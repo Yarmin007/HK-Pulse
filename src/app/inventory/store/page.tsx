@@ -4,9 +4,11 @@ import {
   Search, Package, Droplets, Plus, 
   ArrowRight, ArrowLeft, Calendar, 
   TrendingDown, TrendingUp, Layers, FileText,
-  PieChart, Zap, Snail, Activity, MapPin, X
+  PieChart, Zap, Snail, Activity, MapPin, X, Printer
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 // --- TYPES ---
 type MasterItem = {
@@ -145,23 +147,93 @@ export default function PerpetualInventory() {
     return rows.sort((a,b) => a.itemName.localeCompare(b.itemName));
   }, [masterList, allHistory, currentDate, searchQuery]);
 
-  // --- SMART SEARCH FILTER ---
+  // --- PDF GENERATOR ---
+  const generatePDF = () => {
+    const doc = new jsPDF();
+    const monthName = currentDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    const storeLabel = activeStore === 'All' ? 'All Stores' : activeStore.replace('HK ', '');
+
+    // -- HEADER --
+    doc.setFillColor(109, 33, 88); // #6D2158 (Your Brand Color)
+    doc.rect(0, 0, 210, 40, 'F'); // Top bar
+    
+    doc.setFontSize(22);
+    doc.setTextColor(255, 255, 255);
+    doc.text("INVENTORY STATEMENT", 14, 20);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(255, 255, 255);
+    doc.text(`Department: Housekeeping | ${storeLabel}`, 14, 28);
+    doc.text(`Period: ${monthName}`, 14, 34);
+
+    // -- SUMMARY BOX --
+    const totalIn = inventoryRows.reduce((s, i) => s + i.added, 0);
+    const totalOut = inventoryRows.reduce((s, i) => s + i.consumed, 0);
+    
+    doc.setTextColor(50);
+    doc.setFontSize(10);
+    doc.text(`Total Stock In: ${totalIn}`, 14, 50);
+    doc.text(`Total Consumption: ${totalOut}`, 70, 50);
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 140, 50);
+
+    // -- TABLE --
+    const tableColumn = ["Article", "Unit", "Opening", "In", "Consumed", "Other", "Closing", "Loc"];
+    const tableRows = inventoryRows.map(row => [
+       `${row.itemName} \n#${row.articleNumber}`,
+       row.unit,
+       row.openingStock,
+       row.added > 0 ? `+${row.added}` : '-',
+       row.consumed > 0 ? `-${row.consumed}` : '-',
+       row.others > 0 ? `-${row.others}` : '-',
+       row.closingStock,
+       `${row.rack || '-'}/${row.level || '-'}`
+    ]);
+
+    autoTable(doc, {
+       startY: 55,
+       head: [tableColumn],
+       body: tableRows,
+       theme: 'grid',
+       headStyles: { fillColor: [109, 33, 88], textColor: 255, fontSize: 8, fontStyle: 'bold' },
+       bodyStyles: { fontSize: 8, cellPadding: 3 },
+       columnStyles: {
+          0: { cellWidth: 50 }, // Name is wider
+          6: { fontStyle: 'bold', textColor: [109, 33, 88] } // Closing Stock Bold
+       },
+       didParseCell: function(data) {
+           // Highlight rows with low stock or issues if needed
+       }
+    });
+
+    // -- FOOTER SIGNATURES --
+    const finalY = (doc as any).lastAutoTable.finalY + 30;
+    
+    doc.setLineWidth(0.5);
+    doc.line(14, finalY, 70, finalY); // Line 1
+    doc.line(120, finalY, 190, finalY); // Line 2
+    
+    doc.setFontSize(8);
+    doc.text("Checked By (Supervisor)", 14, finalY + 5);
+    doc.text("Approved By (Executive Housekeeper)", 120, finalY + 5);
+
+    doc.save(`HK_Inventory_${storeLabel}_${monthName}.pdf`);
+  };
+
+  // --- ACTIONS ---
   const filteredSuggestions = useMemo(() => {
     if (!articleSearch) return [];
     const lower = articleSearch.toLowerCase();
     return masterList.filter(m => 
       m.item_name.toLowerCase().includes(lower) || 
       m.article_number.toLowerCase().includes(lower)
-    ).slice(0, 5); // Limit to 5 suggestions
+    ).slice(0, 5);
   }, [articleSearch, masterList]);
 
-  // --- ACTIONS ---
   const handleSelectArticle = (item: MasterItem) => {
     setSelectedArticle(item);
     setArticleSearch(`${item.item_name} (#${item.article_number})`);
     setShowSuggestions(false);
     
-    // Auto-fill location if known
     const row = inventoryRows.find(r => r.masterId === item.id);
     if(row) setTransData(prev => ({ ...prev, rack: row.rack, level: row.level }));
   };
@@ -220,8 +292,7 @@ export default function PerpetualInventory() {
     if(!newArticle.item_name || !newArticle.article_number) return alert("Details required");
     const { data, error } = await supabase.from('hsk_master_catalog').insert(newArticle).select().single();
     if (!error && data) {
-       await fetchData(); // Refresh master list
-       // Auto select the new item
+       await fetchData(); 
        const newItem = data as MasterItem;
        setSelectedArticle(newItem);
        setArticleSearch(`${newItem.item_name} (#${newItem.article_number})`);
@@ -229,7 +300,6 @@ export default function PerpetualInventory() {
     }
   };
 
-  // --- STATS ---
   const fastMovers = inventoryRows.sort((a,b) => b.consumed - a.consumed).slice(0, 5).filter(i => i.consumed > 0);
   const totalIn = inventoryRows.reduce((s, i) => s + i.added, 0);
   const totalConsumed = inventoryRows.reduce((s, i) => s + i.consumed, 0);
@@ -255,32 +325,34 @@ export default function PerpetualInventory() {
       {activeView === 'Inventory' && (
       <>
         {/* CONTROLS */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-           {/* Store */}
-           <div className="bg-white p-2 rounded-xl border border-slate-100 flex items-center justify-between">
-              {['All', 'HK Main Store', 'HK Chemical Store'].map(s => (
-                  <button key={s} onClick={() => setActiveStore(s as any)} className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase ${activeStore === s ? 'bg-slate-100 text-[#6D2158]' : 'text-slate-400'}`}>
-                    {s === 'All' ? 'All' : s.replace('HK ', '')}
-                  </button>
-              ))}
+        <div className="mt-6 flex flex-col md:flex-row justify-between items-center gap-4">
+           {/* Store & Month */}
+           <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+               <div className="bg-white p-2 rounded-xl border border-slate-100 flex items-center justify-between w-full md:w-64">
+                  {['All', 'HK Main Store', 'HK Chemical Store'].map(s => (
+                      <button key={s} onClick={() => setActiveStore(s as any)} className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase ${activeStore === s ? 'bg-slate-100 text-[#6D2158]' : 'text-slate-400'}`}>
+                        {s === 'All' ? 'All' : s.replace('HK ', '')}
+                      </button>
+                  ))}
+               </div>
+               <div className="bg-[#6D2158] text-white p-2 rounded-xl flex items-center justify-between shadow-lg shadow-[#6D2158]/20 w-full md:w-64">
+                  <button onClick={() => { const d = new Date(currentDate); d.setMonth(d.getMonth()-1); setCurrentDate(d); }} className="p-2 hover:bg-white/10 rounded-full"><ArrowLeft size={18}/></button>
+                  <div className="text-center">
+                     <span className="block text-xs font-bold uppercase opacity-70">Current View</span>
+                     <span className="text-lg font-bold">{currentDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</span>
+                  </div>
+                  <button onClick={() => { const d = new Date(currentDate); d.setMonth(d.getMonth()+1); setCurrentDate(d); }} className="p-2 hover:bg-white/10 rounded-full"><ArrowRight size={18}/></button>
+               </div>
            </div>
-           {/* Month Slider */}
-           <div className="bg-[#6D2158] text-white p-2 rounded-xl flex items-center justify-between shadow-lg shadow-[#6D2158]/20">
-              <button onClick={() => { const d = new Date(currentDate); d.setMonth(d.getMonth()-1); setCurrentDate(d); }} className="p-2 hover:bg-white/10 rounded-full"><ArrowLeft size={18}/></button>
-              <div className="text-center">
-                 <span className="block text-xs font-bold uppercase opacity-70">Current View</span>
-                 <span className="text-lg font-bold">{currentDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</span>
-              </div>
-              <button onClick={() => { const d = new Date(currentDate); d.setMonth(d.getMonth()+1); setCurrentDate(d); }} className="p-2 hover:bg-white/10 rounded-full"><ArrowRight size={18}/></button>
-           </div>
-           {/* Stats */}
-           <div className="grid grid-cols-2 gap-2">
-              <div className="bg-white p-3 rounded-xl border border-slate-100 flex items-center gap-2 text-emerald-600">
-                  <TrendingUp size={20}/><span className="text-xl font-bold">+{totalIn}</span>
-              </div>
-              <div className="bg-white p-3 rounded-xl border border-slate-100 flex items-center gap-2 text-rose-600">
-                  <TrendingDown size={20}/><span className="text-xl font-bold">-{totalConsumed}</span>
-              </div>
+           
+           {/* Actions */}
+           <div className="flex gap-2">
+               <button onClick={generatePDF} className="flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-slate-50">
+                  <Printer size={16}/> Print Report
+               </button>
+               <button onClick={() => { setModalMode('Transaction'); setIsModalOpen(true); }} className="flex items-center gap-2 px-6 py-3 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40">
+                  <Plus size={16}/> Record
+               </button>
            </div>
         </div>
 
@@ -291,9 +363,10 @@ export default function PerpetualInventory() {
                   <Search className="absolute left-3 top-2.5 text-slate-300" size={16} />
                   <input type="text" placeholder="Search..." className="w-full pl-10 pr-4 py-2 border rounded-xl text-xs font-bold" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                </div>
-               <button onClick={() => { setModalMode('Transaction'); setIsModalOpen(true); }} className="px-6 py-2 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40">
-                  + Transaction
-               </button>
+               <div className="flex gap-4 text-xs font-bold text-slate-400">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500"></span> In: {totalIn}</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-500"></span> Out: {totalConsumed}</span>
+               </div>
            </div>
            
            <table className="w-full text-left min-w-[1000px]">
@@ -341,7 +414,7 @@ export default function PerpetualInventory() {
       </>
       )}
 
-      {/* --- MASTER LIST VIEW --- */}
+      {/* --- MASTER LIST VIEW & INSIGHTS (Kept same logic, just hidden for brevity in display if needed, but included in full code) --- */}
       {activeView === 'Master List' && (
         <div className="mt-6 bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
            <div className="flex justify-between items-center mb-6">
@@ -350,7 +423,7 @@ export default function PerpetualInventory() {
            </div>
            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {masterList.map(item => (
-                 <div key={item.id} className="p-4 border border-slate-100 rounded-xl hover:border-[#6D2158] group">
+                 <div key={item.id} className="p-4 border border-slate-100 rounded-xl group">
                     <div className="flex justify-between">
                        <span className="text-xs font-bold text-slate-400">#{item.article_number}</span>
                        <span className="text-[10px] font-bold uppercase bg-slate-100 px-2 rounded text-slate-500">{item.unit}</span>
@@ -363,7 +436,6 @@ export default function PerpetualInventory() {
         </div>
       )}
 
-      {/* --- INSIGHTS VIEW --- */}
       {activeView === 'Insights' && (
          <div className="mt-6">
              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
@@ -395,11 +467,8 @@ export default function PerpetualInventory() {
                  {modalMode === 'Transaction' && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">{currentDate.toLocaleDateString('en-GB', { month: 'long' })} Activity</p>}
               </div>
               
-              {/* TRANSACTION FORM */}
               {modalMode === 'Transaction' ? (
                 <div className="space-y-4">
-                   
-                   {/* SMART SEARCH FIELD */}
                    <div className="relative">
                       <label className="text-[10px] font-bold text-slate-400 uppercase">Search Article (Name or #)</label>
                       <input 
@@ -409,24 +478,16 @@ export default function PerpetualInventory() {
                          className="w-full p-3 border rounded-xl font-bold mt-1 text-sm bg-slate-50 focus:border-[#6D2158] outline-none"
                          placeholder="Type to search..."
                       />
-                      {/* Auto-Complete Dropdown */}
                       {showSuggestions && articleSearch.length > 0 && (
                         <div className="absolute z-10 w-full bg-white border border-slate-200 rounded-xl shadow-xl mt-1 max-h-48 overflow-y-auto">
                            {filteredSuggestions.map(item => (
-                              <div 
-                                 key={item.id} 
-                                 onClick={() => handleSelectArticle(item)}
-                                 className="p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0"
-                              >
+                              <div key={item.id} onClick={() => handleSelectArticle(item)} className="p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0">
                                  <p className="text-sm font-bold text-slate-700">{item.item_name}</p>
                                  <p className="text-[10px] text-slate-400">#{item.article_number}</p>
                               </div>
                            ))}
                            {filteredSuggestions.length === 0 && (
-                              <button 
-                                onClick={handleSwitchToCreate}
-                                className="w-full p-3 text-left text-emerald-600 font-bold text-xs hover:bg-emerald-50"
-                              >
+                              <button onClick={handleSwitchToCreate} className="w-full p-3 text-left text-emerald-600 font-bold text-xs hover:bg-emerald-50">
                                 + Create New Article: "{articleSearch}"
                               </button>
                            )}
@@ -437,36 +498,18 @@ export default function PerpetualInventory() {
                    {selectedArticle && (
                    <>
                        <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
-                          <div>
-                             <label className="text-[10px] font-bold text-slate-400 uppercase">Rack</label>
-                             <input type="text" placeholder="A1" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.rack} onChange={e => setTransData({...transData, rack: e.target.value})}/>
-                          </div>
-                          <div>
-                             <label className="text-[10px] font-bold text-slate-400 uppercase">Level</label>
-                             <input type="text" placeholder="2" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.level} onChange={e => setTransData({...transData, level: e.target.value})}/>
-                          </div>
+                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Rack</label><input type="text" placeholder="A1" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.rack} onChange={e => setTransData({...transData, rack: e.target.value})}/></div>
+                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Level</label><input type="text" placeholder="2" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.level} onChange={e => setTransData({...transData, level: e.target.value})}/></div>
                        </div>
                        <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-3">
-                          <div>
-                             <label className="text-[10px] font-bold text-slate-400 uppercase">Action</label>
-                             <select className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, type: e.target.value})}>
-                                <option value="In">Stock In (+)</option>
-                                <option value="Consumed">Consumption (-)</option>
-                                <option value="Damaged">Damaged (-)</option>
-                                <option value="Transferred">Transfer Out (-)</option>
-                             </select>
-                          </div>
-                          <div>
-                             <label className="text-[10px] font-bold text-slate-400 uppercase">Quantity</label>
-                             <input type="number" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, qty: Number(e.target.value)})}/>
-                          </div>
+                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Action</label><select className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, type: e.target.value})}><option value="In">Stock In (+)</option><option value="Consumed">Consumption (-)</option><option value="Damaged">Damaged (-)</option><option value="Transferred">Transfer Out (-)</option></select></div>
+                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Quantity</label><input type="number" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, qty: Number(e.target.value)})}/></div>
                        </div>
                        <button onClick={handleSaveTransaction} className="w-full py-3 bg-[#6D2158] text-white rounded-xl font-bold mt-4 uppercase tracking-wider text-xs animate-in zoom-in">Save Record</button>
                    </>
                    )}
                 </div>
               ) : (
-                /* CREATE NEW ARTICLE FORM */
                 <div className="space-y-4">
                    <input type="text" placeholder="Article # (Unique)" className="w-full p-3 border rounded-xl font-bold text-sm" value={newArticle.article_number} onChange={e => setNewArticle({...newArticle, article_number: e.target.value})} />
                    <input type="text" placeholder="Item Name" className="w-full p-3 border rounded-xl font-bold text-sm" value={newArticle.item_name} onChange={e => setNewArticle({...newArticle, item_name: e.target.value})} />
