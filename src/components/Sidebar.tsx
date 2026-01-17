@@ -1,17 +1,16 @@
 import React from 'react';
 import { 
   LayoutDashboard, ClipboardList, Package, 
-  Users, Droplets, FileText, Settings, LogOut 
+  Users, FileText, Settings, LogOut, ShoppingBasket 
 } from 'lucide-react';
 import Link from 'next/link';
 
 const menuItems = [
   { name: 'Dashboard', icon: LayoutDashboard, href: '/' },
   { name: 'Request Log', icon: ClipboardList, href: '/requests' },
-  { name: 'General Inventory', icon: Package, href: '/inventory/general' },
-  { name: 'Chemical Store', icon: Droplets, href: '/inventory/chemicals' },
+  { name: 'Store Inventory', icon: ShoppingBasket, href: '/inventory/store' }, // Fixed Link
   { name: 'Minibar & Expiry', icon: Package, href: '/inventory/minibar' },
-  { name: 'Staff Allocation', icon: Users, href: '/staff' },
+  { name: 'Hosts', icon: Users, href: '/hosts' }, // Fixed Link (was /staff)
   { name: 'Print Center', icon: FileText, href: '/reports' },
 ];
 
