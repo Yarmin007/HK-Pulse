@@ -2,19 +2,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { 
-  LayoutDashboard, Users, Hotel, 
+  LayoutDashboard, Zap, Users, Hotel, 
   Warehouse, ShoppingCart, FileText, 
   Settings, LogOut, Clock
 } from "lucide-react";
 
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Daily Requests", icon: Zap, path: "/requests" }, // NEW PAGE
   { name: "Host Profiles", icon: Users, path: "/hosts" },
-  { name: "Overtime", icon: Clock, path: "/overtime" }, // Added
+  { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Housekeeping", icon: Hotel, path: "/housekeeping" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
-  { name: "Minibar", icon: FileText, path: "/inventory/minibar" },
-  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
+  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" }, // Kept for PRs
   { name: "Settings", icon: Settings, path: "/settings" },
 ];
 
@@ -23,15 +23,12 @@ export default function Sidebar() {
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-64 bg-white border-r border-slate-100 flex flex-col z-50 shadow-[4px_0_24px_rgba(0,0,0,0.02)]">
-      
-      {/* Logo Area */}
       <div className="h-20 flex items-center px-8 border-b border-slate-50">
         <h1 className="text-2xl font-bold text-[#6D2158] tracking-tight">
           HK<span className="text-slate-300">Pulse</span>
         </h1>
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 px-4 py-6 space-y-2">
         {MENU_ITEMS.map((item) => {
           const isActive = pathname === item.path;
@@ -52,7 +49,6 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Footer / User */}
       <div className="p-4 border-t border-slate-50">
         <button className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-all">
           <LogOut size={20} strokeWidth={2} />
