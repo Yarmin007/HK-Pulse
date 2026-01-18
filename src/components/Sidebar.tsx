@@ -4,16 +4,17 @@ import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Users, Hotel, 
   Warehouse, ShoppingCart, FileText, 
-  Settings, LogOut 
+  Settings, LogOut, Clock
 } from "lucide-react";
 
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
   { name: "Host Profiles", icon: Users, path: "/hosts" },
-  { name: "Housekeeping", icon: Hotel, path: "/housekeeping" }, // Future
+  { name: "Overtime", icon: Clock, path: "/overtime" }, // Added
+  { name: "Housekeeping", icon: Hotel, path: "/housekeeping" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
   { name: "Minibar", icon: FileText, path: "/inventory/minibar" },
-  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" }, // Updated
+  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Settings", icon: Settings, path: "/settings" },
 ];
 
