@@ -1,388 +1,419 @@
 "use client";
 import React, { useState, useEffect } from 'react';
 import { 
-  Plus, Truck, CheckCircle2, Clock, X, Store, ArrowDownToLine, 
-  ShoppingCart, FileText
+  Search, Plus, PackageCheck, Truck, Warehouse,
+  X, Pencil, Trash2, MapPin, Save, AlertCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 // --- TYPES ---
-type MasterItem = {
+type OrderRecord = {
   id: string;
+  order_type: 'Purchase Request' | 'Store Request';
+  request_date: string;
+  request_no: string;
   article_number: string;
   item_name: string;
+  ordered_qty: number;
   unit: string;
+  received_date: string | null;
+  received_qty: number;
+  status: string;
 };
 
-type OrderItem = {
-  id?: string;
-  master_id: string;
-  quantity: number;
-  master?: MasterItem; 
-};
-
-type Order = {
-  id: string;
-  po_number: string;
-  order_type: 'Purchase Request' | 'Store Request';
-  cost_center: 'Housekeeping' | 'Minibar' | 'Garden' | 'Laundry';
-  source_name: string;
-  status: 'Pending' | 'Received';
-  request_date: string;
-  received_date?: string;
-  items?: OrderItem[]; 
-};
+// --- CONFIG ---
+const STORES = ["Minibar Store", "HSK Main Store", "Chemical Store", "Laundry Chemical Store"];
+const STORES_WITH_LEVELS = ["HSK Main Store", "Chemical Store"];
 
 export default function OrderTrackingPage() {
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [masterList, setMasterList] = useState<MasterItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'Pending' | 'Received'>('Pending');
-
-  // --- MODAL STATE ---
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isReceiveModalOpen, setIsReceiveModalOpen] = useState(false);
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
-
-  // --- NEW ORDER FORM ---
-  const [newOrder, setNewOrder] = useState<{
-    po_number: string;
-    order_type: 'Purchase Request' | 'Store Request';
-    cost_center: string;
-    source_name: string;
-    items: { master_id: string; quantity: number }[];
-  }>({
-    po_number: '',
-    order_type: 'Purchase Request',
-    cost_center: 'Housekeeping',
-    source_name: '',
-    items: [{ master_id: '', quantity: 0 }]
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [activeTab, setActiveTab] = useState<'Purchase Request' | 'Store Request'>('Purchase Request');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // Modals & Forms
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isReceiveOpen, setIsReceiveOpen] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState<OrderRecord | null>(null);
+  
+  // Data State
+  const [formData, setFormData] = useState({
+    request_date: new Date().toISOString().split('T')[0],
+    request_no: '',
+    article_number: '',
+    item_name: '',
+    ordered_qty: '',
+    unit: 'Each'
   });
 
-  // --- RECEIVE FORM ---
-  const [destinationStore, setDestinationStore] = useState('HK Main Store');
+  const [receiveData, setReceiveData] = useState({
+    received_date: new Date().toISOString().split('T')[0],
+    received_qty: '',
+    target_store: 'HSK Main Store',
+    target_level: ''
+  });
 
-  // --- FETCH DATA ---
-  const fetchData = async () => {
+  useEffect(() => { fetchOrders(); }, [activeTab]);
+
+  const fetchOrders = async () => {
     setIsLoading(true);
+    const { data } = await supabase
+      .from('hsk_procurement_orders')
+      .select('*')
+      .eq('order_type', activeTab)
+      .order('request_date', { ascending: false });
     
-    // 1. Fetch Catalog
-    const { data: masters } = await supabase.from('hsk_master_catalog').select('id, article_number, item_name, unit');
-    if (masters) setMasterList(masters);
-
-    // 2. Fetch Orders
-    const { data: orderData } = await supabase
-      .from('hsk_orders')
-      .select(`
-        *,
-        items:hsk_order_items (
-          quantity,
-          master:hsk_master_catalog ( item_name, article_number, unit )
-        )
-      `)
-      .order('created_at', { ascending: false });
-    
-    if (orderData) setOrders(orderData as any);
+    if (data) setOrders(data);
     setIsLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, []);
-
-  // --- CREATE ORDER LOGIC ---
-  const handleAddItemRow = () => {
-    setNewOrder({ ...newOrder, items: [...newOrder.items, { master_id: '', quantity: 0 }] });
-  };
-
-  const handleRemoveItemRow = (index: number) => {
-    const updated = [...newOrder.items];
-    updated.splice(index, 1);
-    setNewOrder({ ...newOrder, items: updated });
-  };
-
-  const handleItemChange = (index: number, field: 'master_id' | 'quantity', value: any) => {
-    const updated = [...newOrder.items];
-    updated[index] = { ...updated[index], [field]: value };
-    setNewOrder({ ...newOrder, items: updated });
-  };
-
-  const submitOrder = async () => {
-    if (!newOrder.po_number || !newOrder.source_name) return alert("Fill all details");
+  // --- NEW: MASTER LIST LOOKUP ---
+  const lookupArticle = async (val: string) => {
+    if(!val) return;
     
-    // 1. Create Header
-    const { data: order, error } = await supabase.from('hsk_orders').insert({
-      po_number: newOrder.po_number,
-      order_type: newOrder.order_type,
-      cost_center: newOrder.cost_center,
-      source_name: newOrder.source_name,
-      status: 'Pending',
-      request_date: new Date().toISOString().split('T')[0]
-    }).select().single();
-
-    if (error || !order) return alert("Failed to create order");
-
-    // 2. Create Items
-    const itemsToInsert = newOrder.items
-      .filter(i => i.master_id && i.quantity > 0)
-      .map(i => ({
-        order_id: order.id,
-        master_id: i.master_id,
-        quantity: i.quantity
-      }));
+    // 1. Try to find by Article Number in Master Catalog
+    let { data } = await supabase
+      .from('hsk_master_catalog')
+      .select('article_number, article_name, unit')
+      .eq('article_number', val)
+      .single();
     
-    await supabase.from('hsk_order_items').insert(itemsToInsert);
+    // 2. If not found, try by Exact Name
+    if (!data) {
+       const res = await supabase
+         .from('hsk_master_catalog')
+         .select('article_number, article_name, unit')
+         .ilike('article_name', val)
+         .limit(1);
+       if (res.data && res.data.length > 0) data = res.data[0];
+    }
 
-    setIsModalOpen(false);
-    // Reset Form
-    setNewOrder({ po_number: '', order_type: 'Purchase Request', cost_center: 'Housekeeping', source_name: '', items: [{ master_id: '', quantity: 0 }] });
-    fetchData();
+    // 3. Auto-fill if found
+    if (data) {
+       setFormData(prev => ({
+         ...prev,
+         article_number: data.article_number,
+         item_name: data.article_name,
+         unit: data.unit || 'Each'
+       }));
+    }
   };
 
-  // --- RECEIVE LOGIC ---
-  const handleReceiveOrder = async () => {
-    if (!selectedOrder) return;
+  const handleSaveOrder = async () => {
+    // Validation: Must have Article Number
+    if (!formData.article_number || !formData.item_name) {
+        return alert("Please select a valid item from the Master Catalog. Type Article No or Name to search.");
+    }
 
-    const monthKey = new Date().toISOString().slice(0, 7); // "2024-02"
-
-    // 1. Loop through items and add to Monthly Stock
-    const updates = selectedOrder.items?.map(async (item: any) => {
-        // Find existing stock record for this month
-        const { data: existing } = await supabase
-           .from('hsk_monthly_stock')
-           .select('*')
-           .eq('month_year', monthKey)
-           .eq('master_id', item.master.id || item.master_id)
-           .eq('store_name', destinationStore)
-           .single();
-
-        if (existing) {
-           await supabase.from('hsk_monthly_stock').update({
-              added_stock: existing.added_stock + item.quantity
-           }).eq('id', existing.id);
-        } else {
-           await supabase.from('hsk_monthly_stock').insert({
-              month_year: monthKey,
-              master_id: item.master.id || item.master_id,
-              store_name: destinationStore,
-              opening_stock: 0,
-              added_stock: item.quantity,
-              consumed: 0, damaged: 0, transferred: 0
-           });
-        }
+    const { error } = await supabase.from('hsk_procurement_orders').insert({
+      order_type: activeTab,
+      request_date: formData.request_date,
+      request_no: formData.request_no,
+      article_number: formData.article_number,
+      item_name: formData.item_name,
+      ordered_qty: parseFloat(formData.ordered_qty),
+      unit: formData.unit,
+      received_qty: 0,
+      status: 'Pending'
     });
 
-    if (updates) await Promise.all(updates);
-
-    // 2. Mark Order as Received
-    await supabase.from('hsk_orders').update({
-        status: 'Received',
-        received_date: new Date().toISOString().split('T')[0]
-    }).eq('id', selectedOrder.id);
-
-    setIsReceiveModalOpen(false);
-    setSelectedOrder(null);
-    fetchData();
-    alert("Order Received! Inventory updated.");
+    if (!error) {
+      setIsAddOpen(false);
+      fetchOrders();
+      // Reset form
+      setFormData({ 
+        request_date: new Date().toISOString().split('T')[0], 
+        request_no: '', article_number: '', item_name: '', ordered_qty: '', unit: 'Each' 
+      });
+    } else {
+        alert("Error: " + error.message);
+    }
   };
 
-  // --- FILTERING ---
-  const filteredOrders = orders.filter(o => o.status === activeTab);
+  const handleDelete = async (id: string) => {
+    if(!confirm("Delete this order?")) return;
+    await supabase.from('hsk_procurement_orders').delete().eq('id', id);
+    fetchOrders();
+  };
+
+  const handleReceiveOrder = async () => {
+    if (!selectedOrder) return;
+    
+    const qtyNow = parseFloat(receiveData.received_qty);
+    const totalReceived = (selectedOrder.received_qty || 0) + qtyNow;
+    
+    // 1. Update Order Status
+    let newStatus = 'Pending';
+    if (totalReceived >= selectedOrder.ordered_qty) newStatus = 'Completed';
+    else if (totalReceived > 0) newStatus = 'Partial';
+
+    await supabase.from('hsk_procurement_orders').update({
+      received_date: receiveData.received_date,
+      received_qty: totalReceived,
+      status: newStatus
+    }).eq('id', selectedOrder.id);
+
+    // 2. Update Inventory Stock (Using Article Number)
+    // Check if item exists in this specific store location
+    const { data: existingInv } = await supabase.from('hsk_inventory')
+      .select('*')
+      .eq('article_number', selectedOrder.article_number)
+      .eq('location', receiveData.target_store)
+      .eq('level', receiveData.target_level || '') // Handle optional level
+      .single();
+
+    if (existingInv) {
+      // Add to existing stock
+      await supabase.from('hsk_inventory').update({ 
+          qty_on_hand: existingInv.qty_on_hand + qtyNow,
+          updated_at: new Date().toISOString()
+      }).eq('id', existingInv.id);
+    } else {
+      // Create new stock record for this location
+      await supabase.from('hsk_inventory').insert({
+        article_number: selectedOrder.article_number,
+        location: receiveData.target_store,
+        level: receiveData.target_level || '',
+        qty_on_hand: qtyNow,
+        unit: selectedOrder.unit
+      });
+    }
+
+    setIsReceiveOpen(false);
+    setSelectedOrder(null);
+    fetchOrders();
+    alert(`Stock updated in ${receiveData.target_store}.`);
+  };
+
+  const filteredOrders = orders.filter(o => 
+    o.item_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    o.request_no.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (o.article_number && o.article_number.includes(searchQuery))
+  );
 
   return (
-    <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
+    <div className="min-h-screen bg-[#FDFBFD] p-6 pb-24 font-antiqua text-[#6D2158]">
       
-      {/* --- HEADER --- */}
-      <div className="flex flex-col md:flex-row justify-between items-end border-b border-slate-200 pb-6 gap-6">
+      {/* HEADER */}
+      <div className="flex justify-between items-end mb-6 border-b border-slate-200 pb-6">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Order Tracking</h1>
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">
-            Procurement & Transfers • {activeTab} Orders
-          </p>
+           <h1 className="text-3xl font-bold tracking-tight">Order Tracking</h1>
+           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">
+             Procurement & Receiving
+           </p>
         </div>
-        
-        <div className="flex gap-2">
-           <button onClick={() => setActiveTab('Pending')} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-wider border ${activeTab === 'Pending' ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-400 border-slate-200'}`}>
-              Pending
-           </button>
-           <button onClick={() => setActiveTab('Received')} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-wider border ${activeTab === 'Received' ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-400 border-slate-200'}`}>
-              History
-           </button>
-           <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-6 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-emerald-600/40 ml-4">
-              <Plus size={16}/> New Order
-           </button>
+        <button onClick={() => setIsAddOpen(true)} className="bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center gap-2 shadow-lg hover:bg-[#5a1b49] transition-all">
+          <Plus size={18}/> New Order
+        </button>
+      </div>
+
+      {/* TABS */}
+      <div className="flex gap-4 mb-6">
+        <button 
+          onClick={() => setActiveTab('Purchase Request')}
+          className={`flex-1 p-4 rounded-xl border-2 flex items-center justify-center gap-3 transition-all ${activeTab === 'Purchase Request' ? 'border-[#6D2158] bg-white text-[#6D2158] shadow-md' : 'border-transparent bg-slate-100 text-slate-400'}`}
+        >
+          <Truck size={24} />
+          <div className="text-left">
+            <span className="block text-xs font-bold uppercase">External</span>
+            <span className="text-lg font-bold">Purchase Request</span>
+          </div>
+        </button>
+
+        <button 
+          onClick={() => setActiveTab('Store Request')}
+          className={`flex-1 p-4 rounded-xl border-2 flex items-center justify-center gap-3 transition-all ${activeTab === 'Store Request' ? 'border-[#6D2158] bg-white text-[#6D2158] shadow-md' : 'border-transparent bg-slate-100 text-slate-400'}`}
+        >
+          <Warehouse size={24} />
+          <div className="text-left">
+            <span className="block text-xs font-bold uppercase">Internal</span>
+            <span className="text-lg font-bold">Store Request</span>
+          </div>
+        </button>
+      </div>
+
+      {/* SEARCH */}
+      <div className="relative mb-6">
+         <Search className="absolute left-4 top-3.5 text-slate-400" size={18}/>
+         <input 
+            type="text" 
+            placeholder="Search by Request No, Article No, or Name..." 
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm text-slate-700 outline-none focus:border-[#6D2158]"
+         />
+      </div>
+
+      {/* ORDERS TABLE */}
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+        <table className="w-full text-left">
+           <thead className="bg-slate-50 border-b border-slate-100">
+              <tr>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase">Req No</th>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase">Art. No</th>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase">Item Description</th>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase text-center">Ordered</th>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase text-center">Received</th>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase text-center">Status</th>
+                 <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
+              </tr>
+           </thead>
+           <tbody className="divide-y divide-slate-50">
+              {filteredOrders.map(order => (
+                 <tr key={order.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="p-4 text-sm font-bold text-[#6D2158]">{order.request_no}</td>
+                    <td className="p-4 text-xs font-bold text-slate-400 font-mono">{order.article_number}</td>
+                    <td className="p-4 text-sm font-bold text-slate-700">{order.item_name}</td>
+                    <td className="p-4 text-sm font-bold text-slate-700 text-center">{order.ordered_qty} <span className="text-[10px] text-slate-400 uppercase">{order.unit}</span></td>
+                    <td className="p-4 text-sm font-bold text-emerald-600 text-center">{order.received_qty > 0 ? order.received_qty : '-'}</td>
+                    <td className="p-4 text-center">
+                       <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase ${
+                          order.status === 'Completed' ? 'bg-emerald-100 text-emerald-700' :
+                          order.status === 'Partial' ? 'bg-amber-100 text-amber-700' :
+                          'bg-slate-100 text-slate-500'
+                       }`}>
+                          {order.status}
+                       </span>
+                    </td>
+                    <td className="p-4 text-right flex items-center justify-end gap-2">
+                       {order.status !== 'Completed' && (
+                         <button 
+                           onClick={() => { setSelectedOrder(order); setIsReceiveOpen(true); }}
+                           className="bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-lg text-xs font-bold uppercase hover:bg-emerald-600 hover:text-white transition-colors flex items-center gap-1"
+                         >
+                           <PackageCheck size={14}/> Recv
+                         </button>
+                       )}
+                       <button onClick={() => handleDelete(order.id)} className="text-slate-300 hover:text-rose-500"><Trash2 size={16}/></button>
+                    </td>
+                 </tr>
+              ))}
+           </tbody>
+        </table>
         </div>
       </div>
 
-      {/* --- ORDER LIST --- */}
-      <div className="grid grid-cols-1 gap-4 mt-6">
-         {filteredOrders.length === 0 && !isLoading && (
-            <div className="text-center py-20 text-slate-300 font-bold uppercase text-xs tracking-widest">No {activeTab} Orders</div>
-         )}
-         
-         {filteredOrders.map(order => (
-            <div key={order.id} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col md:flex-row justify-between items-center gap-6 hover:shadow-md transition-all">
-               
-               {/* Info Block */}
-               <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-1">
-                     <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase flex items-center gap-1 ${order.order_type === 'Purchase Request' ? 'bg-purple-50 text-purple-600 border border-purple-100' : 'bg-blue-50 text-blue-600 border border-blue-100'}`}>
-                        {order.order_type === 'Purchase Request' ? <ShoppingCart size={10}/> : <Store size={10}/>}
-                        {order.order_type}
-                     </span>
-                     <span className="text-lg font-bold text-[#6D2158]">{order.po_number}</span>
+      {/* --- ADD MODAL --- */}
+      {isAddOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 animate-in slide-in-from-bottom-8">
+             <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-slate-700">New {activeTab}</h3>
+                <button onClick={() => setIsAddOpen(false)}><X className="text-slate-400"/></button>
+             </div>
+             
+             <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                   <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase">Date</label>
+                      <input type="date" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={formData.request_date} onChange={e => setFormData({...formData, request_date: e.target.value})} />
+                   </div>
+                   <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase">Req No</label>
+                      <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={formData.request_no} onChange={e => setFormData({...formData, request_no: e.target.value})} />
+                   </div>
+                </div>
+                
+                {/* MASTER LIST LOOKUP */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="col-span-1">
+                      <label className="text-xs font-bold text-slate-400 uppercase">Article No</label>
+                      <input 
+                        type="text" 
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" 
+                        placeholder="Scan/Type" 
+                        value={formData.article_number} 
+                        onChange={e => setFormData({...formData, article_number: e.target.value})} 
+                        onBlur={(e) => lookupArticle(e.target.value)}
+                      />
                   </div>
-                  <div className="flex items-center gap-4 text-xs font-bold text-slate-500">
-                     <span className="flex items-center gap-1"><Store size={12}/> {order.source_name}</span>
-                     <span className="text-slate-300">•</span>
-                     <span>{order.cost_center}</span>
-                     <span className="text-slate-300">•</span>
-                     <span className="flex items-center gap-1"><Clock size={12}/> {order.request_date}</span>
+                  <div className="col-span-2">
+                      <label className="text-xs font-bold text-slate-400 uppercase">Item Name</label>
+                      <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" placeholder="Auto-filled from Master" value={formData.item_name} readOnly />
                   </div>
-               </div>
+                </div>
 
-               {/* Items Summary */}
-               <div className="flex-1 flex gap-2 overflow-x-auto max-w-md">
-                   {order.items?.slice(0, 3).map((item: any, i) => (
-                      <div key={i} className="px-3 py-1 bg-slate-50 rounded-lg text-xs font-bold text-slate-600 border border-slate-100 whitespace-nowrap">
-                         {item.quantity} x {item.master.item_name}
-                      </div>
-                   ))}
-                   {(order.items?.length || 0) > 3 && (
-                      <div className="px-3 py-1 bg-slate-50 rounded-lg text-xs font-bold text-slate-400 border border-slate-100">
-                         +{(order.items?.length || 0) - 3} more
-                      </div>
-                   )}
-               </div>
+                {!formData.item_name && formData.article_number && (
+                   <p className="text-[10px] text-rose-500 font-bold flex items-center gap-1"><AlertCircle size={12}/> Item not found in Master Catalog. Please add it in Settings first.</p>
+                )}
 
-               {/* Actions */}
-               <div>
-                  {order.status === 'Pending' ? (
-                      <button 
-                        onClick={() => { setSelectedOrder(order); setIsReceiveModalOpen(true); }}
-                        className="flex items-center gap-2 px-5 py-2 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-emerald-600 hover:text-white transition-all"
-                      >
-                         <ArrowDownToLine size={16}/> Receive
-                      </button>
-                  ) : (
-                      <span className="flex items-center gap-2 text-emerald-600 font-bold text-xs uppercase tracking-wider bg-emerald-50 px-4 py-2 rounded-xl">
-                         <CheckCircle2 size={16}/> Received {order.received_date}
-                      </span>
-                  )}
-               </div>
-            </div>
-         ))}
-      </div>
+                <div className="grid grid-cols-2 gap-4">
+                   <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase">Ordered Qty</label>
+                      <input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={formData.ordered_qty} onChange={e => setFormData({...formData, ordered_qty: e.target.value})} />
+                   </div>
+                   <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase">Unit</label>
+                      <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none bg-slate-50" value={formData.unit} readOnly />
+                   </div>
+                </div>
 
-      {/* --- CREATE ORDER MODAL --- */}
-      {isModalOpen && (
-         <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl p-6 h-[80vh] flex flex-col">
-               <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-xl font-bold text-[#6D2158]">New Order Request</h3>
-                  <button onClick={() => setIsModalOpen(false)}><X size={24} className="text-slate-300 hover:text-rose-500"/></button>
-               </div>
-               
-               <div className="flex-1 overflow-y-auto space-y-6 pr-2">
-                  <div className="grid grid-cols-2 gap-4">
-                     <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase">Order Type</label>
-                        <select className="w-full p-3 border rounded-xl font-bold mt-1 text-sm bg-slate-50" value={newOrder.order_type} onChange={e => setNewOrder({...newOrder, order_type: e.target.value as any})}>
-                           <option>Purchase Request</option>
-                           <option>Store Request</option>
-                        </select>
-                     </div>
-                     <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase">Cost Center (Requester)</label>
-                        <select className="w-full p-3 border rounded-xl font-bold mt-1 text-sm bg-slate-50" value={newOrder.cost_center} onChange={e => setNewOrder({...newOrder, cost_center: e.target.value})}>
-                           <option>Housekeeping</option>
-                           <option>Minibar</option>
-                           <option>Garden</option>
-                           <option>Laundry</option>
-                        </select>
-                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                     <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase">PR No. or SR No.</label>
-                        <input type="text" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" placeholder="e.g. PR-1025" value={newOrder.po_number} onChange={e => setNewOrder({...newOrder, po_number: e.target.value})} />
-                     </div>
-                     <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase">Source (Supplier / Store)</label>
-                        <input type="text" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" placeholder="e.g. Seagull OR F&B Store" value={newOrder.source_name} onChange={e => setNewOrder({...newOrder, source_name: e.target.value})} />
-                     </div>
-                  </div>
-
-                  <hr className="border-slate-100"/>
-                  
-                  <div>
-                     <div className="flex justify-between items-center mb-2">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase">Order Items</label>
-                        <button onClick={handleAddItemRow} className="text-[10px] font-bold text-emerald-600 uppercase hover:underline">+ Add Row</button>
-                     </div>
-                     <div className="space-y-2">
-                        {newOrder.items.map((item, index) => (
-                           <div key={index} className="flex gap-2">
-                              <select 
-                                className="flex-[3] p-2 border rounded-lg font-bold text-sm bg-slate-50"
-                                value={item.master_id}
-                                onChange={e => handleItemChange(index, 'master_id', e.target.value)}
-                              >
-                                 <option value="">Select Item...</option>
-                                 {masterList.map(m => (
-                                    <option key={m.id} value={m.id}>{m.item_name} ({m.article_number})</option>
-                                 ))}
-                              </select>
-                              <input 
-                                type="number" 
-                                placeholder="Qty" 
-                                className="flex-1 p-2 border rounded-lg font-bold text-sm text-center"
-                                value={item.quantity}
-                                onChange={e => handleItemChange(index, 'quantity', Number(e.target.value))}
-                              />
-                              <button onClick={() => handleRemoveItemRow(index)} className="p-2 text-rose-400 hover:text-rose-600"><X size={16}/></button>
-                           </div>
-                        ))}
-                     </div>
-                  </div>
-               </div>
-
-               <div className="mt-6 pt-4 border-t border-slate-100">
-                  <button onClick={submitOrder} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase tracking-widest shadow-lg hover:shadow-[#6D2158]/40">
-                     Create Order
-                  </button>
-               </div>
-            </div>
-         </div>
+                <button onClick={handleSaveOrder} className="w-full py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg mt-4 flex items-center justify-center gap-2">
+                    <Save size={18}/> Create Order
+                </button>
+             </div>
+          </div>
+        </div>
       )}
 
       {/* --- RECEIVE MODAL --- */}
-      {isReceiveModalOpen && selectedOrder && (
-         <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-6">
-               <h3 className="text-xl font-bold text-[#6D2158] mb-2">Receive Goods</h3>
-               <p className="text-sm font-bold text-slate-400 mb-6">Confirm receipt for: {selectedOrder.po_number}</p>
-               
-               <div className="mb-6">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase">Destination Store</label>
-                  <select 
-                     className="w-full p-3 border rounded-xl font-bold mt-1 text-sm bg-slate-50"
-                     value={destinationStore}
-                     onChange={(e) => setDestinationStore(e.target.value)}
-                  >
-                     <option>HK Main Store</option>
-                     <option>HK Chemical Store</option>
-                  </select>
-                  <p className="text-[10px] font-bold text-amber-500 mt-2">
-                     ⚠ This will add {selectedOrder.items?.reduce((s: any, i: any) => s + i.quantity, 0)} items to your inventory immediately.
-                  </p>
-               </div>
+      {isReceiveOpen && selectedOrder && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 animate-in zoom-in-95">
+             <div className="mb-4">
+                <h3 className="text-lg font-bold text-slate-700">Receive Goods</h3>
+                <p className="text-sm text-slate-500 font-bold">{selectedOrder.item_name}</p>
+                <p className="text-xs text-slate-400 font-mono mt-1">Ref: {selectedOrder.article_number}</p>
+             </div>
+             
+             <div className="space-y-4">
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex justify-between items-center">
+                   <div>
+                      <span className="block text-[10px] font-bold text-slate-400 uppercase">Ordered</span>
+                      <span className="text-xl font-bold text-slate-800">{selectedOrder.ordered_qty}</span>
+                   </div>
+                   <div className="h-full w-px bg-slate-200 mx-4"></div>
+                   <div>
+                      <span className="block text-[10px] font-bold text-slate-400 uppercase">Received</span>
+                      <span className="text-xl font-bold text-emerald-600">{selectedOrder.received_qty}</span>
+                   </div>
+                </div>
 
-               <div className="flex gap-2">
-                  <button onClick={() => setIsReceiveModalOpen(false)} className="flex-1 py-3 text-slate-400 font-bold uppercase text-xs border border-slate-200 rounded-xl">Cancel</button>
-                  <button onClick={handleReceiveOrder} className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold uppercase text-xs shadow-lg">Confirm Receipt</button>
-               </div>
-            </div>
-         </div>
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                       <label className="text-xs font-bold text-slate-400 uppercase">Received Date</label>
+                       <input type="date" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={receiveData.received_date} onChange={e => setReceiveData({...receiveData, received_date: e.target.value})} />
+                    </div>
+                    <div>
+                       <label className="text-xs font-bold text-slate-400 uppercase">Qty Recv Now</label>
+                       <input type="number" autoFocus className="w-full p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl font-bold outline-none focus:border-emerald-500" value={receiveData.received_qty} onChange={e => setReceiveData({...receiveData, received_qty: e.target.value})} />
+                    </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-4 mt-2">
+                    <p className="text-xs font-bold text-[#6D2158] uppercase mb-2 flex items-center gap-1"><MapPin size={12}/> Put Away Location</p>
+                    <div className="space-y-3">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase">Store</label>
+                            <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={receiveData.target_store} onChange={e => setReceiveData({...receiveData, target_store: e.target.value, target_level: ''})}>
+                                {STORES.map(s => <option key={s}>{s}</option>)}
+                            </select>
+                        </div>
+                        {STORES_WITH_LEVELS.includes(receiveData.target_store) && (
+                            <div>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase">Shelf / Level</label>
+                                <input type="text" placeholder="e.g. Level 1, Shelf A" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={receiveData.target_level} onChange={e => setReceiveData({...receiveData, target_level: e.target.value})} />
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <button onClick={handleReceiveOrder} className="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold uppercase shadow-lg mt-2">Confirm & Add to Stock</button>
+                <button onClick={() => setIsReceiveOpen(false)} className="w-full py-3 text-slate-400 font-bold text-xs uppercase hover:text-slate-600">Cancel</button>
+             </div>
+          </div>
+        </div>
       )}
 
     </div>

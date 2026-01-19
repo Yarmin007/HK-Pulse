@@ -1,52 +1,40 @@
 "use client";
 import React, { useState, useEffect } from 'react';
 import { 
-  Settings, Save, Plus, Trash2, X,
+  Settings, Save, Plus, Trash2, X, Search,
   Layers, MapPin, Briefcase, Tag, AlertTriangle,
   Coffee, Droplet, Beer, Wine, Cookie, Zap,
-  Cloud, Moon, Sun, Umbrella, Baby, Star
+  Cloud, Moon, Sun, Umbrella, Baby, Star, Box
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 // --- CONFIG ---
-const ICON_MAP: any = {
-  'Coffee': Coffee, 'Droplet': Droplet, 'Beer': Beer, 
-  'Wine': Wine, 'Cookie': Cookie, 'Zap': Zap,
-  'Cloud': Cloud, 'Moon': Moon, 'Sun': Sun, 
-  'Umbrella': Umbrella, 'Baby': Baby, 'Star': Star
+const CATEGORY_ICONS: any = {
+  'Soft Drinks': Coffee, 'Juices': Coffee, 'Water': Droplet,
+  'Beer': Beer, 'Wines': Wine, 'Spirits': Wine,
+  'Bites': Cookie, 'Sweets': Cookie, 'Retail': Zap,
+  'Pillow Menu': Cloud, 'Baby Items': Baby, 'Toiletries': Droplet,
+  'General': Box, 'Chemicals': AlertTriangle, 'Linen': Layers
 };
 
-const MINIBAR_CATEGORIES = ['Bites', 'Sweets', 'Soft Drinks', 'Juices', 'Water', 'Beer', 'Spirits', 'Wines', 'Retail'];
-// Updated Categories
-const AMENITY_CATEGORIES = ['Pillow Menu', 'Baby Items', 'Toiletries', 'General'];
-
-const COLORS = [
-  { label: 'Red', val: 'bg-red-100 text-red-800' },
-  { label: 'Green', val: 'bg-green-100 text-green-800' },
-  { label: 'Blue', val: 'bg-blue-100 text-blue-800' },
-  { label: 'Amber', val: 'bg-amber-100 text-amber-800' },
-  { label: 'Rose', val: 'bg-rose-100 text-rose-800' },
-  { label: 'Yellow', val: 'bg-yellow-100 text-yellow-800' },
-  { label: 'Cyan', val: 'bg-cyan-100 text-cyan-800' },
-  { label: 'Slate', val: 'bg-slate-100 text-slate-800' },
+const MASTER_CATEGORIES = [
+  // Minibar
+  'Bites', 'Sweets', 'Soft Drinks', 'Juices', 'Water', 'Beer', 'Spirits', 'Wines', 'Retail',
+  // Amenities
+  'Pillow Menu', 'Baby Items', 'Toiletries', 'General Requests',
+  // Operational
+  'Chemicals', 'Linen', 'Stationery', 'Engineering', 'Cleaning Supplies'
 ];
 
 // --- TYPES ---
-type CatalogItem = {
-  id: string;
-  micros_name: string;
-  article_name: string;
+type MasterItem = {
   article_number: string;
+  article_name: string;
+  unit: string;
   category: string;
-  icon: string;
-  color: string;
-};
-
-type AmenityItem = {
-  id: string;
-  name: string;
-  category: string;
-  icon: string;
+  is_minibar_item: boolean;
+  micros_name: string;
+  sales_price: number;
 };
 
 type Constant = {
@@ -56,22 +44,15 @@ type Constant = {
 };
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState('Minibar Catalog');
+  const [activeTab, setActiveTab] = useState('Master Inventory');
+  const [searchQuery, setSearchQuery] = useState('');
   
-  // --- STATE: MINIBAR ---
-  const [minibarItems, setMinibarItems] = useState<CatalogItem[]>([]);
-  const [minibarCategoryFilter, setMinibarCategoryFilter] = useState('All');
-  const [isAddingMinibar, setIsAddingMinibar] = useState(false);
-  const [newMinibarItem, setNewMinibarItem] = useState({
-    micros_name: '', article_name: '', article_number: '', 
-    category: 'Soft Drinks', icon: 'Coffee', color: 'bg-slate-100 text-slate-800'
-  });
-
-  // --- STATE: AMENITIES ---
-  const [amenityItems, setAmenityItems] = useState<AmenityItem[]>([]);
-  const [isAddingAmenity, setIsAddingAmenity] = useState(false);
-  const [newAmenityItem, setNewAmenityItem] = useState({
-    name: '', category: 'Pillow Menu', icon: 'Cloud'
+  // --- STATE: MASTER LIST ---
+  const [masterList, setMasterList] = useState<MasterItem[]>([]);
+  const [isAddingItem, setIsAddingItem] = useState(false);
+  const [newItem, setNewItem] = useState<MasterItem>({
+    article_number: '', article_name: '', unit: 'Each', category: 'General',
+    is_minibar_item: false, micros_name: '', sales_price: 0
   });
 
   // --- STATE: SYSTEM CONSTANTS ---
@@ -81,20 +62,14 @@ export default function SettingsPage() {
 
   // --- INIT ---
   useEffect(() => {
-    fetchMinibarCatalog();
-    fetchAmenityCatalog();
+    fetchMasterList();
     fetchConstants();
   }, []);
 
   // --- DATA FETCHING ---
-  const fetchMinibarCatalog = async () => {
-    const { data } = await supabase.from('hsk_minibar_catalog').select('*').order('micros_name');
-    if (data) setMinibarItems(data);
-  };
-
-  const fetchAmenityCatalog = async () => {
-    const { data } = await supabase.from('hsk_amenities_catalog').select('*').order('name');
-    if (data) setAmenityItems(data);
+  const fetchMasterList = async () => {
+    const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
+    if (data) setMasterList(data);
   };
 
   const fetchConstants = async () => {
@@ -102,34 +77,35 @@ export default function SettingsPage() {
     if (data) setConstants(data);
   };
 
-  // --- HANDLERS: MINIBAR ---
-  const handleAddMinibar = async () => {
-    if(!newMinibarItem.micros_name) return alert("Enter Micros Name");
-    await supabase.from('hsk_minibar_catalog').insert(newMinibarItem);
-    setIsAddingMinibar(false);
-    setNewMinibarItem({ micros_name: '', article_name: '', article_number: '', category: 'Soft Drinks', icon: 'Coffee', color: 'bg-slate-100 text-slate-800' });
-    fetchMinibarCatalog();
+  // --- HANDLERS: MASTER LIST ---
+  const handleSaveItem = async () => {
+    if (!newItem.article_number || !newItem.article_name) return alert("Article Number and Name are required.");
+
+    // Smart defaults
+    const finalData = {
+      ...newItem,
+      // If Minibar item, ensure Micros Name exists (default to Article Name)
+      micros_name: newItem.is_minibar_item && !newItem.micros_name ? newItem.article_name : newItem.micros_name
+    };
+
+    const { error } = await supabase.from('hsk_master_catalog').upsert(finalData);
+    
+    if (error) {
+      alert("Error saving: " + error.message);
+    } else {
+      setIsAddingItem(false);
+      setNewItem({ 
+        article_number: '', article_name: '', unit: 'Each', category: 'General', 
+        is_minibar_item: false, micros_name: '', sales_price: 0 
+      });
+      fetchMasterList();
+    }
   };
 
-  const handleDeleteMinibar = async (id: string) => {
-    if(!confirm("Delete this item?")) return;
-    await supabase.from('hsk_minibar_catalog').delete().eq('id', id);
-    fetchMinibarCatalog();
-  };
-
-  // --- HANDLERS: AMENITIES ---
-  const handleAddAmenity = async () => {
-    if(!newAmenityItem.name) return alert("Enter Name");
-    await supabase.from('hsk_amenities_catalog').insert(newAmenityItem);
-    setIsAddingAmenity(false);
-    setNewAmenityItem({ name: '', category: 'Pillow Menu', icon: 'Cloud' });
-    fetchAmenityCatalog();
-  };
-
-  const handleDeleteAmenity = async (id: string) => {
-    if(!confirm("Delete this amenity?")) return;
-    await supabase.from('hsk_amenities_catalog').delete().eq('id', id);
-    fetchAmenityCatalog();
+  const handleDeleteItem = async (id: string) => {
+    if(!confirm("Delete this item from Master List?")) return;
+    await supabase.from('hsk_master_catalog').delete().eq('article_number', id);
+    fetchMasterList();
   };
 
   // --- HANDLERS: CONSTANTS ---
@@ -167,10 +143,7 @@ export default function SettingsPage() {
             onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}
             onKeyDown={(e) => { if (e.key === 'Enter') handleAddConstant(type); }}
           />
-          <button 
-            onClick={() => handleAddConstant(type)}
-            className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:shadow-lg"
-          >
+          <button onClick={() => handleAddConstant(type)} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:shadow-lg">
             <Plus size={16}/> Add
           </button>
         </div>
@@ -179,9 +152,7 @@ export default function SettingsPage() {
            {list.map(item => (
              <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
                 <span className="font-bold text-slate-600 text-sm">{item.label}</span>
-                <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                   <Trash2 size={16}/>
-                </button>
+                <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
              </div>
            ))}
            {list.length === 0 && <p className="text-xs text-slate-400 italic">No items defined.</p>}
@@ -190,8 +161,11 @@ export default function SettingsPage() {
     );
   };
 
-  // Filter Minibar Items
-  const filteredMinibar = minibarCategoryFilter === 'All' ? minibarItems : minibarItems.filter(i => i.category === minibarCategoryFilter);
+  // Filter Master List
+  const filteredMasterList = masterList.filter(item => 
+    item.article_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    item.article_number.includes(searchQuery)
+  );
 
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
@@ -200,13 +174,13 @@ export default function SettingsPage() {
       <div className="border-b border-slate-200 pb-6 mb-6">
         <h1 className="text-3xl font-bold tracking-tight">System Settings</h1>
         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">
-          Configuration & Catalog Manager
+          Configuration & Master Data
         </p>
       </div>
 
       {/* TABS */}
       <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
-         {['Minibar Catalog', 'Guest Amenities', 'System Config', 'App Defaults'].map(tab => (
+         {['Master Inventory', 'System Config', 'App Defaults'].map(tab => (
             <button 
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -217,163 +191,122 @@ export default function SettingsPage() {
          ))}
       </div>
 
-      {/* --- TAB 1: MINIBAR CATALOG --- */}
-      {activeTab === 'Minibar Catalog' && (
+      {/* --- TAB 1: MASTER INVENTORY --- */}
+      {activeTab === 'Master Inventory' && (
         <div className="animate-in slide-in-from-right-4 duration-300">
            
-           {/* Add Button & Filter */}
-           <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-              <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar w-full md:w-auto">
-                 <button onClick={() => setMinibarCategoryFilter('All')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase border whitespace-nowrap ${minibarCategoryFilter === 'All' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 text-slate-400'}`}>All</button>
-                 {MINIBAR_CATEGORIES.map(c => (
-                    <button key={c} onClick={() => setMinibarCategoryFilter(c)} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase border whitespace-nowrap ${minibarCategoryFilter === c ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white border-slate-200 text-slate-400'}`}>{c}</button>
-                 ))}
-              </div>
-              <button onClick={() => setIsAddingMinibar(!isAddingMinibar)} className="bg-[#6D2158] text-white px-4 py-2 rounded-xl text-xs font-bold uppercase flex items-center gap-2 shadow-lg whitespace-nowrap">
-                 {isAddingMinibar ? <X size={16}/> : <Plus size={16}/>}
-                 {isAddingMinibar ? 'Cancel' : 'Add Item'}
-              </button>
-           </div>
-
-           {/* Add Form */}
-           {isAddingMinibar && (
-              <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 mb-8 animate-in slide-in-from-top-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1">Micros Name (POS)</label>
-                    <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" placeholder="e.g. Coca Cola MB" value={newMinibarItem.micros_name} onChange={e => setNewMinibarItem({...newMinibarItem, micros_name: e.target.value})} />
-                  </div>
-                  <div>
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1">Article Number</label>
-                    <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" placeholder="e.g. 2501001" value={newMinibarItem.article_number} onChange={e => setNewMinibarItem({...newMinibarItem, article_number: e.target.value})} />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1">Article Name (Full Description)</label>
-                    <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" placeholder="e.g. SD Coca Cola Can 330ml" value={newMinibarItem.article_name} onChange={e => setNewMinibarItem({...newMinibarItem, article_name: e.target.value})} />
-                  </div>
-                  <div>
-                    <label className="text-xs font-bold text-slate-400 uppercase ml-1">Category</label>
-                    <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" value={newMinibarItem.category} onChange={e => setNewMinibarItem({...newMinibarItem, category: e.target.value})}>
-                      {MINIBAR_CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                     <label className="text-xs font-bold text-slate-400 uppercase ml-1">Icon & Color</label>
-                     <div className="flex gap-2 mt-2">
-                        <div className="flex gap-1 bg-slate-50 p-1 rounded-lg overflow-x-auto">
-                          {Object.keys(ICON_MAP).map(iconKey => {
-                             const IconComp = ICON_MAP[iconKey];
-                             return <button key={iconKey} onClick={() => setNewMinibarItem({...newMinibarItem, icon: iconKey})} className={`p-2 rounded-lg ${newMinibarItem.icon === iconKey ? 'bg-white shadow' : 'text-slate-400'}`}><IconComp size={16}/></button>
-                          })}
-                        </div>
-                     </div>
-                  </div>
-                  <div className="md:col-span-2">
-                     <label className="text-xs font-bold text-slate-400 uppercase ml-1">Color Theme</label>
-                     <div className="flex gap-2 mt-2 overflow-x-auto pb-2">
-                        {COLORS.map(c => (
-                          <button key={c.label} onClick={() => setNewMinibarItem({...newMinibarItem, color: c.val})} className={`px-4 py-2 rounded-lg text-xs font-bold border whitespace-nowrap ${newMinibarItem.color === c.val ? 'border-slate-800 ring-2 ring-slate-200' : 'border-transparent'} ${c.val}`}>{c.label}</button>
-                        ))}
-                     </div>
-                  </div>
-                </div>
-                <button onClick={handleAddMinibar} className="w-full mt-6 py-3 bg-emerald-600 text-white rounded-xl font-bold uppercase shadow-lg hover:bg-emerald-700">Save Item</button>
-              </div>
-           )}
-
-           {/* Grid */}
-           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {filteredMinibar.map(item => {
-                 const IconComp = ICON_MAP[item.icon] || Coffee;
-                 return (
-                   <div key={item.id} className="bg-white p-3 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between group">
-                      <div className="flex items-center gap-3">
-                         <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${item.color}`}>
-                            <IconComp size={20}/>
-                         </div>
-                         <div className="min-w-0">
-                            <h3 className="font-bold text-sm text-slate-700 truncate">{item.micros_name}</h3>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase">{item.article_number || 'No ID'} • {item.category}</p>
-                         </div>
-                      </div>
-                      <button onClick={() => handleDeleteMinibar(item.id)} className="text-slate-200 hover:text-rose-500 p-2"><Trash2 size={16}/></button>
-                   </div>
-                 )
-              })}
-           </div>
-        </div>
-      )}
-
-      {/* --- TAB 2: GUEST AMENITIES (NEW) --- */}
-      {activeTab === 'Guest Amenities' && (
-        <div className="animate-in slide-in-from-right-4 duration-300">
-           
+           {/* Controls */}
            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-bold text-slate-700">On-Request Items</h3>
-              <button onClick={() => setIsAddingAmenity(!isAddingAmenity)} className="bg-[#6D2158] text-white px-4 py-2 rounded-xl text-xs font-bold uppercase flex items-center gap-2 shadow-lg">
-                 {isAddingAmenity ? <X size={16}/> : <Plus size={16}/>}
-                 {isAddingAmenity ? 'Cancel' : 'Add New'}
+              <div className="relative w-full max-w-md">
+                 <Search className="absolute left-3 top-3 text-slate-400" size={18}/>
+                 <input 
+                    type="text" 
+                    placeholder="Search Article No or Name..." 
+                    className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158]"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                 />
+              </div>
+              <button onClick={() => setIsAddingItem(!isAddingItem)} className="ml-4 bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center gap-2 shadow-lg whitespace-nowrap">
+                 {isAddingItem ? <X size={18}/> : <Plus size={18}/>}
+                 {isAddingItem ? 'Cancel' : 'New Item'}
               </button>
            </div>
 
-           {/* Add Amenity Form */}
-           {isAddingAmenity && (
+           {/* ADD FORM */}
+           {isAddingItem && (
               <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 mb-8 animate-in slide-in-from-top-4">
+                 <h3 className="text-lg font-bold text-slate-700 mb-4">Add to Master Catalog</h3>
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                       <label className="text-xs font-bold text-slate-400 uppercase ml-1">Item Name</label>
-                       <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" placeholder="e.g. Body Pillow" value={newAmenityItem.name} onChange={e => setNewAmenityItem({...newAmenityItem, name: e.target.value})} />
+                       <label className="text-xs font-bold text-slate-400 uppercase ml-1">Article Number (Unique)</label>
+                       <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" placeholder="e.g. 151001" value={newItem.article_number} onChange={e => setNewItem({...newItem, article_number: e.target.value})} />
+                    </div>
+                    <div className="md:col-span-2">
+                       <label className="text-xs font-bold text-slate-400 uppercase ml-1">Article Name</label>
+                       <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" placeholder="e.g. Coke Zero 330ml" value={newItem.article_name} onChange={e => setNewItem({...newItem, article_name: e.target.value})} />
                     </div>
                     <div>
                        <label className="text-xs font-bold text-slate-400 uppercase ml-1">Category</label>
-                       <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none" value={newAmenityItem.category} onChange={e => setNewAmenityItem({...newAmenityItem, category: e.target.value})}>
-                          {AMENITY_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                       <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={newItem.category} onChange={e => setNewItem({...newItem, category: e.target.value})}>
+                          {MASTER_CATEGORIES.map(c => <option key={c}>{c}</option>)}
                        </select>
                     </div>
                     <div>
-                       <label className="text-xs font-bold text-slate-400 uppercase ml-1">Icon</label>
-                       <div className="flex gap-2 mt-2 bg-slate-50 p-1 rounded-lg overflow-x-auto">
-                          {['Cloud', 'Moon', 'Sun', 'Baby', 'Star', 'Zap'].map(iconKey => {
-                             const IconComp = ICON_MAP[iconKey] || Zap;
-                             return <button key={iconKey} onClick={() => setNewAmenityItem({...newAmenityItem, icon: iconKey})} className={`p-2 rounded-lg ${newAmenityItem.icon === iconKey ? 'bg-white shadow' : 'text-slate-400'}`}><IconComp size={16}/></button>
-                          })}
-                       </div>
+                       <label className="text-xs font-bold text-slate-400 uppercase ml-1">Unit</label>
+                       <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={newItem.unit} onChange={e => setNewItem({...newItem, unit: e.target.value})}>
+                          <option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option><option>Set</option><option>Pack</option>
+                       </select>
+                    </div>
+                    
+                    {/* Minibar Toggle */}
+                    <div className="flex items-center gap-3 pt-6">
+                       <input type="checkbox" id="mbToggle" className="w-5 h-5 accent-[#6D2158]" checked={newItem.is_minibar_item} onChange={e => setNewItem({...newItem, is_minibar_item: e.target.checked})} />
+                       <label htmlFor="mbToggle" className="text-sm font-bold text-slate-700 cursor-pointer">Is Minibar Item?</label>
                     </div>
                  </div>
-                 <button onClick={handleAddAmenity} className="w-full mt-6 py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg">Save Amenity</button>
+
+                 {/* Extra Fields for Minibar */}
+                 {newItem.is_minibar_item && (
+                    <div className="mt-4 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 gap-4 animate-in fade-in">
+                       <div>
+                          <label className="text-xs font-bold text-rose-400 uppercase">Micros Name (POS)</label>
+                          <input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="Same as Article Name if empty" value={newItem.micros_name} onChange={e => setNewItem({...newItem, micros_name: e.target.value})} />
+                       </div>
+                       <div>
+                          <label className="text-xs font-bold text-rose-400 uppercase">Sales Price ($)</label>
+                          <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={newItem.sales_price} onChange={e => setNewItem({...newItem, sales_price: parseFloat(e.target.value)})} />
+                       </div>
+                    </div>
+                 )}
+
+                 <button onClick={handleSaveItem} className="w-full mt-6 py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49]">Save to Master List</button>
               </div>
            )}
 
-           {/* Amenity List */}
-           <div className="space-y-4">
-              {AMENITY_CATEGORIES.map(cat => {
-                 const items = amenityItems.filter(i => i.category === cat);
-                 if (items.length === 0) return null;
-                 return (
-                    <div key={cat} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-                       <h4 className="font-bold text-slate-400 uppercase text-xs mb-3">{cat}</h4>
-                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                          {items.map(item => {
-                             const IconComp = ICON_MAP[item.icon] || Cloud;
-                             return (
-                                <div key={item.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl">
-                                   <div className="flex items-center gap-3">
-                                      <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center text-[#6D2158] shadow-sm"><IconComp size={16}/></div>
-                                      <span className="font-bold text-sm text-slate-700">{item.name}</span>
-                                   </div>
-                                   <button onClick={() => handleDeleteAmenity(item.id)} className="text-slate-300 hover:text-rose-500"><Trash2 size={14}/></button>
-                                </div>
-                             )
-                          })}
-                       </div>
-                    </div>
-                 )
-              })}
+           {/* LIST */}
+           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <table className="w-full text-left">
+                 <thead className="bg-slate-50 border-b border-slate-100">
+                    <tr>
+                       <th className="p-4 text-xs font-bold text-slate-400 uppercase">Art. No</th>
+                       <th className="p-4 text-xs font-bold text-slate-400 uppercase">Name</th>
+                       <th className="p-4 text-xs font-bold text-slate-400 uppercase">Category</th>
+                       <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
+                    </tr>
+                 </thead>
+                 <tbody className="divide-y divide-slate-50">
+                    {filteredMasterList.length === 0 && (
+                       <tr><td colSpan={4} className="p-8 text-center text-slate-400 italic">No items found.</td></tr>
+                    )}
+                    {filteredMasterList.map(item => {
+                       const Icon = CATEGORY_ICONS[item.category] || Box;
+                       return (
+                         <tr key={item.article_number} className="hover:bg-slate-50">
+                            <td className="p-4 text-xs font-bold text-slate-400 font-mono">{item.article_number}</td>
+                            <td className="p-4 text-sm font-bold text-slate-700 flex items-center gap-3">
+                               <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
+                                  <Icon size={16}/>
+                               </div>
+                               <div>
+                                  {item.article_name}
+                                  {item.is_minibar_item && <span className="ml-2 px-2 py-0.5 bg-rose-100 text-rose-600 text-[9px] rounded uppercase font-bold">Minibar</span>}
+                               </div>
+                            </td>
+                            <td className="p-4 text-xs font-bold text-slate-500">{item.category}</td>
+                            <td className="p-4 text-right">
+                               <button onClick={() => handleDeleteItem(item.article_number)} className="text-slate-300 hover:text-rose-500 p-2"><Trash2 size={16}/></button>
+                            </td>
+                         </tr>
+                       );
+                    })}
+                 </tbody>
+              </table>
            </div>
         </div>
       )}
 
-      {/* --- TAB 3: SYSTEM CONFIG --- */}
+      {/* --- TAB 2: SYSTEM CONFIG --- */}
       {activeTab === 'System Config' && (
          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
             <ListManager type="cost_center" title="Cost Centers" icon={Briefcase} placeholder="e.g. Spa, Front Office..." />
@@ -383,7 +316,7 @@ export default function SettingsPage() {
          </div>
       )}
 
-      {/* --- TAB 4: APP DEFAULTS --- */}
+      {/* --- TAB 3: APP DEFAULTS --- */}
       {activeTab === 'App Defaults' && (
          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
              {/* General App Info */}
