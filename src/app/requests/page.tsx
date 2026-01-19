@@ -1,12 +1,11 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Search, Plus, X, Send, 
-  Wine, Wrench, Trash2, Filter,
+  Search, Plus, X, Wine, Wrench, Trash2, 
   Coffee, Droplet, Cookie, Beer, Zap,
-  ArrowRight, Clock, CheckCircle2, User,
-  Calendar, MapPin, Tag, UtensilsCrossed, Bell,
-  Cloud, Baby, Box
+  Calendar, UtensilsCrossed, Cloud, Baby, Box, List, 
+  CheckCircle2, ArrowUpDown, Clock, MapPin, Send, Split,
+  MoreHorizontal, AlertCircle, Check
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -40,10 +39,10 @@ type MasterItem = {
   icon?: string;
 };
 
-// --- HELPER: DAYS ---
+// --- HELPERS ---
 const getDaysArray = (centerDate: Date) => {
   const days = [];
-  for (let i = -3; i <= 3; i++) {
+  for (let i = -2; i <= 2; i++) {
     const d = new Date(centerDate);
     d.setDate(d.getDate() + i);
     days.push(d);
@@ -65,15 +64,24 @@ export default function CoordinatorLog() {
   // UI State
   const [isMinibarOpen, setIsMinibarOpen] = useState(false);
   const [isOtherOpen, setIsOtherOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isPartialOpen, setIsPartialOpen] = useState(false);
+  const [showToast, setShowToast] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date());
   
+  // Filters
+  const [statusFilter, setStatusFilter] = useState('All');
+
   // Date Picker Ref
   const dateInputRef = useRef<HTMLInputElement>(null);
 
   // Forms
   const [villaNumber, setVillaNumber] = useState('');
   const [manualTime, setManualTime] = useState('');
-  const [selectedRequester, setSelectedRequester] = useState('');
+  
+  // Requester Search State
+  const [requesterSearch, setRequesterSearch] = useState('');
+  const [showRequesterSuggestions, setShowRequesterSuggestions] = useState(false);
   
   // Minibar Logic
   const [mbCart, setMbCart] = useState<{name: string, qty: number}[]>([]);
@@ -81,9 +89,17 @@ export default function CoordinatorLog() {
   
   // Other Logic
   const [otherMode, setOtherMode] = useState<'Catalog' | 'Note'>('Catalog');
-  const [otherCategory, setOtherCategory] = useState('Pillow Menu');
+  const [otherCategory, setOtherCategory] = useState('All');
   const [otherCart, setOtherCart] = useState<{name: string, qty: number}[]>([]);
   const [customNote, setCustomNote] = useState('');
+
+  // Partial Send Logic
+  const [partialTarget, setPartialTarget] = useState<RequestRecord | null>(null);
+  const [partialSelection, setPartialSelection] = useState<string[]>([]);
+
+  // History Sort
+  const [sortCol, setSortCol] = useState('time');
+  const [sortAsc, setSortAsc] = useState(false);
 
   // --- INIT ---
   useEffect(() => { 
@@ -92,9 +108,14 @@ export default function CoordinatorLog() {
     fetchSettings();
   }, [selectedDate]);
 
+  // --- FETCHING ---
   const fetchCatalog = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
-    if (data) setMasterCatalog(data);
+    if (data) {
+        setMasterCatalog(data);
+        const nonMb = data.filter((i: any) => !i.is_minibar_item);
+        if(nonMb.length > 0) setOtherCategory(nonMb[0].category);
+    }
   };
 
   const fetchSettings = async () => {
@@ -121,10 +142,10 @@ export default function CoordinatorLog() {
     setVillaNumber('');
     setMbCart([]); setOtherCart([]);
     setCustomNote('');
-    setSelectedRequester('');
+    setRequesterSearch(''); 
     
     if (type === 'Minibar') {
-       setSelectedRequester(getVillaAttendant(villaNumber) || "Villa Attendant");
+       setRequesterSearch(getVillaAttendant(villaNumber) || "Villa Attendant");
        setIsMinibarOpen(true);
     } else {
        setIsOtherOpen(true);
@@ -134,7 +155,6 @@ export default function CoordinatorLog() {
   const addToCart = (item: string, type: 'MB' | 'Other') => {
     const cart = type === 'MB' ? mbCart : otherCart;
     const setter = type === 'MB' ? setMbCart : setOtherCart;
-    
     const existing = cart.find(i => i.name === item);
     if (existing) {
       setter(cart.map(i => i.name === item ? { ...i, qty: i.qty + 1 } : i));
@@ -147,19 +167,18 @@ export default function CoordinatorLog() {
     if (!villaNumber) return alert("Enter Villa Number");
 
     let details = "";
-    // FIX: Explicitly type as string to allow overwriting with "General" or categories
-    let reqType: string = type; 
-    let requester = selectedRequester;
+    let reqType: string = type;
+    let requester = requesterSearch;
 
     if (type === 'Minibar') {
        if (mbCart.length === 0) return alert("Cart empty");
-       details = mbCart.map(i => `${i.qty}x ${i.name}`).join(', ');
+       details = mbCart.map(i => `${i.qty}x ${i.name}`).join('\n');
        if (!requester) requester = getVillaAttendant(villaNumber);
     } else {
        if (otherMode === 'Catalog') {
           if (otherCart.length === 0) return alert("Select items");
-          details = otherCart.map(i => `${i.qty}x ${i.name}`).join(', ');
-          reqType = otherCategory; // e.g., "Pillow Menu"
+          details = otherCart.map(i => `${i.qty}x ${i.name}`).join('\n');
+          reqType = otherCategory === 'All' ? 'Guest Request' : otherCategory;
        } else {
           if (!customNote) return alert("Enter details");
           details = customNote;
@@ -180,17 +199,20 @@ export default function CoordinatorLog() {
        is_sent: false, is_posted: false, is_done: false
     };
 
-    // Optimistic UI
-    const newRec = { ...payload, id: Math.random().toString(), created_at: new Date().toISOString() };
-    setRecords([newRec as RequestRecord, ...records]);
-    setIsMinibarOpen(false); setIsOtherOpen(false);
+    const { error } = await supabase.from('hsk_daily_requests').insert(payload);
 
-    await supabase.from('hsk_daily_requests').insert(payload);
-    fetchRecords();
+    if (error) {
+        alert("Database Error: " + error.message);
+    } else {
+        setIsMinibarOpen(false); 
+        setIsOtherOpen(false);
+        fetchRecords();
+        triggerToast();
+    }
   };
 
   const deleteRecord = async (id: string) => {
-    if(!confirm("Delete?")) return;
+    if(!confirm("Delete this log?")) return;
     setRecords(records.filter(r => r.id !== id));
     await supabase.from('hsk_daily_requests').delete().eq('id', id);
   };
@@ -203,132 +225,220 @@ export default function CoordinatorLog() {
     await supabase.from('hsk_daily_requests').update({ [field]: newValue }).eq('id', id);
   };
 
-  // --- CATALOG FILTERING ---
-  const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
-  const minibarCats = Array.from(new Set(minibarItems.map(i => i.category)));
+  // --- PARTIAL SEND LOGIC ---
+  const openPartialModal = (record: RequestRecord) => {
+      setPartialTarget(record);
+      const items = record.item_details.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+      setPartialSelection(items);
+      setIsPartialOpen(true);
+  };
 
-  const amenityItems = masterCatalog.filter(i => !i.is_minibar_item && i.category === otherCategory);
-  const amenityCats = Array.from(new Set(masterCatalog.filter(i => !i.is_minibar_item).map(i => i.category)));
+  const submitPartial = async () => {
+      if (!partialTarget) return;
+      
+      const allItems = partialTarget.item_details.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+      const sentItems = partialSelection;
+      const pendingItems = allItems.filter(i => !sentItems.includes(i));
+
+      if (sentItems.length === 0) return alert("Select at least one item to send.");
+
+      // 1. Update current record to "Sent"
+      await supabase.from('hsk_daily_requests').update({
+          item_details: sentItems.join('\n'),
+          is_sent: true
+      }).eq('id', partialTarget.id);
+
+      // 2. Create new record for pending items
+      if (pendingItems.length > 0) {
+          await supabase.from('hsk_daily_requests').insert({
+              villa_number: partialTarget.villa_number,
+              request_type: partialTarget.request_type,
+              item_details: pendingItems.join('\n'),
+              request_time: partialTarget.request_time,
+              attendant_name: partialTarget.attendant_name,
+              is_sent: false, is_posted: false, is_done: false
+          });
+      }
+
+      setIsPartialOpen(false);
+      fetchRecords();
+      triggerToast();
+  };
+
+  const triggerToast = () => {
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 3000);
+  };
+
+  // --- FILTERING ---
+  const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
+  const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))) as string[]];
+
+  const amenityItems = masterCatalog.filter(i => !i.is_minibar_item);
+  const amenityCats = Array.from(new Set(amenityItems.map(i => i.category)));
+
+  // Filter Requesters for Autocomplete
+  const filteredRequesters = requesters.filter(r => r.toLowerCase().includes(requesterSearch.toLowerCase()));
+
+  const visibleRecords = records.filter(r => {
+      if (statusFilter === 'All') return true;
+      if (statusFilter === 'Pending') return !r.is_done && !r.is_posted;
+      if (statusFilter === 'Done') return r.is_done || r.is_posted;
+      return true;
+  });
+
+  const sortedHistory = [...records].sort((a, b) => {
+      let valA = sortCol === 'time' ? a.request_time : a.villa_number;
+      let valB = sortCol === 'time' ? b.request_time : b.villa_number;
+      return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+  });
 
   return (
     <div className="min-h-screen bg-[#FDFBFD] font-antiqua text-[#6D2158] pb-32">
       
-      {/* 1. HEADER & DATE SCROLLER */}
-      <div className="bg-white shadow-sm sticky top-0 z-30">
+      {/* 1. TOP HEADER & CONTROLS */}
+      <div className="bg-white shadow-sm sticky top-0 z-30 pb-2">
         <div className="px-4 pt-4 pb-2 flex justify-between items-center">
            <div>
-             <h1 className="text-xl font-bold text-slate-800">Coordinator Log</h1>
-             <p className="text-xs text-slate-400 font-bold uppercase">{selectedDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</p>
+             <h1 className="text-xl font-bold text-slate-800">Logbook</h1>
+             <div className="flex items-center gap-2 mt-1">
+                <button onClick={() => dateInputRef.current?.showPicker()} className="flex items-center gap-1 text-xs text-slate-500 font-bold uppercase bg-slate-100 px-2 py-1 rounded-lg">
+                    <Calendar size={12}/> {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                </button>
+                <input ref={dateInputRef} type="date" className="absolute opacity-0 w-0 h-0" onChange={(e) => setSelectedDate(new Date(e.target.value))}/>
+             </div>
            </div>
-           <div className="relative">
-              <button onClick={() => dateInputRef.current?.showPicker()} className="p-2 bg-slate-100 rounded-lg text-slate-500"><Calendar size={20}/></button>
-              <input 
-                ref={dateInputRef} type="date" className="absolute opacity-0 w-full h-full left-0 top-0 cursor-pointer" 
-                onChange={(e) => setSelectedDate(new Date(e.target.value))}
-              />
+           
+           {/* COMPACT ACTIONS */}
+           <div className="flex gap-2">
+                <button onClick={() => handleOpenModal('Minibar')} className="bg-rose-600 text-white px-3 py-2 rounded-lg font-bold uppercase text-[10px] flex items-center gap-1 shadow-md hover:bg-rose-700">
+                    <Wine size={14}/> MB
+                </button>
+                <button onClick={() => handleOpenModal('Other')} className="bg-[#6D2158] text-white px-3 py-2 rounded-lg font-bold uppercase text-[10px] flex items-center gap-1 shadow-md hover:bg-[#5a1b49]">
+                    <Wrench size={14}/> Req
+                </button>
+                <button onClick={() => setIsHistoryOpen(true)} className="p-2 bg-slate-100 rounded-lg text-slate-500 hover:text-[#6D2158]">
+                    <List size={20}/>
+                </button>
            </div>
         </div>
         
-        {/* Date Scroller */}
-        <div className="flex items-center gap-2 overflow-x-auto py-3 px-4 no-scrollbar border-b border-slate-100">
-          {getDaysArray(selectedDate).map((d, i) => {
+        {/* Filters & Date Scroller */}
+        <div className="flex items-center gap-2 overflow-x-auto px-4 no-scrollbar mt-1">
+           {['All', 'Pending', 'Done'].map(f => (
+               <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase border transition-all whitespace-nowrap ${statusFilter === f ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-400 border-slate-200'}`}>
+                  {f}
+               </button>
+           ))}
+           <div className="w-px h-6 bg-slate-200 mx-1"></div>
+           {getDaysArray(selectedDate).map((d, i) => {
              const isSelected = d.toDateString() === selectedDate.toDateString();
              return (
-               <button 
-                 key={i} onClick={() => setSelectedDate(d)}
-                 className={`flex-shrink-0 flex flex-col items-center justify-center w-12 h-14 rounded-xl transition-all ${isSelected ? 'bg-[#6D2158] text-white shadow-lg scale-105' : 'bg-slate-50 text-slate-400 border border-slate-100'}`}
-               >
-                 <span className="text-[9px] font-bold uppercase">{d.toLocaleDateString('en-GB', { weekday: 'short' })}</span>
-                 <span className="text-lg font-bold">{d.getDate()}</span>
+               <button key={i} onClick={() => setSelectedDate(d)} className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase border transition-all whitespace-nowrap ${isSelected ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-400 border-slate-200'}`}>
+                 {d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })}
                </button>
              )
-          })}
+           })}
         </div>
       </div>
 
-      {/* 2. COMPACT GRID LIST */}
-      <div className="p-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-         {records.map(r => (
-            <div key={r.id} className={`rounded-xl border p-3 flex flex-col justify-between bg-white shadow-sm relative ${r.request_type === 'Minibar' ? 'border-rose-100' : 'border-amber-100'}`}>
-               
+      {/* 2. MASONRY LIST (FIXED) */}
+      <div className="p-3 columns-2 md:columns-3 lg:columns-4 xl:columns-6 gap-3 space-y-3">
+         {visibleRecords.length === 0 && <div className="py-12 text-center text-slate-300 font-bold italic col-span-full">No requests found.</div>}
+         {visibleRecords.map(r => (
+            <div key={r.id} className={`break-inside-avoid rounded-xl border p-3 flex flex-col bg-white shadow-sm relative ${r.request_type === 'Minibar' ? 'border-rose-100' : 'border-amber-100'}`}>
                <div className="flex justify-between items-start mb-2">
                   <span className="text-xl font-bold text-slate-800">{r.villa_number}</span>
-                  <div className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${r.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                  <div className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase truncate max-w-[80px] ${r.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
                      {r.request_type}
                   </div>
                </div>
                
-               <p className="text-xs font-bold text-slate-600 line-clamp-2 leading-tight mb-2 h-8">{r.item_details}</p>
+               {/* List View of Items */}
+               <div className="mb-3">
+                   {r.item_details.split(/\n|,/).map((item, idx) => (
+                       <div key={idx} className="flex items-start gap-1 text-[11px] font-bold text-slate-600 leading-tight mb-1">
+                           <span className="text-slate-300 mt-0.5">•</span> {item.trim()}
+                       </div>
+                   ))}
+               </div>
                
-               <div className="flex items-end justify-between">
-                  <div>
-                     <p className="text-[9px] text-slate-400 font-bold uppercase">{r.attendant_name}</p>
-                     <p className="text-[9px] text-slate-400 font-bold">{new Date(r.request_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
+               <div className="mt-auto pt-2 border-t border-slate-50">
+                  <div className="flex justify-between items-end mb-2">
+                     <div>
+                        <p className="text-[9px] text-slate-400 font-bold uppercase truncate max-w-[80px]">{r.attendant_name}</p>
+                        <p className="text-[9px] text-slate-400 font-bold">{new Date(r.request_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
+                     </div>
+                     <button onClick={() => deleteRecord(r.id)} className="text-slate-200 hover:text-rose-500"><Trash2 size={14}/></button>
                   </div>
-                  <div className="flex gap-2">
+                  
+                  {/* Action Bar - Split Send */}
+                  <div className="flex gap-1">
                     {r.request_type === 'Minibar' ? (
-                       <button onClick={() => toggleStatus(r.id, 'is_posted')} className={`text-[10px] font-bold px-2 py-1 rounded ${r.is_posted ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>
-                          {r.is_posted ? 'POSTED' : 'POST'}
-                       </button>
+                        <>
+                            {!r.is_sent ? (
+                                <>
+                                    <button onClick={() => openPartialModal(r)} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-slate-100 text-slate-500 hover:bg-slate-200">Part.</button>
+                                    <button onClick={() => toggleStatus(r.id, 'is_sent')} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-blue-50 text-blue-600 hover:bg-blue-100">Send All</button>
+                                </>
+                            ) : (
+                                <button onClick={() => toggleStatus(r.id, 'is_sent')} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-blue-600 text-white">Sent</button>
+                            )}
+                            <button onClick={() => toggleStatus(r.id, 'is_posted')} className={`flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase ${r.is_posted ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`}>Post</button>
+                        </>
                     ) : (
-                       <button onClick={() => toggleStatus(r.id, 'is_done')} className={`text-[10px] font-bold px-2 py-1 rounded ${r.is_done ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                          {r.is_done ? 'DONE' : 'DO'}
-                       </button>
+                        <button onClick={() => toggleStatus(r.id, 'is_done')} className={`w-full py-1.5 rounded-lg text-[9px] font-bold uppercase ${r.is_done ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                            {r.is_done ? 'Done' : 'Do'}
+                        </button>
                     )}
-                    <button onClick={() => deleteRecord(r.id)} className="text-slate-200 hover:text-rose-500"><Trash2 size={14}/></button>
                   </div>
                </div>
             </div>
          ))}
       </div>
 
-      {/* 3. COMPACT BOTTOM ACTIONS */}
-      <div className="fixed bottom-0 left-0 w-full bg-white border-t border-slate-200 px-6 py-3 z-40 flex gap-4 shadow-[0_-5px_20px_rgba(0,0,0,0.05)]">
-         <button onClick={() => handleOpenModal('Minibar')} className="flex-1 bg-rose-600 text-white h-12 rounded-xl font-bold uppercase text-xs flex items-center justify-center gap-2 hover:bg-rose-700 active:scale-95 transition-all">
-            <Wine size={18}/> Minibar
-         </button>
-         <button onClick={() => handleOpenModal('Other')} className="flex-1 bg-[#6D2158] text-white h-12 rounded-xl font-bold uppercase text-xs flex items-center justify-center gap-2 hover:bg-[#5a1b49] active:scale-95 transition-all">
-            <Wrench size={18}/> Request
-         </button>
-      </div>
-
       {/* --- MINIBAR MODAL --- */}
       {isMinibarOpen && (
          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center">
-            <div className="bg-[#FDFBFD] w-full sm:w-[500px] h-[90vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-10">
-               
+            <div className="bg-[#FDFBFD] w-full sm:w-[500px] h-[85vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-10">
                <div className="p-4 bg-white border-b border-slate-100 flex justify-between items-center rounded-t-3xl">
                   <h3 className="text-lg font-bold text-rose-700 flex items-center gap-2"><Wine size={20}/> Minibar</h3>
                   <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500"><X size={18}/></button>
                </div>
-
                <div className="flex-1 overflow-y-auto p-4">
-                  {/* Villa & Time */}
                   <div className="flex gap-3 mb-4">
-                     <input type="number" placeholder="Villa #" autoFocus className="w-20 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-xl outline-none" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
-                     <input type="time" className="flex-1 p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none" value={manualTime} onChange={e => setManualTime(e.target.value)}/>
+                     <input type="number" placeholder="Villa" autoFocus className="w-24 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-xl outline-none" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+                     <div className="flex-1 relative">
+                        <input type="text" placeholder="Requested By..." className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm text-slate-700 outline-none" 
+                           value={requesterSearch} 
+                           onChange={e => { setRequesterSearch(e.target.value); setShowRequesterSuggestions(true); }}
+                           onFocus={() => setShowRequesterSuggestions(true)}
+                        />
+                        {showRequesterSuggestions && filteredRequesters.length > 0 && (
+                           <div className="absolute top-full left-0 w-full bg-white border border-slate-100 shadow-xl rounded-xl mt-1 z-20 max-h-40 overflow-y-auto">
+                              {filteredRequesters.map(r => (
+                                 <div key={r} onClick={() => { setRequesterSearch(r); setShowRequesterSuggestions(false); }} className="p-3 text-sm font-bold text-slate-600 hover:bg-slate-50 border-b border-slate-50">{r}</div>
+                              ))}
+                           </div>
+                        )}
+                     </div>
                   </div>
 
-                  {/* Cart */}
                   {mbCart.length > 0 && (
-                     <div className="flex flex-wrap gap-2 mb-4">
+                     <div className="flex flex-wrap gap-2 mb-4 bg-white p-2 rounded-xl border border-slate-100">
                         {mbCart.map(i => (
-                           <button key={i.name} onClick={() => setMbCart(mbCart.filter(c => c.name !== i.name))} className="bg-rose-600 text-white px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 animate-in zoom-in">
-                              {i.qty} {i.name} <X size={10}/>
-                           </button>
+                           <button key={i.name} onClick={() => setMbCart(mbCart.filter(c => c.name !== i.name))} className="bg-rose-600 text-white px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 animate-in zoom-in">{i.qty} {i.name} <X size={10}/></button>
                         ))}
                      </div>
                   )}
-
-                  {/* Category Select (Replaces Scroll) */}
-                  <div className="mb-4">
-                     <select className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none appearance-none" value={mbCategory} onChange={e => setMbCategory(e.target.value)}>
-                        <option value="All">All Categories</option>
-                        {minibarCats.map((c: any) => <option key={c} value={c}>{c}</option>)}
-                     </select>
+                  
+                  {/* WRAPPED CATEGORIES */}
+                  <div className="flex flex-wrap gap-2 mb-4">
+                     {minibarCats.map((c: any) => (
+                        <button key={c} onClick={() => setMbCategory(c)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase border ${mbCategory === c ? 'bg-rose-600 text-white border-rose-600' : 'bg-white border-slate-200 text-slate-400'}`}>{c}</button>
+                     ))}
                   </div>
 
-                  {/* Grid */}
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 pb-20">
                      {(mbCategory === 'All' ? minibarItems : minibarItems.filter(i => i.category === mbCategory)).map(item => (
                         <button key={item.article_number} onClick={() => addToCart(item.micros_name || item.article_name, 'MB')} className="bg-white p-2 rounded-xl border border-slate-100 shadow-sm flex flex-col items-center gap-2 active:scale-95 transition-transform">
@@ -338,7 +448,6 @@ export default function CoordinatorLog() {
                      ))}
                   </div>
                </div>
-
                <div className="p-4 bg-white border-t border-slate-100">
                   <button onClick={() => submitRequest('Minibar')} className="w-full bg-rose-600 text-white py-3 rounded-xl font-bold uppercase text-sm shadow-lg active:scale-95 transition-transform">Save Log</button>
                </div>
@@ -349,25 +458,30 @@ export default function CoordinatorLog() {
       {/* --- OTHER REQUEST MODAL --- */}
       {isOtherOpen && (
          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center">
-            <div className="bg-[#FDFBFD] w-full sm:w-[500px] h-[90vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-10">
-               
+            <div className="bg-[#FDFBFD] w-full sm:w-[500px] h-[85vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-10">
                <div className="p-4 bg-white border-b border-slate-100 flex justify-between items-center rounded-t-3xl">
                   <h3 className="text-lg font-bold text-[#6D2158] flex items-center gap-2"><Wrench size={20}/> Request</h3>
                   <button onClick={() => setIsOtherOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500"><X size={18}/></button>
                </div>
-
                <div className="flex-1 overflow-y-auto p-4">
-                  {/* Top Inputs */}
                   <div className="flex gap-2 mb-4">
-                     <input type="number" placeholder="Villa" autoFocus className="w-20 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-xl outline-none" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
-                     <select className="flex-1 p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm text-slate-700 outline-none" value={selectedRequester} onChange={e => setSelectedRequester(e.target.value)}>
-                        <option value="">Requested By...</option>
-                        {requesters.map(r => <option key={r} value={r}>{r}</option>)}
-                        <option value="Guest">Guest</option>
-                     </select>
+                     <input type="number" placeholder="Villa" autoFocus className="w-24 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-xl outline-none" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+                     <div className="flex-1 relative">
+                        <input type="text" placeholder="Requested By..." className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm text-slate-700 outline-none" 
+                           value={requesterSearch} 
+                           onChange={e => { setRequesterSearch(e.target.value); setShowRequesterSuggestions(true); }}
+                           onFocus={() => setShowRequesterSuggestions(true)}
+                        />
+                        {showRequesterSuggestions && filteredRequesters.length > 0 && (
+                           <div className="absolute top-full left-0 w-full bg-white border border-slate-100 shadow-xl rounded-xl mt-1 z-20 max-h-40 overflow-y-auto">
+                              {filteredRequesters.map(r => (
+                                 <div key={r} onClick={() => { setRequesterSearch(r); setShowRequesterSuggestions(false); }} className="p-3 text-sm font-bold text-slate-600 hover:bg-slate-50 border-b border-slate-50">{r}</div>
+                              ))}
+                           </div>
+                        )}
+                     </div>
                   </div>
 
-                  {/* Mode Toggle */}
                   <div className="flex bg-slate-200 p-1 rounded-xl mb-4">
                      <button onClick={() => setOtherMode('Catalog')} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase transition-all ${otherMode === 'Catalog' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Items</button>
                      <button onClick={() => setOtherMode('Note')} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase transition-all ${otherMode === 'Note' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Note / Task</button>
@@ -375,27 +489,20 @@ export default function CoordinatorLog() {
 
                   {otherMode === 'Catalog' ? (
                      <>
-                        {/* Cart */}
                         {otherCart.length > 0 && (
-                           <div className="flex flex-wrap gap-2 mb-4">
+                           <div className="flex flex-wrap gap-2 mb-4 bg-white p-2 rounded-xl border border-slate-100">
                               {otherCart.map(i => (
-                                 <button key={i.name} onClick={() => setOtherCart(otherCart.filter(c => c.name !== i.name))} className="bg-[#6D2158] text-white px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 animate-in zoom-in">
-                                    {i.qty} {i.name} <X size={10}/>
-                                 </button>
+                                 <button key={i.name} onClick={() => setOtherCart(otherCart.filter(c => c.name !== i.name))} className="bg-[#6D2158] text-white px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 animate-in zoom-in">{i.qty} {i.name} <X size={10}/></button>
                               ))}
                            </div>
                         )}
-                        
-                        {/* Category Select */}
                         <div className="mb-4">
                            <select className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={otherCategory} onChange={e => setOtherCategory(e.target.value)}>
                               {amenityCats.map((c: any) => <option key={c} value={c}>{c}</option>)}
                            </select>
                         </div>
-
-                        {/* Amenity Grid */}
                         <div className="grid grid-cols-3 gap-2 pb-20">
-                           {amenityItems.map(item => (
+                           {(otherCategory === 'All' ? amenityItems : amenityItems.filter(i => i.category === otherCategory)).map(item => (
                               <button key={item.article_number} onClick={() => addToCart(item.article_name, 'Other')} className="bg-white p-2 rounded-xl border border-slate-100 shadow-sm flex flex-col items-center gap-2 active:scale-95 transition-transform">
                                  <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-500"><Box size={14}/></div>
                                  <span className="text-[9px] font-bold text-slate-600 text-center leading-tight line-clamp-2 h-6">{item.article_name}</span>
@@ -407,12 +514,78 @@ export default function CoordinatorLog() {
                      <textarea className="w-full h-40 p-4 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none resize-none" placeholder="Type details here..." value={customNote} onChange={e => setCustomNote(e.target.value)}/>
                   )}
                </div>
-
                <div className="p-4 bg-white border-t border-slate-100">
                   <button onClick={() => submitRequest('Other')} className="w-full bg-[#6D2158] text-white py-3 rounded-xl font-bold uppercase text-sm shadow-lg active:scale-95 transition-transform">Save Request</button>
                </div>
             </div>
          </div>
+      )}
+
+      {/* --- PARTIAL SEND MODAL --- */}
+      {isPartialOpen && partialTarget && (
+          <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95">
+                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Split size={20}/> Partial Dispatch</h3>
+                  <p className="text-xs text-slate-500 mb-4">Select items to mark as <b>SENT</b>. Unselected items will remain <b>PENDING</b>.</p>
+                  
+                  <div className="space-y-2 mb-6">
+                      {partialTarget.item_details.split(/\n|,/).map((item, i) => {
+                          const itemStr = item.trim();
+                          if(!itemStr) return null;
+                          const isSelected = partialSelection.includes(itemStr);
+                          return (
+                              <button 
+                                key={i} 
+                                onClick={() => isSelected ? setPartialSelection(partialSelection.filter(x => x !== itemStr)) : setPartialSelection([...partialSelection, itemStr])}
+                                className={`w-full p-3 rounded-xl flex items-center justify-between border font-bold text-sm transition-all ${isSelected ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-slate-200 text-slate-400'}`}
+                              >
+                                  {itemStr}
+                                  {isSelected ? <CheckCircle2 size={18} className="text-blue-600"/> : <div className="w-4 h-4 rounded-full border-2 border-slate-200"/>}
+                              </button>
+                          )
+                      })}
+                  </div>
+                  
+                  <button onClick={submitPartial} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold uppercase text-sm shadow-lg mb-2">Confirm Dispatch</button>
+                  <button onClick={() => setIsPartialOpen(false)} className="w-full py-3 text-slate-400 font-bold text-xs uppercase">Cancel</button>
+              </div>
+          </div>
+      )}
+
+      {/* --- HISTORY MODAL --- */}
+      {isHistoryOpen && (
+          <div className="fixed inset-0 z-50 bg-white flex flex-col animate-in slide-in-from-right-10">
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center shadow-sm">
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><List size={20}/> Log History</h3>
+                  <button onClick={() => setIsHistoryOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500"><X size={20}/></button>
+              </div>
+              <div className="flex-1 overflow-auto p-4 space-y-2">
+                  {sortedHistory.map(r => (
+                      <div key={r.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100">
+                          <div className="flex items-center gap-3">
+                              <div className={`w-10 h-10 flex items-center justify-center rounded-lg font-bold text-slate-700 ${r.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                                  {r.villa_number}
+                              </div>
+                              <div>
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase">{r.request_type} • {new Date(r.request_time).toLocaleDateString()}</p>
+                                  <p className="text-xs font-bold text-slate-700 line-clamp-1">{r.item_details.replace(/\n/g, ', ')}</p>
+                              </div>
+                          </div>
+                          <span className={`text-[9px] font-bold uppercase px-2 py-1 rounded ${r.is_done || r.is_posted ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500'}`}>
+                              {r.is_done || r.is_posted ? 'Done' : 'Pending'}
+                          </span>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      )}
+
+      {/* --- TOAST --- */}
+      {showToast && (
+          <div className="fixed top-4 right-4 bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-5 z-[100]">
+              <CheckCircle2 size={18} />
+              <span className="text-xs font-bold uppercase">Saved Successfully</span>
+          </div>
       )}
 
     </div>
