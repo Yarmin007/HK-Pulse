@@ -1,78 +1,136 @@
 "use client";
 import React, { useState, useEffect } from 'react';
 import { 
-  Calendar, Upload, ChevronLeft, ChevronRight, X, Edit3, 
-  Users, FileSpreadsheet, Loader2, Star, CalendarDays,
-  Utensils
+  Calendar, Search, Edit3, ArrowRightLeft, 
+  X, Copy, Loader2, FileDown, ChevronLeft, ChevronRight,
+  User, Baby, FileSpreadsheet, Download
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+// --- CONFIGURATION ---
+const TOTAL_VILLAS = 97;
+
+const getVillaCategory = (num: number) => {
+  if (num >= 1 && num <= 20) return "Water Villa";
+  if (num >= 21 && num <= 40) return "Beach Villa";
+  if (num >= 41 && num <= 60) return "Ocean Pool";
+  if (num >= 61 && num <= 80) return "Family Villa";
+  return "Reserve";
+};
+
+// --- NAME FORMATTER ---
+const formatGuestName = (rawName: string, rawTitle?: string) => {
+  if (!rawName) return "";
+  let name = String(rawName).trim();
+
+  // 1. Handle "Lastname, Firstname" (Guest List)
+  if (name.includes(',')) {
+    const parts = name.split(',');
+    if (parts.length >= 2) {
+      const firstName = parts[1].trim(); 
+      // Ensure title has a dot if it exists
+      const title = rawTitle ? rawTitle.replace(/\.?$/, '. ') : ''; 
+      return `${title}${firstName}`;
+    }
+  }
+
+  // 2. Handle "Mr.Name/Ms.Name" (Daily Summary) cleanup
+  return name
+    .replace(/Alfaalil\s+/gi, "Mr. ")
+    .replace(/Alfaalila\s+/gi, "Ms. ")
+    .replace(/Kokko\s+/gi, "Kid ")
+    .replace(/\//g, " / ");
+};
 
 // --- TYPES ---
-type DailyRecord = {
-  id: string;
+type GuestRecord = {
+  id?: string;
   report_date: string;
   villa_number: string;
-  guest_name: string;
   status: string;
-  gem_name: string;
-  stay_dates: string;
-  meal_plan: string;
+  guest_name: string;
   pax_adults: number;
   pax_kids: number;
+  gem_name: string;
+  meal_plan: string;
+  stay_dates: string;
   remarks: string;
 };
 
-// --- HELPERS ---
-const getStatusColor = (status: string) => {
-  const s = status?.toUpperCase() || '';
-  if (s.includes('OCC')) return 'bg-emerald-100 text-emerald-700 border-emerald-200';
-  if (s.includes('ARR')) return 'bg-blue-100 text-blue-700 border-blue-200';
-  if (s.includes('DEP')) return 'bg-rose-100 text-rose-700 border-rose-200';
-  if (s.includes('VAC')) return 'bg-slate-100 text-slate-500 border-slate-200';
-  if (s.includes('TMA')) return 'bg-amber-100 text-amber-700 border-amber-200';
-  return 'bg-gray-50 text-gray-500 border-gray-200';
-};
-
-export default function DailyOperationsPage() {
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [records, setRecords] = useState<DailyRecord[]>([]);
+export default function GuestListPage() {
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [masterList, setMasterList] = useState<GuestRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
   
-  // Import Modal
+  // Import/Export
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
-  const [importDate, setImportDate] = useState(new Date().toISOString().split('T')[0]);
+  const [parsedData, setParsedData] = useState<any[]>([]); 
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  // Edit Modal
-  const [editingRecord, setEditingRecord] = useState<DailyRecord | null>(null);
+  // Modals
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editingRecord, setEditingRecord] = useState<GuestRecord | null>(null);
+  
+  const [isTransferOpen, setIsTransferOpen] = useState(false);
+  const [transferData, setTransferData] = useState<{from: string, to: string, guest: string} | null>(null);
 
   useEffect(() => {
-    fetchDailyRecords();
+    fetchDailyData();
   }, [selectedDate]);
 
-  // --- DATABASE FETCH ---
-  const fetchDailyRecords = async () => {
+  // --- 1. FETCH & MERGE ---
+  const fetchDailyData = async () => {
     setIsLoading(true);
-    const dateStr = selectedDate.toISOString().split('T')[0];
-    const { data } = await supabase
+    
+    const { data: dbRecords } = await supabase
       .from('hsk_daily_summary')
       .select('*')
-      .eq('report_date', dateStr);
-    
-    // Numeric Sort for Villas
-    const sorted = (data || []).sort((a, b) => {
-       const va = parseInt(a.villa_number) || 0;
-       const vb = parseInt(b.villa_number) || 0;
-       return va - vb;
-    });
+      .eq('report_date', selectedDate);
 
-    setRecords(sorted);
+    const fullList: GuestRecord[] = [];
+    
+    for (let i = 1; i <= TOTAL_VILLAS; i++) {
+      const villaNum = i.toString();
+      // Handle duplicates (e.g. Day Use DEP/ARR) by prioritizing OCC/ARR
+      const matches = dbRecords?.filter(r => r.villa_number === villaNum) || [];
+      
+      let primary = null;
+      if (matches.length > 0) {
+          // Priority: OCC > ARR > DEP > VAC
+          primary = matches.find(r => r.status === 'OCC') || 
+                    matches.find(r => r.status === 'ARR') || 
+                    matches[0];
+      }
+
+      if (primary) {
+        fullList.push(primary);
+      } else {
+        fullList.push({
+          report_date: selectedDate,
+          villa_number: villaNum,
+          status: 'VAC',
+          guest_name: '',
+          pax_adults: 0,
+          pax_kids: 0,
+          gem_name: '',
+          meal_plan: '',
+          stay_dates: '',
+          remarks: ''
+        });
+      }
+    }
+    
+    fullList.sort((a, b) => parseInt(a.villa_number) - parseInt(b.villa_number));
+    setMasterList(fullList);
     setIsLoading(false);
   };
 
-  // --- EXCEL UPLOAD HANDLER ---
+  // --- 2. SMART EXCEL IMPORT (HEADER DETECTION) ---
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -83,345 +141,307 @@ export default function DailyOperationsPage() {
         reader.onload = (evt) => {
           const data = evt.target?.result;
           if (!data) return;
-          
           const wb = XLSX.read(data, { type: 'array' });
-          const wsname = wb.SheetNames[0]; 
-          const ws = wb.Sheets[wsname];
-          const jsonData = XLSX.utils.sheet_to_json(ws, { header: 1 });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
           
-          const csvPreview = jsonData.map((row: any) => (row as any[]).join(',')).join('\n');
-          setImportText(csvPreview);
+          // 1. Find Header Row & Map Columns
+          let headerIdx = -1;
+          let colMap: any = {};
+          
+          for(let i=0; i<Math.min(rows.length, 20); i++) {
+              const rowStr = rows[i].join(' ').toUpperCase();
+              if(rowStr.includes('VILLA') || rowStr.includes('NO.')) {
+                  headerIdx = i;
+                  // Build Map
+                  rows[i].forEach((cell: any, idx: number) => {
+                      const c = String(cell).toUpperCase().trim();
+                      if(c.includes('VILLA') || c === 'NO.') colMap.villa = idx;
+                      else if(c === 'GEM' || c === 'BUTLER') colMap.gem = idx;
+                      else if(c === 'STATUS') colMap.status = idx;
+                      else if(c === 'NAME' || c.includes('GUEST')) colMap.name = idx;
+                      else if(c === 'MP' || c.includes('MEAL')) colMap.mp = idx;
+                      else if(c === 'TITLE') colMap.title = idx;
+                      else if(c.includes('ARR') && c.includes('DATE')) colMap.arrDate = idx;
+                      else if(c.includes('DEP') && c.includes('DATE')) colMap.depDate = idx;
+                      else if(c === 'ADULTS' || c === 'PAX') colMap.adults = idx;
+                      else if(c === 'CHILDREN' || c === 'KIDS') colMap.kids = idx;
+                  });
+                  break;
+              }
+          }
+
+          if (headerIdx === -1 || colMap.villa === undefined) {
+              alert("Could not find 'Villa' header. Please check Excel file.");
+              setIsProcessing(false);
+              return;
+          }
+
+          const extracted = [];
+          for (let i = headerIdx + 1; i < rows.length; i++) {
+              const row = rows[i];
+              const villa = row[colMap.villa];
+              if (!villa || isNaN(parseInt(villa))) continue;
+
+              // Parse Fields
+              const rawName = colMap.name !== undefined ? row[colMap.name] : '';
+              const rawTitle = colMap.title !== undefined ? row[colMap.title] : '';
+              const gem = colMap.gem !== undefined ? row[colMap.gem] : '';
+              const mp = colMap.mp !== undefined ? row[colMap.mp] : '';
+              const statusRaw = colMap.status !== undefined ? row[colMap.status] : '';
+              
+              // Pax
+              const ad = colMap.adults !== undefined ? (parseInt(row[colMap.adults]) || 0) : 0;
+              const ch = colMap.kids !== undefined ? (parseInt(row[colMap.kids]) || 0) : 0;
+
+              // Dates & Status Calculation
+              let status = statusRaw || 'OCC';
+              let dates = '';
+              
+              if (colMap.arrDate !== undefined && colMap.depDate !== undefined) {
+                  const arr = row[colMap.arrDate];
+                  const dep = row[colMap.depDate];
+                  
+                  // Simple string check for dates (Excel dates can be complex, assuming strings/formatted for now)
+                  // Enhanced Logic: If dates match selectedDate, set ARR/DEP
+                  if (arr && String(arr).includes(selectedDate)) status = 'ARR';
+                  if (dep && String(dep).includes(selectedDate)) {
+                      status = status === 'ARR' ? 'DEP/ARR' : 'DEP';
+                  }
+                  if(arr && dep) dates = `${arr} - ${dep}`;
+              }
+
+              extracted.push({
+                  villa_number: villa.toString(),
+                  status: status,
+                  guest_name: formatGuestName(rawName, rawTitle),
+                  pax_adults: ad + ch, // Total Pax
+                  pax_kids: ch,
+                  gem_name: gem,
+                  meal_plan: mp,
+                  stay_dates: dates,
+                  remarks: ''
+              });
+          }
+          setParsedData(extracted);
+          setImportText(`Ready to import ${extracted.length} rows.`);
         };
         reader.readAsArrayBuffer(file);
-    } catch (err: any) {
-      alert("Error reading Excel file: " + err.message);
-    }
+    } catch (err) { alert("Error reading file"); }
     setIsProcessing(false);
   };
 
-  // --- SMART PARSER ---
-  const handleProcessImport = async () => {
-    if (!importText) return alert("No data to process.");
-    
-    setIsLoading(true);
-    const lines = importText.split('\n');
-    const newRecords = [];
-
-    // DETECT FORMAT
-    let format = 'UNKNOWN';
-    let startIdx = -1;
-
-    for(let i=0; i<Math.min(30, lines.length); i++) {
-        const line = lines[i].toUpperCase();
-        if(line.includes('VILLA')) {
-            startIdx = i + 1; 
-            if(line.includes('STATUS')) format = 'DAILY_SUMMARY';
-            else if(line.includes('MP') || line.includes('GEM')) format = 'GUEST_LIST';
-            break;
-        }
-    }
-    
-    if (startIdx === -1) {
-        startIdx = lines[0].includes(',') ? 4 : 0; 
-    }
-
-    for (let i = startIdx; i < lines.length; i++) {
-        let line = lines[i].trim();
-        if (!line) continue;
-        
-        let cols = line.split(',').map(c => c ? c.replace(/"/g, '').trim() : '');
-        
-        if (cols.length < 2) continue;
-
-        // Use temporary object for parsing
-        let tempRecord: any = {
-            villa_number: '',
-            status: 'OCC',
-            guest_name: 'Unknown',
-            pax: 0,
-            gem_name: '',
-            stay_dates: '',
-            meal_plan: '',
-            remarks: ''
-        };
-
-        if (format === 'GUEST_LIST') {
-            // Converted Guest List Excel
-            tempRecord.villa_number = cols[0];
-            tempRecord.gem_name = cols[1];
-            tempRecord.meal_plan = cols[2];
-            tempRecord.guest_name = cols[4] || cols[3]; 
-            tempRecord.pax = (parseInt(cols[6]) || 0) + (parseInt(cols[7]) || 0);
-            
-            const arr = cols[12] ? cols[12].replace('January', 'Jan') : '';
-            const dep = cols[14] ? cols[14].replace('January', 'Jan') : '';
-            tempRecord.stay_dates = arr && dep ? `${arr} - ${dep}` : '';
-            
-        } else {
-            // Daily Summary Excel
-            tempRecord.villa_number = cols[1];
-            tempRecord.status = cols[2];
-            tempRecord.guest_name = cols[4];
-            tempRecord.pax = parseInt(cols[5]) || 0;
-            tempRecord.gem_name = cols[6];
-            tempRecord.stay_dates = cols[7];
-        }
-
-        if(!tempRecord.villa_number || isNaN(parseInt(tempRecord.villa_number))) continue;
-
-        // PUSH ONLY VALID DB COLUMNS
-        newRecords.push({
-            report_date: importDate,
-            villa_number: tempRecord.villa_number,
-            status: tempRecord.status || 'OCC',
-            guest_name: tempRecord.guest_name || 'Unknown',
-            gem_name: tempRecord.gem_name || '',
-            meal_plan: tempRecord.meal_plan || '',
-            stay_dates: tempRecord.stay_dates || '',
-            pax_adults: tempRecord.pax || 0, // MAP 'pax' -> 'pax_adults'
-            pax_kids: 0,
-            remarks: tempRecord.remarks || ''
-        });
-    }
-
-    if (newRecords.length > 0) {
-        await supabase.from('hsk_daily_summary').delete().eq('report_date', importDate);
-        const { error } = await supabase.from('hsk_daily_summary').insert(newRecords);
-        
-        if (!error) {
-            setIsImportOpen(false);
-            setImportText('');
-            setSelectedDate(new Date(importDate)); 
-            alert(`Success! Imported ${newRecords.length} records.`);
-        } else {
-            alert("Database Error: " + error.message);
-        }
-    } else {
-        alert("Could not find valid data rows. Please convert PDF to Excel first.");
-    }
-    fetchDailyRecords();
-    setIsLoading(false);
+  const handleConfirmImport = async () => {
+      if(parsedData.length === 0) return;
+      setIsLoading(true);
+      await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
+      
+      // Filter out invalid rows before insert
+      const toInsert = parsedData.map(r => ({ ...r, report_date: selectedDate }));
+      
+      await supabase.from('hsk_daily_summary').insert(toInsert);
+      setIsImportOpen(false);
+      fetchDailyData();
   };
 
-  // --- SAVE EDITS ---
+  // --- 3. PDF EXPORT ---
+  const exportPDF = () => {
+    const doc = new jsPDF();
+    
+    // Nice Header
+    doc.setFillColor(109, 33, 88); // #6D2158
+    doc.rect(0, 0, 210, 20, 'F'); // Top bar
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text("Housekeeping Daily Summary", 14, 13);
+    
+    doc.setTextColor(100);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Report Date: ${selectedDate}`, 14, 28);
+
+    const data = masterList
+      .filter(r => r.status !== 'VAC') 
+      .map(r => [
+         r.villa_number, 
+         r.status, 
+         r.guest_name, 
+         `${r.pax_adults} (${r.pax_kids} ch)`, 
+         r.gem_name, 
+         r.meal_plan
+      ]);
+
+    autoTable(doc, {
+        head: [['Villa', 'Status', 'Guest Name', 'Pax', 'GEM', 'Meal']],
+        body: data,
+        startY: 32,
+        theme: 'grid',
+        headStyles: { fillColor: [109, 33, 88] },
+        styles: { fontSize: 8, cellPadding: 2 }
+    });
+    doc.save(`HK_Summary_${selectedDate}.pdf`);
+  };
+
+  // --- 4. ACTIONS ---
   const handleSaveEdit = async () => {
-      if (!editingRecord) return;
-      await supabase.from('hsk_daily_summary').update({
-          guest_name: editingRecord.guest_name,
-          status: editingRecord.status,
-          gem_name: editingRecord.gem_name,
-          pax_adults: editingRecord.pax_adults, 
-          pax_kids: editingRecord.pax_kids,
-          meal_plan: editingRecord.meal_plan,
-          remarks: editingRecord.remarks
-      }).eq('id', editingRecord.id);
-      
-      setEditingRecord(null);
-      fetchDailyRecords();
+    if (!editingRecord) return;
+    const payload = { ...editingRecord, report_date: selectedDate };
+    delete payload.id;
+    if (editingRecord.id) await supabase.from('hsk_daily_summary').update(payload).eq('id', editingRecord.id);
+    else await supabase.from('hsk_daily_summary').insert(payload);
+    setIsEditOpen(false);
+    fetchDailyData();
   };
 
   const changeDate = (days: number) => {
-      const newDate = new Date(selectedDate);
-      newDate.setDate(newDate.getDate() + days);
-      setSelectedDate(newDate);
+      const d = new Date(selectedDate);
+      d.setDate(d.getDate() + days);
+      setSelectedDate(d.toISOString().split('T')[0]);
   };
 
+  const getStatusStyle = (status: string) => {
+    const s = status?.toUpperCase() || 'VAC';
+    if (s === 'OCC') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+    if (s === 'VAC') return 'text-slate-200 bg-slate-50/50';
+    if (s.includes('ARR')) return 'bg-blue-50 text-blue-700 border-blue-100';
+    if (s.includes('DEP')) return 'bg-rose-50 text-rose-700 border-rose-100';
+    if (s === 'TMA') return 'bg-amber-50 text-amber-700 border-amber-100';
+    return 'bg-slate-50 text-slate-600 border-slate-100';
+  };
+
+  const filteredList = masterList.filter(r => 
+    r.villa_number.includes(searchTerm) || 
+    r.guest_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    r.status.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
-    <div className="min-h-screen bg-[#FDFBFD] p-6 pb-24 font-antiqua text-[#6D2158]">
+    <div className="min-h-screen bg-[#FDFBFD] p-4 pb-32 font-sans text-slate-800">
       
       {/* HEADER */}
-      <div className="flex flex-col md:flex-row justify-between items-end md:items-center mb-8 gap-4 border-b border-slate-200 pb-6">
+      <div className="flex flex-col md:flex-row justify-between items-end mb-4 gap-4 border-b border-slate-100 pb-4">
         <div>
-           <h1 className="text-3xl font-bold tracking-tight">Guest Operations</h1>
-           <div className="flex items-center gap-4 mt-2">
-              <button onClick={() => changeDate(-1)} className="p-1 rounded-full hover:bg-slate-100 text-slate-400"><ChevronLeft/></button>
-              <div className="flex items-center gap-2 text-lg font-bold text-slate-700 bg-white px-4 py-1 rounded-xl shadow-sm border border-slate-100">
-                 <Calendar size={18} className="text-[#6D2158]"/>
-                 {selectedDate.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-              </div>
-              <button onClick={() => changeDate(1)} className="p-1 rounded-full hover:bg-slate-100 text-slate-400"><ChevronRight/></button>
-           </div>
+          <h1 className="text-xl font-bold tracking-tight text-[#6D2158]">Guest List</h1>
+          <p className="text-[10px] text-slate-400 font-bold uppercase mt-1 flex items-center gap-2">
+             <Calendar size={12}/> {new Date(selectedDate).toLocaleDateString('en-GB', { dateStyle: 'full' })}
+          </p>
         </div>
         
-        <button 
-          onClick={() => { setImportDate(selectedDate.toISOString().split('T')[0]); setIsImportOpen(true); }}
-          className="bg-[#6D2158] text-white px-6 py-3 rounded-xl text-xs font-bold uppercase flex items-center gap-2 shadow-lg hover:bg-[#5a1b49] transition-all"
-        >
-          <Upload size={18}/> Import List
-        </button>
+        <div className="flex items-center gap-2">
+           <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-sm h-8">
+              <button onClick={() => changeDate(-1)} className="px-2 hover:bg-slate-50 text-slate-500 rounded-l-lg"><ChevronLeft size={14}/></button>
+              <span className="px-3 text-[10px] font-bold text-slate-700">{new Date(selectedDate).toLocaleDateString('en-GB', {day:'2-digit', month:'short'})}</span>
+              <button onClick={() => changeDate(1)} className="px-2 hover:bg-slate-50 text-slate-500 rounded-r-lg"><ChevronRight size={14}/></button>
+           </div>
+
+           <button onClick={() => setIsImportOpen(true)} className="bg-white border border-slate-200 text-slate-600 px-3 h-8 rounded-lg text-[10px] font-bold shadow-sm hover:bg-slate-50 flex items-center gap-2">
+              <FileSpreadsheet size={14}/> Import
+           </button>
+           <button onClick={exportPDF} className="bg-[#6D2158] text-white px-3 h-8 rounded-lg text-[10px] font-bold shadow-md hover:bg-[#5a1b49] flex items-center gap-2">
+              <Download size={14}/> PDF
+           </button>
+        </div>
       </div>
 
-      {/* STATS SUMMARY */}
-      <div className="flex gap-4 mb-6 overflow-x-auto pb-2 no-scrollbar">
-          <div className="bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm min-w-[140px]">
-              <p className="text-[10px] font-bold text-slate-400 uppercase">Occupancy</p>
-              <p className="text-xl font-bold text-slate-800">{records.filter(r => ['OCC','ARR'].some(s => r.status.toUpperCase().includes(s))).length}</p>
-          </div>
-          <div className="bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm min-w-[140px]">
-              <p className="text-[10px] font-bold text-emerald-500 uppercase">Arrivals</p>
-              <p className="text-xl font-bold text-emerald-600">{records.filter(r => r.status.toUpperCase().includes('ARR')).length}</p>
-          </div>
-          <div className="bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm min-w-[140px]">
-              <p className="text-[10px] font-bold text-rose-500 uppercase">Departures</p>
-              <p className="text-xl font-bold text-rose-600">{records.filter(r => r.status.toUpperCase().includes('DEP')).length}</p>
-          </div>
-          <div className="bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm min-w-[140px]">
-              <p className="text-[10px] font-bold text-amber-500 uppercase">TMA / Trans</p>
-              <p className="text-xl font-bold text-amber-600">{records.filter(r => r.status.toUpperCase().includes('TMA')).length}</p>
-          </div>
-      </div>
+      {/* TABLE */}
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+        <table className="w-full text-left border-collapse">
+          <thead className="bg-slate-50/50 border-b border-slate-200">
+            <tr>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase w-14">Villa</th>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase w-16">Status</th>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase">Guest Name</th>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase w-10">Pax</th>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase w-24">GEM</th>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase w-12">Meal</th>
+              <th className="py-2 px-3 text-[9px] font-bold text-slate-400 uppercase w-20">Dates</th>
+              <th className="py-2 px-3 text-right w-10"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50">
+            {filteredList.map((row) => (
+              <tr key={row.villa_number} className={`hover:bg-slate-50 group ${row.status === 'VAC' ? 'bg-slate-50/20' : ''}`}>
+                
+                <td className="py-1.5 px-3">
+                   <div className="font-bold text-xs text-slate-700">{row.villa_number}</div>
+                   <div className="text-[7px] font-bold text-slate-300 uppercase">{getVillaCategory(parseInt(row.villa_number)).split(' ')[0]}</div>
+                </td>
 
-      {/* MAIN GRID */}
-      {records.length === 0 && !isLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100">
-              <Users size={48} className="text-slate-200 mb-4"/>
-              <p className="text-slate-400 font-bold text-lg">No data for this date</p>
-              <p className="text-slate-300 text-xs mb-4">Upload the "Daily Summery" or "Guest List" Excel.</p>
-              <button onClick={() => setIsImportOpen(true)} className="text-[#6D2158] font-bold text-sm underline">Import Data</button>
-          </div>
-      ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {records.map(r => (
-                  <div key={r.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 hover:shadow-md transition-shadow relative group">
-                      
-                      <div className="flex justify-between items-start mb-3">
-                          <span className="text-2xl font-bold text-slate-800">{r.villa_number}</span>
-                          <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase border ${getStatusColor(r.status)}`}>
-                              {r.status}
-                          </span>
-                      </div>
+                <td className="py-1.5 px-3">
+                  <span className={`px-1.5 py-0.5 rounded-[3px] text-[8px] font-bold uppercase border ${getStatusStyle(row.status)}`}>
+                    {row.status}
+                  </span>
+                </td>
 
-                      <div className="mb-4">
-                          <h3 className="text-sm font-bold text-slate-700 line-clamp-2 min-h-[1.25rem] flex items-center gap-2">
-                              {r.guest_name || 'Vacant'}
-                          </h3>
-                          <div className="flex gap-2 mt-2 flex-wrap">
-                              {r.pax_adults > 0 && <span className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded text-[10px] font-bold text-slate-500 border border-slate-100"><Users size={10}/> {r.pax_adults}</span>}
-                              {r.gem_name && <span className="flex items-center gap-1 bg-amber-50 text-amber-700 px-2 py-1 rounded text-[10px] font-bold border border-amber-100"><Star size={10}/> {r.gem_name}</span>}
-                              {r.meal_plan && <span className="flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded text-[10px] font-bold border border-blue-100"><Utensils size={10}/> {r.meal_plan}</span>}
-                          </div>
-                      </div>
-
-                      {r.remarks ? (
-                          <div className="mt-3 text-[10px] font-bold text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100 line-clamp-2 flex items-start gap-2">
-                              <CalendarDays size={12} className="shrink-0 mt-0.5 text-slate-400"/>
-                              {r.remarks.replace('Stay: ', '')}
-                          </div>
-                      ) : <div className="h-8"></div>}
-
-                      <button onClick={() => setEditingRecord({...r, pax: r.pax_adults} as any)} className="absolute top-4 right-4 text-slate-300 hover:text-[#6D2158] opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Edit3 size={16}/>
-                      </button>
+                <td className="py-1.5 px-3">
+                  <div className={`text-[11px] font-bold truncate ${row.status === 'VAC' ? 'text-slate-200' : 'text-slate-700'}`}>
+                    {row.guest_name || '-'}
                   </div>
-              ))}
-          </div>
-      )}
+                </td>
 
-      {/* --- IMPORT MODAL --- */}
-      {isImportOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-           <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl p-6 animate-in zoom-in-95">
-              <div className="flex justify-between items-center mb-4">
-                 <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Upload size={20}/> Import Data</h3>
-                 <button onClick={() => setIsImportOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500"><X size={18}/></button>
-              </div>
-              
-              <div className="space-y-4">
-                  <div>
-                      <label className="text-xs font-bold text-slate-400 uppercase">Target Date</label>
-                      <input type="date" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={importDate} onChange={e => setImportDate(e.target.value)} />
-                  </div>
+                <td className="py-1.5 px-3 text-[10px] text-slate-500">
+                  {row.pax_adults > 0 ? `${row.pax_adults}` : ''}
+                </td>
 
-                  <div className={`border-2 border-dashed border-slate-200 rounded-xl p-6 text-center transition-colors relative ${isProcessing ? 'bg-slate-50' : 'hover:bg-slate-50'}`}>
-                      <input 
-                        type="file" 
-                        accept=".xlsx, .xls, .csv" 
-                        onChange={handleFileUpload} 
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
-                        disabled={isProcessing}
-                      />
-                      {isProcessing ? (
-                          <div className="flex flex-col items-center gap-2 text-slate-500">
-                              <Loader2 size={32} className="animate-spin text-[#6D2158]"/>
-                              <p className="text-xs font-bold uppercase">Reading Excel...</p>
-                          </div>
-                      ) : (
-                          <>
-                            <div className="flex justify-center gap-4 mb-2">
-                                <FileSpreadsheet size={32} className="text-emerald-500"/>
-                            </div>
-                            <p className="text-sm font-bold text-slate-700">Click to upload Excel</p>
-                            <p className="text-[10px] text-slate-400">Supports Daily Summary & Guest List</p>
-                          </>
-                      )}
-                  </div>
+                <td className="py-1.5 px-3 text-[10px] font-bold text-slate-500 uppercase truncate max-w-[100px]">
+                  {row.gem_name}
+                </td>
 
-                  <div className="relative">
-                      <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-100"></div></div>
-                      <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-slate-300 font-bold">OR Paste Text</span></div>
-                  </div>
+                <td className="py-1.5 px-3 text-[9px] font-bold text-slate-500">
+                  {row.meal_plan}
+                </td>
 
-                  <textarea 
-                    className="w-full h-24 p-4 bg-slate-50 border border-slate-200 rounded-xl text-[10px] font-mono text-slate-600 outline-none focus:border-[#6D2158] resize-none"
-                    placeholder="Extracted data will appear here..."
-                    value={importText}
-                    onChange={e => setImportText(e.target.value)}
-                  />
+                <td className="py-1.5 px-3 text-[8px] font-mono text-slate-400 whitespace-nowrap overflow-hidden">
+                  {row.stay_dates}
+                </td>
 
-                  <button 
-                     onClick={handleProcessImport} 
-                     disabled={isLoading || isProcessing}
-                     className="w-full bg-[#6D2158] text-white py-3 rounded-xl font-bold uppercase text-sm shadow-lg hover:bg-[#5a1b49] transition-all disabled:opacity-50"
-                  >
-                     {isLoading ? 'Saving...' : 'Process & Save'}
+                <td className="py-1.5 px-3 text-right">
+                  <button onClick={() => { setEditingRecord(row); setIsEditOpen(true); }} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-100 text-slate-400 hover:text-[#6D2158] rounded">
+                    <Edit3 size={12}/>
                   </button>
+                </td>
+
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* IMPORT MODAL */}
+      {isImportOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+           <div className="bg-white w-full max-w-md rounded-2xl shadow-xl p-6">
+              <h3 className="text-lg font-bold mb-4">Import Excel</h3>
+              <div className="border-2 border-dashed border-slate-200 rounded-xl p-8 text-center mb-4 hover:bg-slate-50 relative">
+                  <input type="file" accept=".xlsx" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
+                  <FileSpreadsheet className="mx-auto text-slate-300 mb-2"/>
+                  <p className="text-xs font-bold text-slate-500">Click to upload Guest List or Daily Summary</p>
+              </div>
+              <div className="bg-slate-50 p-2 rounded mb-4 text-[10px] text-slate-500 font-mono overflow-hidden h-16">
+                  {importText || 'Waiting for file...'}
+              </div>
+              <div className="flex gap-2">
+                  <button onClick={handleConfirmImport} disabled={parsedData.length === 0} className="flex-1 bg-[#6D2158] text-white py-2 rounded-lg text-xs font-bold disabled:opacity-50">Confirm Import</button>
+                  <button onClick={() => setIsImportOpen(false)} className="flex-1 bg-slate-100 text-slate-600 py-2 rounded-lg text-xs font-bold">Cancel</button>
               </div>
            </div>
         </div>
       )}
 
-      {/* --- EDIT MODAL --- */}
-      {editingRecord && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-           <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl p-6 animate-in zoom-in-95">
-              <div className="flex justify-between items-center mb-6">
-                 <div>
-                    <h3 className="text-xl font-bold text-slate-800">Edit Guest Info</h3>
-                    <p className="text-sm font-bold text-slate-400">Villa {editingRecord.villa_number}</p>
-                 </div>
-                 <button onClick={() => setEditingRecord(null)} className="bg-slate-100 p-2 rounded-full text-slate-500"><X size={18}/></button>
-              </div>
-
-              <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                      <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase">Status</label>
-                          <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={editingRecord.status} onChange={e => setEditingRecord({...editingRecord, status: e.target.value})}/>
-                      </div>
-                      <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase">GEM</label>
-                          <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={editingRecord.gem_name} onChange={e => setEditingRecord({...editingRecord, gem_name: e.target.value})}/>
-                      </div>
+      {/* EDIT MODAL */}
+      {isEditOpen && editingRecord && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+           <div className="bg-white w-full max-w-md rounded-2xl shadow-xl p-6">
+              <h3 className="text-lg font-bold mb-4 text-[#6D2158]">Edit Villa {editingRecord.villa_number}</h3>
+              <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                      <div><label className="text-[10px] font-bold text-slate-400">Status</label><select className="w-full p-2 border rounded text-xs font-bold" value={editingRecord.status} onChange={e => setEditingRecord({...editingRecord, status: e.target.value})}>{['VAC','OCC','ARR','DEP','DEP/ARR','TMA','H/U'].map(s=><option key={s}>{s}</option>)}</select></div>
+                      <div><label className="text-[10px] font-bold text-slate-400">GEM</label><input className="w-full p-2 border rounded text-xs" value={editingRecord.gem_name} onChange={e => setEditingRecord({...editingRecord, gem_name: e.target.value})}/></div>
                   </div>
-                  <div>
-                      <label className="text-xs font-bold text-slate-400 uppercase">Guest Name</label>
-                      <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={editingRecord.guest_name} onChange={e => setEditingRecord({...editingRecord, guest_name: e.target.value})}/>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                      <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase">Total Pax</label>
-                          <input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={editingRecord.pax_adults} onChange={e => setEditingRecord({...editingRecord, pax_adults: parseInt(e.target.value)})}/>
-                      </div>
-                      <div>
-                          <label className="text-xs font-bold text-slate-400 uppercase">Meal Plan</label>
-                          <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={editingRecord.meal_plan} onChange={e => setEditingRecord({...editingRecord, meal_plan: e.target.value})}/>
-                      </div>
-                  </div>
-                  <div>
-                      <label className="text-xs font-bold text-slate-400 uppercase">Stay Dates / Remarks</label>
-                      <textarea className="w-full h-24 p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none resize-none" value={editingRecord.remarks} onChange={e => setEditingRecord({...editingRecord, remarks: e.target.value})}/>
-                  </div>
-                  <button onClick={handleSaveEdit} className="w-full bg-[#6D2158] text-white py-3 rounded-xl font-bold uppercase text-sm shadow-lg hover:bg-[#5a1b49] transition-all mt-2">Save Changes</button>
+                  <div><label className="text-[10px] font-bold text-slate-400">Guest Name</label><input className="w-full p-2 border rounded text-sm font-bold" value={editingRecord.guest_name} onChange={e => setEditingRecord({...editingRecord, guest_name: e.target.value})}/></div>
+                  <button onClick={handleSaveEdit} className="w-full bg-[#6D2158] text-white py-2 rounded-lg text-xs font-bold mt-2">Save</button>
+                  <button onClick={() => setIsEditOpen(false)} className="w-full bg-slate-100 text-slate-500 py-2 rounded-lg text-xs font-bold">Cancel</button>
               </div>
            </div>
         </div>
