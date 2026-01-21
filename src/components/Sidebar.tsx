@@ -4,17 +4,18 @@ import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Zap, Users, Hotel, 
   Warehouse, ShoppingCart, FileText, 
-  Settings, LogOut, Clock
+  Settings, LogOut, Clock, User 
 } from "lucide-react";
 
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "Daily Requests", icon: Zap, path: "/requests" }, // NEW PAGE
+  { name: "Daily Requests", icon: Zap, path: "/requests" },
+  { name: "Guest Profiles", icon: User, path: "/guests" }, // NEW LINK
   { name: "Host Profiles", icon: Users, path: "/hosts" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Housekeeping", icon: Hotel, path: "/housekeeping" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
-  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" }, // Kept for PRs
+  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Settings", icon: Settings, path: "/settings" },
 ];
 
