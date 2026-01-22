@@ -5,11 +5,11 @@ import {
   Coffee, Droplet, Cookie, Beer, Zap,
   Calendar, UtensilsCrossed, Cloud, Baby, Box, List, 
   CheckCircle2, ArrowUpDown, Clock, MapPin, Send, Split,
-  MoreHorizontal, AlertCircle, Check
+  MoreHorizontal, AlertCircle, Check, User, AlertTriangle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-// --- ICONS & CONFIG ---
+// --- CONFIG ---
 const ICON_MAP: any = {
   'Coffee': Coffee, 'Droplet': Droplet, 'Beer': Beer, 
   'Wine': Wine, 'Cookie': Cookie, 'Zap': Zap,
@@ -28,6 +28,8 @@ type RequestRecord = {
   request_time: string;
   created_at: string;
   attendant_name: string;
+  guest_name?: string;     
+  package_tag?: string;    
 };
 
 type MasterItem = {
@@ -50,10 +52,28 @@ const getDaysArray = (centerDate: Date) => {
   return days;
 };
 
-const getVillaAttendant = (villa: string) => {
-  const v = parseInt(villa);
-  if (isNaN(v)) return "Duty";
-  return v < 20 ? "Ali M." : v < 40 ? "Sarah" : "Team";
+const getTodayStr = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Analyze Meal Plan
+const analyzePackage = (mp: string) => {
+  const plan = (mp || '').toUpperCase();
+  if (plan.includes('SA')) return { type: 'Saint', color: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
+  if (plan.includes('SI')) return { type: 'Sinner', color: 'bg-orange-100 text-orange-700 border-orange-200' };
+  return { type: mp || 'Std', color: 'bg-slate-100 text-slate-500 border-slate-200' };
+};
+
+// Extract Main Name
+const extractMainGuest = (fullString: string) => {
+  if (!fullString) return 'Guest';
+  const parts = fullString.split(/[\/&]/).map(s => s.trim());
+  const main = parts.find(p => p.includes('Mr.') || p.includes('Mrs.') || p.includes('Dr.'));
+  return main || parts[0];
 };
 
 export default function CoordinatorLog() {
@@ -66,7 +86,9 @@ export default function CoordinatorLog() {
   const [isOtherOpen, setIsOtherOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPartialOpen, setIsPartialOpen] = useState(false);
-  const [showToast, setShowToast] = useState(false);
+  
+  // Notification State
+  const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
   
   // Filters
@@ -77,6 +99,7 @@ export default function CoordinatorLog() {
 
   // Forms
   const [villaNumber, setVillaNumber] = useState('');
+  const [guestInfo, setGuestInfo] = useState<any>(null); // NEW: Store fetched guest data
   const [manualTime, setManualTime] = useState('');
   
   // Requester Search State
@@ -107,6 +130,39 @@ export default function CoordinatorLog() {
     fetchCatalog();
     fetchSettings();
   }, [selectedDate]);
+
+  // --- SMART GUEST FETCH ---
+  useEffect(() => {
+    const fetchGuest = async () => {
+      if (!villaNumber || villaNumber.length < 1) { setGuestInfo(null); return; }
+      
+      const { data } = await supabase
+        .from('hsk_daily_summary')
+        .select('*')
+        .eq('report_date', getTodayStr()) // Always look at TODAY for guest info
+        .eq('villa_number', villaNumber)
+        .maybeSingle();
+
+      if (data) {
+        const todayStr = new Date().toLocaleDateString('en-GB', {day: 'numeric', month: 'short'});
+        const isCheckout = data.status.includes('DEP') || (data.stay_dates && data.stay_dates.includes(todayStr));
+        
+        setGuestInfo({
+          ...data,
+          mainName: extractMainGuest(data.guest_name),
+          pkg: analyzePackage(data.meal_plan),
+          isCheckout
+        });
+        
+        // Auto-fill requester if GEM name exists and field is empty
+        if(data.gem_name && !requesterSearch) setRequesterSearch(data.gem_name);
+      } else {
+        setGuestInfo(null);
+      }
+    };
+    const timer = setTimeout(fetchGuest, 400);
+    return () => clearTimeout(timer);
+  }, [villaNumber]);
 
   // --- FETCHING ---
   const fetchCatalog = async () => {
@@ -140,16 +196,13 @@ export default function CoordinatorLog() {
     const now = new Date();
     setManualTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
     setVillaNumber('');
+    setGuestInfo(null);
     setMbCart([]); setOtherCart([]);
     setCustomNote('');
     setRequesterSearch(''); 
     
-    if (type === 'Minibar') {
-       setRequesterSearch(getVillaAttendant(villaNumber) || "Villa Attendant");
-       setIsMinibarOpen(true);
-    } else {
-       setIsOtherOpen(true);
-    }
+    if (type === 'Minibar') setIsMinibarOpen(true);
+    else setIsOtherOpen(true);
   };
 
   const addToCart = (item: string, type: 'MB' | 'Other') => {
@@ -164,51 +217,88 @@ export default function CoordinatorLog() {
   };
 
   const submitRequest = async (type: 'Minibar' | 'Other') => {
-    if (!villaNumber) return alert("Enter Villa Number");
+    if (!villaNumber) {
+        showNotification('error', "Please enter a Villa Number");
+        return;
+    }
 
     let details = "";
     let reqType: string = type;
-    let requester = requesterSearch;
+    let requester = requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest");
 
     if (type === 'Minibar') {
-       if (mbCart.length === 0) return alert("Cart empty");
+       if (mbCart.length === 0) {
+           showNotification('error', "Cart is empty");
+           return;
+       }
        details = mbCart.map(i => `${i.qty}x ${i.name}`).join('\n');
-       if (!requester) requester = getVillaAttendant(villaNumber);
     } else {
        if (otherMode === 'Catalog') {
-          if (otherCart.length === 0) return alert("Select items");
+          if (otherCart.length === 0) {
+              showNotification('error', "No items selected");
+              return;
+          }
           details = otherCart.map(i => `${i.qty}x ${i.name}`).join('\n');
           reqType = otherCategory === 'All' ? 'Guest Request' : otherCategory;
        } else {
-          if (!customNote) return alert("Enter details");
+          if (!customNote) {
+              showNotification('error', "Please enter note details");
+              return;
+          }
           details = customNote;
           reqType = "General";
        }
-       if (!requester) requester = "Guest"; 
     }
 
     const dateStr = selectedDate.toISOString().split('T')[0];
     const fullTimeStr = `${dateStr}T${manualTime}:00`;
 
+    // 1. SAVE TO DAILY REQUESTS (Main Log)
     const payload = {
        villa_number: villaNumber,
        request_type: reqType,
        item_details: details,
        request_time: fullTimeStr,
        attendant_name: requester,
+       guest_name: guestInfo ? guestInfo.mainName : '',
+       package_tag: guestInfo?.pkg?.type || '',
        is_sent: false, is_posted: false, is_done: false
     };
 
-    const { error } = await supabase.from('hsk_daily_requests').insert(payload);
+    const { data: newReq, error } = await supabase
+        .from('hsk_daily_requests')
+        .insert(payload)
+        .select()
+        .single();
 
     if (error) {
-        alert("Database Error: " + error.message);
-    } else {
-        setIsMinibarOpen(false); 
-        setIsOtherOpen(false);
-        fetchRecords();
-        triggerToast();
+        showNotification('error', "Database Error: " + error.message);
+        return;
     }
+
+    // 2. SAVE TO GUEST PROFILE (History)
+    if (guestInfo?.id) {
+        const historyEntry = {
+            date: fullTimeStr,
+            type: reqType,
+            items: type === 'Minibar' ? mbCart : (otherMode === 'Catalog' ? otherCart : [{name: customNote, qty: 1}]),
+            req_id: newReq.id
+        };
+        
+        // Fetch current to append
+        const { data: currentData } = await supabase.from('hsk_daily_summary').select('request_log').eq('id', guestInfo.id).single();
+        const currentLog = currentData?.request_log && Array.isArray(currentData.request_log) ? currentData.request_log : [];
+        
+        await supabase
+            .from('hsk_daily_summary')
+            .update({ request_log: [historyEntry, ...currentLog] })
+            .eq('id', guestInfo.id);
+    }
+
+    setIsMinibarOpen(false); 
+    setIsOtherOpen(false);
+    fetchRecords();
+    showNotification('success', "Request Saved Successfully");
   };
 
   const deleteRecord = async (id: string) => {
@@ -240,7 +330,10 @@ export default function CoordinatorLog() {
       const sentItems = partialSelection;
       const pendingItems = allItems.filter(i => !sentItems.includes(i));
 
-      if (sentItems.length === 0) return alert("Select at least one item to send.");
+      if (sentItems.length === 0) {
+          showNotification('error', "Select at least one item to send.");
+          return;
+      }
 
       // 1. Update current record to "Sent"
       await supabase.from('hsk_daily_requests').update({
@@ -262,12 +355,12 @@ export default function CoordinatorLog() {
 
       setIsPartialOpen(false);
       fetchRecords();
-      triggerToast();
+      showNotification('success', "Partial Send Confirmed");
   };
 
-  const triggerToast = () => {
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
+  const showNotification = (type: 'success' | 'error', text: string) => {
+      setToastMsg({ type, text });
+      setTimeout(() => setToastMsg(null), 3000);
   };
 
   // --- FILTERING ---
@@ -277,7 +370,6 @@ export default function CoordinatorLog() {
   const amenityItems = masterCatalog.filter(i => !i.is_minibar_item);
   const amenityCats = Array.from(new Set(amenityItems.map(i => i.category)));
 
-  // Filter Requesters for Autocomplete
   const filteredRequesters = requesters.filter(r => r.toLowerCase().includes(requesterSearch.toLowerCase()));
 
   const visibleRecords = records.filter(r => {
@@ -292,6 +384,34 @@ export default function CoordinatorLog() {
       let valB = sortCol === 'time' ? b.request_time : b.villa_number;
       return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
   });
+
+  // --- RENDER GUEST CARD (Reusable) ---
+  const GuestCard = () => {
+      if (!guestInfo) return null;
+      return (
+        <div className={`mt-3 p-3 rounded-xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
+            <div className="flex justify-between items-start">
+                <div>
+                    <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <User size={14} className="text-slate-400"/>
+                        {guestInfo.mainName}
+                    </h3>
+                    <p className="text-[10px] text-slate-400 ml-5">{guestInfo.guest_name}</p>
+                </div>
+                {guestInfo.pkg && (
+                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${guestInfo.pkg.color}`}>
+                        {guestInfo.pkg.type}
+                    </span>
+                )}
+            </div>
+            {guestInfo.isCheckout && (
+                <div className="mt-2 flex items-center gap-1 text-rose-600 font-bold text-[10px]">
+                    <AlertTriangle size={12}/> CHECKOUT TODAY
+                </div>
+            )}
+        </div>
+      );
+  };
 
   return (
     <div className="min-h-screen bg-[#FDFBFD] font-antiqua text-[#6D2158] pb-32">
@@ -309,7 +429,7 @@ export default function CoordinatorLog() {
              </div>
            </div>
            
-           {/* COMPACT ACTIONS */}
+           {/* ACTIONS */}
            <div className="flex gap-2">
                 <button onClick={() => handleOpenModal('Minibar')} className="bg-rose-600 text-white px-3 py-2 rounded-lg font-bold uppercase text-[10px] flex items-center gap-1 shadow-md hover:bg-rose-700">
                     <Wine size={14}/> MB
@@ -323,7 +443,7 @@ export default function CoordinatorLog() {
            </div>
         </div>
         
-        {/* Filters & Date Scroller */}
+        {/* Filters */}
         <div className="flex items-center gap-2 overflow-x-auto px-4 no-scrollbar mt-1">
            {['All', 'Pending', 'Done'].map(f => (
                <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase border transition-all whitespace-nowrap ${statusFilter === f ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-400 border-slate-200'}`}>
@@ -342,19 +462,23 @@ export default function CoordinatorLog() {
         </div>
       </div>
 
-      {/* 2. MASONRY LIST (FIXED) */}
+      {/* 2. MASONRY LIST */}
       <div className="p-3 columns-2 md:columns-3 lg:columns-4 xl:columns-6 gap-3 space-y-3">
          {visibleRecords.length === 0 && <div className="py-12 text-center text-slate-300 font-bold italic col-span-full">No requests found.</div>}
          {visibleRecords.map(r => (
             <div key={r.id} className={`break-inside-avoid rounded-xl border p-3 flex flex-col bg-white shadow-sm relative ${r.request_type === 'Minibar' ? 'border-rose-100' : 'border-amber-100'}`}>
                <div className="flex justify-between items-start mb-2">
-                  <span className="text-xl font-bold text-slate-800">{r.villa_number}</span>
+                  <div className="flex items-center gap-2">
+                      <span className="text-xl font-bold text-slate-800">{r.villa_number}</span>
+                      {r.package_tag?.includes('Saint') && <div className="w-2 h-2 rounded-full bg-emerald-500" title="Saint Pkg"></div>}
+                      {r.package_tag?.includes('Sinner') && <div className="w-2 h-2 rounded-full bg-orange-500" title="Sinner Pkg"></div>}
+                  </div>
                   <div className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase truncate max-w-[80px] ${r.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
                      {r.request_type}
                   </div>
                </div>
                
-               {/* List View of Items */}
+               {/* Items */}
                <div className="mb-3">
                    {r.item_details.split(/\n|,/).map((item, idx) => (
                        <div key={idx} className="flex items-start gap-1 text-[11px] font-bold text-slate-600 leading-tight mb-1">
@@ -372,14 +496,14 @@ export default function CoordinatorLog() {
                      <button onClick={() => deleteRecord(r.id)} className="text-slate-200 hover:text-rose-500"><Trash2 size={14}/></button>
                   </div>
                   
-                  {/* Action Bar - Split Send */}
+                  {/* Actions */}
                   <div className="flex gap-1">
                     {r.request_type === 'Minibar' ? (
                         <>
                             {!r.is_sent ? (
                                 <>
                                     <button onClick={() => openPartialModal(r)} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-slate-100 text-slate-500 hover:bg-slate-200">Part.</button>
-                                    <button onClick={() => toggleStatus(r.id, 'is_sent')} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-blue-50 text-blue-600 hover:bg-blue-100">Send All</button>
+                                    <button onClick={() => toggleStatus(r.id, 'is_sent')} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-blue-50 text-blue-600 hover:bg-blue-100">Send</button>
                                 </>
                             ) : (
                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className="flex-1 py-1.5 rounded-lg text-[9px] font-bold uppercase bg-blue-600 text-white">Sent</button>
@@ -424,16 +548,19 @@ export default function CoordinatorLog() {
                      </div>
                   </div>
 
+                  {/* SMART GUEST CARD */}
+                  <GuestCard />
+
                   {mbCart.length > 0 && (
-                     <div className="flex flex-wrap gap-2 mb-4 bg-white p-2 rounded-xl border border-slate-100">
+                     <div className="flex flex-wrap gap-2 mb-4 bg-white p-2 rounded-xl border border-slate-100 mt-4">
                         {mbCart.map(i => (
                            <button key={i.name} onClick={() => setMbCart(mbCart.filter(c => c.name !== i.name))} className="bg-rose-600 text-white px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 animate-in zoom-in">{i.qty} {i.name} <X size={10}/></button>
                         ))}
                      </div>
                   )}
                   
-                  {/* WRAPPED CATEGORIES */}
-                  <div className="flex flex-wrap gap-2 mb-4">
+                  {/* CATEGORIES */}
+                  <div className="flex flex-wrap gap-2 mb-4 mt-4">
                      {minibarCats.map((c: any) => (
                         <button key={c} onClick={() => setMbCategory(c)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase border ${mbCategory === c ? 'bg-rose-600 text-white border-rose-600' : 'bg-white border-slate-200 text-slate-400'}`}>{c}</button>
                      ))}
@@ -482,7 +609,9 @@ export default function CoordinatorLog() {
                      </div>
                   </div>
 
-                  <div className="flex bg-slate-200 p-1 rounded-xl mb-4">
+                  <GuestCard />
+
+                  <div className="flex bg-slate-200 p-1 rounded-xl mb-4 mt-4">
                      <button onClick={() => setOtherMode('Catalog')} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase transition-all ${otherMode === 'Catalog' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Items</button>
                      <button onClick={() => setOtherMode('Note')} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase transition-all ${otherMode === 'Note' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Note / Task</button>
                   </div>
@@ -581,10 +710,14 @@ export default function CoordinatorLog() {
       )}
 
       {/* --- TOAST --- */}
-      {showToast && (
-          <div className="fixed top-4 right-4 bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-5 z-[100]">
-              <CheckCircle2 size={18} />
-              <span className="text-xs font-bold uppercase">Saved Successfully</span>
+      {toastMsg && (
+          <div className={`fixed top-4 right-4 px-6 py-4 rounded-xl shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-5 z-[100] border-2 ${
+              toastMsg.type === 'success' 
+              ? 'bg-emerald-50 border-emerald-100 text-emerald-700' 
+              : 'bg-rose-50 border-rose-100 text-rose-700'
+          }`}>
+              {toastMsg.type === 'success' ? <CheckCircle2 size={20} /> : <AlertTriangle size={20} />}
+              <span className="text-sm font-bold uppercase">{toastMsg.text}</span>
           </div>
       )}
 
