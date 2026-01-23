@@ -8,15 +8,58 @@
 
 body {
   font-family: "Book Antiqua", "Palatino Linotype", serif;
-  background-color: #FDFBFD; /* Very subtle lavender-white for a premium feel */
+  background-color: #FDFBFD; 
   color: #1a1a1a;
 }
 
-/* Scrollbar styling for the Insights section */
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+@layer utilities {
+  /* --- 1. HIDE SCROLLBAR (Clean UI) --- */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* --- 2. ANIMATIONS (For Modals & Toasts) --- */
+  @keyframes slideIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px); /* Slide up slightly */
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes zoomIn {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  /* Utility classes to trigger animations */
+  .animate-in {
+    animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+  
+  .zoom-in-95 {
+    animation: zoomIn 0.2s ease-out forwards;
+  }
+
+  /* --- 3. TOAST NOTIFICATIONS (Glass Effect) --- */
+  .toast-success {
+    @apply bg-emerald-50/90 backdrop-blur-md border border-emerald-200 text-emerald-800 shadow-2xl;
+  }
+  
+  .toast-error {
+    @apply bg-rose-50/90 backdrop-blur-md border border-rose-200 text-rose-800 shadow-2xl;
+  }
 }
