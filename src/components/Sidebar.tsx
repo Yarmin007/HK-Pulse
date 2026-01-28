@@ -4,14 +4,15 @@ import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Users, ClipboardList, 
   Printer, Settings, LogOut, Warehouse, 
-  Clock, ShoppingCart // 👈 Import ShoppingCart Icon
+  Clock, ShoppingCart, ListChecks // 👈 Added ListChecks Icon
 } from "lucide-react";
 
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
   { name: "Guest List", icon: Users, path: "/guests" },
+  { name: "Allocation", icon: ListChecks, path: "/allocation" }, // 👈 New Allocation Page
   { name: "Request Log", icon: ClipboardList, path: "/requests" },
-  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" }, // 👈 ADD THIS LINE
+  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Print Hub", icon: Printer, path: "/print" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
