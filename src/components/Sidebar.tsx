@@ -4,13 +4,14 @@ import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Users, ClipboardList, 
   Printer, Settings, LogOut, Warehouse, 
-  Clock, ShoppingCart, ListChecks // 👈 Added ListChecks Icon
+  Clock, ShoppingCart, ListChecks, Droplets // 👈 Added Droplets Icon
 } from "lucide-react";
 
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
   { name: "Guest List", icon: Users, path: "/guests" },
-  { name: "Allocation", icon: ListChecks, path: "/allocation" }, // 👈 New Allocation Page
+  { name: "Allocation", icon: ListChecks, path: "/allocation" },
+  { name: "Water Production", icon: Droplets, path: "/water" }, // 👈 New Water Page
   { name: "Request Log", icon: ClipboardList, path: "/requests" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
