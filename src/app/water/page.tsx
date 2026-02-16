@@ -138,7 +138,6 @@ export default function WaterProductionPage() {
     setSelectedDate(d);
   };
 
-  // --- STATS & CHARTS ---
   const stats = useMemo(() => {
     let totals = { 
         l_still: 0, l_spk: 0, bottles: 0, breakage: 0,
@@ -248,8 +247,10 @@ export default function WaterProductionPage() {
             if (line.includes("unused") || line.includes("return")) newRecord.b500_ret_still = val;
         } else if (currentSection === "350") {
             if (line.includes("sparkling") && !line.includes("unused")) newRecord.b350_hsk_spk = val;
-            // FIX: Exclude lines with "sparkling" to avoid "Unused Sparkling" triggering "Spa"
+            
+            // Fix for SPA parsing
             if (line.includes("spa") && !line.includes("sparkling")) newRecord.b350_spa_still = val;
+            
             if (line.includes("water") && line.includes("sports")) newRecord.b350_ws_still = val;
             if (line.includes("unused") || line.includes("return")) {
                  if(line.includes("sparkling")) newRecord.b350_ret_spk = val;
@@ -320,17 +321,17 @@ export default function WaterProductionPage() {
             </div>
         </div>
         
-        {/* STATS */}
-        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 print:bg-white print:border-none print:px-0 print:py-2">
-            <div className="flex gap-3 print:hidden">
+        {/* STATS AREA */}
+        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 print:bg-white print:border-none print:px-0 print:py-2 overflow-x-auto">
+            <div className="flex gap-3 print:hidden min-w-max">
                 <StatCard label="Total Production" val={stats.l_still.toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
                 <StatCard label="Sparkling" val={stats.l_spk.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
                 <StatCard label="Bottles Filled" val={stats.bottles.toLocaleString()} unit="Qty" color="text-emerald-700" bg="bg-emerald-100" />
                 <StatCard label="Breakage" val={stats.breakage} unit="Qty" color="text-red-700" bg="bg-red-100" />
             </div>
             
-            {/* GRAPHS (Restored) */}
-            <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 print:border-none print:pl-0">
+            {/* GRAPHS */}
+            <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 print:border-none print:pl-0 min-w-[300px]">
                 <div className="flex-1 flex flex-col justify-center gap-2">
                     <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Still Breakdown</span></div>
                     <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex print:border print:border-slate-300">
@@ -369,6 +370,7 @@ export default function WaterProductionPage() {
       <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4">
         <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
             <div className="overflow-auto flex-1">
+                {/* 1. RESTORED 'w-full' - No forced min-width */}
                 <table className="w-full table-fixed border-collapse text-[10px]">
                     <thead className="bg-slate-50 border-b-2 border-slate-300">
                         <tr>
@@ -383,6 +385,7 @@ export default function WaterProductionPage() {
                         </tr>
                         <tr className="text-[9px] font-bold text-slate-500 uppercase">
                             <ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="SPK" dim /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
+                            {/* 2. FIXED TROPIC HEADER */}
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="STILL" dim /><ColHeader label="SPK" dim /><ColHeader label="-" brk end />
                             <ColHeader label="250" /><ColHeader label="250" brk /><ColHeader label="200" brk end />
