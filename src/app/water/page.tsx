@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Printer, Download, AlertTriangle, Edit2, Calendar } from 'lucide-react';
+import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Download, AlertTriangle, Calendar, FileText } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 // --- TYPES ---
@@ -247,10 +247,7 @@ export default function WaterProductionPage() {
             if (line.includes("unused") || line.includes("return")) newRecord.b500_ret_still = val;
         } else if (currentSection === "350") {
             if (line.includes("sparkling") && !line.includes("unused")) newRecord.b350_hsk_spk = val;
-            
-            // Fix for SPA parsing
             if (line.includes("spa") && !line.includes("sparkling")) newRecord.b350_spa_still = val;
-            
             if (line.includes("water") && line.includes("sports")) newRecord.b350_ws_still = val;
             if (line.includes("unused") || line.includes("return")) {
                  if(line.includes("sparkling")) newRecord.b350_ret_spk = val;
@@ -265,13 +262,9 @@ export default function WaterProductionPage() {
     });
 
     const { error } = await supabase.from('water_records').upsert(newRecord, { onConflict: 'date' });
-
-    if (error) {
-        alert("Failed to save paste data: " + error.message);
-    } else {
-        setIsPasteModalOpen(false);
-        setPasteText("");
-        setSavedDate(manualDateStr || "");
+    if (error) { alert("Failed to save paste data: " + error.message); } 
+    else {
+        setIsPasteModalOpen(false); setPasteText(""); setSavedDate(manualDateStr || "");
         setSelectedDate(new Date(targetYear, targetMonth, 1));
         fetchMonthData(new Date(targetYear, targetMonth, 1));
     }
@@ -284,14 +277,195 @@ export default function WaterProductionPage() {
     const link = document.createElement("a");
     link.setAttribute("href", encodeURI(csvContent));
     link.setAttribute("download", `Water_Log_${selectedDate.toISOString().slice(0,7)}.csv`);
-    document.body.appendChild(link);
-    link.click();
+    document.body.appendChild(link); link.click();
+  };
+
+  // --- PDF GENERATOR ---
+  const handleDownloadPDF = async () => {
+    const monthYearStr = selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' }).toUpperCase();
+    
+    let baseSvg = "";
+    try {
+        const res = await fetch('/water-template.svg');
+        if (!res.ok) throw new Error("File not found");
+        baseSvg = await res.text();
+    } catch (e) {
+        alert("Make sure 'water-template.svg' is saved in your 'public' folder!");
+        return;
+    }
+
+    baseSvg = baseSvg.replace('</svg>', '');
+
+    let overlays = `
+      <text x="297" y="115" font-family="'Book Antiqua', serif" font-size="13px" font-weight="bold" fill="#231f20" text-anchor="middle">${monthYearStr}</text>
+      
+      <text x="297" y="645" fill="#6b1b51" font-family="'Book Antiqua', serif" font-size="17px" font-weight="bold" text-anchor="middle">TOTAL PRODUCTION</text>
+
+      <rect x="49.74" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#ddeafe"/>
+      <rect x="153.16" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/>
+      <rect x="256.58" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/>
+      <rect x="359.99" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#d7fae7"/>
+      <rect x="463.41" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#fae2e2"/>
+
+      <text x="89.65" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">TOTAL L</text>
+      <text x="193.07" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">STILL L</text>
+      <text x="296.49" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">SPARKLING L</text>
+      <text x="399.90" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BOTTLES FILLED</text>
+      <text x="503.32" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BREAKAGE</text>
+    `;
+
+    // Add Grid Lines and Data
+    const colCenters = [54.5, 84.1, 113.7, 143.3, 172.9, 202.5, 232.1, 261.7, 291.3, 320.9, 350.5, 380.1, 409.7, 439.3, 468.9, 498.5, 528.1, 557.7];
+    
+    let gridSVG = `<g fill="none" stroke="#231f20" stroke-miterlimit="10" stroke-width=".25px">`;
+    let numbersSVG = `<g font-family="'Book Antiqua', serif" font-size="7.5px" font-weight="bold" fill="#231f20" text-anchor="middle">`;
+
+    records.forEach((r, i) => {
+        const yPos = 183.5 + (i * 13.07); 
+        const hasData = hasRowData(r);
+        
+        // Print Day number in the first column
+        numbersSVG += `<text x="31" y="${yPos}">${r.day}</text>`;
+        
+        const values = [
+            r.b1000_fnb_still, r.b1000_fnb_spk, r.b1000_ret_spk, r.b1000_ret_still, r.b1000_break,
+            r.b500_hsk_still, r.b500_tropic_still, r.b500_ret_still, r.b500_break,
+            r.b350_spa_still, r.b350_ws_still, r.b350_hsk_spk, r.b350_ret_still, r.b350_ret_spk, r.b350_break,
+            r.b250_tma_still, r.b250_break, r.b200_break
+        ];
+        
+        // Inject numbers or zeroes
+        values.forEach((val, colIdx) => {
+            if (val > 0 || (hasData && val === 0)) {
+                numbersSVG += `<text x="${colCenters[colIdx]}" y="${yPos}">${val}</text>`;
+            }
+        });
+
+        // Add Grid Lines
+        const rectY = 174.59 + (i * 13.07);
+        const xStarts = [22.42, 39.68, 69.3, 98.93, 128.55, 158.17, 187.79, 217.41, 247.03, 276.65, 306.27, 335.89, 365.51, 395.13, 424.76, 454.38, 484, 513.62, 543.24];
+        const widths = [17.27, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62];
+        xStarts.forEach((x, idx) => {
+            gridSVG += `<rect x="${x}" y="${rectY}" width="${widths[idx]}" height="13.07"/>`;
+        });
+    });
+    
+    gridSVG += `</g>`;
+    numbersSVG += `</g>`;
+
+    // Inject Values into Bottom Totals
+    const totalL = stats.l_still + stats.l_spk;
+    overlays += `
+      <text x="89.6" y="696" fill="#3e4cd6" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${totalL.toFixed(0)}</text>
+      <text x="193.07" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_still.toFixed(0)}</text>
+      <text x="296.49" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_spk.toFixed(0)}</text>
+      <text x="399.90" y="696" fill="#2e7959" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.bottles.toLocaleString()}</text>
+      <text x="503.32" y="696" fill="#ad1003" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.breakage}</text>
+    `;
+
+    // Build Dynamic Insights (Still and Sparkling Bars) using Native SVG Attributes
+    const colorMap: Record<string, string> = {
+        'bg-emerald-500': '#4cbb85', 'bg-blue-500': '#5280f4', 'bg-purple-500': '#a24ff3',
+        'bg-cyan-500': '#4db6d4', 'bg-teal-500': '#14b8a6', 'bg-amber-500': '#ea9d00',
+    };
+
+    overlays += `
+      <text x="49.74" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">STILL BREAKDOWN</text>
+      <text x="341.31" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">SPARKLING BREAKDOWN</text>
+      
+      <rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>
+      <rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>
+    `;
+
+    // Draw Dynamic Still Breakdown
+    overlays += `<clipPath id="still-clip"><rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath>`;
+    overlays += `<g clip-path="url(#still-clip)">`;
+    let currentX = 49.74;
+    chartData.still.forEach(item => {
+        const barW = (item.pct / 100) * 202.08;
+        if(barW > 0) {
+            overlays += `<rect x="${currentX}" y="735" width="${barW}" height="8.47" fill="${colorMap[item.color] || '#000'}"/>`;
+            currentX += barW;
+        }
+    });
+    overlays += `</g>`;
+
+    chartData.still.forEach((item, idx) => {
+        const legendX = 52 + (idx * 38); 
+        overlays += `<circle cx="${legendX}" cy="761" r="2.8" fill="${colorMap[item.color] || '#000'}"/>`;
+        overlays += `<text x="${legendX + 5}" y="762.5" font-family="'Book Antiqua', serif" font-size="5px" font-weight="bold" fill="#747d94" text-anchor="start">${item.label} (${item.pct.toFixed(0)}%)</text>`;
+    });
+
+    // Draw Dynamic Sparkling Breakdown
+    overlays += `<clipPath id="spk-clip"><rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath>`;
+    overlays += `<g clip-path="url(#spk-clip)">`;
+    let spkX = 341.31;
+    chartData.spk.forEach(item => {
+        const barW = (item.pct / 100) * 202.08;
+        if(barW > 0) {
+            overlays += `<rect x="${spkX}" y="735" width="${barW}" height="8.47" fill="${colorMap[item.color] || '#000'}"/>`;
+            spkX += barW;
+        }
+    });
+    overlays += `</g>`;
+
+    chartData.spk.forEach((item, idx) => {
+        const legendX = 344 + (idx * 38);
+        overlays += `<circle cx="${legendX}" cy="761" r="2.8" fill="${colorMap[item.color] || '#000'}"/>`;
+        overlays += `<text x="${legendX + 5}" y="762.5" font-family="'Book Antiqua', serif" font-size="5px" font-weight="bold" fill="#747d94" text-anchor="start">${item.label} (${item.pct.toFixed(0)}%)</text>`;
+    });
+
+    const finalSVG = baseSvg + gridSVG + overlays + numbersSVG + '</svg>';
+    
+    // Open in a new window and force background colors to print
+    const win = window.open('', 'Print', 'height=800,width=600');
+    if(win) {
+        win.document.write(`
+            <html>
+                <head>
+                    <title>Water Log ${monthYearStr}</title>
+                    <style>
+                        @page { size: A4 portrait; margin: 0; } 
+                        body, html { 
+                            margin: 0; 
+                            padding: 0; 
+                            width: 100vw; 
+                            height: 100vh; 
+                            display: flex; 
+                            justify-content: center; 
+                            align-items: center; 
+                            overflow: hidden; 
+                            background: white; 
+                            -webkit-print-color-adjust: exact !important; 
+                            print-color-adjust: exact !important; 
+                        }
+                        svg { max-width: 100%; max-height: 100vh; object-fit: contain; }
+                    </style>
+                </head>
+                <body>
+                    ${finalSVG}
+                    <script>
+                        setTimeout(() => { window.print(); window.close(); }, 500);
+                    </script>
+                </body>
+            </html>
+        `);
+        win.document.close();
+    }
   };
 
   if (!isMounted) return null;
 
   return (
-    <div className="h-screen flex flex-col bg-white text-slate-900 font-sans text-xs print-area-wrapper">
+    <div className="h-screen flex flex-col bg-white text-slate-900 font-sans text-xs">
+      
+      {/* 1. Global styles to hide scroll arrows on inputs */}
+      <style dangerouslySetInnerHTML={{__html: `
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type="number"] { -moz-appearance: textfield; }
+      `}} />
+
       {errorMessage && <div className="bg-red-500 text-white text-center py-1 font-bold flex justify-center items-center gap-2"><AlertTriangle size={12}/> {errorMessage}</div>}
 
       <div className="bg-white border-b border-slate-300 shadow-sm shrink-0 z-40">
@@ -317,45 +491,46 @@ export default function WaterProductionPage() {
                 </div>
                 <button onClick={() => setIsPasteModalOpen(true)} className="btn-secondary"><ClipboardPaste size={16}/> <span className="hidden md:inline">Paste</span></button>
                 <button onClick={handleExportCSV} className="btn-secondary"><Download size={16}/> <span className="hidden md:inline">CSV</span></button>
-                <button onClick={() => window.print()} className="btn-secondary"><Printer size={16}/> <span className="hidden md:inline">Print</span></button>
+                <button onClick={handleDownloadPDF} className="btn-secondary text-[#6D2158] border-[#6D2158]/30 hover:bg-[#6D2158]/5"><FileText size={16}/> <span className="hidden md:inline">PDF</span></button>
             </div>
         </div>
         
         {/* STATS AREA */}
-        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 print:bg-white print:border-none print:px-0 print:py-2 overflow-x-auto">
-            <div className="flex gap-3 print:hidden min-w-max">
-                <StatCard label="Total Production" val={stats.l_still.toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
-                <StatCard label="Sparkling" val={stats.l_spk.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
+        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 overflow-x-auto">
+            <div className="flex gap-3 min-w-max">
+                <StatCard label="Total L" val={(stats.l_still + stats.l_spk).toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
+                <StatCard label="Still L" val={stats.l_still.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
+                <StatCard label="Sparkling L" val={stats.l_spk.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
                 <StatCard label="Bottles Filled" val={stats.bottles.toLocaleString()} unit="Qty" color="text-emerald-700" bg="bg-emerald-100" />
                 <StatCard label="Breakage" val={stats.breakage} unit="Qty" color="text-red-700" bg="bg-red-100" />
             </div>
             
             {/* GRAPHS */}
-            <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 print:border-none print:pl-0 min-w-[300px]">
+            <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 min-w-[300px]">
                 <div className="flex-1 flex flex-col justify-center gap-2">
                     <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Still Breakdown</span></div>
-                    <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex print:border print:border-slate-300">
-                        {chartData.still.map((item, i) => (<div key={i} className={`h-full ${item.color} print:bg-slate-400`} style={{ width: `${item.pct}%` }}></div>))}
+                    <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
+                        {chartData.still.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
                     </div>
                     <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
                         {chartData.still.map((item, i) => (
                             <div key={i} className="flex items-center gap-1">
-                                <div className={`w-2 h-2 rounded-full ${item.color} print:bg-slate-800`}></div>
+                                <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
                                 {item.label} 
                                 <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
                             </div>
                         ))}
                     </div>
                 </div>
-                <div className="flex-1 flex flex-col justify-center gap-2 border-l border-slate-200 pl-6 print:border-none">
+                <div className="flex-1 flex flex-col justify-center gap-2 border-l border-slate-200 pl-6">
                     <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Sparkling Breakdown</span></div>
-                    <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex print:border print:border-slate-300">
-                        {chartData.spk.map((item, i) => (<div key={i} className={`h-full ${item.color} print:bg-slate-400`} style={{ width: `${item.pct}%` }}></div>))}
+                    <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
+                        {chartData.spk.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
                     </div>
                     <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
                         {chartData.spk.map((item, i) => (
                             <div key={i} className="flex items-center gap-1">
-                                <div className={`w-2 h-2 rounded-full ${item.color} print:bg-slate-800`}></div>
+                                <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
                                 {item.label}
                                 <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
                             </div>
@@ -370,7 +545,6 @@ export default function WaterProductionPage() {
       <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4">
         <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
             <div className="overflow-auto flex-1">
-                {/* 1. RESTORED 'w-full' - No forced min-width */}
                 <table className="w-full table-fixed border-collapse text-[10px]">
                     <thead className="bg-slate-50 border-b-2 border-slate-300">
                         <tr>
@@ -385,7 +559,6 @@ export default function WaterProductionPage() {
                         </tr>
                         <tr className="text-[9px] font-bold text-slate-500 uppercase">
                             <ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="SPK" dim /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
-                            {/* 2. FIXED TROPIC HEADER */}
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="STILL" dim /><ColHeader label="SPK" dim /><ColHeader label="-" brk end />
                             <ColHeader label="250" /><ColHeader label="250" brk /><ColHeader label="200" brk end />
@@ -512,18 +685,6 @@ export default function WaterProductionPage() {
       )}
 
       <style jsx global>{`
-        @media print {
-            @page { size: landscape; margin: 5mm; }
-            body { background: white; color: black; font-size: 9px; }
-            body > * { display: none !important; }
-            .print-area-wrapper, .print-area-wrapper * { display: block !important; }
-            .print-area-wrapper .flex { display: flex !important; }
-            .print-area-wrapper .hidden { display: none !important; }
-            table { width: 100% !important; border-collapse: collapse; font-size: 8px; }
-            td, th { padding: 2px !important; border: 1px solid black !important; }
-            input { display: none !important; } 
-            .print-val { display: block !important; width: 100%; text-align: center; font-weight: bold; }
-        }
         .btn-secondary { @apply flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all; }
       `}</style>
     </div>
@@ -553,8 +714,7 @@ const ColHeader = ({ label, sub, dim, brk, end, highlight }: ColHeaderProps) => 
 interface CellProps { val: number; onChange: (v: string) => void; bg?: string; isBreak?: boolean; dim?: boolean; end?: boolean; showDash?: boolean; }
 const Cell = ({ val, onChange, bg, isBreak, dim, end, showDash }: CellProps) => (
     <td className={`border-b border-slate-300 p-0 h-7 ${end ? 'border-r-2 border-slate-300' : 'border-r border-slate-200'} ${bg || 'bg-white'} ${isBreak ? 'bg-red-50' : ''}`}>
-        <input type="number" value={val === 0 ? '' : val} onChange={(e) => onChange(e.target.value)} placeholder={showDash && val === 0 ? '-' : ''} className={`w-full h-full text-center outline-none bg-transparent font-medium text-[10px] ${val > 0 ? 'text-slate-800' : 'text-transparent hover:text-slate-300 focus:text-slate-500 placeholder:text-slate-300 placeholder:font-bold'} ${isBreak && val > 0 ? 'text-red-600 font-bold' : ''} ${dim ? 'text-slate-400' : ''} focus:bg-blue-50 transition-colors`}/>
-        <span className="hidden print:block text-center w-full font-bold text-black text-[8px] print-val">{val > 0 ? val : (showDash ? '-' : '')}</span>
+        <input type="number" value={val === 0 ? '' : val} onChange={(e) => onChange(e.target.value)} placeholder={showDash && val === 0 ? '0' : ''} className={`w-full h-full text-center outline-none bg-transparent font-medium text-[10px] ${val > 0 ? 'text-slate-800' : 'text-transparent hover:text-slate-300 focus:text-slate-500 placeholder:text-slate-800 placeholder:font-bold'} ${isBreak && val > 0 ? 'text-red-600 font-bold' : ''} ${dim ? 'text-slate-400' : ''} focus:bg-blue-50 transition-colors`}/>
     </td>
 );
 
