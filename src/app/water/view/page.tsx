@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, Droplets, Download, AlertTriangle, FileText, Printer } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Droplets, Download, AlertTriangle, FileText } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 // --- TYPES ---
@@ -133,7 +133,23 @@ export default function WaterProductionReadonlyPage() {
         return;
     }
     baseSvg = baseSvg.replace('</svg>', '');
-    let overlays = `<style>.svg-txt { font-family: 'Book Antiqua', serif; font-size: 7.5px; font-weight: bold; fill: #231f20; text-anchor: middle; }</style><text x="272" y="115" style="font-family: 'Book Antiqua', serif; font-size: 13px; font-weight: bold; fill: #231f20; text-anchor: middle;">${monthYearStr}</text><text x="297" y="645" fill="#6b1b51" font-family="'Book Antiqua', serif" font-size="17px" font-weight="bold" text-anchor="middle">TOTAL PRODUCTION</text><rect x="49.74" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#ddeafe"/><rect x="153.16" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/><rect x="256.58" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/><rect x="359.99" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#d7fae7"/><rect x="463.41" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#fae2e2"/><text x="89.65" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">TOTAL L</text><text x="193.07" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">STILL L</text><text x="296.49" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">SPARKLING L</text><text x="399.90" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BOTTLES FILLED</text><text x="503.32" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BREAKAGE</text>`;
+    
+    let overlays = `
+      <style>.svg-txt { font-family: 'Book Antiqua', serif; font-size: 7.5px; font-weight: bold; fill: #231f20; text-anchor: middle; }</style>
+      <text x="272" y="115" font-family="'Book Antiqua', serif" font-size="13px" font-weight="bold" fill="#231f20" text-anchor="middle">${monthYearStr}</text>
+      <text x="297" y="645" fill="#6b1b51" font-family="'Book Antiqua', serif" font-size="17px" font-weight="bold" text-anchor="middle">TOTAL PRODUCTION</text>
+      <rect x="49.74" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#ddeafe"/>
+      <rect x="153.16" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/>
+      <rect x="256.58" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/>
+      <rect x="359.99" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#d7fae7"/>
+      <rect x="463.41" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#fae2e2"/>
+      <text x="89.65" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">TOTAL L</text>
+      <text x="193.07" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">STILL L</text>
+      <text x="296.49" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">SPARKLING L</text>
+      <text x="399.90" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BOTTLES FILLED</text>
+      <text x="503.32" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BREAKAGE</text>
+    `;
+
     const colCenters = [54.5, 84.1, 113.7, 143.3, 172.9, 202.5, 232.1, 261.7, 291.3, 320.9, 350.5, 380.1, 409.7, 439.3, 468.9, 498.5, 528.1, 557.7];
     let gridSVG = `<g fill="none" stroke="#231f20" stroke-miterlimit="10" stroke-width=".25px">`;
     let numbersSVG = `<g font-family="'Book Antiqua', serif" font-size="7.5px" font-weight="bold" fill="#231f20" text-anchor="middle">`;
@@ -151,10 +167,21 @@ export default function WaterProductionReadonlyPage() {
     gridSVG += `</g>`; numbersSVG += `</g>`;
 
     const totalL = stats.l_still + stats.l_spk;
-    overlays += `<text x="89.6" y="696" fill="#3e4cd6" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${totalL.toFixed(0)}</text><text x="193.07" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_still.toFixed(0)}</text><text x="296.49" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_spk.toFixed(0)}</text><text x="399.90" y="696" fill="#2e7959" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.bottles.toLocaleString()}</text><text x="503.32" y="696" fill="#ad1003" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.breakage}</text>`;
+    overlays += `
+      <text x="89.6" y="696" fill="#3e4cd6" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${totalL.toFixed(0)}</text>
+      <text x="193.07" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_still.toFixed(0)}</text>
+      <text x="296.49" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_spk.toFixed(0)}</text>
+      <text x="399.90" y="696" fill="#2e7959" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.bottles.toLocaleString()}</text>
+      <text x="503.32" y="696" fill="#ad1003" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.breakage}</text>
+    `;
 
-    const colorMap: Record<string, string> = { 'bg-emerald-500': '#4cbb85', 'bg-blue-500': '#5280f4', 'bg-purple-500': '#a24ff3', 'bg-cyan-500': '#4db6d4', 'bg-teal-500': '#14b8a6', 'bg-amber-500': '#ea9d00', };
-    overlays += `<text x="49.74" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">STILL BREAKDOWN</text><text x="341.31" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">SPARKLING BREAKDOWN</text><rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/><rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>`;
+    const colorMap: Record<string, string> = { 'bg-emerald-500': '#4cbb85', 'bg-blue-500': '#5280f4', 'bg-purple-500': '#a24ff3', 'bg-cyan-500': '#4db6d4', 'bg-teal-500': '#14b8a6', 'bg-amber-500': '#ea9d00' };
+    overlays += `
+      <text x="49.74" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">STILL BREAKDOWN</text>
+      <text x="341.31" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">SPARKLING BREAKDOWN</text>
+      <rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>
+      <rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>
+    `;
 
     overlays += `<clipPath id="still-clip"><rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath><g clip-path="url(#still-clip)">`;
     let currentX = 49.74;
@@ -178,8 +205,9 @@ export default function WaterProductionReadonlyPage() {
 
   if (!isMounted) return null;
 
+  // KEY CHANGE: The main div here gets `fixed inset-0 z-[9999]` to overlay EVERYTHING including the sidebar!
   return (
-    <div className="h-screen flex flex-col bg-slate-100 text-slate-900 font-sans text-xs">
+    <div className="fixed inset-0 z-[9999] h-screen w-screen flex flex-col bg-slate-100 text-slate-900 font-sans text-xs overflow-hidden">
       {errorMessage && <div className="bg-red-500 text-white text-center py-1 font-bold flex justify-center items-center gap-2"><AlertTriangle size={12}/> {errorMessage}</div>}
 
       <div className="bg-white border-b border-slate-300 shadow-sm shrink-0 z-40">
@@ -188,7 +216,7 @@ export default function WaterProductionReadonlyPage() {
                 <div className="flex items-center gap-3">
                     <div className="bg-slate-100 p-2 rounded-lg text-slate-500 shadow-inner"><Droplets size={20} /></div>
                     <div>
-                        <h1 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight">Water Production <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2">Read-Only</span></h1>
+                        <h1 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight">Water Production <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full ml-2 align-middle">READ-ONLY</span></h1>
                         <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
                             <button onClick={() => changeMonth(-1)} className="hover:text-blue-600"><ChevronLeft size={16}/></button>
                             <span className="w-28 text-center">{selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
@@ -251,8 +279,8 @@ export default function WaterProductionReadonlyPage() {
       </div>
 
       {/* --- DESKTOP VIEW: SPREADSHEET (READ ONLY) --- */}
-      <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4">
-        <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
+      <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4 pb-24">
+        <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 flex flex-col">
             <div className="overflow-auto flex-1">
                 <table className="w-full table-fixed border-collapse text-[10px]">
                     <thead className="bg-slate-50 border-b-2 border-slate-300">
@@ -289,7 +317,7 @@ export default function WaterProductionReadonlyPage() {
       </div>
 
       {/* --- MOBILE VIEW: CARD LIST (READ ONLY) --- */}
-      <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3">
+      <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3 pb-24">
         {records.map((r, i) => {
             const hasData = hasRowData(r);
             const totalBottles = (r.b1000_fnb_still + r.b1000_fnb_spk + r.b500_hsk_still + r.b500_tropic_still + r.b350_spa_still + r.b350_ws_still + r.b350_hsk_spk);
@@ -339,7 +367,7 @@ const ColHeader = ({ label, sub, dim, brk, end, highlight }: ColHeaderProps) => 
     <th className={`border-b border-slate-300 p-1 bg-white ${end ? 'border-r-2 border-slate-300' : 'border-r border-slate-200'} ${dim ? 'text-slate-400 font-medium' : 'text-slate-700'} ${brk ? 'text-red-500' : ''} ${highlight ? 'bg-slate-50' : ''}`}><div className="flex flex-col items-center leading-none"><span>{label}</span></div></th>
 );
 
-// Changed to text only (removed input field)
+// Changed to strictly div (no input field)
 interface CellProps { val: number; bg?: string; isBreak?: boolean; dim?: boolean; end?: boolean; showDash?: boolean; }
 const Cell = ({ val, bg, isBreak, dim, end, showDash }: CellProps) => (
     <td className={`border-b border-slate-300 p-0 h-7 ${end ? 'border-r-2 border-slate-300' : 'border-r border-slate-200'} ${bg || 'bg-white'} ${isBreak ? 'bg-red-50' : ''}`}>
