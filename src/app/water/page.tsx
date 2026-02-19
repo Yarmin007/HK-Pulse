@@ -49,7 +49,6 @@ export default function WaterProductionPage() {
   const [isMounted, setIsMounted] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [records, setRecords] = useState<DailyRecord[]>([]);
-  
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -72,14 +71,14 @@ export default function WaterProductionPage() {
   useEffect(() => {
     if (!isMounted || records.length === 0 || !isDirty.current) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    if (saveStatus === 'idle') {
-        setSaveStatus("saving");
-        autoSaveTimerRef.current = setTimeout(() => {
-            saveToDatabase(records);
-        }, 1500); 
-    }
+    
+    setSaveStatus("saving");
+    autoSaveTimerRef.current = setTimeout(() => {
+        saveToDatabase(records);
+    }, 1500); 
+    
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [records, saveStatus]);
+  }, [records, isMounted]);
 
   const fetchMonthData = async (targetDate: Date) => {
     const year = targetDate.getFullYear();
@@ -100,6 +99,7 @@ export default function WaterProductionPage() {
     }
     setRecords(skeleton);
     setSaveStatus("saved");
+    isDirty.current = false;
   };
 
   const saveToDatabase = async (dataToSave: DailyRecord[]) => {
@@ -114,7 +114,6 @@ export default function WaterProductionPage() {
     const { error } = await supabase.from('water_records').upsert(payload, { onConflict: 'date' });
 
     if (error) {
-      console.error("Save Failed:", error);
       setErrorMessage("Save Failed: " + error.message);
       setSaveStatus("error");
     } else {
@@ -200,8 +199,7 @@ export default function WaterProductionPage() {
     const lines = pasteText.split('\n').map(l => l.trim().toLowerCase());
     const dateLine = lines.find(l => l.includes('date'));
     let manualDateStr: string | null = null;
-    let targetYear = 0;
-    let targetMonth = 0;
+    let targetYear = 0, targetMonth = 0;
 
     if (dateLine) {
         const match = dateLine.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
@@ -211,62 +209,63 @@ export default function WaterProductionPage() {
             let yearStr = match[3];
             if (yearStr.length === 2) yearStr = "20" + yearStr;
             manualDateStr = `${yearStr}-${month}-${day}`;
-            targetYear = parseInt(yearStr);
-            targetMonth = parseInt(month) - 1; 
+            targetYear = parseInt(yearStr); targetMonth = parseInt(month) - 1; 
         }
     }
 
-    if (!manualDateStr) {
-        alert("Could not find a valid date (DD/MM/YYYY) in the report.");
-        return;
-    }
+    if (!manualDateStr) { alert("Invalid date in report."); return; }
 
     const newRecord: any = { date: manualDateStr };
     let currentSection = "";
 
     lines.forEach(line => {
-        const valMatch = line.match(/:?\s*(\d+)$/);
+        // Robust number extraction: ignores symbols like ~ : x and spaces
+        const valMatch = line.match(/(\d+)/);
         const val = valMatch ? parseInt(valMatch[1]) : 0;
         
-        if(line.includes("1000 ml") && !line.includes("breakage")) currentSection = "1000";
-        else if(line.includes("500 ml") && !line.includes("breakage")) currentSection = "500";
-        else if(line.includes("350 ml") && !line.includes("breakage")) currentSection = "350";
+        if(line.includes("1000 ml")) currentSection = "1000";
+        else if(line.includes("500 ml")) currentSection = "500";
+        else if(line.includes("350 ml")) currentSection = "350";
+        else if(line.includes("200 ml")) currentSection = "200";
         else if(line.includes("seaplane") || line.includes("tma")) currentSection = "TMA";
-        else if(line.includes("breakage")) currentSection = "BREAK";
+
+        const isBreak = line.includes("breakage") || line.includes("damaged") || line.includes("~");
 
         if (currentSection === "1000") {
-            if (line.includes("still")) newRecord.b1000_fnb_still = val;
-            if (line.includes("sparkling") && !line.includes("unused")) newRecord.b1000_fnb_spk = val;
-            if (line.includes("unused") || line.includes("return")) {
+            if (isBreak) newRecord.b1000_break = val;
+            else if (line.includes("still")) newRecord.b1000_fnb_still = val;
+            else if (line.includes("sparkling") && !line.includes("unused")) newRecord.b1000_fnb_spk = val;
+            else if (line.includes("unused") || line.includes("return")) {
                 if(line.includes("sparkling")) newRecord.b1000_ret_spk = val;
                 else newRecord.b1000_ret_still = val; 
             }
         } else if (currentSection === "500") {
-            if (line.includes("still") && !line.includes("unused")) newRecord.b500_hsk_still = val;
-            if (line.includes("tropic")) newRecord.b500_tropic_still = val;
-            if (line.includes("unused") || line.includes("return")) newRecord.b500_ret_still = val;
+            if (isBreak) newRecord.b500_break = val;
+            else if (line.includes("still") && !line.includes("unused")) newRecord.b500_hsk_still = val;
+            else if (line.includes("tropic")) newRecord.b500_tropic_still = val;
+            else if (line.includes("unused") || line.includes("return")) newRecord.b500_ret_still = val;
         } else if (currentSection === "350") {
-            if (line.includes("sparkling") && !line.includes("unused")) newRecord.b350_hsk_spk = val;
-            if (line.includes("spa") && !line.includes("sparkling")) newRecord.b350_spa_still = val;
-            if (line.includes("water") && line.includes("sports")) newRecord.b350_ws_still = val;
-            if (line.includes("unused") || line.includes("return")) {
+            if (isBreak) newRecord.b350_break = val;
+            else if (line.includes("sparkling") && !line.includes("unused")) newRecord.b350_hsk_spk = val;
+            else if (line.includes("spa") && !line.includes("sparkling")) newRecord.b350_spa_still = val;
+            else if (line.includes("water") || line.includes("sports")) newRecord.b350_ws_still = val;
+            else if (line.includes("unused") || line.includes("return")) {
                  if(line.includes("sparkling")) newRecord.b350_ret_spk = val;
                  else newRecord.b350_ret_still = val;
             }
-        } else if (currentSection === "TMA") { if (val > 0) newRecord.b250_tma_still = val; }
-        else if (currentSection === "BREAK") {
-            if (line.includes("1000")) newRecord.b1000_break = val;
-            if (line.includes("500")) newRecord.b500_break = val;
-            if (line.includes("350")) newRecord.b350_break = val;
+        } else if (currentSection === "200") {
+            if (isBreak) newRecord.b200_break = val;
+        } else if (currentSection === "TMA") {
+             if (isBreak) newRecord.b250_break = val;
+             else if (val > 0) newRecord.b250_tma_still = val; 
         }
     });
 
     const { error } = await supabase.from('water_records').upsert(newRecord, { onConflict: 'date' });
-    if (error) { alert("Failed to save paste data: " + error.message); } 
+    if (error) { alert("Failed to save: " + error.message); } 
     else {
         setIsPasteModalOpen(false); setPasteText(""); setSavedDate(manualDateStr || "");
-        setSelectedDate(new Date(targetYear, targetMonth, 1));
-        fetchMonthData(new Date(targetYear, targetMonth, 1));
+        setSelectedDate(new Date(targetYear, targetMonth, 1)); fetchMonthData(new Date(targetYear, targetMonth, 1));
     }
   };
 
@@ -274,182 +273,51 @@ export default function WaterProductionPage() {
     const headers = [ "Date", "1000ML F&B Still", "1000ML F&B Spk", "1000ML Return Spk", "1000ML Return Still", "1000ML Breakage", "500ML HSK Still", "500ML Tropic", "500ML Return", "500ML Breakage", "350ML SPA", "350ML WaterSports", "350ML HSK Spk", "350ML Return Still", "350ML Return Spk", "350ML Breakage", "250ML TMA", "250ML Breakage", "200ML Breakage" ];
     const rows = records.map(r => [ r.dateStr, r.b1000_fnb_still, r.b1000_fnb_spk, r.b1000_ret_spk, r.b1000_ret_still, r.b1000_break, r.b500_hsk_still, r.b500_tropic_still, r.b500_ret_still, r.b500_break, r.b350_spa_still, r.b350_ws_still, r.b350_hsk_spk, r.b350_ret_still, r.b350_ret_spk, r.b350_break, r.b250_tma_still, r.b250_break, r.b200_break ]);
     const csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" + rows.map(e => e.join(",")).join("\n");
-    const link = document.createElement("a");
-    link.setAttribute("href", encodeURI(csvContent));
+    const link = document.createElement("a"); link.setAttribute("href", encodeURI(csvContent));
     link.setAttribute("download", `Water_Log_${selectedDate.toISOString().slice(0,7)}.csv`);
     document.body.appendChild(link); link.click();
   };
 
-  // --- PDF GENERATOR ---
   const handleDownloadPDF = async () => {
     const monthYearStr = selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' }).toUpperCase();
-    
     let baseSvg = "";
     try {
         const res = await fetch('/water-template.svg');
         if (!res.ok) throw new Error("File not found");
         baseSvg = await res.text();
-    } catch (e) {
-        alert("Make sure 'water-template.svg' is saved in your 'public' folder!");
-        return;
-    }
-
+    } catch (e) { alert("Make sure 'water-template.svg' is saved in your 'public' folder!"); return; }
     baseSvg = baseSvg.replace('</svg>', '');
-
-    let overlays = `
-      <text x="297" y="115" font-family="'Book Antiqua', serif" font-size="13px" font-weight="bold" fill="#231f20" text-anchor="middle">${monthYearStr}</text>
-      
-      <text x="297" y="645" fill="#6b1b51" font-family="'Book Antiqua', serif" font-size="17px" font-weight="bold" text-anchor="middle">TOTAL PRODUCTION</text>
-
-      <rect x="49.74" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#ddeafe"/>
-      <rect x="153.16" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/>
-      <rect x="256.58" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/>
-      <rect x="359.99" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#d7fae7"/>
-      <rect x="463.41" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#fae2e2"/>
-
-      <text x="89.65" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">TOTAL L</text>
-      <text x="193.07" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">STILL L</text>
-      <text x="296.49" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">SPARKLING L</text>
-      <text x="399.90" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BOTTLES FILLED</text>
-      <text x="503.32" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BREAKAGE</text>
-    `;
-
-    // Add Grid Lines and Data
+    let overlays = `<style>.svg-txt { font-family: 'Book Antiqua', serif; font-size: 7.5px; font-weight: bold; fill: #231f20; text-anchor: middle; }</style><text x="272" y="115" font-family="'Book Antiqua', serif" font-size="13px" font-weight="bold" fill="#231f20" text-anchor="middle">${monthYearStr}</text><text x="297" y="645" fill="#6b1b51" font-family="'Book Antiqua', serif" font-size="17px" font-weight="bold" text-anchor="middle">TOTAL PRODUCTION</text><rect x="49.74" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#ddeafe"/><rect x="153.16" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/><rect x="256.58" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#f1e8ff"/><rect x="359.99" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#d7fae7"/><rect x="463.41" y="661.93" width="79.83" height="44.47" rx="10.94" ry="10.94" fill="#fae2e2"/><text x="89.65" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">TOTAL L</text><text x="193.07" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">STILL L</text><text x="296.49" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">SPARKLING L</text><text x="399.90" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BOTTLES FILLED</text><text x="503.32" y="678" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="6.5px" font-weight="bold" text-anchor="middle">BREAKAGE</text>`;
     const colCenters = [54.5, 84.1, 113.7, 143.3, 172.9, 202.5, 232.1, 261.7, 291.3, 320.9, 350.5, 380.1, 409.7, 439.3, 468.9, 498.5, 528.1, 557.7];
-    
     let gridSVG = `<g fill="none" stroke="#231f20" stroke-miterlimit="10" stroke-width=".25px">`;
     let numbersSVG = `<g font-family="'Book Antiqua', serif" font-size="7.5px" font-weight="bold" fill="#231f20" text-anchor="middle">`;
-
     records.forEach((r, i) => {
-        const yPos = 183.5 + (i * 13.07); 
-        const hasData = hasRowData(r);
-        
-        // Print Day number in the first column
+        const yPos = 183.5 + (i * 13.07); const hasData = hasRowData(r);
         numbersSVG += `<text x="31" y="${yPos}">${r.day}</text>`;
-        
-        const values = [
-            r.b1000_fnb_still, r.b1000_fnb_spk, r.b1000_ret_spk, r.b1000_ret_still, r.b1000_break,
-            r.b500_hsk_still, r.b500_tropic_still, r.b500_ret_still, r.b500_break,
-            r.b350_spa_still, r.b350_ws_still, r.b350_hsk_spk, r.b350_ret_still, r.b350_ret_spk, r.b350_break,
-            r.b250_tma_still, r.b250_break, r.b200_break
-        ];
-        
-        // Inject numbers or zeroes
-        values.forEach((val, colIdx) => {
-            if (val > 0 || (hasData && val === 0)) {
-                numbersSVG += `<text x="${colCenters[colIdx]}" y="${yPos}">${val}</text>`;
-            }
-        });
-
-        // Add Grid Lines
+        const values = [ r.b1000_fnb_still, r.b1000_fnb_spk, r.b1000_ret_spk, r.b1000_ret_still, r.b1000_break, r.b500_hsk_still, r.b500_tropic_still, r.b500_ret_still, r.b500_break, r.b350_spa_still, r.b350_ws_still, r.b350_hsk_spk, r.b350_ret_still, r.b350_ret_spk, r.b350_break, r.b250_tma_still, r.b250_break, r.b200_break ];
+        values.forEach((val, colIdx) => { if (val > 0 || (hasData && val === 0)) { numbersSVG += `<text x="${colCenters[colIdx]}" y="${yPos}">${val}</text>`; } });
         const rectY = 174.59 + (i * 13.07);
         const xStarts = [22.42, 39.68, 69.3, 98.93, 128.55, 158.17, 187.79, 217.41, 247.03, 276.65, 306.27, 335.89, 365.51, 395.13, 424.76, 454.38, 484, 513.62, 543.24];
         const widths = [17.27, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62, 29.62];
-        xStarts.forEach((x, idx) => {
-            gridSVG += `<rect x="${x}" y="${rectY}" width="${widths[idx]}" height="13.07"/>`;
-        });
+        xStarts.forEach((x, idx) => { gridSVG += `<rect x="${x}" y="${rectY}" width="${widths[idx]}" height="13.07"/>`; });
     });
-    
-    gridSVG += `</g>`;
-    numbersSVG += `</g>`;
-
-    // Inject Values into Bottom Totals
+    gridSVG += `</g>`; numbersSVG += `</g>`;
     const totalL = stats.l_still + stats.l_spk;
-    overlays += `
-      <text x="89.6" y="696" fill="#3e4cd6" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${totalL.toFixed(0)}</text>
-      <text x="193.07" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_still.toFixed(0)}</text>
-      <text x="296.49" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_spk.toFixed(0)}</text>
-      <text x="399.90" y="696" fill="#2e7959" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.bottles.toLocaleString()}</text>
-      <text x="503.32" y="696" fill="#ad1003" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.breakage}</text>
-    `;
-
-    // Build Dynamic Insights (Still and Sparkling Bars) using Native SVG Attributes
-    const colorMap: Record<string, string> = {
-        'bg-emerald-500': '#4cbb85', 'bg-blue-500': '#5280f4', 'bg-purple-500': '#a24ff3',
-        'bg-cyan-500': '#4db6d4', 'bg-teal-500': '#14b8a6', 'bg-amber-500': '#ea9d00',
-    };
-
-    overlays += `
-      <text x="49.74" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">STILL BREAKDOWN</text>
-      <text x="341.31" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">SPARKLING BREAKDOWN</text>
-      
-      <rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>
-      <rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>
-    `;
-
-    // Draw Dynamic Still Breakdown
-    overlays += `<clipPath id="still-clip"><rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath>`;
-    overlays += `<g clip-path="url(#still-clip)">`;
-    let currentX = 49.74;
-    chartData.still.forEach(item => {
-        const barW = (item.pct / 100) * 202.08;
-        if(barW > 0) {
-            overlays += `<rect x="${currentX}" y="735" width="${barW}" height="8.47" fill="${colorMap[item.color] || '#000'}"/>`;
-            currentX += barW;
-        }
-    });
+    overlays += `<text x="89.6" y="696" fill="#3e4cd6" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${totalL.toFixed(0)}</text><text x="193.07" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_still.toFixed(0)}</text><text x="296.49" y="696" fill="#7817cc" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.l_spk.toFixed(0)}</text><text x="399.90" y="696" fill="#2e7959" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.bottles.toLocaleString()}</text><text x="503.32" y="696" fill="#ad1003" font-family="'Book Antiqua', serif" font-size="16px" font-weight="bold" text-anchor="middle">${stats.breakage}</text>`;
+    const colorMap: Record<string, string> = { 'bg-emerald-500': '#4cbb85', 'bg-blue-500': '#5280f4', 'bg-purple-500': '#a24ff3', 'bg-cyan-500': '#4db6d4', 'bg-teal-500': '#14b8a6', 'bg-amber-500': '#ea9d00' };
+    overlays += `<text x="49.74" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">STILL BREAKDOWN</text><text x="341.31" y="726" fill="#747d94" font-family="Helvetica, Arial, sans-serif" font-size="7px" font-weight="bold" text-anchor="start">SPARKLING BREAKDOWN</text><rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/><rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" fill="#e2e8f0"/>`;
+    overlays += `<clipPath id="still-clip"><rect x="49.74" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath><g clip-path="url(#still-clip)">`;
+    let curX = 49.74; chartData.still.forEach(item => { const barW = (item.pct / 100) * 202.08; if(barW > 0) { overlays += `<rect x="${curX}" y="735" width="${barW}" height="8.47" fill="${colorMap[item.color] || '#000'}"/>`; curX += barW; } });
     overlays += `</g>`;
-
-    chartData.still.forEach((item, idx) => {
-        const legendX = 52 + (idx * 38); 
-        overlays += `<circle cx="${legendX}" cy="761" r="2.8" fill="${colorMap[item.color] || '#000'}"/>`;
-        overlays += `<text x="${legendX + 5}" y="762.5" font-family="'Book Antiqua', serif" font-size="5px" font-weight="bold" fill="#747d94" text-anchor="start">${item.label} (${item.pct.toFixed(0)}%)</text>`;
-    });
-
-    // Draw Dynamic Sparkling Breakdown
-    overlays += `<clipPath id="spk-clip"><rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath>`;
-    overlays += `<g clip-path="url(#spk-clip)">`;
-    let spkX = 341.31;
-    chartData.spk.forEach(item => {
-        const barW = (item.pct / 100) * 202.08;
-        if(barW > 0) {
-            overlays += `<rect x="${spkX}" y="735" width="${barW}" height="8.47" fill="${colorMap[item.color] || '#000'}"/>`;
-            spkX += barW;
-        }
-    });
+    chartData.still.forEach((item, idx) => { const lx = 52 + (idx * 38); overlays += `<circle cx="${lx}" cy="761" r="2.8" fill="${colorMap[item.color] || '#000'}"/><text x="${lx + 5}" y="762.5" font-family="'Book Antiqua', serif" font-size="5px" font-weight="bold" fill="#747d94" text-anchor="start">${item.label} (${item.pct.toFixed(0)}%)</text>`; });
+    overlays += `<clipPath id="spk-clip"><rect x="341.31" y="735" width="202.08" height="8.47" rx="4.24" ry="4.24" /></clipPath><g clip-path="url(#spk-clip)">`;
+    let spkX = 341.31; chartData.spk.forEach(item => { const barW = (item.pct / 100) * 202.08; if(barW > 0) { overlays += `<rect x="${spkX}" y="735" width="${barW}" height="8.47" fill="${colorMap[item.color] || '#000'}"/>`; spkX += barW; } });
     overlays += `</g>`;
-
-    chartData.spk.forEach((item, idx) => {
-        const legendX = 344 + (idx * 38);
-        overlays += `<circle cx="${legendX}" cy="761" r="2.8" fill="${colorMap[item.color] || '#000'}"/>`;
-        overlays += `<text x="${legendX + 5}" y="762.5" font-family="'Book Antiqua', serif" font-size="5px" font-weight="bold" fill="#747d94" text-anchor="start">${item.label} (${item.pct.toFixed(0)}%)</text>`;
-    });
-
+    chartData.spk.forEach((item, idx) => { const lx = 344 + (idx * 38); overlays += `<circle cx="${lx}" cy="761" r="2.8" fill="${colorMap[item.color] || '#000'}"/><text x="${lx + 5}" y="762.5" font-family="'Book Antiqua', serif" font-size="5px" font-weight="bold" fill="#747d94" text-anchor="start">${item.label} (${item.pct.toFixed(0)}%)</text>`; });
     const finalSVG = baseSvg + gridSVG + overlays + numbersSVG + '</svg>';
-    
-    // Open in a new window and force background colors to print
     const win = window.open('', 'Print', 'height=800,width=600');
     if(win) {
-        win.document.write(`
-            <html>
-                <head>
-                    <title>Water Log ${monthYearStr}</title>
-                    <style>
-                        @page { size: A4 portrait; margin: 0; } 
-                        body, html { 
-                            margin: 0; 
-                            padding: 0; 
-                            width: 100vw; 
-                            height: 100vh; 
-                            display: flex; 
-                            justify-content: center; 
-                            align-items: center; 
-                            overflow: hidden; 
-                            background: white; 
-                            -webkit-print-color-adjust: exact !important; 
-                            print-color-adjust: exact !important; 
-                        }
-                        svg { max-width: 100%; max-height: 100vh; object-fit: contain; }
-                    </style>
-                </head>
-                <body>
-                    ${finalSVG}
-                    <script>
-                        setTimeout(() => { window.print(); window.close(); }, 500);
-                    </script>
-                </body>
-            </html>
-        `);
+        win.document.write(`<html><head><title>Water Log ${monthYearStr}</title><style>@page { size: A4 portrait; margin: 0; } body, html { margin: 0; padding: 0; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; overflow: hidden; background: white; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; } svg { max-width: 100%; max-height: 100vh; object-fit: contain; }</style></head><body>${finalSVG}<script>setTimeout(() => { window.print(); window.close(); }, 500);</script></body></html>`);
         win.document.close();
     }
   };
@@ -458,8 +326,6 @@ export default function WaterProductionPage() {
 
   return (
     <div className="h-screen flex flex-col bg-white text-slate-900 font-sans text-xs">
-      
-      {/* 1. Global styles to hide scroll arrows on inputs */}
       <style dangerouslySetInnerHTML={{__html: `
         input[type="number"]::-webkit-inner-spin-button,
         input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
