@@ -109,7 +109,7 @@ export default function CoordinatorLog() {
   const [requesterSearch, setRequesterSearch] = useState('');
   const [showRequesterSuggestions, setShowRequesterSuggestions] = useState(false);
   
-  // 3. MINIBAR LOGIC (Added isRefill)
+  // 3. MINIBAR LOGIC (Added isRefill field)
   const [mbCart, setMbCart] = useState<{name: string, qty: number, isRefill?: boolean}[]>([]);
   const [mbCategory, setMbCategory] = useState('All');
   
@@ -164,7 +164,6 @@ export default function CoordinatorLog() {
     if (type === 'Minibar') setIsMinibarOpen(true); else setIsOtherOpen(true);
   };
 
-  // 2. EDIT RECORD HANDLER
   const handleEditRecord = (record: RequestRecord) => {
     setVillaNumber(record.villa_number);
     setManualTime(new Date(record.request_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Dhaka' }));
@@ -294,7 +293,14 @@ export default function CoordinatorLog() {
     <div className="min-h-screen bg-[#FDFBFD] font-antiqua text-[#6D2158] pb-32">
       <div className="bg-white shadow-sm sticky top-0 z-30 pb-3 px-4 pt-4">
         <div className="flex justify-between items-center mb-3">
-           <div><h1 className="text-xl font-bold text-slate-800 tracking-tighter">Logbook</h1></div>
+           <div>
+              <h1 className="text-xl font-bold text-slate-800 tracking-tighter">Logbook</h1>
+              {/* RESTORED DATE PICKER OPTION */}
+              <div onClick={() => dateInputRef.current?.showPicker()} className="flex items-center gap-1 text-[10px] text-slate-400 font-bold uppercase cursor-pointer mt-0.5">
+                  <Calendar size={12}/> {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+              </div>
+              <input ref={dateInputRef} type="date" className="absolute opacity-0 w-0 h-0" onChange={(e) => setSelectedDate(new Date(e.target.value))}/>
+           </div>
            <div className="flex gap-2">
                 <button onClick={() => handleOpenModal('Minibar')} className="bg-rose-600 text-white px-3 py-2 rounded-lg font-bold uppercase text-[10px] shadow-md">MB</button>
                 <button onClick={() => handleOpenModal('Other')} className="bg-[#6D2158] text-white px-3 py-2 rounded-lg font-bold uppercase text-[10px] shadow-md">Req</button>
@@ -316,6 +322,7 @@ export default function CoordinatorLog() {
                <div className="flex justify-between items-start mb-3">
                   <div className="flex items-center gap-2">
                     <span className="text-2xl font-black text-slate-800 tracking-tight">{r.villa_number}</span>
+                    {/* EDIT OPTION */}
                     <button onClick={() => handleEditRecord(r)} className="p-1 text-blue-500 hover:bg-blue-50 rounded" title="Edit"><Edit3 size={14}/></button>
                   </div>
                   <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{r.request_type}</div>
@@ -326,6 +333,7 @@ export default function CoordinatorLog() {
                <div className="mt-auto pt-3 border-t border-slate-50 flex justify-between items-end">
                   <div className="mr-6">
                     <div className="text-[9px] text-slate-400 font-black uppercase truncate max-w-[60px]">{r.attendant_name}</div>
+                    {/* DHAKA TIME FOR ENTERED DATA */}
                     <div className="text-[9px] text-slate-300 font-bold"><Clock size={8} className="inline mr-1"/>{formatDhakaTime(r.request_time)}</div>
                   </div>
                   <div className="flex gap-1.5 flex-wrap justify-end">
@@ -341,6 +349,7 @@ export default function CoordinatorLog() {
          ))}
       </div>
 
+      {/* CUSTOM CONFIRMATION MODAL */}
       {confirmModal.isOpen && (
           <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
               <div className="bg-white rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95 duration-200">
@@ -368,6 +377,7 @@ export default function CoordinatorLog() {
                      <div className="flex-1 relative"><input type="text" placeholder="By..." className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-rose-300 shadow-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/></div>
                   </div>
                   <GuestCard />
+                  {/* REFILL TOGGLE IN MODAL */}
                   {mbCart.length > 0 && (
                      <div className="mt-4 p-3 bg-white rounded-2xl border-2 border-rose-50 flex flex-wrap gap-2 animate-in zoom-in-95 shadow-sm">
                         {mbCart.map(i => (
@@ -452,7 +462,7 @@ export default function CoordinatorLog() {
                           )})}
                   </div>
                   <button onClick={submitPartial} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold uppercase text-sm shadow-lg mb-2 active:scale-95 transition-all">Confirm Dispatch</button>
-                  <button onClick={() => setIsPartialOpen(false)} className="w-full py-2 text-slate-400 font-bold text-[10px] uppercase">Cancel</button>
+                  <button onClick={() => setIsPartialOpen(false)} className="w-full py-3 text-slate-400 font-bold text-[10px] uppercase">Cancel</button>
               </div>
           </div>
       )}
