@@ -286,30 +286,75 @@ export default function WaterProductionReadonlyPage() {
                     <thead className="bg-slate-50 border-b-2 border-slate-300">
                         <tr>
                             <th rowSpan={3} className="sticky left-0 z-20 bg-slate-100 border-r border-slate-300 w-8 p-1 text-xs font-bold text-slate-500 uppercase">Day</th>
-                            <GroupHeader label="1000 ML" color="bg-emerald-50 text-emerald-900 border-emerald-200" span={5} /><GroupHeader label="500 ML" color="bg-blue-50 text-blue-900 border-blue-200" span={4} /><GroupHeader label="350 ML" color="bg-purple-50 text-purple-900 border-purple-200" span={6} /><GroupHeader label="250 / 200 ML" color="bg-amber-50 text-amber-900 border-amber-200" span={3} />
+                            <GroupHeader label="1000 ML" color="bg-emerald-50 text-emerald-900 border-emerald-200" span={5} />
+                            <GroupHeader label="500 ML" color="bg-blue-50 text-blue-900 border-blue-200" span={4} />
+                            <GroupHeader label="350 ML" color="bg-purple-50 text-purple-900 border-purple-200" span={6} />
+                            <GroupHeader label="250 / 200 ML" color="bg-amber-50 text-amber-900 border-amber-200" span={3} />
+                            {/* --- ADDED DAILY TOTALS HEADER --- */}
+                            <GroupHeader label="DAILY TOTALS (L)" color="bg-indigo-50 text-indigo-900 border-indigo-200" span={4} />
                         </tr>
                         <tr className="text-[9px] font-bold text-slate-600 uppercase">
                             <SubGroupHeader label="F&B" span={2} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
                             <SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="TROPIC" span={1} /><SubGroupHeader label="RETURN" span={1} dim /><SubGroupHeader label="BRK" span={1} end isRed />
                             <SubGroupHeader label="SPA" span={1} /><SubGroupHeader label="WS" span={1} /><SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
                             <SubGroupHeader label="TMA" span={1} /><SubGroupHeader label="BRK" span={2} end isRed />
+                            {/* --- ADDED DAILY TOTALS SUBHEADER --- */}
+                            <SubGroupHeader label="STILL" span={2} />
+                            <SubGroupHeader label="SPARK" span={2} end />
                         </tr>
                         <tr className="text-[9px] font-bold text-slate-500 uppercase">
                             <ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="SPK" dim /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="STILL" dim /><ColHeader label="SPK" dim /><ColHeader label="-" brk end />
                             <ColHeader label="250" /><ColHeader label="250" brk /><ColHeader label="200" brk end />
+                            {/* --- ADDED DAILY TOTALS COLUMNS --- */}
+                            <ColHeader label="PROD" highlight />
+                            <ColHeader label="RET" dim />
+                            <ColHeader label="PROD" highlight />
+                            <ColHeader label="RET" dim end />
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {records.map((r, i) => (
-                            <tr key={i} className="hover:bg-blue-50 transition-colors">
-                                <td className="sticky left-0 z-10 border-r border-slate-300 p-1 text-center font-bold text-slate-600 bg-slate-50">{r.day}</td>
-                                {COLUMN_CONFIG.map((col, idx) => (
-                                    <Cell key={idx} val={r[col.key]} bg={col.bg} isBreak={col.isBreak} dim={col.dim} end={col.end} showDash={hasRowData(r)} />
-                                ))}
-                            </tr>
-                        ))}
+                        {records.map((r, i) => {
+                            const hasData = hasRowData(r);
+                            
+                            // CALCULATE ROW TOTALS IN LITERS
+                            const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
+                            const stillRetL = (r.b1000_ret_still * 1) + (r.b500_ret_still * 0.5) + (r.b350_ret_still * 0.35);
+                            const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
+                            const spkRetL = (r.b1000_ret_spk * 1) + (r.b350_ret_spk * 0.35);
+
+                            return (
+                                <tr key={i} className="hover:bg-blue-50 transition-colors">
+                                    <td className="sticky left-0 z-10 border-r border-slate-300 p-1 text-center font-bold text-slate-600 bg-slate-50">{r.day}</td>
+                                    {COLUMN_CONFIG.map((col, idx) => (
+                                        <Cell key={idx} val={r[col.key]} bg={col.bg} isBreak={col.isBreak} dim={col.dim} end={col.end} showDash={hasRowData(r)} />
+                                    ))}
+                                    
+                                    {/* --- ADDED DAILY TOTALS CELLS (Read Only) --- */}
+                                    <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
+                                        <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
+                                            {stillProdL > 0 ? stillProdL.toFixed(1) : (hasData ? '0.0' : '')}
+                                        </div>
+                                    </td>
+                                    <td className="border-b border-slate-300 p-0 h-7 bg-white border-l border-slate-200">
+                                        <div className="w-full h-full flex items-center justify-center font-medium text-[10px] text-slate-400">
+                                            {stillRetL > 0 ? stillRetL.toFixed(1) : (hasData ? '0.0' : '')}
+                                        </div>
+                                    </td>
+                                    <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
+                                        <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
+                                            {spkProdL > 0 ? spkProdL.toFixed(1) : (hasData ? '0.0' : '')}
+                                        </div>
+                                    </td>
+                                    <td className="border-b border-slate-300 border-r-2 border-slate-300 border-l border-slate-200 p-0 h-7 bg-white">
+                                        <div className="w-full h-full flex items-center justify-center font-medium text-[10px] text-slate-400">
+                                            {spkRetL > 0 ? spkRetL.toFixed(1) : (hasData ? '0.0' : '')}
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>
@@ -320,7 +365,12 @@ export default function WaterProductionReadonlyPage() {
       <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3 pb-24">
         {records.map((r, i) => {
             const hasData = hasRowData(r);
-            const totalBottles = (r.b1000_fnb_still + r.b1000_fnb_spk + r.b500_hsk_still + r.b500_tropic_still + r.b350_spa_still + r.b350_ws_still + r.b350_hsk_spk);
+            const totalBottles = (r.b1000_fnb_still + r.b1000_fnb_spk + r.b500_hsk_still + r.b500_tropic_still + r.b350_spa_still + r.b350_ws_still + r.b350_hsk_spk + r.b250_tma_still);
+            
+            // LITER CALCULATIONS FOR MOBILE CARD
+            const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
+            const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
+
             return (
                 <div key={i} className={`bg-white rounded-xl p-4 shadow-sm border border-slate-200 ${hasData ? 'border-l-4 border-l-slate-400' : 'opacity-70'}`}>
                     <div className="flex justify-between items-center">
@@ -331,6 +381,11 @@ export default function WaterProductionReadonlyPage() {
                             <div>
                                 <div className="text-xs font-bold text-slate-700">{selectedDate.toLocaleString('default', { month: 'short' })} {r.day}</div>
                                 <div className="text-[10px] text-slate-400">{hasData ? `${totalBottles} bottles logged` : 'No data'}</div>
+                                {hasData && (
+                                    <div className="text-[9px] font-bold text-indigo-600 mt-0.5">
+                                        {stillProdL.toFixed(1)}L Still | {spkProdL.toFixed(1)}L Spk
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
