@@ -22,6 +22,8 @@ type Timesheet = {
   shift_out: string;
   shift_in_2: string;
   shift_out_2: string;
+  shift_in_3?: string; // NEW SHIFT 3
+  shift_out_3?: string; // NEW SHIFT 3
   worked_hours: number;
   daily_balance: number;
 };
@@ -39,25 +41,20 @@ export default function OvertimeRegistry() {
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   
-  // Date State (Payroll Month)
   const [payrollMonth, setPayrollMonth] = useState(new Date());
 
   const [hosts, setHosts] = useState<Host[]>([]);
-  
   const timesheetsRef = useRef<Timesheet[]>([]); 
   const [timesheets, setTimesheets] = useState<Timesheet[]>([]); 
-
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // Modals & Search
   const [searchQuery, setSearchQuery] = useState('');
   const [isLogModalOpen, setIsLogModalOpen] = useState(false);
   const [hostSearch, setHostSearch] = useState('');
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [historyHost, setHistoryHost] = useState<any>(null);
   
-  // Delete Confirmation Modal State
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -83,25 +80,34 @@ export default function OvertimeRegistry() {
 
   const getMonthLabel = (date: Date) => date.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 
+  // SMART TIME FORMATTER (Allows "0800", "8", "08:00")
   const formatTimeInput = (val: string) => {
     if (!val) return '';
-    if (/^\d{1,2}$/.test(val)) return `${val.padStart(2, '0')}:00`;
-    return val;
+    if (/^\d{2}:\d{2}$/.test(val)) return val; // Already HH:MM
+    if (/^\d{2}:\d{2}:\d{2}$/.test(val)) return val.substring(0, 5); // Strip seconds from DB
+
+    const clean = val.replace(/[^\d]/g, ''); // strip colons/letters
+    if (clean.length === 0) return '';
+    if (clean.length === 1) return `0${clean}:00`;
+    if (clean.length === 2) return `${clean}:00`;
+    if (clean.length === 3) return `0${clean.slice(0, 1)}:${clean.slice(1, 3)}`;
+    if (clean.length >= 4) return `${clean.slice(0, 2)}:${clean.slice(2, 4)}`;
+    return val.substring(0, 5); 
   };
 
-  const calculateHours = (in1: string, out1: string, in2: string, out2: string) => {
+  const calculateHours = (in1: string, out1: string, in2: string, out2: string, in3?: string, out3?: string) => {
     const getMins = (t: string) => {
-      if(!t) return 0;
+      if(!t || !t.includes(':')) return 0;
       const [h, m] = t.split(':').map(Number);
-      return h * 60 + m;
+      return (h || 0) * 60 + (m || 0);
     };
     let totalMins = 0;
     if(in1 && out1) totalMins += Math.max(0, getMins(out1) - getMins(in1));
     if(in2 && out2) totalMins += Math.max(0, getMins(out2) - getMins(in2));
+    if(in3 && out3) totalMins += Math.max(0, getMins(out3) - getMins(in3));
     return Number((totalMins / 60).toFixed(2));
   };
 
-  // Auto-calculate days
   useEffect(() => {
     if (redeemData.start && redeemData.end) {
       const start = new Date(redeemData.start);
@@ -164,11 +170,12 @@ export default function OvertimeRegistry() {
     }).filter(h => h.hasHistory); 
   }, [hosts, timesheets, redemptions]);
 
-
   // --- SHEET ACTIONS ---
   const handleSheetUpdate = async (dateStr: string, field: string, value: string) => {
     if (!selectedHost) return;
     setSaveStatus('saving');
+    
+    const formattedValue = formatTimeInput(value); // Force HH:MM format
     
     const currentList = [...timesheetsRef.current];
     const existingIndex = currentList.findIndex(t => t.host_id === selectedHost.id && t.date === dateStr);
@@ -176,18 +183,18 @@ export default function OvertimeRegistry() {
     let updatedItem: Timesheet;
 
     if (existingIndex > -1) {
-        updatedItem = { ...currentList[existingIndex], [field]: value };
+        updatedItem = { ...currentList[existingIndex], [field]: formattedValue };
     } else {
         updatedItem = {
            host_id: selectedHost.id,
            date: dateStr,
-           shift_in: '', shift_out: '', shift_in_2: '', shift_out_2: '',
+           shift_in: '', shift_out: '', shift_in_2: '', shift_out_2: '', shift_in_3: '', shift_out_3: '',
            worked_hours: 0, daily_balance: 0,
-           [field]: value 
+           [field]: formattedValue 
         } as Timesheet;
     }
 
-    updatedItem.worked_hours = calculateHours(updatedItem.shift_in, updatedItem.shift_out, updatedItem.shift_in_2, updatedItem.shift_out_2);
+    updatedItem.worked_hours = calculateHours(updatedItem.shift_in, updatedItem.shift_out, updatedItem.shift_in_2, updatedItem.shift_out_2, updatedItem.shift_in_3, updatedItem.shift_out_3);
     updatedItem.daily_balance = updatedItem.worked_hours > 0 ? updatedItem.worked_hours - 9 : 0;
 
     if (existingIndex > -1) {
@@ -206,6 +213,8 @@ export default function OvertimeRegistry() {
        shift_out: updatedItem.shift_out || null,
        shift_in_2: updatedItem.shift_in_2 || null,
        shift_out_2: updatedItem.shift_out_2 || null,
+       shift_in_3: updatedItem.shift_in_3 || null,
+       shift_out_3: updatedItem.shift_out_3 || null,
        worked_hours: updatedItem.worked_hours,
        daily_balance: updatedItem.daily_balance
     }, { onConflict: 'host_id, date' }).select().single();
@@ -221,12 +230,11 @@ export default function OvertimeRegistry() {
     }
   };
 
-  // DELETE ENTRY LOGIC
   const requestDeleteEntry = (dateStr: string) => {
     setConfirmModal({
       isOpen: true,
       title: 'Delete Entry?',
-      message: `Are you sure you want to clear the entry for ${dateStr}? This cannot be undone.`,
+      message: `Are you sure you want to clear the entry for ${dateStr}?`,
       onConfirm: () => confirmDeleteEntry(dateStr)
     });
   };
@@ -236,17 +244,14 @@ export default function OvertimeRegistry() {
     setSaveStatus('saving');
     setConfirmModal({ ...confirmModal, isOpen: false });
 
-    // 1. Delete from DB
     await supabase.from('hsk_timesheets').delete().match({ host_id: selectedHost.id, date: dateStr });
 
-    // 2. Remove from Local State
     const updatedList = timesheetsRef.current.filter(t => !(t.host_id === selectedHost.id && t.date === dateStr));
     timesheetsRef.current = updatedList;
     setTimesheets(updatedList);
     setSaveStatus('saved');
   };
 
-  // FULL WIPE LOGIC (From Registry)
   const requestWipeHistory = (host: Host) => {
     setConfirmModal({
       isOpen: true,
@@ -261,32 +266,9 @@ export default function OvertimeRegistry() {
     setIsLoading(true);
     await supabase.from('hsk_timesheets').delete().eq('host_id', hostId);
     await supabase.from('hsk_ot_redemptions').delete().eq('host_id', hostId);
-    fetchData(); // Refresh all
+    fetchData();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, dateStr: string, field: string) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const val = e.currentTarget.value;
-      const formatted = formatTimeInput(val);
-      if (val !== formatted) handleSheetUpdate(dateStr, field, formatted);
-
-      // Find the container div (not form) and navigate inputs
-      const container = e.currentTarget.closest('.sheet-container');
-      if (container) {
-        const inputs = Array.from(container.querySelectorAll('input'));
-        const index = inputs.indexOf(e.currentTarget as HTMLInputElement);
-        if (index > -1 && index < inputs.length - 1) inputs[index + 1].focus();
-      }
-    }
-  };
-
-  const handleBlur = (dateStr: string, field: string, val: string) => {
-      const formatted = formatTimeInput(val);
-      if (val !== formatted) handleSheetUpdate(dateStr, field, formatted);
-  };
-
-  // --- REDEMPTION ---
   const handleRedeem = async () => {
     if(!selectedHost || !redeemData.start || !redeemData.end || redeemData.days <= 0) return alert("Invalid selection");
     const notes = `Taken: ${new Date(redeemData.start).toLocaleDateString()} to ${new Date(redeemData.end).toLocaleDateString()}`;
@@ -313,14 +295,13 @@ export default function OvertimeRegistry() {
     });
   };
 
-  // --- RENDER ---
   const renderSheetRows = () => {
     const { start, end } = getPayrollRange(payrollMonth);
     const rows = [];
     let current = new Date(start);
     let monthlyTotalBalance = 0;
 
-    const timeFields: (keyof Timesheet)[] = ['shift_in', 'shift_out', 'shift_in_2', 'shift_out_2'];
+    const timeFields: (keyof Timesheet)[] = ['shift_in', 'shift_out', 'shift_in_2', 'shift_out_2', 'shift_in_3', 'shift_out_3'];
 
     while (current <= end) {
        const dateStr = toLocalISOString(current);
@@ -331,34 +312,67 @@ export default function OvertimeRegistry() {
 
        rows.push(
          <tr key={dateStr} className="hover:bg-slate-50 border-b border-slate-50 transition-colors focus-within:bg-blue-50/20 group">
-            <td className="p-3 text-sm font-bold text-slate-600 w-32">
+            <td className="p-2 text-sm font-bold text-slate-600 w-32">
                {current.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
-               <span className="text-xs text-slate-400 font-normal ml-2">{current.toLocaleDateString('en-GB', { weekday: 'short' })}</span>
+               <span className="text-xs text-slate-400 font-normal ml-1">{current.toLocaleDateString('en-GB', { weekday: 'short' })}</span>
             </td>
-            {timeFields.map((field) => (
-                <td key={field} className="p-2">
-                    <input 
-                        type="time" 
-                        className="w-20 p-1.5 border rounded-lg text-xs font-bold bg-white focus:border-[#6D2158] focus:ring-2 focus:ring-[#6D2158]/10 outline-none transition-all"
-                        value={(sheet as any)?.[field] || ''}
-                        onBlur={(e) => handleBlur(dateStr, field, e.target.value)}
-                        onKeyDown={(e) => handleKeyDown(e, dateStr, field)}
-                        onChange={(e) => handleSheetUpdate(dateStr, field, e.target.value)}
-                    />
-                </td>
-            ))}
-            <td className="p-3 text-center font-bold text-slate-700">{worked > 0 ? worked.toFixed(2) : '-'}</td>
-            <td className="p-3 text-center">
+            {timeFields.map((field) => {
+                let displayVal = (sheet as any)?.[field] || '';
+                // Fix for SS (Seconds) coming from database
+                if (displayVal.length > 5 && displayVal.includes(':')) {
+                    displayVal = displayVal.substring(0, 5); 
+                }
+
+                return (
+                  <td key={field} className="p-1">
+                      <input 
+                          type="text" 
+                          placeholder="--"
+                          maxLength={5}
+                          className="w-[50px] p-1.5 border border-slate-200 rounded text-xs font-bold text-center bg-white focus:border-[#6D2158] focus:ring-2 focus:ring-[#6D2158]/10 outline-none transition-all placeholder-slate-200"
+                          value={displayVal}
+                          onChange={(e) => {
+                              // Instant UI update for smooth typing
+                              const val = e.target.value;
+                              const currentList = [...timesheetsRef.current];
+                              const idx = currentList.findIndex(t => t.host_id === selectedHost?.id && t.date === dateStr);
+                              if (idx > -1) currentList[idx] = { ...currentList[idx], [field]: val };
+                              else currentList.push({ host_id: selectedHost!.id, date: dateStr, shift_in:'', shift_out:'', shift_in_2:'', shift_out_2:'', shift_in_3:'', shift_out_3:'', worked_hours:0, daily_balance:0, [field]: val });
+                              setTimesheets(currentList);
+                          }}
+                          onBlur={(e) => {
+                              // Only save to DB on blur (when user clicks away or tabs out)
+                              handleSheetUpdate(dateStr, field, e.target.value);
+                          }}
+                          onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleSheetUpdate(dateStr, field, e.currentTarget.value);
+                                  // Auto focus next input
+                                  const container = e.currentTarget.closest('.sheet-container');
+                                  if (container) {
+                                    const inputs = Array.from(container.querySelectorAll('input'));
+                                    const index = inputs.indexOf(e.currentTarget as HTMLInputElement);
+                                    if (index > -1 && index < inputs.length - 1) inputs[index + 1].focus();
+                                  }
+                              }
+                          }}
+                      />
+                  </td>
+                );
+            })}
+            <td className="p-2 text-center font-bold text-slate-700">{worked > 0 ? worked.toFixed(2) : '-'}</td>
+            <td className="p-2 text-center">
                {displayBalance !== 0 && (
-                 <span className={`px-2 py-1 rounded text-xs font-bold ${displayBalance > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                 <span className={`px-2 py-1 rounded text-[10px] font-bold ${displayBalance > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                     {displayBalance > 0 ? '+' : ''}{displayBalance.toFixed(2)}
                  </span>
                )}
             </td>
-            <td className="p-3 text-center">
+            <td className="p-2 text-center w-8">
                 {sheet && (
                     <button type="button" onClick={() => requestDeleteEntry(dateStr)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Trash2 size={16}/>
+                        <Trash2 size={14}/>
                     </button>
                 )}
             </td>
@@ -467,12 +481,17 @@ export default function OvertimeRegistry() {
                      <button onClick={() => { const d = new Date(payrollMonth); d.setMonth(d.getMonth()+1); setPayrollMonth(d); }} className="p-2 hover:bg-white rounded-lg transition-colors"><ArrowRight size={16} className="text-slate-500"/></button>
                   </div>
                </div>
-               {/* Timesheet Table (Div Container, NO FORM) */}
-               <div className="sheet-container bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                  <table className="w-full text-left">
+               
+               {/* Timesheet Table */}
+               <div className="sheet-container bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden overflow-x-auto">
+                  <table className="w-full text-left min-w-max">
                      <thead>
                         <tr className="bg-slate-50 text-[10px] uppercase tracking-widest text-slate-500 font-bold border-b border-slate-200">
-                           <th className="p-3">Date</th><th className="p-3 w-24">In</th><th className="p-3 w-24">Out</th><th className="p-3 w-24">In (PM)</th><th className="p-3 w-24">Out (PM)</th><th className="p-3 text-center">Hrs</th><th className="p-3 text-center">Bal</th><th className="p-3">Action</th>
+                           <th className="p-3">Date</th>
+                           <th className="p-3 text-center">In</th><th className="p-3 text-center">Out</th>
+                           <th className="p-3 text-center">In</th><th className="p-3 text-center">Out</th>
+                           <th className="p-3 text-center text-amber-600">In</th><th className="p-3 text-center text-amber-600">Out</th>
+                           <th className="p-3 text-center">Hrs</th><th className="p-3 text-center">Bal</th><th className="p-3"></th>
                         </tr>
                      </thead>
                      <tbody>
@@ -481,7 +500,11 @@ export default function OvertimeRegistry() {
                            return (
                               <>
                                  {rows}
-                                 <tr className="bg-[#6D2158]/5 border-t-2 border-[#6D2158]/10"><td colSpan={6} className="p-4 text-right text-sm font-bold text-[#6D2158] uppercase tracking-widest">Monthly Net Balance</td><td className="p-4 text-center"><span className={`text-lg font-bold ${monthlyTotalBalance > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{monthlyTotalBalance > 0 ? '+' : ''}{monthlyTotalBalance.toFixed(2)}</span></td><td></td></tr>
+                                 <tr className="bg-[#6D2158]/5 border-t-2 border-[#6D2158]/10">
+                                     <td colSpan={8} className="p-4 text-right text-sm font-bold text-[#6D2158] uppercase tracking-widest">Monthly Net Balance</td>
+                                     <td className="p-4 text-center"><span className={`text-lg font-bold ${monthlyTotalBalance > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{monthlyTotalBalance > 0 ? '+' : ''}{monthlyTotalBalance.toFixed(2)}</span></td>
+                                     <td></td>
+                                 </tr>
                               </>
                            );
                         })()}
@@ -489,6 +512,8 @@ export default function OvertimeRegistry() {
                   </table>
                </div>
             </div>
+
+            {/* Redeem Area */}
             <div className="w-full xl:w-80 space-y-6">
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                     <h3 className="text-sm font-bold text-[#6D2158] uppercase tracking-widest mb-4">Redeem Day Off</h3>
@@ -519,24 +544,94 @@ export default function OvertimeRegistry() {
 
       {/* --- CONFIRM MODAL --- */}
       {confirmModal.isOpen && (
-         <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 relative animate-in zoom-in-95 duration-200">
-               <div className="w-10 h-10 bg-rose-100 rounded-full flex items-center justify-center mb-4 text-rose-600 mx-auto"><AlertTriangle size={20}/></div>
-               <h3 className="text-lg font-bold text-center text-slate-800 mb-2">{confirmModal.title}</h3>
-               <p className="text-sm text-center text-slate-500 mb-6">{confirmModal.message}</p>
-               <div className="flex gap-2">
-                  <button onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })} className="flex-1 py-3 text-slate-500 font-bold uppercase text-xs border border-slate-200 rounded-xl hover:bg-slate-50">Cancel</button>
-                  <button onClick={confirmModal.onConfirm} className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold uppercase text-xs shadow-lg hover:bg-rose-700">Yes, Delete</button>
-               </div>
+        <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 relative animate-in zoom-in-95 duration-200">
+            <div className="w-10 h-10 bg-rose-100 rounded-full flex items-center justify-center mb-4 text-rose-600 mx-auto">
+              <AlertTriangle size={20}/>
             </div>
-         </div>
+            <h3 className="text-lg font-bold text-center text-slate-800 mb-2">{confirmModal.title}</h3>
+            <p className="text-sm text-center text-slate-500 mb-6">{confirmModal.message}</p>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })} 
+                className="flex-1 py-3 text-slate-500 font-bold uppercase text-xs border border-slate-200 rounded-xl hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={confirmModal.onConfirm} 
+                className="flex-1 py-3 bg-rose-600 text-white rounded-xl font-bold uppercase text-xs shadow-lg hover:bg-rose-700"
+              >
+                Yes, Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* --- LOG OT MODAL --- */}
-      {isLogModalOpen && <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 relative"><button onClick={() => setIsLogModalOpen(false)} className="absolute top-4 right-4 text-slate-300 hover:text-rose-500"><X size={20}/></button><h3 className="text-lg font-bold text-[#6D2158] mb-4">Select Staff</h3><input type="text" placeholder="Search..." autoFocus className="w-full p-4 border rounded-xl font-bold text-sm bg-slate-50 focus:border-[#6D2158] outline-none" value={hostSearch} onChange={e => setHostSearch(e.target.value)} /><div className="mt-4 space-y-2 max-h-60 overflow-y-auto">{modalFilteredHosts.map(h => (<div key={h.id} onClick={() => { setSelectedHost(h); setIsLogModalOpen(false); setHostSearch(''); setActiveView('Sheet'); }} className="p-3 border rounded-xl hover:bg-slate-50 cursor-pointer flex justify-between items-center group"><div><p className="text-sm font-bold text-slate-700">{h.full_name}</p><p className="text-[10px] text-slate-400 font-bold">{h.host_id}</p></div><ArrowRight size={16} className="text-slate-300 group-hover:text-[#6D2158]"/></div>))}</div></div></div>}
+      {isLogModalOpen && (
+        <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl p-6 relative">
+            <button 
+              onClick={() => setIsLogModalOpen(false)} 
+              className="absolute top-4 right-4 text-slate-300 hover:text-rose-500"
+            >
+              <X size={20}/>
+            </button>
+            <h3 className="text-lg font-bold text-[#6D2158] mb-4">Select Staff</h3>
+            <input 
+              type="text" 
+              placeholder="Search..." 
+              autoFocus 
+              className="w-full p-4 border rounded-xl font-bold text-sm bg-slate-50 focus:border-[#6D2158] outline-none" 
+              value={hostSearch} 
+              onChange={e => setHostSearch(e.target.value)} 
+            />
+            <div className="mt-4 space-y-2 max-h-60 overflow-y-auto">
+              {modalFilteredHosts.map(h => (
+                <div 
+                  key={h.id} 
+                  onClick={() => { setSelectedHost(h); setIsLogModalOpen(false); setHostSearch(''); setActiveView('Sheet'); }} 
+                  className="p-3 border rounded-xl hover:bg-slate-50 cursor-pointer flex justify-between items-center group"
+                >
+                  <div>
+                    <p className="text-sm font-bold text-slate-700">{h.full_name}</p>
+                    <p className="text-[10px] text-slate-400 font-bold">{h.host_id}</p>
+                  </div>
+                  <ArrowRight size={16} className="text-slate-300 group-hover:text-[#6D2158]"/>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* --- HISTORY MODAL --- */}
-      {isHistoryModalOpen && historyHost && <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4"><div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 relative"><button onClick={() => setIsHistoryModalOpen(false)} className="absolute top-4 right-4 text-slate-300 hover:text-rose-500"><X size={20}/></button><h3 className="text-lg font-bold text-[#6D2158] mb-4">{historyHost.full_name}</h3><div className="space-y-2 max-h-80 overflow-y-auto">{Object.entries(historyHost.monthlyBalances).map(([month, val]: any) => (<div key={month} className="flex justify-between p-3 border-b border-slate-50"><span className="text-sm font-bold text-slate-600">{month}</span><span className={`text-sm font-bold ${val > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{val > 0 ? '+' : ''}{val.toFixed(2)} Hrs</span></div>))}</div></div></div>}
+      {isHistoryModalOpen && historyHost && (
+        <div className="fixed inset-0 bg-[#6D2158]/20 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 relative">
+            <button 
+              onClick={() => setIsHistoryModalOpen(false)} 
+              className="absolute top-4 right-4 text-slate-300 hover:text-rose-500"
+            >
+              <X size={20}/>
+            </button>
+            <h3 className="text-lg font-bold text-[#6D2158] mb-4">{historyHost.full_name}</h3>
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {Object.entries(historyHost.monthlyBalances).map(([month, val]: any) => (
+                <div key={month} className="flex justify-between p-3 border-b border-slate-50">
+                  <span className="text-sm font-bold text-slate-600">{month}</span>
+                  <span className={`text-sm font-bold ${val > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                    {val > 0 ? '+' : ''}{val.toFixed(2)} Hrs
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
