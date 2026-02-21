@@ -30,6 +30,7 @@ type RequestRecord = {
   attendant_name: string;
   guest_name?: string;     
   package_tag?: string;    
+  chk_number?: string; // NEW BILL NO FIELD
 };
 
 type MasterItem = {
@@ -94,6 +95,9 @@ export default function CoordinatorLog() {
       isOpen: false, id: null, title: '', message: ''
   });
   
+  // POST / BILL NUMBER MODAL
+  const [postModal, setPostModal] = useState({ isOpen: false, id: '', chk: '' });
+  
   const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
   
@@ -107,7 +111,6 @@ export default function CoordinatorLog() {
   const [guestInfo, setGuestInfo] = useState<any>(null); 
   const [manualTime, setManualTime] = useState('');
   const [requesterSearch, setRequesterSearch] = useState('');
-  const [showRequesterSuggestions, setShowRequesterSuggestions] = useState(false);
   
   // 3. MINIBAR LOGIC (Added isRefill field)
   const [mbCart, setMbCart] = useState<{name: string, qty: number, isRefill?: boolean}[]>([]);
@@ -191,8 +194,11 @@ export default function CoordinatorLog() {
     const cart = type === 'MB' ? mbCart : otherCart;
     const setter = type === 'MB' ? setMbCart : setOtherCart;
     const existing = cart.find(i => i.name === item);
-    if (existing) setter(cart.map(i => i.name === item ? { ...i, qty: i.qty + 1 } : i));
-    else setter([...cart, { name: item, qty: 1, isRefill: false }]);
+    if (existing) {
+        setter(cart.map(i => i.name === item ? { ...i, qty: i.qty + 1 } : i));
+    } else {
+        setter([...cart, { name: item, qty: 1, isRefill: false }]);
+    }
   };
 
   const toggleRefill = (name: string) => {
@@ -215,10 +221,30 @@ export default function CoordinatorLog() {
     if (!error) { setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); showNotification('success', isEditing ? "Updated" : "Saved"); }
   };
 
-  const askDelete = (id: string) => {
-      setConfirmModal({ isOpen: true, id, title: 'Delete Log?', message: 'Are you sure you want to remove this villa request from the logbook?' });
+  // POST (CHK) MODAL LOGIC
+  const handleOpenPost = (r: RequestRecord) => {
+      if (r.is_posted && r.chk_number) {
+          setPostModal({ isOpen: true, id: r.id, chk: r.chk_number });
+      } else {
+          // Auto-increment logic
+          const chks = records.map(x => parseInt(x.chk_number || '0')).filter(n => !isNaN(n) && n > 1000000);
+          const nextChk = chks.length > 0 ? Math.max(...chks) + 1 : 10703132;
+          setPostModal({ isOpen: true, id: r.id, chk: nextChk.toString() });
+      }
   };
 
+  const confirmPost = async () => {
+      if (!postModal.chk) return alert("Enter CHK number");
+      await supabase.from('hsk_daily_requests').update({ is_posted: true, chk_number: postModal.chk }).eq('id', postModal.id);
+      setRecords(records.map(r => r.id === postModal.id ? { ...r, is_posted: true, chk_number: postModal.chk } : r));
+      setPostModal({ isOpen: false, id: '', chk: '' });
+      showNotification('success', 'Bill successfully linked');
+  };
+
+  const askDelete = (id: string) => { 
+      setConfirmModal({ isOpen: true, id, title: 'Delete Log?', message: 'Are you sure you want to remove this log?' }); 
+  };
+  
   const deleteRecord = async () => {
     if(!confirmModal.id) return;
     await supabase.from('hsk_daily_requests').delete().eq('id', confirmModal.id);
@@ -227,7 +253,7 @@ export default function CoordinatorLog() {
     showNotification('success', "Log Deleted");
   };
 
-  const toggleStatus = async (id: string, field: 'is_sent' | 'is_posted' | 'is_done') => {
+  const toggleStatus = async (id: string, field: 'is_sent' | 'is_done') => {
     const record = records.find(r => r.id === id);
     if (!record) return;
     const newValue = !record[field];
@@ -254,13 +280,23 @@ export default function CoordinatorLog() {
       setIsPartialOpen(false); fetchRecords();
   };
 
+  const isOnlyRefills = (details: string) => {
+      const items = details.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+      if(items.length === 0) return false;
+      return items.every(item => item.includes('(Refill)'));
+  };
+
   const visibleRecords = records.filter(r => {
       const vNum = parseInt(r.villa_number);
       const isMB = r.request_type === 'Minibar';
+      const onlyRefills = isOnlyRefills(r.item_details);
+
+      // Filtering out "Refill Only" from Unposted view since they dont need posting
       if (statusFilter === 'Unsent' && (!isMB || r.is_sent)) return false;
-      if (statusFilter === 'Unposted' && (!isMB || r.is_posted)) return false;
+      if (statusFilter === 'Unposted' && (!isMB || r.is_posted || onlyRefills)) return false;
       if (statusFilter === 'Pending' && r.is_done) return false;
       if (statusFilter === 'Done' && !r.is_done && !r.is_posted) return false;
+      
       if (villaSearch && !r.villa_number.includes(villaSearch)) return false;
       if (jettyFilter === 'Jetty A' && !(vNum >= 1 && vNum <= 35)) return false;
       if (jettyFilter === 'Jetty B' && !(vNum >= 37 && vNum <= 50)) return false;
@@ -271,7 +307,6 @@ export default function CoordinatorLog() {
 
   const showNotification = (type: 'success' | 'error', text: string) => { setToastMsg({ type, text }); setTimeout(() => setToastMsg(null), 3000); };
 
-  // --- CATALOG LISTS ---
   const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
   const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))) as string[]];
   const amenityItems = masterCatalog.filter(i => !i.is_minibar_item);
@@ -295,7 +330,6 @@ export default function CoordinatorLog() {
         <div className="flex justify-between items-center mb-3">
            <div>
               <h1 className="text-xl font-bold text-slate-800 tracking-tighter">Logbook</h1>
-              {/* RESTORED DATE PICKER OPTION */}
               <div onClick={() => dateInputRef.current?.showPicker()} className="flex items-center gap-1 text-[10px] text-slate-400 font-bold uppercase cursor-pointer mt-0.5">
                   <Calendar size={12}/> {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
               </div>
@@ -317,39 +351,71 @@ export default function CoordinatorLog() {
       </div>
 
       <div className="p-3 columns-2 md:columns-3 lg:columns-4 xl:columns-6 gap-3 space-y-3">
-         {visibleRecords.map(r => (
-            <div key={r.id} className={`break-inside-avoid rounded-2xl border p-4 flex flex-col bg-white shadow-sm relative transition-all ${r.request_type === 'Minibar' ? 'border-rose-100' : 'border-amber-100'}`}>
-               <div className="flex justify-between items-start mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl font-black text-slate-800 tracking-tight">{r.villa_number}</span>
-                    {/* EDIT OPTION */}
-                    <button onClick={() => handleEditRecord(r)} className="p-1 text-blue-500 hover:bg-blue-50 rounded" title="Edit"><Edit3 size={14}/></button>
-                  </div>
-                  <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{r.request_type}</div>
-               </div>
-               <div className="mb-4 text-[12px] font-bold text-slate-600 leading-tight space-y-1">
-                   {r.item_details.split(/\n|,/).map((item, idx) => (<div key={idx} className={item.includes('(Refill)') ? 'text-blue-600 italic font-black' : ''}>• {item.trim()}</div>))}
-               </div>
-               <div className="mt-auto pt-3 border-t border-slate-50 flex justify-between items-end">
-                  <div className="mr-6">
-                    <div className="text-[9px] text-slate-400 font-black uppercase truncate max-w-[60px]">{r.attendant_name}</div>
-                    {/* DHAKA TIME FOR ENTERED DATA */}
-                    <div className="text-[9px] text-slate-300 font-bold"><Clock size={8} className="inline mr-1"/>{formatDhakaTime(r.request_time)}</div>
-                  </div>
-                  <div className="flex gap-1.5 flex-wrap justify-end">
-                    {r.request_type === 'Minibar' ? (
-                        <><button onClick={() => openPartialModal(r)} className="p-2 rounded-xl bg-slate-50 text-slate-400 hover:text-slate-600" title="Split"><Split size={14}/></button>
-                        <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-100 text-slate-300'}`} title="Sent"><Send size={14}/></button>
-                        <button onClick={() => toggleStatus(r.id, 'is_posted')} className={`p-2 rounded-xl transition-all ${r.is_posted ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-100 text-slate-300'}`} title="Post"><Check size={14}/></button></>
-                    ) : (<button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2 rounded-xl transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-100 text-slate-300'}`} title="Done"><Check size={14}/></button>)}
-                    <button onClick={() => askDelete(r.id)} className="p-2 rounded-xl text-slate-200 hover:text-rose-500 transition-all active:scale-90"><Trash2 size={14}/></button>
-                  </div>
-               </div>
-            </div>
-         ))}
+         {visibleRecords.map(r => {
+             const allRefill = isOnlyRefills(r.item_details);
+             return (
+             <div key={r.id} className={`break-inside-avoid rounded-2xl border p-4 flex flex-col bg-white shadow-sm relative transition-all ${r.request_type === 'Minibar' ? 'border-rose-100' : 'border-amber-100'}`}>
+                <div className="flex justify-between items-start mb-3">
+                   <div className="flex items-center gap-2">
+                     <span className="text-2xl font-black text-slate-800 tracking-tight">{r.villa_number}</span>
+                     <button onClick={() => handleEditRecord(r)} className="p-1 text-blue-500 hover:bg-blue-50 rounded" title="Edit"><Edit3 size={14}/></button>
+                   </div>
+                   <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{r.request_type}</div>
+                </div>
+                <div className="mb-4 text-[12px] font-bold text-slate-600 leading-tight space-y-1">
+                    {r.item_details.split(/\n|,/).map((item, idx) => (<div key={idx} className={item.includes('(Refill)') ? 'text-blue-600 italic font-black' : ''}>• {item.trim()}</div>))}
+                </div>
+                <div className="mt-auto pt-3 border-t border-slate-50 flex justify-between items-end">
+                   <div className="mr-6">
+                     <div className="text-[9px] text-slate-400 font-black uppercase truncate max-w-[60px]">{r.attendant_name}</div>
+                     <div className="text-[9px] text-slate-300 font-bold"><Clock size={8} className="inline mr-1"/>{formatDhakaTime(r.request_time)}</div>
+                     {r.chk_number && <div className="text-[10px] text-[#6D2158] font-black mt-1">CHK: {r.chk_number}</div>}
+                   </div>
+                   <div className="flex gap-1.5 flex-wrap justify-end">
+                     {r.request_type === 'Minibar' ? (
+                         <>
+                             <button onClick={() => openPartialModal(r)} className="p-2 rounded-xl bg-slate-50 text-slate-400 hover:text-slate-600" title="Split"><Split size={14}/></button>
+                             <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-100 text-slate-300'}`} title="Sent"><Send size={14}/></button>
+                             
+                             {!allRefill && (
+                                 <button onClick={() => handleOpenPost(r)} className={`p-2 rounded-xl transition-all ${r.is_posted ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-100 text-slate-300'}`} title={r.is_posted ? "Edit Bill" : "Post to Guest"}>
+                                     <Check size={14}/>
+                                 </button>
+                             )}
+                         </>
+                     ) : (<button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2 rounded-xl transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-100 text-slate-300'}`} title="Done"><Check size={14}/></button>)}
+                     <button onClick={() => askDelete(r.id)} className="p-2 rounded-xl text-slate-200 hover:text-rose-500 transition-all active:scale-90"><Trash2 size={14}/></button>
+                   </div>
+                </div>
+             </div>
+             )
+         })}
       </div>
 
-      {/* CUSTOM CONFIRMATION MODAL */}
+      {/* CHK NUMBER MODAL */}
+      {postModal.isOpen && (
+          <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+              <div className="bg-white rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+                  <h3 className="text-xl font-black text-[#6D2158] text-center mb-2 uppercase tracking-tight">Post Bill</h3>
+                  <p className="text-xs font-bold text-slate-400 text-center mb-6 uppercase">Confirm CHK Number</p>
+                  
+                  <input 
+                      type="number" 
+                      className="w-full text-center text-3xl font-black p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-[#6D2158] mb-6"
+                      value={postModal.chk}
+                      onChange={e => setPostModal({...postModal, chk: e.target.value})}
+                      autoFocus
+                  />
+
+                  <div className="flex flex-col gap-3">
+                      <button onClick={confirmPost} className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl shadow-purple-200 active:scale-95 transition-all">Link Bill & Post</button>
+                      <button onClick={() => setPostModal({isOpen: false, id: '', chk: ''})} className="w-full py-4 bg-slate-50 text-slate-400 rounded-2xl font-black uppercase text-[10px] tracking-widest active:scale-95 transition-all">Cancel</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* DELETE CONFIRMATION MODAL */}
       {confirmModal.isOpen && (
           <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
               <div className="bg-white rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95 duration-200">
@@ -364,9 +430,10 @@ export default function CoordinatorLog() {
           </div>
       )}
 
+      {/* MINIBAR ENTRY MODAL */}
       {isMinibarOpen && (
          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center">
-            <div className="bg-[#FDFBFD] w-full sm:w-[520px] h-[90vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-20">
+            <div className="bg-[#FDFBFD] w-full sm:w-[560px] h-[90vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-20">
                <div className="p-4 bg-white border-b flex justify-between items-center rounded-t-3xl">
                   <h3 className="text-lg font-bold text-rose-700 uppercase tracking-tight">{isEditing ? 'Edit Entry' : 'Minibar Entry'}</h3>
                   <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 hover:bg-slate-200 transition-colors"><X size={18}/></button>
@@ -377,7 +444,6 @@ export default function CoordinatorLog() {
                      <div className="flex-1 relative"><input type="text" placeholder="By..." className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-rose-300 shadow-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/></div>
                   </div>
                   <GuestCard />
-                  {/* REFILL TOGGLE IN MODAL */}
                   {mbCart.length > 0 && (
                      <div className="mt-4 p-3 bg-white rounded-2xl border-2 border-rose-50 flex flex-wrap gap-2 animate-in zoom-in-95 shadow-sm">
                         {mbCart.map(i => (
@@ -390,14 +456,17 @@ export default function CoordinatorLog() {
                   )}
                   <div className="relative mt-4 mb-2"><Search size={14} className="absolute left-3 top-3.5 text-slate-400"/><input type="text" placeholder="Find Item..." className="w-full pl-9 pr-4 py-3 bg-white border border-slate-100 rounded-xl text-sm font-bold outline-none focus:border-rose-300 shadow-sm" value={mbItemSearch} onChange={(e) => setMbItemSearch(e.target.value)}/></div>
                   <div className="flex flex-wrap gap-2 mb-4 mt-4 overflow-x-auto no-scrollbar">{minibarCats.map(c => (<button key={c} onClick={() => setMbCategory(c)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase border whitespace-nowrap transition-all ${mbCategory === c ? 'bg-rose-600 text-white border-rose-600 shadow-lg' : 'bg-white border-slate-200 text-slate-400 hover:border-rose-100'}`}>{c}</button>))}</div>
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 pb-24">
+                  
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pb-24">
                      {minibarItems.filter(i => (mbCategory === 'All' || i.category === mbCategory) && (i.article_name.toLowerCase().includes(mbItemSearch.toLowerCase()) || (i.generic_name || "").toLowerCase().includes(mbItemSearch.toLowerCase()))).map(item => {
                         const inCart = mbCart.find(c => c.name === (item.generic_name || item.article_name));
                         return (
-                        <button key={item.article_number} onClick={() => addToCart(item.generic_name || item.article_name, 'MB')} className={`bg-white p-2 rounded-xl border flex flex-col items-center gap-2 active:scale-95 transition-transform overflow-hidden group relative ${inCart ? 'border-rose-500 ring-2 ring-rose-100' : 'border-slate-100'}`}>
-                           {inCart && <div className="absolute top-1 right-1 bg-rose-500 text-white text-[8px] font-black px-1.5 rounded-full animate-in zoom-in">{inCart.qty}</div>}
-                           <div className="w-full aspect-square bg-slate-50 rounded-lg flex items-center justify-center overflow-hidden h-14">{item.image_url ? <img src={item.image_url} alt="" className="w-full h-full object-contain p-1 group-hover:scale-110 transition-transform duration-500"/> : <Wine size={14} className="text-rose-200"/>}</div>
-                           <span className="text-[9px] font-bold text-slate-600 text-center leading-tight line-clamp-2 h-6 flex items-center">{item.generic_name || item.article_name}</span>
+                        <button key={item.article_number} onClick={() => addToCart(item.generic_name || item.article_name, 'MB')} className={`bg-white p-3 rounded-2xl border-2 flex flex-col items-center gap-3 active:scale-95 transition-transform overflow-hidden group relative ${inCart ? 'border-rose-500 ring-4 ring-rose-100 shadow-md' : 'border-slate-100'}`}>
+                           {inCart && <div className="absolute top-2 right-2 bg-rose-500 text-white text-xs font-black px-2 py-0.5 rounded-full animate-in zoom-in">{inCart.qty}</div>}
+                           <div className="w-full aspect-square bg-slate-50 rounded-xl flex items-center justify-center overflow-hidden h-20 sm:h-24">
+                               {item.image_url ? <img src={item.image_url} alt="" className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-500"/> : <Wine size={20} className="text-rose-200"/>}
+                           </div>
+                           <span className="text-xs font-bold text-slate-700 text-center leading-tight line-clamp-2 h-8 flex items-center">{item.generic_name || item.article_name}</span>
                         </button>
                      )})}
                   </div>
@@ -409,6 +478,7 @@ export default function CoordinatorLog() {
          </div>
       )}
 
+      {/* OTHER MODAL */}
       {isOtherOpen && (
          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center">
             <div className="bg-[#FDFBFD] w-full sm:w-[500px] h-[85vh] sm:rounded-3xl rounded-t-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-10">
@@ -446,6 +516,7 @@ export default function CoordinatorLog() {
          </div>
       )}
 
+      {/* PARTIAL SEND MODAL */}
       {isPartialOpen && partialTarget && (
           <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95 border-2 border-[#6D2158]/10">

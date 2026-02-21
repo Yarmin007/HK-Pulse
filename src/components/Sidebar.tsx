@@ -1,12 +1,12 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Users, ClipboardList, 
   Printer, Settings, LogOut, Warehouse, 
   Clock, ShoppingCart, ListChecks, Droplets,
-  Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed 
+  Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight
 } from "lucide-react";
 
 const MENU_ITEMS = [
@@ -22,7 +22,6 @@ const MENU_ITEMS = [
   { name: "Settings", icon: Settings, path: "/settings" },
 ];
 
-// 👈 Added Minibar specific headings
 const MINIBAR_ITEMS = [
   { name: "Expiry Control", icon: Calendar, path: "/minibar/expiry" },
   { name: "Minibar Inventory", icon: Box, path: "/minibar/inventory" },
@@ -33,6 +32,14 @@ const MINIBAR_ITEMS = [
 export default function Sidebar() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
+  
+  // Auto-open dropdown if we are currently on a minibar page
+  const isMinibarRoute = pathname.includes('/minibar');
+  const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
+
+  useEffect(() => {
+      if (isMinibarRoute) setIsMinibarOpen(true);
+  }, [pathname, isMinibarRoute]);
 
   return (
     <>
@@ -81,31 +88,47 @@ export default function Sidebar() {
             );
           })}
 
-          {/* 👈 MINIBAR SECTION HEADING */}
-          <div className="pt-4 pb-2 px-4">
-            <p className="text-[10px] font-black text-slate-300 uppercase tracking-[2px] flex items-center gap-2">
-              <Wine size={12} /> Minibar
-            </p>
-          </div>
+          {/* --- MINIBAR DROPDOWN --- */}
+          <div className="pt-2">
+            <button 
+              onClick={() => setIsMinibarOpen(!isMinibarOpen)}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all duration-200 group ${
+                isMinibarRoute && !isMinibarOpen
+                  ? "bg-rose-50 text-rose-600 border border-rose-100" 
+                  : "text-slate-400 hover:bg-slate-50 hover:text-[#6D2158]"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <Wine size={20} className={isMinibarRoute ? "text-rose-600" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                <span className="text-sm font-bold tracking-wide">Minibar</span>
+              </div>
+              {isMinibarOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </button>
 
-          {MINIBAR_ITEMS.map((item) => {
-            const isActive = pathname === item.path;
-            return (
-              <Link 
-                key={item.path} 
-                href={item.path}
-                onClick={() => setIsOpen(false)}
-                className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                  isActive 
-                    ? "bg-rose-50 text-rose-600 border border-rose-100" 
-                    : "text-slate-400 hover:bg-slate-50 hover:text-rose-600"
-                }`}
-              >
-                <item.icon size={18} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={2} />
-                <span className="text-[13px] font-bold tracking-wide">{item.name}</span>
-              </Link>
-            );
-          })}
+            {/* Dropdown Items */}
+            {isMinibarOpen && (
+              <div className="mt-1 ml-4 pl-4 border-l-2 border-slate-100 space-y-1 animate-in slide-in-from-top-2 duration-200">
+                {MINIBAR_ITEMS.map((item) => {
+                  const isActive = pathname === item.path;
+                  return (
+                    <Link 
+                      key={item.path} 
+                      href={item.path}
+                      onClick={() => setIsOpen(false)}
+                      className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isActive 
+                          ? "bg-rose-50 text-rose-600 font-black" 
+                          : "text-slate-400 hover:text-rose-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      <item.icon size={16} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                      <span className="text-xs tracking-wide">{item.name}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </nav>
 
         <div className="p-4 border-t border-slate-50">
