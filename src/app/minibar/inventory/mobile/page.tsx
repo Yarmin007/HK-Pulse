@@ -63,6 +63,9 @@ export default function MinibarInventoryApp() {
   const [completedVillas, setCompletedVillas] = useState<string[]>([]);
   const [selectedVilla, setSelectedVilla] = useState('');
   const [doubleVillas, setDoubleVillas] = useState<string[]>([]);
+  
+  // PREVIOUS SUBMISSION STATE
+  const [previousSubmissions, setPreviousSubmissions] = useState<Record<string, Record<string, number>>>({});
 
   // Catalog & Counting State
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
@@ -103,7 +106,6 @@ export default function MinibarInventoryApp() {
 
     if (constRes.data) {
         const dvStr = constRes.data.find(c => c.type === 'double_mb_villas')?.label || '';
-        // Fixed TypeScript implicit 'any' error by adding (s: string)
         const parsedDv = dvStr.split(',').map((s: string) => s.trim());
         setDoubleVillas(parsedDv);
     }
@@ -172,16 +174,32 @@ export default function MinibarInventoryApp() {
     const parsed = parseVillas(allocations.villas);
     setAssignedVillas(parsed);
 
+    // FETCH PREVIOUS SUBMISSIONS TO PRE-FILL COUNTS
     const startOfDay = `${today}T00:00:00`;
     const { data: submissions } = await supabase
         .from('hsk_villa_minibar_inventory')
-        .select('villa_number')
+        .select('villa_number, inventory_data, logged_at')
         .gte('logged_at', startOfDay)
-        .eq('host_id', foundHost.host_id);
+        .eq('host_id', foundHost.host_id)
+        .order('logged_at', { ascending: false }); 
 
     if (submissions) {
-        const done = submissions.map(s => s.villa_number);
+        const done = Array.from(new Set(submissions.map(s => s.villa_number)));
         setCompletedVillas(done);
+
+        const prevData: Record<string, Record<string, number>> = {};
+        submissions.forEach(sub => {
+            if (!prevData[sub.villa_number]) {
+                const itemMap: Record<string, number> = {};
+                if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
+                    sub.inventory_data.forEach((item: any) => {
+                        itemMap[item.article_number] = item.qty;
+                    });
+                }
+                prevData[sub.villa_number] = itemMap;
+            }
+        });
+        setPreviousSubmissions(prevData);
     }
 
     setCurrentHost(foundHost);
@@ -192,8 +210,14 @@ export default function MinibarInventoryApp() {
   // --- STEP 2: START INVENTORY ---
   const startAudit = (villa: string) => {
     setSelectedVilla(villa);
+    
     const initialCounts: Record<string, number> = {};
-    catalog.forEach(item => { initialCounts[item.article_number] = 0; });
+    const previousData = previousSubmissions[villa] || {};
+    
+    catalog.forEach(item => { 
+        initialCounts[item.article_number] = previousData[item.article_number] || 0; 
+    });
+    
     setCounts(initialCounts);
     setStep(3);
   };
@@ -222,6 +246,11 @@ export default function MinibarInventoryApp() {
                       par = 1;
                   }
                   
+                  // Specific items that only get 1 piece despite being beverages
+                  if (name.includes('light tonic') || name.includes('indian tonic') || name.includes('ginger beer') || name.includes('ginger ale')) {
+                      par = 1;
+                  }
+
                   if (name.includes('zero') || name.includes('fanta')) {
                       par = 0;
                   }
@@ -305,11 +334,11 @@ export default function MinibarInventoryApp() {
     setIsLoading(false);
 
     if (error) {
-        // Improved Error Logging for debugging DB constraints
         console.error("Save Error Details:", error);
         showNotification('error', `DB Error: ${error.message || 'Check database permissions'}`);
     } else {
-        setCompletedVillas(prev => [...prev, selectedVilla]);
+        setCompletedVillas(prev => Array.from(new Set([...prev, selectedVilla])));
+        setPreviousSubmissions(prev => ({ ...prev, [selectedVilla]: finalCounts }));
         setShowSuccess(true);
     }
   };
