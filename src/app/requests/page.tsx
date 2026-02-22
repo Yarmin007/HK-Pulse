@@ -330,11 +330,11 @@ export default function CoordinatorLog() {
         <div className="flex justify-between items-center mb-3">
            <div>
               <h1 className="text-xl font-bold text-slate-800 tracking-tighter">Logbook</h1>
-              <div className="relative flex items-center gap-1 text-[10px] text-slate-400 font-bold uppercase cursor-pointer mt-0.5">
+              <div className="relative flex items-center gap-1 text-[10px] text-slate-400 font-bold uppercase cursor-pointer mt-0.5 hover:text-[#6D2158]">
                   <Calendar size={12}/> {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                   <input 
                       type="date" 
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-0" 
                       value={selectedDate.toISOString().split('T')[0]} 
                       onChange={(e) => {
                           if (e.target.value) setSelectedDate(new Date(e.target.value));
