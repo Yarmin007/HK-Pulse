@@ -6,15 +6,6 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-// Safely get local date string (YYYY-MM-DD) avoiding UTC offset bugs
-const getLocalToday = () => {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-};
-
 // --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
   const c = (cat || '').toLowerCase();
@@ -91,9 +82,9 @@ export default function MinibarInventoryApp() {
   const [assignedVillas, setAssignedVillas] = useState<string[]>([]);
   const [completedVillas, setCompletedVillas] = useState<string[]>([]);
   const [selectedVilla, setSelectedVilla] = useState('');
-  const [doubleVillas, setDoubleVillas] = useState<string[]>([]);
   
-  // PREVIOUS SUBMISSION STATE
+  // MONTHLY STATE
+  const [activePeriod, setActivePeriod] = useState<string>('');
   const [previousSubmissions, setPreviousSubmissions] = useState<Record<string, Record<string, number>>>({});
 
   // Catalog & Counting State
@@ -119,24 +110,16 @@ export default function MinibarInventoryApp() {
   }, []);
 
   const fetchCatalog = async () => {
-    const [catRes, constRes] = await Promise.all([
-        supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
-        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas'])
-    ]);
+    const { data: catRes } = await supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true);
+    const { data: constRes } = await supabase.from('hsk_constants').select('*').eq('type', 'hidden_mb_item');
     
-    if (catRes.data) {
-        const hiddenList = constRes.data ? constRes.data.filter(c => c.type === 'hidden_mb_item').map(h => h.label) : [];
-        const filteredAndSorted = catRes.data
+    if (catRes) {
+        const hiddenList = constRes ? constRes.map(h => h.label) : [];
+        const filteredAndSorted = catRes
             .filter(i => !hiddenList.includes(i.article_number))
             .sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
         
         setCatalog(filteredAndSorted);
-    }
-
-    if (constRes.data) {
-        const dvStr = constRes.data.find(c => c.type === 'double_mb_villas')?.label || '';
-        const parsedDv = dvStr.split(',').map((s: string) => s.trim());
-        setDoubleVillas(parsedDv);
     }
   };
 
@@ -161,8 +144,29 @@ export default function MinibarInventoryApp() {
         return;
     }
 
-    const { data: hosts, error: hostErr } = await supabase.from('hsk_hosts').select('*');
+    // 1. Fetch Global Settings (Status, Period, Double Villas)
+    const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
+    const status = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
+    const period = constData?.find(c => c.type === 'mb_active_period')?.label;
+    const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
+    const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
 
+    if (status !== 'OPEN') {
+        setAuthError('Inventory is currently LOCKED by Admin.');
+        setIsLoading(false);
+        return;
+    }
+
+    if (!period) {
+        setAuthError('System Error: No Active Period set.');
+        setIsLoading(false);
+        return;
+    }
+
+    setActivePeriod(period);
+
+    // 2. Fetch Host Data
+    const { data: hosts, error: hostErr } = await supabase.from('hsk_hosts').select('*');
     if (hostErr || !hosts) {
       setAuthError('Database connection error. Try again.');
       setIsLoading(false);
@@ -180,43 +184,40 @@ export default function MinibarInventoryApp() {
       return;
     }
 
-    // Local today string (YYYY-MM-DD)
-    const today = getLocalToday();
-    
-    const [allocRes, doubleRes] = await Promise.all([
-        supabase.from('hsk_minibar_allocations').select('villas').eq('date', today).eq('host_id', foundHost.host_id).maybeSingle(),
-        supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle()
-    ]);
+    // 3. Fetch Monthly Allocations (Stored under 'YYYY-MM-01')
+    const allocDate = `${period}-01`;
+    const { data: allocations, error: allocErr } = await supabase
+        .from('hsk_minibar_allocations')
+        .select('villas')
+        .eq('date', allocDate)
+        .eq('host_id', foundHost.host_id)
+        .maybeSingle();
 
-    if (allocRes.error) {
+    if (allocErr) {
         setAuthError('System Error: Allocations table missing.');
         setIsLoading(false);
         return;
     }
 
-    if (!allocRes.data || !allocRes.data.villas) {
-        setAuthError(`Welcome ${foundHost.full_name.split(' ')[0]}, but you have NO VILLAS assigned today. Check the Admin Dashboard.`);
+    if (!allocations || !allocations.villas) {
+        setAuthError(`Welcome ${foundHost.full_name.split(' ')[0]}, but you have NO VILLAS assigned for this month.`);
         setIsLoading(false);
         return;
     }
 
-    let dvList: string[] = [];
-    if (doubleRes.data && doubleRes.data.label) {
-        dvList = doubleRes.data.label.split(',').map((s: string) => s.trim());
-        setDoubleVillas(dvList);
-    }
-
-    const parsed = parseVillas(allocRes.data.villas, dvList);
+    const parsed = parseVillas(allocations.villas, dvList);
     setAssignedVillas(parsed);
 
-    // EXACT ISO CONVERSION FOR DB QUERY
-    const [y, m, d] = today.split('-').map(Number);
-    const startOfDay = new Date(y, m - 1, d, 0, 0, 0).toISOString();
+    // 4. FETCH PREVIOUS SUBMISSIONS FOR THIS MONTH TO PRE-FILL COUNTS
+    const [y, m] = period.split('-').map(Number);
+    const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
+    const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
     
     const { data: submissions } = await supabase
         .from('hsk_villa_minibar_inventory')
         .select('villa_number, inventory_data, logged_at')
-        .gte('logged_at', startOfDay)
+        .gte('logged_at', startOfMonthUTC)
+        .lt('logged_at', startOfNextMonthUTC)
         .eq('host_id', foundHost.host_id)
         .order('logged_at', { ascending: false }); 
 
@@ -359,7 +360,8 @@ export default function MinibarInventoryApp() {
         host_id: currentHost?.host_id,
         host_name: currentHost?.full_name,
         inventory_data: countedItems,
-        logged_at: new Date().toISOString()
+        // DB timestamp handles itself automatically on insert, we just rely on it matching the month
+        logged_at: new Date().toISOString() 
     };
 
     const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
@@ -368,7 +370,7 @@ export default function MinibarInventoryApp() {
 
     if (error) {
         console.error("Save Error Details:", error);
-        showNotification('error', `DB Error: ${error.message || 'Check database permissions'}`);
+        showNotification('error', `DB Error: Please contact Admin. Make sure table & RLS exist!`);
     } else {
         setCompletedVillas(prev => Array.from(new Set([...prev, selectedVilla])));
         setPreviousSubmissions(prev => ({ ...prev, [selectedVilla]: finalCounts }));

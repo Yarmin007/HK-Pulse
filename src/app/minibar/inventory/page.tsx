@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
-  Calendar, CheckCircle2, User, Save,
+  Calendar, CheckCircle2, User, Save, Lock, Unlock,
   RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, Check, X, Wine, EyeOff, Eye, Search, AlertCircle, Home
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -9,13 +9,12 @@ import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
 
-// Safely get local date string (YYYY-MM-DD) avoiding UTC offset bugs
-const getLocalToday = () => {
+// Get Local Month (YYYY-MM)
+const getLocalMonth = () => {
     const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    const offset = d.getTimezoneOffset() * 60000;
+    const local = new Date(d.getTime() - offset);
+    return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}`;
 };
 
 // --- CUSTOM SORTING LOGIC ---
@@ -79,7 +78,10 @@ export default function MinibarInventoryAdmin() {
   const [activeTab, setActiveTab] = useState<'MATRIX' | 'ASSIGNMENTS' | 'SETUP'>('MATRIX');
   const [isLoading, setIsLoading] = useState(true);
   
-  const [selectedDate, setSelectedDate] = useState(getLocalToday());
+  // MONTHLY STATE
+  const [selectedMonth, setSelectedMonth] = useState(getLocalMonth());
+  const [activePeriod, setActivePeriod] = useState('');
+  const [invStatus, setInvStatus] = useState<'OPEN' | 'CLOSED'>('CLOSED');
   
   // Data
   const [catalog, setCatalog] = useState<any[]>([]);
@@ -109,17 +111,20 @@ export default function MinibarInventoryAdmin() {
       return list;
   }, [doubleVillasStr]);
 
-  const fetchDailyData = useCallback(async () => {
+  const fetchMonthlyData = useCallback(async () => {
     setIsLoading(true);
     
-    // Create true UTC bounds based on the selected local date
-    const [y, m, d] = selectedDate.split('-').map(Number);
-    const startOfDay = new Date(y, m - 1, d, 0, 0, 0).toISOString();
-    const endOfDay = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+    // Bounds for the whole month
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const startOfMonth = new Date(y, m - 1, 1).toISOString();
+    const startOfNextMonth = new Date(y, m, 1).toISOString();
+
+    // Use "-01" as a standard date to store allocations for the month
+    const allocDate = `${selectedMonth}-01`;
 
     const [subRes, allocRes] = await Promise.all([
-        supabase.from('hsk_villa_minibar_inventory').select('*').gte('logged_at', startOfDay).lte('logged_at', endOfDay),
-        supabase.from('hsk_minibar_allocations').select('*').eq('date', selectedDate)
+        supabase.from('hsk_villa_minibar_inventory').select('*').gte('logged_at', startOfMonth).lt('logged_at', startOfNextMonth),
+        supabase.from('hsk_minibar_allocations').select('*').eq('date', allocDate)
     ]);
 
     if (subRes.data) {
@@ -142,16 +147,16 @@ export default function MinibarInventoryAdmin() {
     }
 
     setIsLoading(false);
-  }, [selectedDate]);
+  }, [selectedMonth]);
 
   useEffect(() => {
     setIsMounted(true);
-    fetchCatalogAndHosts();
+    fetchCatalogAndSettings();
   }, []);
 
   useEffect(() => {
     if (!isMounted) return;
-    fetchDailyData();
+    fetchMonthlyData();
 
     const channel = supabase
         .channel('realtime_inventory')
@@ -162,35 +167,33 @@ export default function MinibarInventoryAdmin() {
                 const newRecord = payload.new as any;
                 if (!newRecord || !newRecord.logged_at) return;
                 
-                // Convert UTC logged_at to Local Date string for comparison
                 const recordDateObj = new Date(newRecord.logged_at);
                 const ry = recordDateObj.getFullYear();
                 const rm = String(recordDateObj.getMonth() + 1).padStart(2, '0');
-                const rd = String(recordDateObj.getDate()).padStart(2, '0');
-                const recordDate = `${ry}-${rm}-${rd}`;
+                const recordMonth = `${ry}-${rm}`;
                 
-                if (recordDate === selectedDate) {
+                if (recordMonth === selectedMonth) {
                     if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-                        toast.success(`${newRecord.host_name.split(' ')[0] || 'Attendant'} submitted Villa ${newRecord.villa_number}!`, {
+                        toast.success(`${newRecord.host_name.split(' ')[0] || 'Attendant'} updated Villa ${newRecord.villa_number}!`, {
                             icon: '🔔',
                             style: { background: '#FDFBFD', color: '#6D2158', border: '1px solid #6D2158', fontWeight: 'bold' },
                             duration: 4000,
                         });
                     }
-                    fetchDailyData();
+                    fetchMonthlyData();
                 }
             }
         )
         .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [selectedDate, isMounted, fetchDailyData]);
+  }, [selectedMonth, isMounted, fetchMonthlyData]);
 
-  const fetchCatalogAndHosts = async () => {
+  const fetchCatalogAndSettings = async () => {
     const [catRes, hostRes, constRes] = await Promise.all([
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
         supabase.from('hsk_hosts').select('*').order('full_name'),
-        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas']) 
+        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas', 'mb_inv_status', 'mb_active_period']) 
     ]);
 
     if (catRes.data) {
@@ -199,28 +202,57 @@ export default function MinibarInventoryAdmin() {
     }
     
     if (hostRes.data) setHosts(hostRes.data);
+    
     if (constRes.data) {
         setHiddenItems(constRes.data.filter(h => h.type === 'hidden_mb_item').map(h => h.label));
         const dv = constRes.data.find(h => h.type === 'double_mb_villas');
         if (dv) setDoubleVillasStr(dv.label);
+
+        const status = constRes.data.find(h => h.type === 'mb_inv_status')?.label as 'OPEN' | 'CLOSED' || 'CLOSED';
+        setInvStatus(status);
+        
+        const period = constRes.data.find(h => h.type === 'mb_active_period')?.label;
+        if (period) {
+            setActivePeriod(period);
+            setSelectedMonth(period); // Auto-jump to active period on load
+        }
     }
+  };
+
+  const toggleInventoryStatus = async () => {
+      const newStatus = invStatus === 'OPEN' ? 'CLOSED' : 'OPEN';
+      setIsSaving(true);
+      
+      // Update Status
+      await supabase.from('hsk_constants').upsert({ type: 'mb_inv_status', label: newStatus }, { onConflict: 'type' });
+      setInvStatus(newStatus);
+      
+      // If we are opening, ensure the active period is set to the selected month
+      if (newStatus === 'OPEN' && selectedMonth !== activePeriod) {
+          await supabase.from('hsk_constants').upsert({ type: 'mb_active_period', label: selectedMonth }, { onConflict: 'type' });
+          setActivePeriod(selectedMonth);
+      }
+
+      setIsSaving(false);
+      toast.success(`Inventory is now ${newStatus}`);
   };
 
   const handleSaveAllocations = async () => {
       setIsSaving(true);
       const toUpsert = [];
       const toDelete = [];
+      const allocDate = `${selectedMonth}-01`;
 
       for (const [host_id, villas] of Object.entries(allocations)) {
           if (villas.trim() === '') toDelete.push(host_id);
-          else toUpsert.push({ date: selectedDate, host_id, villas });
+          else toUpsert.push({ date: allocDate, host_id, villas });
       }
 
       if (toUpsert.length > 0) await supabase.from('hsk_minibar_allocations').upsert(toUpsert, { onConflict: 'date,host_id' });
-      if (toDelete.length > 0) await supabase.from('hsk_minibar_allocations').delete().eq('date', selectedDate).in('host_id', toDelete);
+      if (toDelete.length > 0) await supabase.from('hsk_minibar_allocations').delete().eq('date', allocDate).in('host_id', toDelete);
       
       setIsSaving(false);
-      toast.success("Assignments saved successfully!");
+      toast.success(`Allocations saved for ${selectedMonth}!`);
   };
 
   const handleSaveDoubleVillas = async () => {
@@ -252,7 +284,6 @@ export default function MinibarInventoryAdmin() {
   const matrixDict = useMemo(() => {
       const dict: Record<string, Record<string, number>> = {};
       
-      // Failsafe: Add all active list AND any submitted list
       activeVillaList.forEach(v => dict[v] = {});
       submissions.forEach(sub => {
           if (!dict[sub.villa_number]) dict[sub.villa_number] = {};
@@ -278,29 +309,36 @@ export default function MinibarInventoryAdmin() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-6 mb-6 gap-6">
         <div>
            <h1 className="text-3xl font-bold tracking-tight">Minibar Inventory</h1>
-           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2">
-             Daily Tracking & Allocations 
-             <span className="bg-rose-100 text-rose-600 px-2 py-0.5 rounded-full animate-pulse text-[9px] font-black shadow-sm">LIVE SYNC ON</span>
-           </p>
+           <div className="flex items-center gap-3 mt-2">
+               <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Monthly Tracking Period</p>
+               {selectedMonth === activePeriod && invStatus === 'OPEN' && (
+                   <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full animate-pulse text-[9px] font-black shadow-sm flex items-center gap-1"><Unlock size={10}/> OPEN & LIVE</span>
+               )}
+               {(selectedMonth !== activePeriod || invStatus === 'CLOSED') && (
+                   <span className="bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full text-[9px] font-black shadow-sm flex items-center gap-1"><Lock size={10}/> CLOSED</span>
+               )}
+           </div>
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
+           
            <div className="flex items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm gap-2">
               <Calendar size={16} className="text-slate-400 ml-2"/>
               <input 
-                  type="date" 
-                  className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer p-1"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
+                  type="month" 
+                  className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer p-1"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
               />
            </div>
            
-           <button onClick={fetchDailyData} className="flex items-center gap-2 px-4 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold uppercase hover:bg-slate-50 transition-colors">
-              <RefreshCw size={14}/> Refresh
+           <button onClick={toggleInventoryStatus} disabled={isSaving} className={`flex items-center gap-2 px-6 py-3 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg transition-all ${invStatus === 'OPEN' && selectedMonth === activePeriod ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
+              {isSaving ? <Loader2 size={16} className="animate-spin"/> : (invStatus === 'OPEN' && selectedMonth === activePeriod ? <Lock size={16}/> : <Unlock size={16}/>)}
+              {invStatus === 'OPEN' && selectedMonth === activePeriod ? 'Lock Inventory' : 'Open This Month'}
            </button>
            
-           <button onClick={copyMobileLink} className="flex items-center gap-2 px-6 py-3 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-[#5a1b49] transition-all">
-              <Smartphone size={16}/> Copy App Link
+           <button onClick={copyMobileLink} className="flex items-center gap-2 px-4 py-3 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-[#5a1b49] transition-all">
+              <Smartphone size={16}/> App Link
            </button>
         </div>
       </div>
@@ -308,10 +346,10 @@ export default function MinibarInventoryAdmin() {
       {/* TABS */}
       <div className="flex gap-2 mb-6">
           <button onClick={() => setActiveTab('MATRIX')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'MATRIX' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
-              <LayoutGrid size={16}/> Live Matrix
+              <LayoutGrid size={16}/> Matrix View
           </button>
           <button onClick={() => setActiveTab('ASSIGNMENTS')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'ASSIGNMENTS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
-              <Users size={16}/> Assign Villas
+              <Users size={16}/> Set Monthly Allocations
           </button>
           <button onClick={() => setActiveTab('SETUP')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'SETUP' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
               <Settings size={16}/> System Setup
@@ -325,8 +363,8 @@ export default function MinibarInventoryAdmin() {
           /* --- LIVE MATRIX VIEW --- */
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                  <span className="text-xs font-bold uppercase tracking-widest text-slate-500">Live Item x Villa Grid</span>
-                  <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200">{submissions.length} / {activeVillaList.length} Records</span>
+                  <span className="text-xs font-bold uppercase tracking-widest text-slate-500">Period: {selectedMonth}</span>
+                  <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200">{submissions.length} / {activeVillaList.length} Records Logged</span>
               </div>
               <div className="overflow-auto flex-1 relative">
                   <table className="w-full text-center border-collapse text-xs whitespace-nowrap">
@@ -368,9 +406,10 @@ export default function MinibarInventoryAdmin() {
 
           /* --- ASSIGNMENTS VIEW --- */
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
+              {/* FIXED Z-INDEX BUG HERE: z-10 changed to z-50 so dropdown overlaps table */}
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-50">
                   <div>
-                      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Villa Attendant Allocations</h3>
+                      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Monthly Attendant Allocations</h3>
                       <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
                   </div>
                   
@@ -421,7 +460,7 @@ export default function MinibarInventoryAdmin() {
                           <tr>
                               <th className="p-4 text-[10px] font-black uppercase text-slate-400 whitespace-nowrap">Villa Attendant</th>
                               <th className="p-4 text-[10px] font-black uppercase text-slate-400 whitespace-nowrap">Host No</th>
-                              <th className="p-4 text-[10px] font-black uppercase text-slate-400 w-full">Assigned Villas</th>
+                              <th className="p-4 text-[10px] font-black uppercase text-slate-400 w-full">Assigned Villas (For {selectedMonth})</th>
                               <th className="p-4"></th>
                           </tr>
                       </thead>
@@ -446,7 +485,7 @@ export default function MinibarInventoryAdmin() {
                               </tr>
                           ))}
                           {activeHostsForBoard.length === 0 && (
-                              <tr><td colSpan={4} className="p-10 text-center text-slate-400 italic font-bold">No attendants added to the board yet today. Search and add above.</td></tr>
+                              <tr><td colSpan={4} className="p-10 text-center text-slate-400 italic font-bold">No attendants added to the board. Search and add above.</td></tr>
                           )}
                       </tbody>
                   </table>
