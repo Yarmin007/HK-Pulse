@@ -12,8 +12,24 @@ body {
   color: #1a1a1a;
 }
 
+/* --- CUSTOM SLEEK SCROLLBARS --- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent; 
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1; 
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; 
+}
+
 @layer utilities {
-  /* --- 1. HIDE SCROLLBAR (Clean UI) --- */
+  /* Hide scrollbar completely if needed */
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }
@@ -22,11 +38,11 @@ body {
     scrollbar-width: none;
   }
 
-  /* --- 2. ANIMATIONS (For Modals & Toasts) --- */
+  /* --- ANIMATIONS --- */
   @keyframes slideIn {
     from {
       opacity: 0;
-      transform: translateY(10px); /* Slide up slightly */
+      transform: translateY(10px);
     }
     to {
       opacity: 1;
@@ -45,7 +61,6 @@ body {
     }
   }
 
-  /* Utility classes to trigger animations */
   .animate-in {
     animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
@@ -54,7 +69,7 @@ body {
     animation: zoomIn 0.2s ease-out forwards;
   }
 
-  /* --- 3. TOAST NOTIFICATIONS (Glass Effect) --- */
+  /* --- TOAST NOTIFICATIONS --- */
   .toast-success {
     @apply bg-emerald-50/90 backdrop-blur-md border border-emerald-200 text-emerald-800 shadow-2xl;
   }

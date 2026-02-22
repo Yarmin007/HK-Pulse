@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Lock, ArrowRight, User, MapPin, Search, 
-  Plus, Minus, Save, CheckCircle2, Loader2, ChevronLeft, Wine, AlertCircle
+  Plus, Minus, Save, CheckCircle2, Loader2, ChevronLeft, Wine, AlertCircle, Trash2, AlertTriangle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -69,8 +69,17 @@ export default function MinibarInventoryApp() {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [activeCategory, setActiveCategory] = useState('All');
 
-  // Success State
+  // Custom Modal & Toast States
   const [showSuccess, setShowSuccess] = useState(false);
+  const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{
+      isOpen: boolean;
+      title: string;
+      message: string;
+      confirmText: string;
+      isDestructive: boolean;
+      onConfirm: () => void;
+  }>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
   useEffect(() => {
     setIsMounted(true);
@@ -78,7 +87,6 @@ export default function MinibarInventoryApp() {
   }, []);
 
   const fetchCatalog = async () => {
-    // Fetch items and the hidden list simultaneously
     const [catRes, hiddenRes] = await Promise.all([
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
         supabase.from('hsk_constants').select('label').eq('type', 'hidden_mb_item')
@@ -94,6 +102,11 @@ export default function MinibarInventoryApp() {
     }
   };
 
+  const showNotification = (type: 'success' | 'error', text: string) => {
+      setToastMsg({ type, text });
+      setTimeout(() => setToastMsg(null), 3000);
+  };
+
   // --- STEP 1: STRICT SSL LOGIN ---
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,9 +116,7 @@ export default function MinibarInventoryApp() {
     setIsLoading(true);
     setAuthError('');
 
-    // Extract ONLY digits from input (e.g. if they accidentally type "SSL123", we just want "123")
     const inputDigits = val.replace(/\D/g, '');
-
     if (!inputDigits) {
         setAuthError('Please enter a valid numeric Host ID.');
         setIsLoading(false);
@@ -120,7 +131,6 @@ export default function MinibarInventoryApp() {
       return;
     }
 
-    // STRICT MATCH: ONLY look at host_id
     const foundHost = hosts.find(h => {
         const dbIdDigits = (h.host_id || '').replace(/\D/g, '');
         return dbIdDigits === inputDigits;
@@ -132,7 +142,6 @@ export default function MinibarInventoryApp() {
       return;
     }
 
-    // 2. Fetch Allocations for Today
     const today = new Date().toISOString().split('T')[0];
     const { data: allocations, error: allocErr } = await supabase
         .from('hsk_minibar_allocations')
@@ -140,6 +149,12 @@ export default function MinibarInventoryApp() {
         .eq('date', today)
         .eq('host_id', foundHost.host_id)
         .maybeSingle();
+
+    if (allocErr) {
+        setAuthError('System Error: Allocations table missing.');
+        setIsLoading(false);
+        return;
+    }
 
     if (!allocations || !allocations.villas) {
         setAuthError(`Welcome ${foundHost.full_name.split(' ')[0]}, but you have NO VILLAS assigned today. Check the Admin Dashboard.`);
@@ -150,7 +165,6 @@ export default function MinibarInventoryApp() {
     const parsed = parseVillas(allocations.villas);
     setAssignedVillas(parsed);
 
-    // 3. Check which ones are already completed today
     const startOfDay = `${today}T00:00:00`;
     const { data: submissions } = await supabase
         .from('hsk_villa_minibar_inventory')
@@ -177,7 +191,52 @@ export default function MinibarInventoryApp() {
     setStep(3);
   };
 
-  // --- STEP 3: COUNTING ---
+  // --- STEP 3: QUICK FILL ACTIONS & CUSTOM MODALS ---
+  const requestAllOk = () => {
+      setConfirmModal({
+          isOpen: true,
+          title: "Fill All to PAR?",
+          message: "Foods & Spirits = 1, Beverages & Wines = 2.",
+          confirmText: "Yes, Fill All",
+          isDestructive: false,
+          onConfirm: () => {
+              const newCounts: Record<string, number> = {};
+              catalog.forEach(item => {
+                  const cat = (item.category || '').toLowerCase();
+                  let par = 1; 
+                  
+                  if (cat.includes('bite') || cat.includes('sweet') || cat.includes('food') || cat.includes('snack')) {
+                      par = 1;
+                  } else if (cat.includes('soft') || cat.includes('juice') || cat.includes('water') || cat.includes('beverage') || cat.includes('beer') || cat.includes('wine')) {
+                      par = 2;
+                  } else if (cat.includes('spirit') || cat.includes('liquor') || cat.includes('hard') || cat.includes('alcohol')) {
+                      par = 1;
+                  }
+                  
+                  newCounts[item.article_number] = par;
+              });
+              setCounts(newCounts);
+              setConfirmModal(prev => ({ ...prev, isOpen: false }));
+          }
+      });
+  };
+
+  const requestEmptyMinibar = () => {
+      setConfirmModal({
+          isOpen: true,
+          title: "Empty Minibar?",
+          message: "This will set all items to 0.",
+          confirmText: "Yes, Empty It",
+          isDestructive: true,
+          onConfirm: () => {
+              const newCounts: Record<string, number> = {};
+              catalog.forEach(item => { newCounts[item.article_number] = 0; });
+              setCounts(newCounts);
+              setConfirmModal(prev => ({ ...prev, isOpen: false }));
+          }
+      });
+  };
+
   const updateCount = (article_number: string, delta: number) => {
     setCounts(prev => {
       const current = prev[article_number] || 0;
@@ -186,8 +245,21 @@ export default function MinibarInventoryApp() {
     });
   };
 
-  const handleSaveInventory = async () => {
-    if (!confirm(`Submit inventory for Villa ${selectedVilla}?`)) return;
+  const requestSaveInventory = () => {
+      setConfirmModal({
+          isOpen: true,
+          title: `Submit Villa ${selectedVilla}?`,
+          message: "Are you sure you want to save this inventory record?",
+          confirmText: "Submit Record",
+          isDestructive: false,
+          onConfirm: () => {
+              setConfirmModal(prev => ({ ...prev, isOpen: false }));
+              executeSaveInventory();
+          }
+      });
+  };
+
+  const executeSaveInventory = async () => {
     setIsLoading(true);
 
     const countedItems = Object.entries(counts)
@@ -215,11 +287,11 @@ export default function MinibarInventoryApp() {
 
     if (error) {
         console.error("Save Error", error);
+        showNotification('error', "Save failed. Check connection.");
     } else {
         setCompletedVillas(prev => [...prev, selectedVilla]);
+        setShowSuccess(true);
     }
-
-    setShowSuccess(true);
   };
 
   const resetFlow = () => {
@@ -233,7 +305,6 @@ export default function MinibarInventoryApp() {
   if (!isMounted) return null;
 
   return (
-    // Fixed: min-h-[100dvh] ensures it perfectly fits mobile screens including Safari bottom bar
     <div className="min-h-[100dvh] bg-slate-50 md:bg-slate-100 flex items-center justify-center p-0 md:p-6 font-antiqua">
       
       {/* Mobile-sized container */}
@@ -278,7 +349,6 @@ export default function MinibarInventoryApp() {
 
         {/* --- STEP 2: VILLA SELECTION (GRID) --- */}
         {step === 2 && currentHost && (
-            // Fixed: min-h-0 allows the inner scroll container to work correctly
             <div className="flex-1 flex flex-col bg-slate-50 min-h-0 relative">
                 <div className="bg-[#6D2158] p-6 text-white pb-10 rounded-b-[2.5rem] shadow-md shrink-0">
                     <p className="text-xs font-bold text-white/60 uppercase tracking-widest mb-1">Welcome back,</p>
@@ -316,22 +386,20 @@ export default function MinibarInventoryApp() {
 
         {/* --- STEP 3: INVENTORY ENTRY --- */}
         {step === 3 && currentHost && (
-            // Fixed: min-h-0 is absolutely necessary here to allow inner overflow scrolling!
             <div className="flex-1 flex flex-col bg-white min-h-0 relative">
                 
                 {/* Header */}
-                <div className="bg-[#6D2158] text-white pt-6 pb-4 px-4 flex flex-col shrink-0 shadow-md z-10">
+                <div className="bg-[#6D2158] text-white pt-6 pb-4 px-4 flex flex-col shrink-0 shadow-md z-20">
                     <div className="flex items-center justify-between mb-2">
                         <button onClick={() => setStep(2)} className="p-2 bg-white/10 rounded-full"><ChevronLeft size={20}/></button>
                         <div className="text-center">
                             <p className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Inventorying</p>
                             <h2 className="text-xl font-black">Villa {selectedVilla}</h2>
                         </div>
-                        <div className="w-9"></div> {/* Spacer */}
+                        <div className="w-9"></div>
                     </div>
                     
-                    {/* Category Filter Horizontal Scroll */}
-                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 px-2">
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 px-2 mt-2">
                         {categories.map(cat => (
                             <button 
                                 key={cat} 
@@ -342,6 +410,16 @@ export default function MinibarInventoryApp() {
                             </button>
                         ))}
                     </div>
+                </div>
+
+                {/* --- QUICK ACTION BUTTONS --- */}
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex gap-2 shadow-sm z-10 shrink-0">
+                    <button onClick={requestAllOk} className="flex-1 bg-emerald-100 text-emerald-700 py-3 rounded-xl text-xs font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex items-center justify-center gap-1">
+                        <CheckCircle2 size={16}/> All OK
+                    </button>
+                    <button onClick={requestEmptyMinibar} className="flex-1 bg-rose-100 text-rose-700 py-3 rounded-xl text-xs font-black uppercase tracking-widest border border-rose-200 active:scale-95 transition-all flex items-center justify-center gap-1">
+                        <Trash2 size={16}/> Empty
+                    </button>
                 </div>
 
                 {/* Items List */}
@@ -382,21 +460,57 @@ export default function MinibarInventoryApp() {
 
                 {/* Sticky Bottom Bar */}
                 <div className="absolute bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-100 shadow-[0_-10px_20px_rgba(0,0,0,0.03)] z-20">
-                    <button onClick={handleSaveInventory} disabled={isLoading} className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
+                    <button onClick={requestSaveInventory} disabled={isLoading} className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
                         {isLoading ? <Loader2 className="animate-spin" size={20}/> : <><Save size={18}/> Submit Record</>}
                     </button>
                 </div>
             </div>
         )}
 
+        {/* --- CUSTOM TOAST NOTIFICATION --- */}
+        {toastMsg && (
+            <div className={`absolute top-4 left-4 right-4 z-[100] px-4 py-3 rounded-2xl shadow-xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 ${toastMsg.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
+                {toastMsg.type === 'error' ? <AlertTriangle size={18}/> : <CheckCircle2 size={18}/>}
+                <p className="text-xs font-bold">{toastMsg.text}</p>
+            </div>
+        )}
+
+        {/* --- CUSTOM CONFIRMATION MODAL --- */}
+        {confirmModal.isOpen && (
+            <div className="absolute inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+                <div className="bg-white w-full rounded-3xl p-6 shadow-2xl animate-in zoom-in-95">
+                    <h3 className={`text-xl font-black mb-2 tracking-tight ${confirmModal.isDestructive ? 'text-rose-600' : 'text-[#6D2158]'}`}>
+                        {confirmModal.title}
+                    </h3>
+                    <p className="text-sm text-slate-500 font-medium mb-8 leading-relaxed">
+                        {confirmModal.message}
+                    </p>
+                    <div className="flex gap-3">
+                        <button 
+                            onClick={() => setConfirmModal(prev => ({...prev, isOpen: false}))}
+                            className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all"
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            onClick={confirmModal.onConfirm}
+                            className={`flex-1 py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}
+                        >
+                            {confirmModal.confirmText}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
         {/* --- SUCCESS OVERLAY --- */}
         {showSuccess && (
-            <div className="absolute inset-0 z-50 bg-emerald-600 flex flex-col items-center justify-center text-white p-8 animate-in fade-in zoom-in-95 duration-300">
+            <div className="absolute inset-0 z-[90] bg-emerald-600 flex flex-col items-center justify-center text-white p-8 animate-in fade-in zoom-in-95 duration-300">
                 <div className="w-24 h-24 bg-white/20 rounded-full flex items-center justify-center mb-6">
                     <CheckCircle2 size={64} className="text-white"/>
                 </div>
                 <h2 className="text-3xl font-black text-center mb-2">Saved!</h2>
-                <p className="text-center font-medium text-emerald-100 mb-10">Villa {selectedVilla} inventory has been successfully logged to the system.</p>
+                <p className="text-center font-medium text-emerald-100 mb-10">Villa {selectedVilla} inventory has been successfully logged.</p>
                 
                 <button onClick={resetFlow} className="w-full py-4 bg-white text-emerald-700 rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all">
                     Log Next Villa

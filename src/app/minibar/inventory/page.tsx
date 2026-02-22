@@ -1,10 +1,11 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, CheckCircle2, User, Save,
   RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, Check, X, Wine, EyeOff, Eye, Search
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import toast from 'react-hot-toast'; // Added for live notifications!
 
 const TOTAL_VILLAS = 97;
 const VILLA_NUMBERS = Array.from({ length: TOTAL_VILLAS }, (_, i) => String(i + 1));
@@ -83,33 +84,8 @@ export default function MinibarInventoryAdmin() {
   const [hostSearch, setHostSearch] = useState('');
   const [showHostDropdown, setShowHostDropdown] = useState(false);
 
-  useEffect(() => {
-    setIsMounted(true);
-    fetchCatalogAndHosts();
-  }, []);
-
-  useEffect(() => {
-    if (isMounted) fetchDailyData();
-  }, [selectedDate, isMounted]);
-
-  const fetchCatalogAndHosts = async () => {
-    const [catRes, hostRes, hiddenRes] = await Promise.all([
-        supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
-        supabase.from('hsk_hosts').select('*').order('full_name'),
-        supabase.from('hsk_constants').select('label').eq('type', 'hidden_mb_item') // Store hidden items here
-    ]);
-
-    if (catRes.data) {
-        // Sort items by custom logic
-        const sortedCatalog = catRes.data.sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
-        setCatalog(sortedCatalog);
-    }
-    
-    if (hostRes.data) setHosts(hostRes.data);
-    if (hiddenRes.data) setHiddenItems(hiddenRes.data.map(h => h.label));
-  };
-
-  const fetchDailyData = async () => {
+  // Memoize fetchDailyData so it can be used safely in useEffect without staleness
+  const fetchDailyData = useCallback(async () => {
     setIsLoading(true);
     const startOfDay = `${selectedDate}T00:00:00`;
     const endOfDay = `${selectedDate}T23:59:59`;
@@ -141,6 +117,71 @@ export default function MinibarInventoryAdmin() {
     }
 
     setIsLoading(false);
+  }, [selectedDate]);
+
+  useEffect(() => {
+    setIsMounted(true);
+    fetchCatalogAndHosts();
+  }, []);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    
+    fetchDailyData();
+
+    // --- REALTIME LISTENER FOR LIVE UPDATES & NOTIFICATIONS ---
+    const channel = supabase
+        .channel('realtime_inventory')
+        .on(
+            'postgres_changes', 
+            { event: '*', schema: 'public', table: 'hsk_villa_minibar_inventory' }, 
+            (payload) => {
+                const newRecord = payload.new as any;
+                if (!newRecord || !newRecord.logged_at) return;
+
+                const recordDate = newRecord.logged_at.split('T')[0];
+                
+                // Only notify and update if the incoming data belongs to the date currently being viewed
+                if (recordDate === selectedDate) {
+                    if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+                        // Fire the beautiful toast notification
+                        toast.success(`${newRecord.host_name.split(' ')[0] || 'Attendant'} submitted Villa ${newRecord.villa_number}!`, {
+                            icon: '🔔',
+                            style: {
+                                background: '#FDFBFD',
+                                color: '#6D2158',
+                                border: '1px solid #6D2158',
+                                fontWeight: 'bold'
+                            },
+                            duration: 4000,
+                        });
+                    }
+                    // Silently refresh the grid data
+                    fetchDailyData();
+                }
+            }
+        )
+        .subscribe();
+
+    return () => {
+        supabase.removeChannel(channel);
+    };
+  }, [selectedDate, isMounted, fetchDailyData]);
+
+  const fetchCatalogAndHosts = async () => {
+    const [catRes, hostRes, hiddenRes] = await Promise.all([
+        supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
+        supabase.from('hsk_hosts').select('*').order('full_name'),
+        supabase.from('hsk_constants').select('label').eq('type', 'hidden_mb_item') 
+    ]);
+
+    if (catRes.data) {
+        const sortedCatalog = catRes.data.sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
+        setCatalog(sortedCatalog);
+    }
+    
+    if (hostRes.data) setHosts(hostRes.data);
+    if (hiddenRes.data) setHiddenItems(hiddenRes.data.map(h => h.label));
   };
 
   const handleSaveAllocations = async () => {
@@ -168,16 +209,14 @@ export default function MinibarInventoryAdmin() {
       }
       
       setIsSaving(false);
-      alert("Assignments saved successfully!");
+      toast.success("Assignments saved successfully!");
   };
 
   const toggleHiddenItem = async (articleNo: string, isCurrentlyHidden: boolean) => {
       if (isCurrentlyHidden) {
-          // Remove from hidden
           await supabase.from('hsk_constants').delete().match({ type: 'hidden_mb_item', label: articleNo });
           setHiddenItems(prev => prev.filter(a => a !== articleNo));
       } else {
-          // Add to hidden
           await supabase.from('hsk_constants').insert({ type: 'hidden_mb_item', label: articleNo });
           setHiddenItems(prev => [...prev, articleNo]);
       }
@@ -186,10 +225,9 @@ export default function MinibarInventoryAdmin() {
   const copyMobileLink = () => {
     const url = `${window.location.origin}/minibar/inventory/mobile`;
     navigator.clipboard.writeText(url);
-    alert(`Link Copied:\n${url}`);
+    toast.success("Mobile App link copied to clipboard!");
   };
 
-  // Matrix processing
   const matrixDict = useMemo(() => {
       const dict: Record<string, Record<string, number>> = {};
       VILLA_NUMBERS.forEach(v => dict[v] = {});
@@ -211,8 +249,6 @@ export default function MinibarInventoryAdmin() {
   const progressPct = (completedCount / TOTAL_VILLAS) * 100;
   
   const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
-  
-  // Hosts filtering for assignment board
   const activeHostsForBoard = hosts.filter(h => allocations[h.host_id] !== undefined);
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
 
@@ -223,8 +259,9 @@ export default function MinibarInventoryAdmin() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-6 mb-6 gap-6">
         <div>
            <h1 className="text-3xl font-bold tracking-tight">Minibar Inventory</h1>
-           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">
-             Daily Tracking & Allocations
+           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2">
+             Daily Tracking & Allocations 
+             <span className="bg-rose-100 text-rose-600 px-2 py-0.5 rounded-full animate-pulse text-[9px] font-black shadow-sm">LIVE SYNC ON</span>
            </p>
         </div>
         
@@ -239,7 +276,7 @@ export default function MinibarInventoryAdmin() {
               />
            </div>
            
-           <button onClick={fetchDailyData} className="flex items-center gap-2 px-4 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold uppercase hover:bg-slate-50">
+           <button onClick={fetchDailyData} className="flex items-center gap-2 px-4 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold uppercase hover:bg-slate-50 transition-colors">
               <RefreshCw size={14}/> Refresh
            </button>
            
@@ -277,7 +314,7 @@ export default function MinibarInventoryAdmin() {
                       <thead className="sticky top-0 z-30 shadow-sm">
                           <tr>
                               <th className="sticky left-0 z-40 bg-slate-100 border-r border-b border-slate-200 p-3 text-left min-w-[200px] shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
-                                  <span className="font-black uppercase text-slate-500 tracking-wider text-[10px]">Active Villa Items</span>
+                                  <span className="font-black uppercase text-slate-500 tracking-wider text-[10px]">Minibar Item</span>
                               </th>
                               {VILLA_NUMBERS.map(v => (
                                   <th key={v} className={`p-2 border-r border-b border-slate-200 font-black ${submissions.some(s => s.villa_number === v) ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-50 text-slate-400'}`}>
