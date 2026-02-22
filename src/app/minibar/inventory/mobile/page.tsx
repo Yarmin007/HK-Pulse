@@ -32,7 +32,6 @@ type MasterItem = {
   image_url?: string;
 };
 
-// Helper: Convert "1, 2, 5-8" into ["1", "2", "5", "6", "7", "8"]
 const parseVillas = (input: string) => {
     const result = new Set<string>();
     const parts = input.split(',').map(s => s.trim());
@@ -63,6 +62,7 @@ export default function MinibarInventoryApp() {
   const [assignedVillas, setAssignedVillas] = useState<string[]>([]);
   const [completedVillas, setCompletedVillas] = useState<string[]>([]);
   const [selectedVilla, setSelectedVilla] = useState('');
+  const [doubleVillas, setDoubleVillas] = useState<string[]>([]);
 
   // Catalog & Counting State
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
@@ -87,24 +87,31 @@ export default function MinibarInventoryApp() {
   }, []);
 
   const fetchCatalog = async () => {
-    const [catRes, hiddenRes] = await Promise.all([
+    const [catRes, constRes] = await Promise.all([
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
-        supabase.from('hsk_constants').select('label').eq('type', 'hidden_mb_item')
+        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas'])
     ]);
     
     if (catRes.data) {
-        const hiddenList = hiddenRes.data ? hiddenRes.data.map(h => h.label) : [];
+        const hiddenList = constRes.data ? constRes.data.filter(c => c.type === 'hidden_mb_item').map(h => h.label) : [];
         const filteredAndSorted = catRes.data
             .filter(i => !hiddenList.includes(i.article_number))
             .sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
         
         setCatalog(filteredAndSorted);
     }
+
+    if (constRes.data) {
+        const dvStr = constRes.data.find(c => c.type === 'double_mb_villas')?.label || '';
+        // Fixed TypeScript implicit 'any' error by adding (s: string)
+        const parsedDv = dvStr.split(',').map((s: string) => s.trim());
+        setDoubleVillas(parsedDv);
+    }
   };
 
   const showNotification = (type: 'success' | 'error', text: string) => {
       setToastMsg({ type, text });
-      setTimeout(() => setToastMsg(null), 3000);
+      setTimeout(() => setToastMsg(null), 4000);
   };
 
   // --- STEP 1: STRICT SSL LOGIN ---
@@ -191,32 +198,40 @@ export default function MinibarInventoryApp() {
     setStep(3);
   };
 
-  // --- STEP 3: QUICK FILL ACTIONS & CUSTOM MODALS ---
+  // --- STEP 3: QUICK FILL ACTIONS & ONE-CLICK SUBMIT ---
   const requestAllOk = () => {
+      const isDouble = doubleVillas.includes(selectedVilla);
+      const multiplier = isDouble ? 2 : 1;
+
       setConfirmModal({
           isOpen: true,
-          title: "Fill All to PAR?",
-          message: "Foods & Spirits = 1, Beverages & Wines = 2.",
-          confirmText: "Yes, Fill All",
+          title: "Fill & Submit?",
+          message: `This will auto-fill standard PAR${isDouble ? ' (x2 for Double Minibar)' : ''} and submit immediately.`,
+          confirmText: "Fill & Submit",
           isDestructive: false,
           onConfirm: () => {
               const newCounts: Record<string, number> = {};
               catalog.forEach(item => {
                   const cat = (item.category || '').toLowerCase();
+                  const name = (item.generic_name || item.article_name || '').toLowerCase();
                   let par = 1; 
                   
-                  if (cat.includes('bite') || cat.includes('sweet') || cat.includes('food') || cat.includes('snack')) {
-                      par = 1;
-                  } else if (cat.includes('soft') || cat.includes('juice') || cat.includes('water') || cat.includes('beverage') || cat.includes('beer') || cat.includes('wine')) {
+                  if (cat.includes('soft') || cat.includes('juice') || cat.includes('water') || cat.includes('beverage') || cat.includes('beer')) {
                       par = 2;
-                  } else if (cat.includes('spirit') || cat.includes('liquor') || cat.includes('hard') || cat.includes('alcohol')) {
+                  } else if (cat.includes('wine') || cat.includes('spirit') || cat.includes('liquor') || cat.includes('hard') || cat.includes('alcohol') || cat.includes('bite') || cat.includes('sweet') || cat.includes('food') || cat.includes('snack')) {
                       par = 1;
                   }
                   
-                  newCounts[item.article_number] = par;
+                  if (name.includes('zero') || name.includes('fanta')) {
+                      par = 0;
+                  }
+                  
+                  newCounts[item.article_number] = par * multiplier;
               });
               setCounts(newCounts);
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
+              
+              executeSaveInventory(newCounts);
           }
       });
   };
@@ -224,15 +239,17 @@ export default function MinibarInventoryApp() {
   const requestEmptyMinibar = () => {
       setConfirmModal({
           isOpen: true,
-          title: "Empty Minibar?",
-          message: "This will set all items to 0.",
-          confirmText: "Yes, Empty It",
+          title: "Empty & Submit?",
+          message: "This will set all items to 0 and submit immediately.",
+          confirmText: "Empty & Submit",
           isDestructive: true,
           onConfirm: () => {
               const newCounts: Record<string, number> = {};
               catalog.forEach(item => { newCounts[item.article_number] = 0; });
               setCounts(newCounts);
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
+              
+              executeSaveInventory(newCounts);
           }
       });
   };
@@ -254,15 +271,17 @@ export default function MinibarInventoryApp() {
           isDestructive: false,
           onConfirm: () => {
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              executeSaveInventory();
+              executeSaveInventory(); 
           }
       });
   };
 
-  const executeSaveInventory = async () => {
+  const executeSaveInventory = async (overrideCounts?: Record<string, number>) => {
     setIsLoading(true);
 
-    const countedItems = Object.entries(counts)
+    const finalCounts = overrideCounts || counts;
+
+    const countedItems = Object.entries(finalCounts)
         .filter(([_, qty]) => qty > 0)
         .map(([artNo, qty]) => {
             const item = catalog.find(c => c.article_number === artNo);
@@ -286,8 +305,9 @@ export default function MinibarInventoryApp() {
     setIsLoading(false);
 
     if (error) {
-        console.error("Save Error", error);
-        showNotification('error', "Save failed. Check connection.");
+        // Improved Error Logging for debugging DB constraints
+        console.error("Save Error Details:", error);
+        showNotification('error', `DB Error: ${error.message || 'Check database permissions'}`);
     } else {
         setCompletedVillas(prev => [...prev, selectedVilla]);
         setShowSuccess(true);
@@ -307,7 +327,6 @@ export default function MinibarInventoryApp() {
   return (
     <div className="min-h-[100dvh] bg-slate-50 md:bg-slate-100 flex items-center justify-center p-0 md:p-6 font-antiqua">
       
-      {/* Mobile-sized container */}
       <div className="w-full max-w-md h-[100dvh] md:h-[85vh] bg-white md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col relative">
         
         {/* --- STEP 1: AUTHENTICATION --- */}
@@ -347,7 +366,7 @@ export default function MinibarInventoryApp() {
             </div>
         )}
 
-        {/* --- STEP 2: VILLA SELECTION (GRID) --- */}
+        {/* --- STEP 2: VILLA SELECTION --- */}
         {step === 2 && currentHost && (
             <div className="flex-1 flex flex-col bg-slate-50 min-h-0 relative">
                 <div className="bg-[#6D2158] p-6 text-white pb-10 rounded-b-[2.5rem] shadow-md shrink-0">
@@ -393,7 +412,7 @@ export default function MinibarInventoryApp() {
                     <div className="flex items-center justify-between mb-2">
                         <button onClick={() => setStep(2)} className="p-2 bg-white/10 rounded-full"><ChevronLeft size={20}/></button>
                         <div className="text-center">
-                            <p className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Inventorying</p>
+                            <p className="text-[10px] font-bold text-white/60 uppercase tracking-widest flex items-center justify-center gap-1">Inventorying {doubleVillas.includes(selectedVilla) && <span className="bg-amber-400 text-[#6D2158] px-1.5 py-0.5 rounded text-[8px] font-black">x2</span>}</p>
                             <h2 className="text-xl font-black">Villa {selectedVilla}</h2>
                         </div>
                         <div className="w-9"></div>
@@ -414,10 +433,10 @@ export default function MinibarInventoryApp() {
 
                 {/* --- QUICK ACTION BUTTONS --- */}
                 <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex gap-2 shadow-sm z-10 shrink-0">
-                    <button onClick={requestAllOk} className="flex-1 bg-emerald-100 text-emerald-700 py-3 rounded-xl text-xs font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex items-center justify-center gap-1">
+                    <button onClick={requestAllOk} className="flex-1 bg-emerald-100 text-emerald-700 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex items-center justify-center gap-1 shadow-sm">
                         <CheckCircle2 size={16}/> All OK
                     </button>
-                    <button onClick={requestEmptyMinibar} className="flex-1 bg-rose-100 text-rose-700 py-3 rounded-xl text-xs font-black uppercase tracking-widest border border-rose-200 active:scale-95 transition-all flex items-center justify-center gap-1">
+                    <button onClick={requestEmptyMinibar} className="flex-1 bg-rose-100 text-rose-700 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest border border-rose-200 active:scale-95 transition-all flex items-center justify-center gap-1 shadow-sm">
                         <Trash2 size={16}/> Empty
                     </button>
                 </div>
@@ -461,7 +480,7 @@ export default function MinibarInventoryApp() {
                 {/* Sticky Bottom Bar */}
                 <div className="absolute bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-100 shadow-[0_-10px_20px_rgba(0,0,0,0.03)] z-20">
                     <button onClick={requestSaveInventory} disabled={isLoading} className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
-                        {isLoading ? <Loader2 className="animate-spin" size={20}/> : <><Save size={18}/> Submit Record</>}
+                        {isLoading ? <Loader2 className="animate-spin" size={20}/> : <><Save size={18}/> Manual Submit</>}
                     </button>
                 </div>
             </div>
@@ -471,7 +490,7 @@ export default function MinibarInventoryApp() {
         {toastMsg && (
             <div className={`absolute top-4 left-4 right-4 z-[100] px-4 py-3 rounded-2xl shadow-xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 ${toastMsg.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
                 {toastMsg.type === 'error' ? <AlertTriangle size={18}/> : <CheckCircle2 size={18}/>}
-                <p className="text-xs font-bold">{toastMsg.text}</p>
+                <p className="text-xs font-bold leading-tight">{toastMsg.text}</p>
             </div>
         )}
 
@@ -494,9 +513,9 @@ export default function MinibarInventoryApp() {
                         </button>
                         <button 
                             onClick={confirmModal.onConfirm}
-                            className={`flex-1 py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}
+                            className={`flex-1 py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2 ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}
                         >
-                            {confirmModal.confirmText}
+                            <Save size={16}/> {confirmModal.confirmText}
                         </button>
                     </div>
                 </div>

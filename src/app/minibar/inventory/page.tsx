@@ -2,10 +2,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, CheckCircle2, User, Save,
-  RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, Check, X, Wine, EyeOff, Eye, Search
+  RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, Check, X, Wine, EyeOff, Eye, Search, AlertCircle, Home
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import toast from 'react-hot-toast'; // Added for live notifications!
+import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
 const VILLA_NUMBERS = Array.from({ length: TOTAL_VILLAS }, (_, i) => String(i + 1));
@@ -78,6 +78,7 @@ export default function MinibarInventoryAdmin() {
   const [hosts, setHosts] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [hiddenItems, setHiddenItems] = useState<string[]>([]);
+  const [doubleVillasStr, setDoubleVillasStr] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
 
   // Search State for Hosts
@@ -95,7 +96,6 @@ export default function MinibarInventoryAdmin() {
         supabase.from('hsk_minibar_allocations').select('*').eq('date', selectedDate)
     ]);
 
-    // Handle Submissions
     if (subRes.data) {
       const latestSubmissions: Record<string, any> = {};
       subRes.data.forEach(sub => {
@@ -107,7 +107,6 @@ export default function MinibarInventoryAdmin() {
       setSubmissions(Object.values(latestSubmissions));
     }
 
-    // Handle Allocations
     if (allocRes.data) {
         const allocMap: Record<string, string> = {};
         allocRes.data.forEach(a => { allocMap[a.host_id] = a.villas; });
@@ -129,7 +128,7 @@ export default function MinibarInventoryAdmin() {
     
     fetchDailyData();
 
-    // --- REALTIME LISTENER FOR LIVE UPDATES & NOTIFICATIONS ---
+    // REALTIME LISTENER FOR LIVE UPDATES
     const channel = supabase
         .channel('realtime_inventory')
         .on(
@@ -141,38 +140,28 @@ export default function MinibarInventoryAdmin() {
 
                 const recordDate = newRecord.logged_at.split('T')[0];
                 
-                // Only notify and update if the incoming data belongs to the date currently being viewed
                 if (recordDate === selectedDate) {
                     if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-                        // Fire the beautiful toast notification
                         toast.success(`${newRecord.host_name.split(' ')[0] || 'Attendant'} submitted Villa ${newRecord.villa_number}!`, {
                             icon: '🔔',
-                            style: {
-                                background: '#FDFBFD',
-                                color: '#6D2158',
-                                border: '1px solid #6D2158',
-                                fontWeight: 'bold'
-                            },
+                            style: { background: '#FDFBFD', color: '#6D2158', border: '1px solid #6D2158', fontWeight: 'bold' },
                             duration: 4000,
                         });
                     }
-                    // Silently refresh the grid data
                     fetchDailyData();
                 }
             }
         )
         .subscribe();
 
-    return () => {
-        supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [selectedDate, isMounted, fetchDailyData]);
 
   const fetchCatalogAndHosts = async () => {
-    const [catRes, hostRes, hiddenRes] = await Promise.all([
+    const [catRes, hostRes, constRes] = await Promise.all([
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
         supabase.from('hsk_hosts').select('*').order('full_name'),
-        supabase.from('hsk_constants').select('label').eq('type', 'hidden_mb_item') 
+        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas']) 
     ]);
 
     if (catRes.data) {
@@ -181,35 +170,38 @@ export default function MinibarInventoryAdmin() {
     }
     
     if (hostRes.data) setHosts(hostRes.data);
-    if (hiddenRes.data) setHiddenItems(hiddenRes.data.map(h => h.label));
+    if (constRes.data) {
+        setHiddenItems(constRes.data.filter(h => h.type === 'hidden_mb_item').map(h => h.label));
+        const dv = constRes.data.find(h => h.type === 'double_mb_villas');
+        if (dv) setDoubleVillasStr(dv.label);
+    }
   };
 
   const handleSaveAllocations = async () => {
       setIsSaving(true);
-      
       const toUpsert = [];
       const toDelete = [];
 
       for (const [host_id, villas] of Object.entries(allocations)) {
-          if (villas.trim() === '') {
-              toDelete.push(host_id);
-          } else {
-              toUpsert.push({ date: selectedDate, host_id, villas });
-          }
+          if (villas.trim() === '') toDelete.push(host_id);
+          else toUpsert.push({ date: selectedDate, host_id, villas });
       }
 
-      // Upsert valid allocations
-      if (toUpsert.length > 0) {
-          await supabase.from('hsk_minibar_allocations').upsert(toUpsert, { onConflict: 'date,host_id' });
-      }
-
-      // Explicitly delete allocations that were cleared
-      if (toDelete.length > 0) {
-          await supabase.from('hsk_minibar_allocations').delete().eq('date', selectedDate).in('host_id', toDelete);
-      }
+      if (toUpsert.length > 0) await supabase.from('hsk_minibar_allocations').upsert(toUpsert, { onConflict: 'date,host_id' });
+      if (toDelete.length > 0) await supabase.from('hsk_minibar_allocations').delete().eq('date', selectedDate).in('host_id', toDelete);
       
       setIsSaving(false);
       toast.success("Assignments saved successfully!");
+  };
+
+  const handleSaveDoubleVillas = async () => {
+      setIsSaving(true);
+      await supabase.from('hsk_constants').delete().eq('type', 'double_mb_villas');
+      if (doubleVillasStr.trim()) {
+          await supabase.from('hsk_constants').insert({ type: 'double_mb_villas', label: doubleVillasStr.trim() });
+      }
+      setIsSaving(false);
+      toast.success("Villa multipliers saved!");
   };
 
   const toggleHiddenItem = async (articleNo: string, isCurrentlyHidden: boolean) => {
@@ -295,7 +287,7 @@ export default function MinibarInventoryAdmin() {
               <Users size={16}/> Assign Villas
           </button>
           <button onClick={() => setActiveTab('SETUP')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'SETUP' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
-              <Settings size={16}/> Item Setup
+              <Settings size={16}/> System Setup
           </button>
       </div>
 
@@ -340,9 +332,6 @@ export default function MinibarInventoryAdmin() {
                                   })}
                               </tr>
                           ))}
-                          {visibleCatalogItems.length === 0 && (
-                              <tr><td colSpan={100} className="p-10 text-center text-slate-400 italic font-bold">No items set to show. Go to 'Item Setup' to activate items.</td></tr>
-                          )}
                       </tbody>
                   </table>
               </div>
@@ -440,33 +429,59 @@ export default function MinibarInventoryAdmin() {
       ) : (
 
           /* --- SETUP VIEW --- */
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
-              <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                  <div>
-                      <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Wine size={16}/> Items to Inventory</h3>
-                      <p className="text-[10px] text-slate-400 font-bold mt-1">Select items that should appear on the attendant's mobile screen.</p>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in">
+              
+              {/* DOUBLE MINIBAR SETUP */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
+                  <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+                      <div>
+                          <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Home size={16}/> Double PAR Villas</h3>
+                          <p className="text-[10px] text-slate-400 font-bold mt-1">These villas will have x2 items auto-filled on the Mobile App.</p>
+                      </div>
+                      <button onClick={handleSaveDoubleVillas} disabled={isSaving} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-emerald-500 transition-all flex gap-1 items-center">
+                          {isSaving ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>} Save
+                      </button>
+                  </div>
+                  <div className="p-6 flex-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Villa Numbers (Comma Separated)</label>
+                      <input 
+                          type="text" 
+                          className="w-full mt-2 p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] transition-all text-[#6D2158]"
+                          placeholder="e.g. 1, 2, 50, 51"
+                          value={doubleVillasStr}
+                          onChange={(e) => setDoubleVillasStr(e.target.value)}
+                      />
                   </div>
               </div>
-              <div className="p-6 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 content-start">
-                  {catalog.map(item => {
-                      const isHidden = hiddenItems.includes(item.article_number);
-                      return (
-                          <button 
-                              key={item.article_number} 
-                              onClick={() => toggleHiddenItem(item.article_number, isHidden)} 
-                              className={`w-full flex items-center gap-3 p-4 rounded-xl border transition-all text-left group ${!isHidden ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200 hover:border-slate-300 opacity-60 hover:opacity-100'}`}
-                          >
-                              <div className={`w-5 h-5 rounded flex items-center justify-center border shrink-0 transition-colors ${!isHidden ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-300 bg-slate-50 text-slate-400'}`}>
-                                  {!isHidden ? <Eye size={12} strokeWidth={3}/> : <EyeOff size={12}/>}
-                              </div>
-                              <div className="flex-1 truncate">
-                                  <p className={`font-bold text-sm ${!isHidden ? 'text-emerald-800' : 'text-slate-500'}`}>{item.generic_name || item.article_name}</p>
-                                  <p className={`text-[10px] uppercase font-bold tracking-widest mt-1 ${!isHidden ? 'text-emerald-600/70' : 'text-slate-400'}`}>{item.category}</p>
-                              </div>
-                          </button>
-                      );
-                  })}
+
+              {/* ITEMS VISIBILITY */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-[75vh]">
+                  <div className="p-5 border-b border-slate-100 bg-slate-50">
+                      <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Wine size={16}/> Active Items</h3>
+                      <p className="text-[10px] text-slate-400 font-bold mt-1">Select items to appear on the attendant's screen.</p>
+                  </div>
+                  <div className="p-6 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-3 content-start">
+                      {catalog.map(item => {
+                          const isHidden = hiddenItems.includes(item.article_number);
+                          return (
+                              <button 
+                                  key={item.article_number} 
+                                  onClick={() => toggleHiddenItem(item.article_number, isHidden)} 
+                                  className={`w-full flex items-center gap-3 p-4 rounded-xl border transition-all text-left group ${!isHidden ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200 hover:border-slate-300 opacity-60 hover:opacity-100'}`}
+                              >
+                                  <div className={`w-5 h-5 rounded flex items-center justify-center border shrink-0 transition-colors ${!isHidden ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-300 bg-slate-50 text-slate-400'}`}>
+                                      {!isHidden ? <Eye size={12} strokeWidth={3}/> : <EyeOff size={12}/>}
+                                  </div>
+                                  <div className="flex-1 truncate">
+                                      <p className={`font-bold text-sm ${!isHidden ? 'text-emerald-800' : 'text-slate-500'}`}>{item.generic_name || item.article_name}</p>
+                                      <p className={`text-[10px] uppercase font-bold tracking-widest mt-1 ${!isHidden ? 'text-emerald-600/70' : 'text-slate-400'}`}>{item.category}</p>
+                                  </div>
+                              </button>
+                          );
+                      })}
+                  </div>
               </div>
+
           </div>
 
       )}
