@@ -219,17 +219,20 @@ export default function MinibarInventoryAdmin() {
     }
   };
 
+  // --- BUG FIX: BULLETPROOF SAVE FOR OPEN/CLOSE STATUS ---
   const toggleInventoryStatus = async () => {
       const newStatus = invStatus === 'OPEN' ? 'CLOSED' : 'OPEN';
       setIsSaving(true);
       
-      // Update Status
-      await supabase.from('hsk_constants').upsert({ type: 'mb_inv_status', label: newStatus }, { onConflict: 'type' });
+      // Wipe the old status and insert the new one to prevent unique constraint failures
+      await supabase.from('hsk_constants').delete().eq('type', 'mb_inv_status');
+      await supabase.from('hsk_constants').insert({ type: 'mb_inv_status', label: newStatus });
       setInvStatus(newStatus);
       
-      // If we are opening, ensure the active period is set to the selected month
+      // If we are opening, ensure the active period is safely set to the selected month
       if (newStatus === 'OPEN' && selectedMonth !== activePeriod) {
-          await supabase.from('hsk_constants').upsert({ type: 'mb_active_period', label: selectedMonth }, { onConflict: 'type' });
+          await supabase.from('hsk_constants').delete().eq('type', 'mb_active_period');
+          await supabase.from('hsk_constants').insert({ type: 'mb_active_period', label: selectedMonth });
           setActivePeriod(selectedMonth);
       }
 
@@ -237,22 +240,33 @@ export default function MinibarInventoryAdmin() {
       toast.success(`Inventory is now ${newStatus}`);
   };
 
+  // --- BUG FIX: BULLETPROOF ALLOCATION SAVING ---
   const handleSaveAllocations = async () => {
       setIsSaving(true);
-      const toUpsert = [];
-      const toDelete = [];
+      const toInsert = [];
       const allocDate = `${selectedMonth}-01`;
 
       for (const [host_id, villas] of Object.entries(allocations)) {
-          if (villas.trim() === '') toDelete.push(host_id);
-          else toUpsert.push({ date: allocDate, host_id, villas });
+          // We only save hosts that have actual text in their assigned box
+          if (villas.trim() !== '') {
+              toInsert.push({ date: allocDate, host_id, villas });
+          }
       }
 
-      if (toUpsert.length > 0) await supabase.from('hsk_minibar_allocations').upsert(toUpsert, { onConflict: 'date,host_id' });
-      if (toDelete.length > 0) await supabase.from('hsk_minibar_allocations').delete().eq('date', allocDate).in('host_id', toDelete);
+      let hasError = false;
+
+      // 1. Wipe ALL allocations for this specific month date to ensure a completely clean slate
+      const { error: delErr } = await supabase.from('hsk_minibar_allocations').delete().eq('date', allocDate);
+      if (delErr) { toast.error("DB Wipe Error: " + delErr.message); hasError = true; }
+
+      // 2. Insert the fresh data from the screen
+      if (toInsert.length > 0) {
+          const { error: insErr } = await supabase.from('hsk_minibar_allocations').insert(toInsert);
+          if (insErr) { toast.error("DB Save Error: " + insErr.message); hasError = true; }
+      }
       
+      if (!hasError) toast.success(`Allocations saved for ${selectedMonth}!`);
       setIsSaving(false);
-      toast.success(`Allocations saved for ${selectedMonth}!`);
   };
 
   const handleSaveDoubleVillas = async () => {
@@ -299,6 +313,9 @@ export default function MinibarInventoryAdmin() {
   if (!isMounted) return null;
 
   const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
+  
+  // --- BUG FIX: RESTORED CORRECT HOST FILTERING ---
+  // If it's not undefined, they are on the board! (Even if the string is empty, we keep them on board so they can type)
   const activeHostsForBoard = hosts.filter(h => allocations[h.host_id] !== undefined);
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
 
@@ -406,7 +423,6 @@ export default function MinibarInventoryAdmin() {
 
           /* --- ASSIGNMENTS VIEW --- */
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
-              {/* FIXED Z-INDEX BUG HERE: z-10 changed to z-50 so dropdown overlaps table */}
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-50">
                   <div>
                       <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Monthly Attendant Allocations</h3>
