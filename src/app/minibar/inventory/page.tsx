@@ -12,8 +12,10 @@ const TOTAL_VILLAS = 97;
 // Safely get local date string (YYYY-MM-DD) avoiding UTC offset bugs
 const getLocalToday = () => {
     const d = new Date();
-    const offset = d.getTimezoneOffset() * 60000;
-    return new Date(d.getTime() - offset).toISOString().split('T')[0];
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
 };
 
 // --- CUSTOM SORTING LOGIC ---
@@ -77,7 +79,6 @@ export default function MinibarInventoryAdmin() {
   const [activeTab, setActiveTab] = useState<'MATRIX' | 'ASSIGNMENTS' | 'SETUP'>('MATRIX');
   const [isLoading, setIsLoading] = useState(true);
   
-  // Use safe local date function here
   const [selectedDate, setSelectedDate] = useState(getLocalToday());
   
   // Data
@@ -110,8 +111,11 @@ export default function MinibarInventoryAdmin() {
 
   const fetchDailyData = useCallback(async () => {
     setIsLoading(true);
-    const startOfDay = `${selectedDate}T00:00:00`;
-    const endOfDay = `${selectedDate}T23:59:59`;
+    
+    // Create true UTC bounds based on the selected local date
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const startOfDay = new Date(y, m - 1, d, 0, 0, 0).toISOString();
+    const endOfDay = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
 
     const [subRes, allocRes] = await Promise.all([
         supabase.from('hsk_villa_minibar_inventory').select('*').gte('logged_at', startOfDay).lte('logged_at', endOfDay),
@@ -157,7 +161,13 @@ export default function MinibarInventoryAdmin() {
             (payload) => {
                 const newRecord = payload.new as any;
                 if (!newRecord || !newRecord.logged_at) return;
-                const recordDate = newRecord.logged_at.split('T')[0];
+                
+                // Convert UTC logged_at to Local Date string for comparison
+                const recordDateObj = new Date(newRecord.logged_at);
+                const ry = recordDateObj.getFullYear();
+                const rm = String(recordDateObj.getMonth() + 1).padStart(2, '0');
+                const rd = String(recordDateObj.getDate()).padStart(2, '0');
+                const recordDate = `${ry}-${rm}-${rd}`;
                 
                 if (recordDate === selectedDate) {
                     if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
@@ -241,10 +251,12 @@ export default function MinibarInventoryAdmin() {
 
   const matrixDict = useMemo(() => {
       const dict: Record<string, Record<string, number>> = {};
+      
+      // Failsafe: Add all active list AND any submitted list
       activeVillaList.forEach(v => dict[v] = {});
-
       submissions.forEach(sub => {
-          if (sub.inventory_data && Array.isArray(sub.inventory_data) && dict[sub.villa_number]) {
+          if (!dict[sub.villa_number]) dict[sub.villa_number] = {};
+          if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
               sub.inventory_data.forEach((item: any) => {
                   dict[sub.villa_number][item.article_number] = item.qty;
               });
@@ -356,7 +368,6 @@ export default function MinibarInventoryAdmin() {
 
           /* --- ASSIGNMENTS VIEW --- */
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
-              {/* FIXED Z-INDEX BUG HERE: z-10 changed to z-50 so dropdown overlaps table */}
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-50">
                   <div>
                       <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Villa Attendant Allocations</h3>

@@ -6,6 +6,15 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
+// Safely get local date string (YYYY-MM-DD) avoiding UTC offset bugs
+const getLocalToday = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+};
+
 // --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
   const c = (cat || '').toLowerCase();
@@ -32,13 +41,11 @@ type MasterItem = {
   image_url?: string;
 };
 
-// Dynamic parser that splits double villas into -1 and -2
 const parseVillas = (input: string, doubleVillas: string[]) => {
     const result = new Set<string>();
     const parts = input.split(',').map(s => s.trim());
     
     for (const p of parts) {
-        // Handle ranges like 85-88
         if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
             const [start, end] = p.split('-').map(Number);
             if (!isNaN(start) && !isNaN(end) && start <= end) {
@@ -53,7 +60,6 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
                 }
             }
         } else if (p) {
-            // Handle single numbers
             const baseV = p.replace('-1', '').replace('-2', '');
             if (!p.includes('-') && doubleVillas.includes(p)) {
                 result.add(`${p}-1`);
@@ -113,20 +119,24 @@ export default function MinibarInventoryApp() {
   }, []);
 
   const fetchCatalog = async () => {
-    // We fetch catalog but we DO NOT set doubleVillas here for assigning.
-    // We will fetch doubleVillas explicitly during Login to ensure no race conditions.
     const [catRes, constRes] = await Promise.all([
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
-        supabase.from('hsk_constants').select('*').eq('type', 'hidden_mb_item')
+        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas'])
     ]);
     
     if (catRes.data) {
-        const hiddenList = constRes.data ? constRes.data.map(h => h.label) : [];
+        const hiddenList = constRes.data ? constRes.data.filter(c => c.type === 'hidden_mb_item').map(h => h.label) : [];
         const filteredAndSorted = catRes.data
             .filter(i => !hiddenList.includes(i.article_number))
             .sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
         
         setCatalog(filteredAndSorted);
+    }
+
+    if (constRes.data) {
+        const dvStr = constRes.data.find(c => c.type === 'double_mb_villas')?.label || '';
+        const parsedDv = dvStr.split(',').map((s: string) => s.trim());
+        setDoubleVillas(parsedDv);
     }
   };
 
@@ -170,9 +180,9 @@ export default function MinibarInventoryApp() {
       return;
     }
 
-    const today = new Date().toISOString().split('T')[0];
+    // Local today string (YYYY-MM-DD)
+    const today = getLocalToday();
     
-    // FETCH BOTH ALLOCATIONS AND DOUBLE VILLA LIST SIMULTANEOUSLY
     const [allocRes, doubleRes] = await Promise.all([
         supabase.from('hsk_minibar_allocations').select('villas').eq('date', today).eq('host_id', foundHost.host_id).maybeSingle(),
         supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle()
@@ -190,19 +200,19 @@ export default function MinibarInventoryApp() {
         return;
     }
 
-    // Process double villas
     let dvList: string[] = [];
     if (doubleRes.data && doubleRes.data.label) {
         dvList = doubleRes.data.label.split(',').map((s: string) => s.trim());
         setDoubleVillas(dvList);
     }
 
-    // Parse the assigned string using the dynamically fetched double villas list
     const parsed = parseVillas(allocRes.data.villas, dvList);
     setAssignedVillas(parsed);
 
-    // FETCH PREVIOUS SUBMISSIONS TO PRE-FILL COUNTS
-    const startOfDay = `${today}T00:00:00`;
+    // EXACT ISO CONVERSION FOR DB QUERY
+    const [y, m, d] = today.split('-').map(Number);
+    const startOfDay = new Date(y, m - 1, d, 0, 0, 0).toISOString();
+    
     const { data: submissions } = await supabase
         .from('hsk_villa_minibar_inventory')
         .select('villa_number, inventory_data, logged_at')
@@ -270,7 +280,6 @@ export default function MinibarInventoryApp() {
                       par = 1;
                   }
                   
-                  // Specific items that only get 1 piece despite being beverages
                   if (name.includes('light tonic') || name.includes('indian tonic') || name.includes('ginger beer') || name.includes('ginger ale')) {
                       par = 1;
                   }
@@ -279,7 +288,6 @@ export default function MinibarInventoryApp() {
                       par = 0;
                   }
                   
-                  // NO MULTIPLIER USED HERE, standard par is used for each split villa
                   newCounts[item.article_number] = par;
               });
               setCounts(newCounts);
