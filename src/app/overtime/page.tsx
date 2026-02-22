@@ -619,7 +619,7 @@ export default function OvertimeRegistry() {
             </button>
             <h3 className="text-lg font-bold text-[#6D2158] mb-4">{historyHost.full_name}</h3>
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {Object.entries(historyHost.monthlyBalances).map(([month, val]: any) => (
+              {Object.entries(historyHost.monthlyBalances).map(([month, val]: [string, any]) => (
                 <div key={month} className="flex justify-between p-3 border-b border-slate-50">
                   <span className="text-sm font-bold text-slate-600">{month}</span>
                   <span className={`text-sm font-bold ${val > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>

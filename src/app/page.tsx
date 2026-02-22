@@ -55,15 +55,15 @@ export default function Dashboard() {
     // Fallback if foreign key isn't set up yet: we will just fetch the master catalog and map it
     const { data: catalog } = await supabase.from('hsk_master_catalog').select('article_number, article_name');
     
-    const expiringList = (batches || []).map(b => {
-        const days = differenceInDays(parseISO(b.expiry_date), new Date());
-        const masterItem = catalog?.find(c => c.article_number === b.article_number);
+    const expiringList = (batches || []).map((b: any) => {
+        const days = differenceInDays(parseISO(String(b.expiry_date)), new Date());
+        const masterItem = catalog?.find((c: any) => c.article_number === b.article_number);
         return {
             ...b,
             item_name: masterItem?.article_name || b.article_number,
             days
         };
-    }).filter(b => b.days <= 60).sort((a, b) => a.days - b.days);
+    }).filter((b: any) => b.days <= 60).sort((a: any, b: any) => a.days - b.days);
 
     setStats({
       totalHosts: hostCount || 0,

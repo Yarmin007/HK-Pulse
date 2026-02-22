@@ -330,10 +330,17 @@ export default function CoordinatorLog() {
         <div className="flex justify-between items-center mb-3">
            <div>
               <h1 className="text-xl font-bold text-slate-800 tracking-tighter">Logbook</h1>
-              <div onClick={() => dateInputRef.current?.showPicker()} className="flex items-center gap-1 text-[10px] text-slate-400 font-bold uppercase cursor-pointer mt-0.5">
+              <div className="relative flex items-center gap-1 text-[10px] text-slate-400 font-bold uppercase cursor-pointer mt-0.5">
                   <Calendar size={12}/> {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                  <input 
+                      type="date" 
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
+                      value={selectedDate.toISOString().split('T')[0]} 
+                      onChange={(e) => {
+                          if (e.target.value) setSelectedDate(new Date(e.target.value));
+                      }}
+                  />
               </div>
-              <input ref={dateInputRef} type="date" className="absolute opacity-0 w-0 h-0" onChange={(e) => setSelectedDate(new Date(e.target.value))}/>
            </div>
            <div className="flex gap-2">
                 <button onClick={() => handleOpenModal('Minibar')} className="bg-rose-600 text-white px-3 py-2 rounded-lg font-bold uppercase text-[10px] shadow-md">MB</button>

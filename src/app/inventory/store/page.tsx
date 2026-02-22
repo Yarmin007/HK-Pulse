@@ -86,12 +86,12 @@ export default function PerpetualInventory() {
   const fetchData = async () => {
     setIsLoading(true);
     const { data: masters } = await supabase.from('hsk_master_catalog').select('*').order('item_name');
-    if (masters) setMasterList(masters);
+    if (masters) setMasterList(masters as MasterItem[]);
 
     let query = supabase.from('hsk_monthly_stock').select('*');
     if (activeStore !== 'All') query = query.eq('store_name', activeStore);
     const { data: history } = await query;
-    if (history) setAllHistory(history);
+    if (history) setAllHistory(history as MonthlyRecord[]);
     setIsLoading(false);
   };
 
