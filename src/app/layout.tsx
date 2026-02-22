@@ -6,7 +6,11 @@ import { Toaster } from "react-hot-toast";
 export const metadata: Metadata = {
   title: "HK Pulse | Coordinator Hub",
   description: "Advanced Housekeeping Management System",
-  manifest: "/manifest.json", // 👈 Link the PWA Manifest here
+  manifest: "/manifest.json", 
+  icons: {
+    icon: '/icon.svg', // Next.js natively uses the SVG as the web favicon!
+    apple: '/icon-192.png', // Apple requires a PNG for the home screen
+  },
 };
 
 export default function RootLayout({
@@ -20,11 +24,6 @@ export default function RootLayout({
         <div className="flex min-h-screen">
           <Sidebar />
           
-          {/* UPDATED MAIN CONTAINER: 
-              - 'ml-0' on mobile (full width)
-              - 'md:ml-64' on desktop (sidebar space)
-              - Added 'pt-16' on mobile to clear the hamburger button
-          */}
           <main className="flex-1 ml-0 md:ml-64 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300 w-full">
             {children}
           </main>
