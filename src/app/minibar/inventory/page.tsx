@@ -9,6 +9,13 @@ import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
 
+// Safely get local date string (YYYY-MM-DD) avoiding UTC offset bugs
+const getLocalToday = () => {
+    const d = new Date();
+    const offset = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - offset).toISOString().split('T')[0];
+};
+
 // --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
   const c = (cat || '').toLowerCase();
@@ -69,7 +76,9 @@ export default function MinibarInventoryAdmin() {
   const [isMounted, setIsMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<'MATRIX' | 'ASSIGNMENTS' | 'SETUP'>('MATRIX');
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  
+  // Use safe local date function here
+  const [selectedDate, setSelectedDate] = useState(getLocalToday());
   
   // Data
   const [catalog, setCatalog] = useState<any[]>([]);
@@ -347,7 +356,8 @@ export default function MinibarInventoryAdmin() {
 
           /* --- ASSIGNMENTS VIEW --- */
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
-              <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-10">
+              {/* FIXED Z-INDEX BUG HERE: z-10 changed to z-50 so dropdown overlaps table */}
+              <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-50">
                   <div>
                       <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Villa Attendant Allocations</h3>
                       <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
@@ -369,7 +379,7 @@ export default function MinibarInventoryAdmin() {
                           onBlur={() => setTimeout(() => setShowHostDropdown(false), 200)}
                       />
                       {showHostDropdown && (
-                          <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-slate-100 max-h-60 overflow-y-auto z-50">
+                          <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-slate-100 max-h-60 overflow-y-auto z-[100]">
                               {availableHostsToAdd.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || (h.host_id || '').includes(hostSearch)).map(h => (
                                   <button 
                                       key={h.id}
@@ -394,7 +404,7 @@ export default function MinibarInventoryAdmin() {
                   </button>
               </div>
 
-              <div className="p-0 overflow-y-auto">
+              <div className="p-0 overflow-y-auto relative z-0">
                   <table className="w-full text-left">
                       <thead className="bg-slate-50 sticky top-0 border-b border-slate-100 z-10">
                           <tr>
