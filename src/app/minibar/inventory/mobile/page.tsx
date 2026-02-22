@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Lock, ArrowRight, User, MapPin, Search, 
   Plus, Minus, Save, CheckCircle2, Loader2, ChevronLeft, Wine, AlertCircle
@@ -9,11 +9,11 @@ import { supabase } from '@/lib/supabase';
 // --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
   const c = (cat || '').toLowerCase();
-  if (c.includes('bite') || c.includes('sweet') || c.includes('food')) return 1;
+  if (c.includes('bite') || c.includes('sweet') || c.includes('food') || c.includes('snack')) return 1;
   if (c.includes('soft') || c.includes('juice') || c.includes('water') || c.includes('beverage')) return 2;
   if (c.includes('beer')) return 3;
   if (c.includes('wine')) return 4;
-  if (c.includes('spirit') || c.includes('liquor') || c.includes('hard')) return 5;
+  if (c.includes('spirit') || c.includes('liquor') || c.includes('hard') || c.includes('alcohol')) return 5;
   return 6;
 };
 
@@ -67,6 +67,7 @@ export default function MinibarInventoryApp() {
   // Catalog & Counting State
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [activeCategory, setActiveCategory] = useState('All');
 
   // Success State
   const [showSuccess, setShowSuccess] = useState(false);
@@ -227,13 +228,16 @@ export default function MinibarInventoryApp() {
     setStep(2);
   };
 
+  const categories = ['All', ...Array.from(new Set(catalog.map(i => i.category)))];
+
   if (!isMounted) return null;
 
   return (
-    <div className="min-h-screen bg-slate-50 md:bg-slate-100 flex items-center justify-center p-0 md:p-6 font-antiqua">
+    // Fixed: min-h-[100dvh] ensures it perfectly fits mobile screens including Safari bottom bar
+    <div className="min-h-[100dvh] bg-slate-50 md:bg-slate-100 flex items-center justify-center p-0 md:p-6 font-antiqua">
       
       {/* Mobile-sized container */}
-      <div className="w-full max-w-md h-screen md:h-[85vh] bg-white md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col relative">
+      <div className="w-full max-w-md h-[100dvh] md:h-[85vh] bg-white md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col relative">
         
         {/* --- STEP 1: AUTHENTICATION --- */}
         {step === 1 && (
@@ -274,13 +278,14 @@ export default function MinibarInventoryApp() {
 
         {/* --- STEP 2: VILLA SELECTION (GRID) --- */}
         {step === 2 && currentHost && (
-            <div className="flex-1 flex flex-col bg-slate-50">
+            // Fixed: min-h-0 allows the inner scroll container to work correctly
+            <div className="flex-1 flex flex-col bg-slate-50 min-h-0 relative">
                 <div className="bg-[#6D2158] p-6 text-white pb-10 rounded-b-[2.5rem] shadow-md shrink-0">
                     <p className="text-xs font-bold text-white/60 uppercase tracking-widest mb-1">Welcome back,</p>
                     <h2 className="text-2xl font-black flex items-center gap-2 truncate"><User size={24}/> {currentHost.full_name.split(' ')[0]}</h2>
                 </div>
 
-                <div className="flex-1 p-6 -mt-6">
+                <div className="flex-1 p-6 -mt-6 overflow-y-auto pb-10">
                     <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 mb-6 animate-in slide-in-from-bottom-4">
                         <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-4">
                             <MapPin size={24} />
@@ -311,7 +316,8 @@ export default function MinibarInventoryApp() {
 
         {/* --- STEP 3: INVENTORY ENTRY --- */}
         {step === 3 && currentHost && (
-            <div className="flex-1 flex flex-col bg-white">
+            // Fixed: min-h-0 is absolutely necessary here to allow inner overflow scrolling!
+            <div className="flex-1 flex flex-col bg-white min-h-0 relative">
                 
                 {/* Header */}
                 <div className="bg-[#6D2158] text-white pt-6 pb-4 px-4 flex flex-col shrink-0 shadow-md z-10">
@@ -323,11 +329,24 @@ export default function MinibarInventoryApp() {
                         </div>
                         <div className="w-9"></div> {/* Spacer */}
                     </div>
+                    
+                    {/* Category Filter Horizontal Scroll */}
+                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 px-2">
+                        {categories.map(cat => (
+                            <button 
+                                key={cat} 
+                                onClick={() => setActiveCategory(cat)}
+                                className={`px-4 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-colors border ${activeCategory === cat ? 'bg-white text-[#6D2158] border-white' : 'bg-transparent text-white border-white/30'}`}
+                            >
+                                {cat}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
-                {/* Items List (Automatically sorted!) */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 pb-28">
-                    {catalog.map(item => (
+                {/* Items List */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 pb-[100px]">
+                    {catalog.filter(i => activeCategory === 'All' || i.category === activeCategory).map(item => (
                         <div key={item.article_number} className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between gap-4 animate-in slide-in-from-bottom-2">
                             
                             <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center shrink-0 border border-slate-100 overflow-hidden">
