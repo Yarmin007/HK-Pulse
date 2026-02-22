@@ -8,7 +8,6 @@ import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
-const VILLA_NUMBERS = Array.from({ length: TOTAL_VILLAS }, (_, i) => String(i + 1));
 
 // --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
@@ -85,7 +84,21 @@ export default function MinibarInventoryAdmin() {
   const [hostSearch, setHostSearch] = useState('');
   const [showHostDropdown, setShowHostDropdown] = useState(false);
 
-  // Memoize fetchDailyData so it can be used safely in useEffect without staleness
+  // --- DYNAMIC VILLA LIST (Splits double villas) ---
+  const activeVillaList = useMemo(() => {
+      const doubleList = doubleVillasStr.split(',').map(s => s.trim()).filter(Boolean);
+      const list: string[] = [];
+      for (let i = 1; i <= TOTAL_VILLAS; i++) {
+          const v = String(i);
+          if (doubleList.includes(v)) {
+              list.push(`${v}-1`, `${v}-2`);
+          } else {
+              list.push(v);
+          }
+      }
+      return list;
+  }, [doubleVillasStr]);
+
   const fetchDailyData = useCallback(async () => {
     setIsLoading(true);
     const startOfDay = `${selectedDate}T00:00:00`;
@@ -125,10 +138,8 @@ export default function MinibarInventoryAdmin() {
 
   useEffect(() => {
     if (!isMounted) return;
-    
     fetchDailyData();
 
-    // REALTIME LISTENER FOR LIVE UPDATES
     const channel = supabase
         .channel('realtime_inventory')
         .on(
@@ -137,7 +148,6 @@ export default function MinibarInventoryAdmin() {
             (payload) => {
                 const newRecord = payload.new as any;
                 if (!newRecord || !newRecord.logged_at) return;
-
                 const recordDate = newRecord.logged_at.split('T')[0];
                 
                 if (recordDate === selectedDate) {
@@ -201,7 +211,7 @@ export default function MinibarInventoryAdmin() {
           await supabase.from('hsk_constants').insert({ type: 'double_mb_villas', label: doubleVillasStr.trim() });
       }
       setIsSaving(false);
-      toast.success("Villa multipliers saved!");
+      toast.success("Villa splits saved!");
   };
 
   const toggleHiddenItem = async (articleNo: string, isCurrentlyHidden: boolean) => {
@@ -222,24 +232,20 @@ export default function MinibarInventoryAdmin() {
 
   const matrixDict = useMemo(() => {
       const dict: Record<string, Record<string, number>> = {};
-      VILLA_NUMBERS.forEach(v => dict[v] = {});
+      activeVillaList.forEach(v => dict[v] = {});
 
       submissions.forEach(sub => {
-          if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
+          if (sub.inventory_data && Array.isArray(sub.inventory_data) && dict[sub.villa_number]) {
               sub.inventory_data.forEach((item: any) => {
                   dict[sub.villa_number][item.article_number] = item.qty;
               });
           }
       });
       return dict;
-  }, [submissions]);
+  }, [submissions, activeVillaList]);
 
   if (!isMounted) return null;
 
-  const completedCount = submissions.length;
-  const pendingCount = TOTAL_VILLAS - completedCount;
-  const progressPct = (completedCount / TOTAL_VILLAS) * 100;
-  
   const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
   const activeHostsForBoard = hosts.filter(h => allocations[h.host_id] !== undefined);
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
@@ -299,7 +305,7 @@ export default function MinibarInventoryAdmin() {
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col max-h-[75vh] animate-in fade-in">
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
                   <span className="text-xs font-bold uppercase tracking-widest text-slate-500">Live Item x Villa Grid</span>
-                  <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200">{submissions.length} / {TOTAL_VILLAS} Villas Recorded</span>
+                  <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200">{submissions.length} / {activeVillaList.length} Records</span>
               </div>
               <div className="overflow-auto flex-1 relative">
                   <table className="w-full text-center border-collapse text-xs whitespace-nowrap">
@@ -308,7 +314,7 @@ export default function MinibarInventoryAdmin() {
                               <th className="sticky left-0 z-40 bg-slate-100 border-r border-b border-slate-200 p-3 text-left min-w-[200px] shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
                                   <span className="font-black uppercase text-slate-500 tracking-wider text-[10px]">Minibar Item</span>
                               </th>
-                              {VILLA_NUMBERS.map(v => (
+                              {activeVillaList.map(v => (
                                   <th key={v} className={`p-2 border-r border-b border-slate-200 font-black ${submissions.some(s => s.villa_number === v) ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-50 text-slate-400'}`}>
                                       {v}
                                   </th>
@@ -322,7 +328,7 @@ export default function MinibarInventoryAdmin() {
                                       <p className="font-bold text-slate-700 truncate max-w-[180px]">{item.generic_name || item.article_name}</p>
                                       <p className="text-[9px] text-slate-400 uppercase tracking-widest">{item.category}</p>
                                   </td>
-                                  {VILLA_NUMBERS.map(v => {
+                                  {activeVillaList.map(v => {
                                       const qty = matrixDict[v][item.article_number] || 0;
                                       return (
                                           <td key={v} className={`p-2 border-r border-b border-slate-50 ${qty > 0 ? 'font-black text-[#6D2158] bg-[#6D2158]/5' : 'text-slate-300'}`}>
@@ -344,7 +350,7 @@ export default function MinibarInventoryAdmin() {
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-10">
                   <div>
                       <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Villa Attendant Allocations</h3>
-                      <p className="text-[10px] text-slate-400 font-bold mt-1">Type villa number and press ENTER to add. E.g., "1, 2, 5-10"</p>
+                      <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
                   </div>
                   
                   {/* SMART SEARCHABLE HOST INPUT */}
@@ -432,11 +438,11 @@ export default function MinibarInventoryAdmin() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in">
               
               {/* DOUBLE MINIBAR SETUP */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-fit">
                   <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
                       <div>
-                          <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Home size={16}/> Double PAR Villas</h3>
-                          <p className="text-[10px] text-slate-400 font-bold mt-1">These villas will have x2 items auto-filled on the Mobile App.</p>
+                          <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Home size={16}/> Split Minibar Villas</h3>
+                          <p className="text-[10px] text-slate-400 font-bold mt-1">These villas will appear as -1 and -2 on the Mobile App.</p>
                       </div>
                       <button onClick={handleSaveDoubleVillas} disabled={isSaving} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-emerald-500 transition-all flex gap-1 items-center">
                           {isSaving ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>} Save
@@ -447,7 +453,7 @@ export default function MinibarInventoryAdmin() {
                       <input 
                           type="text" 
                           className="w-full mt-2 p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] transition-all text-[#6D2158]"
-                          placeholder="e.g. 1, 2, 50, 51"
+                          placeholder="e.g. 1, 2, 50, 87"
                           value={doubleVillasStr}
                           onChange={(e) => setDoubleVillasStr(e.target.value)}
                       />

@@ -32,20 +32,43 @@ type MasterItem = {
   image_url?: string;
 };
 
-const parseVillas = (input: string) => {
+// Dynamic parser that splits double villas into -1 and -2
+const parseVillas = (input: string, doubleVillas: string[]) => {
     const result = new Set<string>();
     const parts = input.split(',').map(s => s.trim());
+    
     for (const p of parts) {
-        if (p.includes('-')) {
+        // Handle ranges like 85-88
+        if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
             const [start, end] = p.split('-').map(Number);
             if (!isNaN(start) && !isNaN(end) && start <= end) {
-                for (let i = start; i <= end; i++) result.add(String(i));
+                for (let i = start; i <= end; i++) {
+                    const v = String(i);
+                    if (doubleVillas.includes(v)) {
+                        result.add(`${v}-1`);
+                        result.add(`${v}-2`);
+                    } else {
+                        result.add(v);
+                    }
+                }
             }
         } else if (p) {
-            if (!isNaN(Number(p))) result.add(String(Number(p)));
+            // Handle single numbers
+            const baseV = p.replace('-1', '').replace('-2', '');
+            if (!p.includes('-') && doubleVillas.includes(p)) {
+                result.add(`${p}-1`);
+                result.add(`${p}-2`);
+            } else {
+                result.add(p);
+            }
         }
     }
-    return Array.from(result).sort((a,b) => Number(a) - Number(b));
+    
+    return Array.from(result).sort((a,b) => {
+        const numA = parseFloat(a.replace('-', '.'));
+        const numB = parseFloat(b.replace('-', '.'));
+        return numA - numB;
+    });
 };
 
 export default function MinibarInventoryApp() {
@@ -90,24 +113,20 @@ export default function MinibarInventoryApp() {
   }, []);
 
   const fetchCatalog = async () => {
+    // We fetch catalog but we DO NOT set doubleVillas here for assigning.
+    // We will fetch doubleVillas explicitly during Login to ensure no race conditions.
     const [catRes, constRes] = await Promise.all([
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
-        supabase.from('hsk_constants').select('*').in('type', ['hidden_mb_item', 'double_mb_villas'])
+        supabase.from('hsk_constants').select('*').eq('type', 'hidden_mb_item')
     ]);
     
     if (catRes.data) {
-        const hiddenList = constRes.data ? constRes.data.filter(c => c.type === 'hidden_mb_item').map(h => h.label) : [];
+        const hiddenList = constRes.data ? constRes.data.map(h => h.label) : [];
         const filteredAndSorted = catRes.data
             .filter(i => !hiddenList.includes(i.article_number))
             .sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
         
         setCatalog(filteredAndSorted);
-    }
-
-    if (constRes.data) {
-        const dvStr = constRes.data.find(c => c.type === 'double_mb_villas')?.label || '';
-        const parsedDv = dvStr.split(',').map((s: string) => s.trim());
-        setDoubleVillas(parsedDv);
     }
   };
 
@@ -152,26 +171,34 @@ export default function MinibarInventoryApp() {
     }
 
     const today = new Date().toISOString().split('T')[0];
-    const { data: allocations, error: allocErr } = await supabase
-        .from('hsk_minibar_allocations')
-        .select('villas')
-        .eq('date', today)
-        .eq('host_id', foundHost.host_id)
-        .maybeSingle();
+    
+    // FETCH BOTH ALLOCATIONS AND DOUBLE VILLA LIST SIMULTANEOUSLY
+    const [allocRes, doubleRes] = await Promise.all([
+        supabase.from('hsk_minibar_allocations').select('villas').eq('date', today).eq('host_id', foundHost.host_id).maybeSingle(),
+        supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle()
+    ]);
 
-    if (allocErr) {
+    if (allocRes.error) {
         setAuthError('System Error: Allocations table missing.');
         setIsLoading(false);
         return;
     }
 
-    if (!allocations || !allocations.villas) {
+    if (!allocRes.data || !allocRes.data.villas) {
         setAuthError(`Welcome ${foundHost.full_name.split(' ')[0]}, but you have NO VILLAS assigned today. Check the Admin Dashboard.`);
         setIsLoading(false);
         return;
     }
 
-    const parsed = parseVillas(allocations.villas);
+    // Process double villas
+    let dvList: string[] = [];
+    if (doubleRes.data && doubleRes.data.label) {
+        dvList = doubleRes.data.label.split(',').map((s: string) => s.trim());
+        setDoubleVillas(dvList);
+    }
+
+    // Parse the assigned string using the dynamically fetched double villas list
+    const parsed = parseVillas(allocRes.data.villas, dvList);
     setAssignedVillas(parsed);
 
     // FETCH PREVIOUS SUBMISSIONS TO PRE-FILL COUNTS
@@ -224,13 +251,10 @@ export default function MinibarInventoryApp() {
 
   // --- STEP 3: QUICK FILL ACTIONS & ONE-CLICK SUBMIT ---
   const requestAllOk = () => {
-      const isDouble = doubleVillas.includes(selectedVilla);
-      const multiplier = isDouble ? 2 : 1;
-
       setConfirmModal({
           isOpen: true,
           title: "Fill & Submit?",
-          message: `This will auto-fill standard PAR${isDouble ? ' (x2 for Double Minibar)' : ''} and submit immediately.`,
+          message: `This will auto-fill standard PAR and submit immediately.`,
           confirmText: "Fill & Submit",
           isDestructive: false,
           onConfirm: () => {
@@ -255,7 +279,8 @@ export default function MinibarInventoryApp() {
                       par = 0;
                   }
                   
-                  newCounts[item.article_number] = par * multiplier;
+                  // NO MULTIPLIER USED HERE, standard par is used for each split villa
+                  newCounts[item.article_number] = par;
               });
               setCounts(newCounts);
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
@@ -421,7 +446,7 @@ export default function MinibarInventoryApp() {
                                         className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158]'}`}
                                     >
                                         {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
-                                        <span className="text-2xl font-black">{villa}</span>
+                                        <span className={`font-black ${villa.includes('-') ? 'text-xl' : 'text-2xl'}`}>{villa}</span>
                                         <span className="text-[9px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
                                     </button>
                                 );
@@ -441,7 +466,7 @@ export default function MinibarInventoryApp() {
                     <div className="flex items-center justify-between mb-2">
                         <button onClick={() => setStep(2)} className="p-2 bg-white/10 rounded-full"><ChevronLeft size={20}/></button>
                         <div className="text-center">
-                            <p className="text-[10px] font-bold text-white/60 uppercase tracking-widest flex items-center justify-center gap-1">Inventorying {doubleVillas.includes(selectedVilla) && <span className="bg-amber-400 text-[#6D2158] px-1.5 py-0.5 rounded text-[8px] font-black">x2</span>}</p>
+                            <p className="text-[10px] font-bold text-white/60 uppercase tracking-widest flex items-center justify-center gap-1">Inventorying</p>
                             <h2 className="text-xl font-black">Villa {selectedVilla}</h2>
                         </div>
                         <div className="w-9"></div>
