@@ -9,12 +9,14 @@ import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
 
-// Get Local Month (YYYY-MM)
+// DYNAMIC MONTH TIMEZONE FIX
 const getLocalMonth = () => {
-    const d = new Date();
-    const offset = d.getTimezoneOffset() * 60000;
-    const local = new Date(d.getTime() - offset);
-    return `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, '0')}`;
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    const str = new Intl.DateTimeFormat('en-CA', { 
+        timeZone: tz, 
+        year: 'numeric', month: '2-digit', day: '2-digit' 
+    }).format(new Date());
+    return str.substring(0, 7);
 };
 
 // --- CUSTOM SORTING LOGIC ---
@@ -219,7 +221,6 @@ export default function MinibarInventoryAdmin() {
     }
   };
 
-  // --- BUG FIX: BULLETPROOF SAVE FOR OPEN/CLOSE STATUS ---
   const toggleInventoryStatus = async () => {
       const newStatus = invStatus === 'OPEN' ? 'CLOSED' : 'OPEN';
       setIsSaving(true);
@@ -240,7 +241,6 @@ export default function MinibarInventoryAdmin() {
       toast.success(`Inventory is now ${newStatus}`);
   };
 
-  // --- BUG FIX: BULLETPROOF ALLOCATION SAVING ---
   const handleSaveAllocations = async () => {
       setIsSaving(true);
       const toInsert = [];
@@ -314,8 +314,7 @@ export default function MinibarInventoryAdmin() {
 
   const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
   
-  // --- BUG FIX: RESTORED CORRECT HOST FILTERING ---
-  // If it's not undefined, they are on the board! (Even if the string is empty, we keep them on board so they can type)
+  // If it's not undefined, they are on the board!
   const activeHostsForBoard = hosts.filter(h => allocations[h.host_id] !== undefined);
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
 

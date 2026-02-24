@@ -4,11 +4,10 @@ import {
   Settings, Save, Plus, Trash2, X, Search, Edit3, Image as ImageIcon,
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar,
   Coffee, Droplet, Beer, Wine, Cookie, Zap,
-  Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud
+  Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-// --- CONFIG ---
 const CATEGORY_ICONS: any = {
   'Soft Drinks': Coffee, 'Juices': Coffee, 'Water': Droplet,
   'Beer': Beer, 'Wines': Wine, 'Spirits': Wine,
@@ -23,15 +22,14 @@ const MASTER_CATEGORIES = [
   'Chemicals', 'Linen', 'Stationery', 'Engineering', 'Cleaning Supplies'
 ];
 
-// --- TYPES ---
 type MasterItem = {
   article_number: string;
-  article_name: string;   // Keeping Article Name
-  generic_name: string;   // ADDED: Your short/generic name
+  article_name: string;   
+  generic_name: string;   
   unit: string;
   category: string;
   is_minibar_item: boolean;
-  micros_name: string;    // Keeping Micros Name
+  micros_name: string;    
   sales_price: number;
   image_url?: string; 
   has_expiry: boolean; 
@@ -64,6 +62,10 @@ export default function SettingsPage() {
   const [newConstantValue, setNewConstantValue] = useState('');
   const [activeConstantType, setActiveConstantType] = useState('');
 
+  // SYSTEM CONFIG STATE
+  const [adminPin, setAdminPin] = useState('2026');
+  const [systemTimezone, setSystemTimezone] = useState('Indian/Maldives');
+
   useEffect(() => { fetchMasterList(); fetchConstants(); }, []);
 
   const fetchMasterList = async () => {
@@ -73,7 +75,13 @@ export default function SettingsPage() {
 
   const fetchConstants = async () => {
     const { data } = await supabase.from('hsk_constants').select('*').order('label');
-    if (data) setConstants(data);
+    if (data) {
+        setConstants(data);
+        const pin = data.find(c => c.type === 'admin_pin')?.label || '2026';
+        const tz = data.find(c => c.type === 'system_timezone')?.label || 'Indian/Maldives';
+        setAdminPin(pin);
+        setSystemTimezone(tz);
+    }
   };
 
   const handleEditItem = (item: MasterItem) => {
@@ -108,7 +116,6 @@ export default function SettingsPage() {
   const handleSaveItem = async () => {
     if (!currentItem.article_number || !currentItem.article_name) return alert("Article Number and Name are required.");
     
-    // Auto-fill Generic Name if left blank
     const finalData = {
       ...currentItem,
       generic_name: currentItem.generic_name || currentItem.article_name,
@@ -136,6 +143,19 @@ export default function SettingsPage() {
     if (!confirm('Remove?')) return;
     await supabase.from('hsk_constants').delete().eq('id', id);
     fetchConstants();
+  };
+
+  const handleSaveSystemConfig = async (type: string, val: string) => {
+    setIsUploading(true);
+    await supabase.from('hsk_constants').delete().eq('type', type);
+    await supabase.from('hsk_constants').insert({ type, label: val });
+    
+    if(type === 'system_timezone') {
+        localStorage.setItem('hk_pulse_timezone', val);
+    }
+    
+    setIsUploading(false);
+    alert('System config updated successfully!');
   };
 
   const filteredList = masterList.filter(item => 
@@ -182,7 +202,46 @@ export default function SettingsPage() {
          ))}
       </div>
 
-      {activeTab !== 'System Config' ? (
+      {activeTab === 'System Config' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
+           
+           <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
+              <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  
+                  {/* PIN Config */}
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                      <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Lock size={14}/> Admin Access PIN</label>
+                      <div className="flex gap-2">
+                          <input type="text" className="flex-1 p-3 rounded-lg border font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={adminPin} onChange={e => setAdminPin(e.target.value)} />
+                          <button onClick={() => handleSaveSystemConfig('admin_pin', adminPin)} className="px-6 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-2 font-bold">Used to lock the main dashboard from unauthorized access.</p>
+                  </div>
+
+                  {/* Timezone Config */}
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                      <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Clock size={14}/> Global Website Timezone</label>
+                      <div className="flex gap-2">
+                          <select className="flex-1 p-3 rounded-lg border font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={systemTimezone} onChange={e => setSystemTimezone(e.target.value)}>
+                              <option value="Indian/Maldives">Maldives Time (GMT+5)</option>
+                              <option value="Asia/Dhaka">Bangladesh Time (GMT+6)</option>
+                              <option value="Asia/Colombo">Sri Lanka Time (GMT+5:30)</option>
+                              <option value="Asia/Dubai">Gulf Standard Time (GMT+4)</option>
+                              <option value="UTC">Universal Time (UTC)</option>
+                          </select>
+                          <button onClick={() => handleSaveSystemConfig('system_timezone', systemTimezone)} className="px-6 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-2 font-bold">Adjusts all logs, inventory, and timestamps across the platform.</p>
+                  </div>
+
+              </div>
+           </div>
+
+           <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." />
+           <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." />
+        </div>
+      ) : (
         <div className="animate-in slide-in-from-right-4 duration-300">
            <div className="flex justify-between items-center mb-6">
               <div className="relative w-full max-w-md">
@@ -309,11 +368,6 @@ export default function SettingsPage() {
               </table>
            </div>
         </div>
-      ) : (
-         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
-            <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." />
-            <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." />
-         </div>
       )}
     </div>
   );

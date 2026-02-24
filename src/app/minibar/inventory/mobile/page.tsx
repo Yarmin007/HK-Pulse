@@ -6,6 +6,16 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
+// DYNAMIC DAY TIMEZONE FIX
+const getLocalToday = () => {
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    const str = new Intl.DateTimeFormat('en-CA', { 
+        timeZone: tz, 
+        year: 'numeric', month: '2-digit', day: '2-digit' 
+    }).format(new Date());
+    return str; // Returns YYYY-MM-DD
+};
+
 // --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
   const c = (cat || '').toLowerCase();
@@ -105,6 +115,13 @@ export default function MinibarInventoryApp() {
   }>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
   useEffect(() => {
+    // Also sync timezone on mobile app load
+    const syncTimezone = async () => {
+        const { data } = await supabase.from('hsk_constants').select('label').eq('type', 'system_timezone').maybeSingle();
+        if (data && data.label) localStorage.setItem('hk_pulse_timezone', data.label);
+    };
+    syncTimezone();
+
     setIsMounted(true);
     fetchCatalog();
   }, []);

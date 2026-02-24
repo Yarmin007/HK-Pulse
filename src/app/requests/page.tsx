@@ -53,10 +53,11 @@ const getTodayStr = () => {
   return `${year}-${month}-${day}`;
 };
 
-// 1. DHAKA TIME FORMATTER (GMT+6)
-const formatDhakaTime = (dateStr: string) => {
+// DYNAMIC TIME FORMATTER 
+const formatLocalTime = (dateStr: string) => {
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
     return new Date(dateStr).toLocaleTimeString('en-US', {
-        timeZone: 'Asia/Dhaka',
+        timeZone: tz,
         hour: '2-digit',
         minute: '2-digit',
         hour12: true
@@ -160,8 +161,9 @@ export default function CoordinatorLog() {
 
   const handleOpenModal = (type: 'Minibar' | 'Other') => {
     const now = new Date();
-    const dhakaNow = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
-    setManualTime(dhakaNow);
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    const localNow = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
+    setManualTime(localNow);
     setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch('');
     setIsEditing(false); setEditingId(null);
     if (type === 'Minibar') setIsMinibarOpen(true); else setIsOtherOpen(true);
@@ -169,7 +171,8 @@ export default function CoordinatorLog() {
 
   const handleEditRecord = (record: RequestRecord) => {
     setVillaNumber(record.villa_number);
-    setManualTime(new Date(record.request_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Dhaka' }));
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    setManualTime(new Date(record.request_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz }));
     setRequesterSearch(record.attendant_name);
     setIsEditing(true);
     setEditingId(record.id);
@@ -374,9 +377,9 @@ export default function CoordinatorLog() {
                 </div>
                 <div className="mt-auto pt-3 border-t border-slate-50 flex justify-between items-end">
                    <div className="mr-6">
-                     <div className="text-[9px] text-slate-400 font-black uppercase truncate max-w-[60px]">{r.attendant_name}</div>
-                     <div className="text-[9px] text-slate-300 font-bold"><Clock size={8} className="inline mr-1"/>{formatDhakaTime(r.request_time)}</div>
-                     {r.chk_number && <div className="text-[10px] text-[#6D2158] font-black mt-1">CHK: {r.chk_number}</div>}
+                      <div className="text-[9px] text-slate-400 font-black uppercase truncate max-w-[60px]">{r.attendant_name}</div>
+                      <div className="text-[9px] text-slate-300 font-bold"><Clock size={8} className="inline mr-1"/>{formatLocalTime(r.request_time)}</div>
+                      {r.chk_number && <div className="text-[10px] text-[#6D2158] font-black mt-1">CHK: {r.chk_number}</div>}
                    </div>
                    <div className="flex gap-1.5 flex-wrap justify-end">
                      {r.request_type === 'Minibar' ? (
