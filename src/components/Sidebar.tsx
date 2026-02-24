@@ -9,12 +9,13 @@ import {
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight
 } from "lucide-react";
 
+// MOVED Request Log to the 2nd position
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Request Log", icon: ClipboardList, path: "/requests" },
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocation", icon: ListChecks, path: "/allocation" },
   { name: "Water Production", icon: Droplets, path: "/water" },
-  { name: "Request Log", icon: ClipboardList, path: "/requests" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Print Hub", icon: Printer, path: "/print" },

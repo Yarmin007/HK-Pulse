@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Save, Plus, Trash2, X, Search, Edit3, Image as ImageIcon,
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar,
-  Coffee, Droplet, Beer, Wine, Cookie, Zap,
+  Coffee, Droplet, Beer, Wine, Cookie, Zap, User,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -65,6 +65,10 @@ export default function SettingsPage() {
   // SYSTEM CONFIG STATE
   const [adminPin, setAdminPin] = useState('2026');
   const [systemTimezone, setSystemTimezone] = useState('Indian/Maldives');
+
+  // GEM DIRECTORY STATE
+  const [gemName, setGemName] = useState('');
+  const [gemMvpn, setGemMvpn] = useState('');
 
   useEffect(() => { fetchMasterList(); fetchConstants(); }, []);
 
@@ -139,6 +143,13 @@ export default function SettingsPage() {
     if (!error) { setNewConstantValue(''); fetchConstants(); }
   };
 
+  const handleAddGem = async () => {
+    if (!gemName.trim() || !gemMvpn.trim()) return alert("Please enter both Name and MVPN");
+    const label = `${gemName.trim()} - ${gemMvpn.trim()}`;
+    const { error } = await supabase.from('hsk_constants').insert({ type: 'gem', label });
+    if (!error) { setGemName(''); setGemMvpn(''); fetchConstants(); }
+  };
+
   const handleDeleteConstant = async (id: string) => {
     if (!confirm('Remove?')) return;
     await supabase.from('hsk_constants').delete().eq('id', id);
@@ -171,7 +182,7 @@ export default function SettingsPage() {
   const ListManager = ({ type, title, icon: Icon, placeholder }: any) => {
     const list = constants.filter(c => c.type === type);
     return (
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-6">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-6 h-fit">
         <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
         <div className="flex gap-2 mb-4">
           <input type="text" placeholder={placeholder} className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={activeConstantType === type ? newConstantValue : ''} onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}/>
@@ -192,12 +203,12 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
       <div className="border-b border-slate-200 pb-6 mb-6">
-        <h1 className="text-3xl font-bold tracking-tight">System Settings</h1>
-        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">Configuration & Master Data</p>
+        <h1 className="text-3xl font-bold tracking-tight text-slate-800">System Settings</h1>
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configuration & Master Data</p>
       </div>
 
       <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
-         {['Master List', 'Minibar Menu', 'Expiry Setup', 'System Config'].map(tab => (
+         {['Master List', 'Minibar Menu', 'Expiry Setup', 'GEM Directory', 'System Config'].map(tab => (
             <button key={tab} onClick={() => { setActiveTab(tab); setIsFormOpen(false); }} className={`px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${activeTab === tab ? 'bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20' : 'bg-white text-slate-400 border border-slate-100 hover:border-[#6D2158]'}`}>{tab}</button>
          ))}
       </div>
@@ -240,6 +251,58 @@ export default function SettingsPage() {
 
            <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." />
            <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." />
+        </div>
+      ) : activeTab === 'GEM Directory' ? (
+        <div className="animate-in slide-in-from-right-4 duration-300">
+           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 max-w-2xl">
+              <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
+                 <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center">
+                    <Briefcase size={20} />
+                 </div>
+                 <div>
+                    <h3 className="text-lg font-bold text-slate-800">GEM Directory</h3>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Manage Guest Experience Makers</p>
+                 </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2 mb-6">
+                <input 
+                   type="text" 
+                   placeholder="GEM Name (e.g. John)" 
+                   className="flex-1 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 focus:bg-white transition-colors" 
+                   value={gemName} 
+                   onChange={(e) => setGemName(e.target.value)}
+                />
+                <input 
+                   type="number" 
+                   placeholder="MVPN (e.g. 1234)" 
+                   className="w-full sm:w-48 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 focus:bg-white transition-colors" 
+                   value={gemMvpn} 
+                   onChange={(e) => setGemMvpn(e.target.value)}
+                   onKeyDown={(e) => { if (e.key === 'Enter') handleAddGem(); }}
+                />
+                <button onClick={handleAddGem} className="px-6 py-4 bg-amber-500 text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600 transition-colors whitespace-nowrap">
+                   Add GEM
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                 {constants.filter(c => c.type === 'gem').map(item => (
+                   <div key={item.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-200 transition-all">
+                      <div className="flex items-center gap-3">
+                         <User size={16} className="text-slate-400" />
+                         <span className="font-bold text-slate-700">{item.label}</span>
+                      </div>
+                      <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2">
+                         <Trash2 size={18}/>
+                      </button>
+                   </div>
+                 ))}
+                 {constants.filter(c => c.type === 'gem').length === 0 && (
+                     <div className="text-center py-10 text-slate-400 text-sm font-bold italic">No GEMs added yet.</div>
+                 )}
+              </div>
+           </div>
         </div>
       ) : (
         <div className="animate-in slide-in-from-right-4 duration-300">
