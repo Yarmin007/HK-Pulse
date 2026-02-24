@@ -2,14 +2,15 @@ import type { Metadata } from "next";
 import "./globals.css"; 
 import Sidebar from "@/components/Sidebar";
 import { Toaster } from "react-hot-toast"; 
+import AuthGuard from "@/components/AuthGuard";
 
 export const metadata: Metadata = {
   title: "HK Pulse | Coordinator Hub",
   description: "Advanced Housekeeping Management System",
   manifest: "/manifest.json", 
   icons: {
-    icon: '/icon.svg', // Next.js natively uses the SVG as the web favicon!
-    apple: '/icon-192.png', // Apple requires a PNG for the home screen
+    icon: '/icon.svg', 
+    apple: '/icon-192.png', 
   },
 };
 
@@ -21,13 +22,17 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-[#FDFBFD] text-[#6D2158] font-antiqua antialiased">
-        <div className="flex min-h-screen">
-          <Sidebar />
-          
-          <main className="flex-1 ml-0 md:ml-64 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300 w-full">
-            {children}
-          </main>
-        </div>
+        
+        {/* THIS IS THE NEW SECURITY LOCK */}
+        <AuthGuard>
+          <div className="flex min-h-screen">
+            <Sidebar />
+            
+            <main className="flex-1 ml-0 md:ml-64 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300 w-full">
+              {children}
+            </main>
+          </div>
+        </AuthGuard>
 
         <Toaster 
           position="top-right"
