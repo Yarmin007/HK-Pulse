@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css"; 
-import Sidebar from "@/components/Sidebar";
 import { Toaster } from "react-hot-toast"; 
 import AuthGuard from "@/components/AuthGuard";
+import ClientLayout from "@/components/ClientLayout";
 
 export const metadata: Metadata = {
   title: "HK Pulse | Coordinator Hub",
@@ -23,15 +23,12 @@ export default function RootLayout({
     <html lang="en">
       <body className="bg-[#FDFBFD] text-[#6D2158] font-antiqua antialiased">
         
-        {/* THIS IS THE NEW SECURITY LOCK */}
+        {/* Security Lock */}
         <AuthGuard>
-          <div className="flex min-h-screen">
-            <Sidebar />
-            
-            <main className="flex-1 ml-0 md:ml-64 p-4 md:p-8 pt-20 md:pt-8 transition-all duration-300 w-full">
-              {children}
-            </main>
-          </div>
+          {/* Smart Layout Wrapper (Hides Sidebar on Public Pages) */}
+          <ClientLayout>
+            {children}
+          </ClientLayout>
         </AuthGuard>
 
         <Toaster 

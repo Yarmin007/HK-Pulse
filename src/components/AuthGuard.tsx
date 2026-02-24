@@ -14,7 +14,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    // Synchronize global settings instantly 
+    // Synchronize global timezone instantly 
     const syncGlobalSettings = async () => {
       const { data } = await supabase.from('hsk_constants').select('type,label').in('type', ['admin_pin', 'system_timezone']);
       if (data) {
@@ -24,18 +24,19 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     };
     syncGlobalSettings();
 
-    // 1. Let the Mobile App bypass this lock
-    if (pathname?.includes('/mobile')) {
-      setIsAuthenticated(true);
-      setIsChecking(false);
-      return;
-    }
-
-    // 2. Check if this browser already logged in successfully before
+    // 1. Identify if this is a public link that bypasses the PIN
+    const isPublicRoute = pathname?.includes('/mobile') || pathname?.includes('/water/view');
     const authStatus = localStorage.getItem('hk_pulse_admin_auth');
-    if (authStatus === 'true') {
+
+    // 2. Logic: Allow if public OR if they have the PIN saved. Otherwise, LOCK IT.
+    if (isPublicRoute) {
       setIsAuthenticated(true);
+    } else if (authStatus === 'true') {
+      setIsAuthenticated(true);
+    } else {
+      setIsAuthenticated(false); // Strictly revoke access if they navigate away from public route
     }
+    
     setIsChecking(false);
   }, [pathname]);
 
