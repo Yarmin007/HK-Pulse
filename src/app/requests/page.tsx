@@ -103,11 +103,13 @@ export default function CoordinatorLog() {
   const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
   
+  // FILTERS
+  const [typeFilter, setTypeFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
-  const [villaSearch, setVillaSearch] = useState('');
   const [jettyFilter, setJettyFilter] = useState('All');
+  const [villaSearch, setVillaSearch] = useState('');
+  
   const [mbItemSearch, setMbItemSearch] = useState('');
-
   const [villaNumber, setVillaNumber] = useState('');
   const [guestInfo, setGuestInfo] = useState<any>(null); 
   const [manualTime, setManualTime] = useState('');
@@ -130,12 +132,19 @@ export default function CoordinatorLog() {
 
   useEffect(() => {
     const fetchGuest = async () => {
+      // Adjusted to check length rather than just number
       if (!villaNumber || villaNumber.length < 1) { setGuestInfo(null); return; }
-      const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr()).eq('villa_number', villaNumber).maybeSingle();
-      if (data) {
-        setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
-        if(data.gem_name && !requesterSearch && otherModalType !== 'GEM') setRequesterSearch(data.gem_name);
-      } else { setGuestInfo(null); }
+      
+      // If user typed a pure number, try to fetch guest data
+      if (/^\d+$/.test(villaNumber)) {
+          const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr()).eq('villa_number', villaNumber).maybeSingle();
+          if (data) {
+            setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
+            if(data.gem_name && !requesterSearch && otherModalType !== 'GEM') setRequesterSearch(data.gem_name);
+          } else { setGuestInfo(null); }
+      } else {
+          setGuestInfo(null); // It's a custom text like "Office", no guest data
+      }
     };
     const timer = setTimeout(fetchGuest, 400);
     return () => clearTimeout(timer);
@@ -288,15 +297,21 @@ export default function CoordinatorLog() {
         }
     }
 
+    // Properly calculate exact local ISO string to prevent 6 hour timezone shift
+    const [h, m] = manualTime.split(':').map(Number);
+    const reqDate = new Date(selectedDate);
+    reqDate.setHours(h, m, 0, 0);
+
     const payload = {
        villa_number: villaNumber,
        request_type: reqType,
        item_details: details,
-       request_time: `${selectedDate.toISOString().split('T')[0]}T${manualTime}:00`,
+       request_time: reqDate.toISOString(), // Perfectly accurate UTC translation of local time
        attendant_name: requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest"),
        guest_name: guestInfo ? guestInfo.mainName : '',
        package_tag: guestInfo?.pkg?.type || '',
     };
+
     const { error } = isEditing ? await supabase.from('hsk_daily_requests').update(payload).eq('id', editingId) : await supabase.from('hsk_daily_requests').insert(payload);
     if (!error) { setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); showNotification('success', isEditing ? "Updated" : "Saved"); }
   };
@@ -368,14 +383,22 @@ export default function CoordinatorLog() {
   const visibleRecords = records.filter(r => {
       const vNum = parseInt(r.villa_number);
       const isMB = r.request_type === 'Minibar';
+      const isGemReq = r.request_type === 'GEM Request';
       const onlyRefills = isOnlyRefills(r.item_details);
 
+      // TYPE FILTERS
+      if (typeFilter === 'Minibar' && !isMB) return false;
+      if (typeFilter === 'GEM' && !isGemReq) return false;
+      if (typeFilter === 'General' && (isMB || isGemReq)) return false;
+
+      // STATUS FILTERS
       if (statusFilter === 'Unsent' && (!isMB || r.is_sent)) return false;
       if (statusFilter === 'Unposted' && (!isMB || r.is_posted || onlyRefills)) return false;
       if (statusFilter === 'Pending' && r.is_done) return false;
       if (statusFilter === 'Done' && !r.is_done && !r.is_posted) return false;
       
-      if (villaSearch && !r.villa_number.includes(villaSearch)) return false;
+      // SEARCH & ZONE FILTERS
+      if (villaSearch && !r.villa_number.toLowerCase().includes(villaSearch.toLowerCase())) return false;
       if (jettyFilter === 'Jetty A' && !(vNum >= 1 && vNum <= 35)) return false;
       if (jettyFilter === 'Jetty B' && !(vNum >= 37 && vNum <= 50)) return false;
       if (jettyFilter === 'Jetty C' && !(vNum >= 59 && vNum <= 79)) return false;
@@ -431,12 +454,41 @@ export default function CoordinatorLog() {
            </div>
         </div>
 
-        <div className="relative mb-2"><Search size={14} className="absolute left-3 top-2.5 text-slate-400" /><input type="number" placeholder="Search Villa..." className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158]" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/></div>
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar mt-3">
-           {['All', 'Unsent', 'Unposted', 'Pending', 'Done'].map(f => (<button key={f} onClick={() => setStatusFilter(f)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase border transition-all whitespace-nowrap ${statusFilter === f ? 'bg-[#6D2158] border-[#6D2158] text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:border-[#6D2158]'}`}>{f}</button>))}
+        <div className="relative mb-4">
+            <Search size={14} className="absolute left-3 top-3 text-slate-400" />
+            <input type="text" placeholder="Search Villa or Name..." className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158]" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
         </div>
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar mt-2">
-            {['All', 'Jetty A', 'Jetty B', 'Jetty C', 'Beach'].map(j => (<button key={j} onClick={() => setJettyFilter(j)} className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase border transition-all whitespace-nowrap ${jettyFilter === j ? 'bg-slate-800 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-400 hover:border-slate-800'}`}>{j}</button>))}
+
+        {/* --- DYNAMIC FILTER GROUPS --- */}
+        <div className="space-y-3 mb-2">
+            
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <span className="text-[10px] font-bold text-slate-400 uppercase w-12 shrink-0">Type</span>
+                {['All', 'Minibar', 'General', 'GEM'].map(t => (
+                    <button key={t} onClick={() => setTypeFilter(t)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase border transition-all whitespace-nowrap ${typeFilter === t ? 'bg-blue-600 border-blue-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-400 hover:border-blue-600'}`}>
+                        {t}
+                    </button>
+                ))}
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <span className="text-[10px] font-bold text-slate-400 uppercase w-12 shrink-0">Status</span>
+                {['All', 'Unsent', 'Unposted', 'Pending', 'Done'].map(f => (
+                    <button key={f} onClick={() => setStatusFilter(f)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase border transition-all whitespace-nowrap ${statusFilter === f ? 'bg-[#6D2158] border-[#6D2158] text-white shadow-sm' : 'bg-white border-slate-200 text-slate-400 hover:border-[#6D2158]'}`}>
+                        {f}
+                    </button>
+                ))}
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                <span className="text-[10px] font-bold text-slate-400 uppercase w-12 shrink-0">Zone</span>
+                {['All', 'Jetty A', 'Jetty B', 'Jetty C', 'Beach'].map(j => (
+                    <button key={j} onClick={() => setJettyFilter(j)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase border transition-all whitespace-nowrap ${jettyFilter === j ? 'bg-slate-800 border-slate-800 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-400 hover:border-slate-800'}`}>
+                        {j}
+                    </button>
+                ))}
+            </div>
+
         </div>
       </div>
 
@@ -448,10 +500,10 @@ export default function CoordinatorLog() {
              <div key={r.id} className={`break-inside-avoid rounded-2xl border p-4 flex flex-col bg-white shadow-sm relative transition-all hover:shadow-md ${r.request_type === 'Minibar' ? 'border-rose-100' : isGemReq ? 'border-amber-200' : 'border-slate-200'}`}>
                 <div className="flex justify-between items-start mb-3">
                    <div className="flex items-center gap-2">
-                     <span className="text-2xl font-black text-slate-800 tracking-tight">{r.villa_number}</span>
-                     <button onClick={() => handleEditRecord(r)} className="p-1 text-blue-500 hover:bg-blue-50 rounded transition-colors" title="Edit"><Edit3 size={14}/></button>
+                     <span className="text-xl font-black text-slate-800 tracking-tight leading-none break-all">{r.villa_number}</span>
+                     <button onClick={() => handleEditRecord(r)} className="p-1 text-blue-500 hover:bg-blue-50 rounded transition-colors shrink-0" title="Edit"><Edit3 size={14}/></button>
                    </div>
-                   <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : isGemReq ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{r.request_type}</div>
+                   <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider shrink-0 ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : isGemReq ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>{r.request_type}</div>
                 </div>
                 <div className="mb-4 text-[12px] font-bold text-slate-600 leading-tight space-y-1">
                     {r.item_details.split(/\n|,/).map((item, idx) => (<div key={idx} className={item.includes('(Refill)') ? 'text-blue-600 italic font-black' : ''}>• {item.trim()}</div>))}
@@ -474,7 +526,18 @@ export default function CoordinatorLog() {
                                  </button>
                              )}
                          </>
-                     ) : (<button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2 rounded-xl transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'bg-slate-100 text-slate-300 hover:text-emerald-500'}`} title="Done"><Check size={14}/></button>)}
+                     ) : isGemReq ? (
+                         <>
+                             <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`flex items-center gap-1 px-3 py-1.5 rounded-xl transition-all text-[10px] font-bold uppercase tracking-wider ${r.is_sent ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title="Informed">
+                                 <Send size={12}/> {r.is_sent ? 'Informed' : 'Inform'}
+                             </button>
+                             <button onClick={() => toggleStatus(r.id, 'is_done')} className={`flex items-center gap-1 px-3 py-1.5 rounded-xl transition-all text-[10px] font-bold uppercase tracking-wider ${r.is_done ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
+                                 <Check size={12}/> Done
+                             </button>
+                         </>
+                     ) : (
+                         <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2 rounded-xl transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'bg-slate-100 text-slate-300 hover:text-emerald-500'}`} title="Done"><Check size={14}/></button>
+                     )}
                      <button onClick={() => askDelete(r.id)} className="p-2 rounded-xl text-slate-200 hover:bg-rose-50 hover:text-rose-500 transition-all active:scale-90"><Trash2 size={14}/></button>
                    </div>
                 </div>
@@ -531,7 +594,7 @@ export default function CoordinatorLog() {
                </div>
                <div className="flex-1 overflow-y-auto p-4">
                   <div className="flex gap-3 mb-4">
-                     <input type="number" placeholder="Villa" autoFocus className="w-24 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-xl outline-none focus:border-rose-300 shadow-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+                     <input type="text" placeholder="Villa/Name" autoFocus className="w-32 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-lg outline-none focus:border-rose-300 shadow-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      <div className="flex-1 relative"><input type="text" placeholder="By..." className="w-full p-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-rose-300 shadow-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/></div>
                   </div>
                   <GuestCard />
@@ -583,7 +646,7 @@ export default function CoordinatorLog() {
                   
                   {/* General inputs: Villa & Name */}
                   <div className="flex gap-2 mb-4">
-                     <input type="number" placeholder="Villa" autoFocus className="w-24 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-xl outline-none focus:border-[#6D2158]" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+                     <input type="text" placeholder="Villa/Name" autoFocus className="w-32 p-3 bg-white border border-slate-200 rounded-xl text-center font-bold text-lg outline-none focus:border-[#6D2158]" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      
                      {/* If it's a GEM request, show dropdown from Settings. Otherwise show text input */}
                      {otherModalType === 'GEM' ? (
