@@ -45,12 +45,9 @@ type MasterItem = {
 };
 
 // --- HELPERS ---
-const getTodayStr = () => {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+const getTodayStr = (dateObj: Date = new Date()) => {
+  const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(dateObj);
 };
 
 const formatLocalTime = (dateStr: string) => {
@@ -130,14 +127,27 @@ export default function CoordinatorLog() {
 
   useEffect(() => { fetchRecords(); fetchCatalog(); fetchSettings(); }, [selectedDate]);
 
+  // SMART FILTER UPDATE LOGIC
+  const getAvailableStatuses = () => {
+      if (typeFilter === 'Minibar') return ['All', 'Unsent', 'Unposted', 'Done'];
+      if (typeFilter === 'General' || typeFilter === 'GEM') return ['All', 'Pending', 'Done'];
+      return ['All', 'Unsent', 'Unposted', 'Pending', 'Done'];
+  };
+
+  useEffect(() => {
+      const validStatuses = getAvailableStatuses();
+      if (!validStatuses.includes(statusFilter)) {
+          setStatusFilter('All');
+      }
+  }, [typeFilter]);
+
   useEffect(() => {
     const fetchGuest = async () => {
-      // Adjusted to check length rather than just number
       if (!villaNumber || villaNumber.length < 1) { setGuestInfo(null); return; }
       
       // If user typed a pure number, try to fetch guest data
       if (/^\d+$/.test(villaNumber)) {
-          const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr()).eq('villa_number', villaNumber).maybeSingle();
+          const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr(selectedDate)).eq('villa_number', villaNumber).maybeSingle();
           if (data) {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
             if(data.gem_name && !requesterSearch && otherModalType !== 'GEM') setRequesterSearch(data.gem_name);
@@ -148,7 +158,7 @@ export default function CoordinatorLog() {
     };
     const timer = setTimeout(fetchGuest, 400);
     return () => clearTimeout(timer);
-  }, [villaNumber, otherModalType]);
+  }, [villaNumber, otherModalType, selectedDate]);
 
   const fetchCatalog = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
@@ -166,8 +176,9 @@ export default function CoordinatorLog() {
   };
 
   const fetchRecords = async () => {
-    const dateStr = selectedDate.toISOString().split('T')[0];
-    const { data } = await supabase.from('hsk_daily_requests').select('*').gte('request_time', `${dateStr}T00:00:00`).lte('request_time', `${dateStr}T23:59:59`).order('request_time', { ascending: false });
+    const dateStr = getTodayStr(selectedDate);
+    // Grab everything recorded on this local date day
+    const { data } = await supabase.from('hsk_daily_requests').select('*').gte('request_time', `${dateStr}T00:00:00+05:00`).lte('request_time', `${dateStr}T23:59:59+05:00`).order('request_time', { ascending: false });
     if (data) setRecords(data);
   };
 
@@ -292,21 +303,19 @@ export default function CoordinatorLog() {
         if (otherModalType === 'GEM') {
             reqType = 'GEM Request';
         } else {
-            // Uses chosen category for Note mode, or the catalog item category
             reqType = otherCategory; 
         }
     }
 
-    // Properly calculate exact local ISO string to prevent 6 hour timezone shift
-    const [h, m] = manualTime.split(':').map(Number);
-    const reqDate = new Date(selectedDate);
-    reqDate.setHours(h, m, 0, 0);
+    // PERFECT TIMEZONE FIX - Forcing Maldives Time (+05:00) so the DB never shifts the hours!
+    const dateStr = getTodayStr(selectedDate);
+    const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`;
 
     const payload = {
        villa_number: villaNumber,
        request_type: reqType,
        item_details: details,
-       request_time: reqDate.toISOString(), // Perfectly accurate UTC translation of local time
+       request_time: dbTimeStr, 
        attendant_name: requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest"),
        guest_name: guestInfo ? guestInfo.mainName : '',
        package_tag: guestInfo?.pkg?.type || '',
@@ -392,10 +401,23 @@ export default function CoordinatorLog() {
       if (typeFilter === 'General' && (isMB || isGemReq)) return false;
 
       // STATUS FILTERS
-      if (statusFilter === 'Unsent' && (!isMB || r.is_sent)) return false;
-      if (statusFilter === 'Unposted' && (!isMB || r.is_posted || onlyRefills)) return false;
-      if (statusFilter === 'Pending' && r.is_done) return false;
-      if (statusFilter === 'Done' && !r.is_done && !r.is_posted) return false;
+      if (statusFilter === 'Unsent') {
+          if (!isMB) return false; 
+          if (r.is_sent) return false;
+      }
+      if (statusFilter === 'Unposted') {
+          if (!isMB) return false; 
+          if (r.is_posted || onlyRefills) return false;
+      }
+      if (statusFilter === 'Pending') {
+          if (isMB) return false; // Not used for MB
+          if (r.is_done) return false;
+      }
+      if (statusFilter === 'Done') {
+          if (isMB && (!r.is_sent || !r.is_posted) && !onlyRefills) return false;
+          if (isMB && onlyRefills && !r.is_sent) return false;
+          if (!isMB && !r.is_done) return false;
+      }
       
       // SEARCH & ZONE FILTERS
       if (villaSearch && !r.villa_number.toLowerCase().includes(villaSearch.toLowerCase())) return false;
@@ -429,10 +451,10 @@ export default function CoordinatorLog() {
     <div className="min-h-screen bg-[#FDFBFD] font-antiqua text-[#6D2158] pb-32">
       
       {/* STANDARDIZED HEADER */}
-      <div className="bg-white shadow-sm sticky top-0 z-30 pb-4 px-6 pt-6 border-b border-slate-200 mb-4">
+      <div className="bg-white shadow-sm sticky top-0 z-30 pb-4 px-4 md:px-6 pt-6 border-b border-slate-200 mb-4">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 mb-4">
-           <div>
-              <h1 className="text-3xl font-bold tracking-tight text-slate-800">Coordinator's Log Book</h1>
+           <div className="w-full md:w-auto">
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-800">Coordinator's Log Book</h1>
               <div className="relative flex items-center gap-1 text-xs font-bold text-slate-400 uppercase tracking-widest mt-1 cursor-pointer hover:text-[#6D2158] transition-colors">
                   <Calendar size={14}/> {selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                   <input 
@@ -446,11 +468,11 @@ export default function CoordinatorLog() {
               </div>
            </div>
            
-           <div className="flex gap-2">
-                <button onClick={() => handleOpenModal('Minibar')} className="bg-rose-600 text-white px-4 py-2.5 rounded-xl font-bold uppercase text-xs shadow-md hover:bg-rose-700 transition-all">Minibar</button>
-                <button onClick={() => handleOpenModal('General')} className="bg-[#6D2158] text-white px-4 py-2.5 rounded-xl font-bold uppercase text-xs shadow-md hover:bg-[#5a1b49] transition-all">Gen Req</button>
-                <button onClick={() => handleOpenModal('GEM')} className="bg-amber-500 text-white px-4 py-2.5 rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600 transition-all">GEM Req</button>
-                <button onClick={() => setIsHistoryOpen(true)} className="p-2.5 bg-slate-100 rounded-xl text-slate-500 hover:text-[#6D2158] transition-colors"><List size={18}/></button>
+           <div className="flex gap-2 w-full md:w-auto overflow-x-auto no-scrollbar pb-1">
+                <button onClick={() => handleOpenModal('Minibar')} className="flex-1 md:flex-none justify-center bg-rose-600 text-white px-4 py-2.5 rounded-xl font-bold uppercase text-xs shadow-md hover:bg-rose-700 transition-all whitespace-nowrap">Minibar</button>
+                <button onClick={() => handleOpenModal('General')} className="flex-1 md:flex-none justify-center bg-[#6D2158] text-white px-4 py-2.5 rounded-xl font-bold uppercase text-xs shadow-md hover:bg-[#5a1b49] transition-all whitespace-nowrap">Gen Req</button>
+                <button onClick={() => handleOpenModal('GEM')} className="flex-1 md:flex-none justify-center bg-amber-500 text-white px-4 py-2.5 rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600 transition-all whitespace-nowrap">GEM Req</button>
+                <button onClick={() => setIsHistoryOpen(true)} className="flex-none justify-center p-2.5 bg-slate-100 rounded-xl text-slate-500 hover:text-[#6D2158] transition-colors"><List size={18}/></button>
            </div>
         </div>
 
@@ -460,8 +482,7 @@ export default function CoordinatorLog() {
         </div>
 
         {/* --- DYNAMIC FILTER GROUPS --- */}
-        <div className="space-y-3 mb-2">
-            
+        <div className="flex flex-col gap-3 mb-2">
             <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-12 shrink-0">Type</span>
                 {['All', 'Minibar', 'General', 'GEM'].map(t => (
@@ -473,7 +494,7 @@ export default function CoordinatorLog() {
 
             <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-12 shrink-0">Status</span>
-                {['All', 'Unsent', 'Unposted', 'Pending', 'Done'].map(f => (
+                {getAvailableStatuses().map(f => (
                     <button key={f} onClick={() => setStatusFilter(f)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase border transition-all whitespace-nowrap ${statusFilter === f ? 'bg-[#6D2158] border-[#6D2158] text-white shadow-sm' : 'bg-white border-slate-200 text-slate-400 hover:border-[#6D2158]'}`}>
                         {f}
                     </button>
@@ -488,11 +509,10 @@ export default function CoordinatorLog() {
                     </button>
                 ))}
             </div>
-
         </div>
       </div>
 
-      <div className="p-4 columns-2 md:columns-3 lg:columns-4 xl:columns-6 gap-4 space-y-4">
+      <div className="p-4 columns-1 sm:columns-2 md:columns-3 lg:columns-4 xl:columns-6 gap-4 space-y-4">
          {visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
              const isGemReq = r.request_type === 'GEM Request';
