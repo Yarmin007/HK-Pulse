@@ -31,6 +31,8 @@ type MasterItem = {
   is_minibar_item: boolean;
   micros_name: string;    
   sales_price: number;
+  avg_cost: number;
+  sort_order: number;
   image_url?: string; 
   has_expiry: boolean; 
 };
@@ -53,7 +55,7 @@ export default function SettingsPage() {
   
   const defaultItemState: MasterItem = {
     article_number: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
-    is_minibar_item: false, micros_name: '', sales_price: 0,
+    is_minibar_item: false, micros_name: '', sales_price: 0, avg_cost: 0, sort_order: 0,
     image_url: '', has_expiry: false
   };
   
@@ -335,25 +337,25 @@ export default function SettingsPage() {
                     <div className="md:col-span-9 grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Number (ID)</label>
-                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400' : 'bg-slate-50 border-slate-200'}`} placeholder="151001" value={currentItem.article_number} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
+                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400' : 'bg-slate-50 border-slate-200'}`} placeholder="151001" value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Name (Official)</label>
-                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" placeholder="e.g. Coca Cola Zero 330ml" value={currentItem.article_name} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} />
+                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" placeholder="e.g. Coca Cola Zero 330ml" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} />
                         </div>
                         <div className="md:col-span-2">
                            <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name (Button Display Name)</label>
-                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" placeholder="e.g. Coke Zero" value={currentItem.generic_name} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
+                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" placeholder="e.g. Coke Zero" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Category</label>
-                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>
+                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>
                               {MASTER_CATEGORIES.map(c => <option key={c}>{c}</option>)}
                            </select>
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Unit</label>
-                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}>
+                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit || 'Each'} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}>
                               <option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option>
                            </select>
                         </div>
@@ -370,14 +372,22 @@ export default function SettingsPage() {
                         </div>
 
                         {currentItem.is_minibar_item && (
-                            <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 gap-4">
+                            <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 lg:grid-cols-4 gap-4">
                                <div>
-                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Micros Name (Billing Name)</label>
-                                  <input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.micros_name} onChange={e => setCurrentItem({...currentItem, micros_name: e.target.value})} />
+                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Micros Name</label>
+                                  <input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.micros_name || ''} onChange={e => setCurrentItem({...currentItem, micros_name: e.target.value})} />
+                               </div>
+                               <div>
+                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Sort Order</label>
+                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sort_order ?? 0} onChange={e => setCurrentItem({...currentItem, sort_order: parseInt(e.target.value) || 0})} />
+                               </div>
+                               <div>
+                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Avg Cost ($)</label>
+                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.avg_cost ?? 0} onChange={e => setCurrentItem({...currentItem, avg_cost: parseFloat(e.target.value) || 0})} />
                                </div>
                                <div>
                                   <label className="text-[10px] font-bold text-rose-400 uppercase">Sales Price ($)</label>
-                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sales_price} onChange={e => setCurrentItem({...currentItem, sales_price: parseFloat(e.target.value)})} />
+                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sales_price ?? 0} onChange={e => setCurrentItem({...currentItem, sales_price: parseFloat(e.target.value) || 0})} />
                                </div>
                             </div>
                         )}
