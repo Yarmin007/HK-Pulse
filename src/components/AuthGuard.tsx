@@ -25,7 +25,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     syncGlobalSettings();
 
     // 1. Identify if this is a public link that bypasses the PIN
-    const isPublicRoute = pathname?.includes('/mobile') || pathname?.includes('/water/view');
+    const isPublicRoute = pathname?.includes('/mobile') || pathname?.includes('/water/view') || pathname?.includes('/minibar/finance');
     const authStatus = localStorage.getItem('hk_pulse_admin_auth');
 
     // 2. Logic: Allow if public OR if they have the PIN saved. Otherwise, LOCK IT.
