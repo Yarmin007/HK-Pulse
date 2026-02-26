@@ -5,11 +5,12 @@ import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, Users, ClipboardList, 
   Printer, Settings, LogOut, Warehouse, 
-  Clock, ShoppingCart, ListChecks, Droplets,
-  Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight
+  ShoppingCart, ListChecks, Droplets,
+  Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
+  Briefcase, Contact, UserCheck, Clock
 } from "lucide-react";
 
-// MOVED Request Log to the 2nd position
+// Removed "Overtime" as it is now in TEAM_ITEMS
 const MENU_ITEMS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
   { name: "Request Log", icon: ClipboardList, path: "/requests" },
@@ -17,10 +18,15 @@ const MENU_ITEMS = [
   { name: "Allocation", icon: ListChecks, path: "/allocation" },
   { name: "Water Production", icon: Droplets, path: "/water" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
-  { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Print Hub", icon: Printer, path: "/print" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
   { name: "Settings", icon: Settings, path: "/settings" },
+];
+
+const TEAM_ITEMS = [
+  { name: "Host Profiles", icon: Contact, path: "/hosts" },
+  { name: "Attendance", icon: UserCheck, path: "/attendance" },
+  { name: "Overtime", icon: Clock, path: "/overtime" },
 ];
 
 const MINIBAR_ITEMS = [
@@ -34,13 +40,17 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   
-  // Auto-open dropdown if we are currently on a minibar page
+  // Auto-open logic for Dropdowns
   const isMinibarRoute = pathname.includes('/minibar');
+  const isTeamRoute = pathname.includes('/hosts') || pathname.includes('/attendance') || pathname.includes('/overtime');
+  
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
+  const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
 
   useEffect(() => {
       if (isMinibarRoute) setIsMinibarOpen(true);
-  }, [pathname, isMinibarRoute]);
+      if (isTeamRoute) setIsTeamOpen(true);
+  }, [pathname, isMinibarRoute, isTeamRoute]);
 
   return (
     <>
@@ -106,6 +116,47 @@ export default function Sidebar() {
             );
           })}
 
+          {/* --- TEAM HUB DROPDOWN --- */}
+          <div className="pt-2">
+            <button 
+              onClick={() => setIsTeamOpen(!isTeamOpen)}
+              className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all duration-200 group ${
+                isTeamRoute && !isTeamOpen
+                  ? "bg-blue-50 text-blue-700 border border-blue-100" 
+                  : "text-slate-400 hover:bg-slate-50 hover:text-[#6D2158]"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <Briefcase size={20} className={isTeamRoute ? "text-blue-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                <span className="text-sm font-bold tracking-wide">Team Hub</span>
+              </div>
+              {isTeamOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </button>
+
+            {isTeamOpen && (
+              <div className="mt-1 ml-4 pl-4 border-l-2 border-slate-100 space-y-1 animate-in slide-in-from-top-2 duration-200">
+                {TEAM_ITEMS.map((item) => {
+                  const isActive = pathname === item.path;
+                  return (
+                    <Link 
+                      key={item.path} 
+                      href={item.path}
+                      onClick={() => setIsOpen(false)}
+                      className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isActive 
+                          ? "bg-blue-50 text-blue-700 font-black" 
+                          : "text-slate-400 hover:text-blue-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <item.icon size={16} className={isActive ? "text-blue-700" : "group-hover:text-blue-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                      <span className="text-xs tracking-wide">{item.name}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* --- MINIBAR DROPDOWN --- */}
           <div className="pt-2">
             <button 
@@ -123,7 +174,6 @@ export default function Sidebar() {
               {isMinibarOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
 
-            {/* Dropdown Items */}
             {isMinibarOpen && (
               <div className="mt-1 ml-4 pl-4 border-l-2 border-slate-100 space-y-1 animate-in slide-in-from-top-2 duration-200">
                 {MINIBAR_ITEMS.map((item) => {
