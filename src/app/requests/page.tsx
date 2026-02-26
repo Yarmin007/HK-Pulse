@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Plus, X, Wine, Wrench, Trash2, 
   Calendar, Split, Send, Check, Clock, 
-  Edit3, Trash, Wand2, Loader2, CheckCircle2, AlertTriangle, User
+  Edit3, Trash, Wand2, Loader2, CheckCircle2, AlertTriangle, User, Bell, BellRing
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -32,13 +32,6 @@ type MasterItem = {
   is_minibar_item: boolean;
   micros_name?: string;
   image_url?: string; 
-};
-
-// --- NOTIFICATION HELPER ---
-const sendWebPush = (title: string, body: string) => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(title, { body, icon: '/icon-192.png' });
-    }
 };
 
 // --- HELPERS ---
@@ -81,6 +74,7 @@ export default function CoordinatorLog() {
   const [isOtherOpen, setIsOtherOpen] = useState(false);
   const [otherModalType, setOtherModalType] = useState<'General' | 'GEM'>('General');
   const [isPartialOpen, setIsPartialOpen] = useState(false);
+  const [notifyPerm, setNotifyPerm] = useState<string>('default');
 
   // EDIT & CUSTOM PROMPT STATE
   const [isEditing, setIsEditing] = useState(false);
@@ -120,9 +114,8 @@ export default function CoordinatorLog() {
 
   // INIT & REALTIME SYNC
   useEffect(() => { 
-    // Ask for native notification permissions
-    if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-        Notification.requestPermission();
+    if ('Notification' in window) {
+        setNotifyPerm(Notification.permission);
     }
 
     fetchRecords(); 
@@ -132,19 +125,42 @@ export default function CoordinatorLog() {
     // Subscribe to realtime database changes for instant collaboration
     const channel = supabase.channel('requests_realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, (payload) => {
+          
           fetchRecords(); // Refresh list automatically
           
           if (payload.eventType === 'INSERT') {
              const nr = payload.new as RequestRecord;
-             showNotification('success', `New ${nr.request_type} added for Villa ${nr.villa_number}`);
-             sendWebPush(`Villa ${nr.villa_number} - ${nr.request_type}`, `Requested by: ${nr.attendant_name}`);
+             showNotification('success', `New ${nr.request_type} - Villa ${nr.villa_number}`);
+             
+             // Trigger Native Push Notification if permitted
+             if ('Notification' in window && Notification.permission === 'granted') {
+                 new Notification(`Villa ${nr.villa_number} - ${nr.request_type}`, {
+                     body: `By: ${nr.attendant_name}`,
+                     icon: '/icon-192.png'
+                 });
+             }
           }
       })
-      .subscribe();
+      .subscribe((status) => {
+          console.log("Realtime Sync Status:", status);
+      });
 
     return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
+
+  const requestNotifications = () => {
+      if ('Notification' in window) {
+          Notification.requestPermission().then(permission => {
+              setNotifyPerm(permission);
+              if (permission === 'granted') {
+                  showNotification('success', 'Push Notifications Enabled!');
+              } else {
+                  showNotification('error', 'Notifications were blocked.');
+              }
+          });
+      }
+  };
 
   // SMART FILTER UPDATE LOGIC
   const getAvailableStatuses = () => {
@@ -444,10 +460,22 @@ export default function CoordinatorLog() {
       <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 pt-4 pb-3 shadow-sm flex flex-col gap-3">
         <div className="flex justify-between items-center">
             <div>
-              <h1 className="text-2xl font-black tracking-tight text-[#6D2158]">Request Log</h1>
+              <h1 className="text-2xl font-black tracking-tight text-[#6D2158] flex items-center gap-2">
+                Request Log
+                {notifyPerm !== 'granted' && (
+                    <button onClick={requestNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Notifications">
+                        <Bell size={14} className="animate-pulse" />
+                    </button>
+                )}
+                {notifyPerm === 'granted' && (
+                    <span className="ml-2 text-emerald-500 bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Notifications Active">
+                        <BellRing size={14} />
+                    </span>
+                )}
+              </h1>
               
               {/* FIXED CALENDAR */}
-              <div className="flex items-center gap-2 mt-2 bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-200 w-fit relative cursor-pointer">
+              <div className="flex items-center gap-2 mt-2 bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-200 w-fit relative cursor-pointer hover:border-[#6D2158] transition-colors">
                   <Calendar size={14} className="text-[#6D2158]"/> 
                   <span className="text-xs font-bold text-[#6D2158]">{selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                   <input 
