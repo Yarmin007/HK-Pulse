@@ -6,10 +6,21 @@
   --primary: #6D2158;
 }
 
-body {
+html, body {
   font-family: "Book Antiqua", "Palatino Linotype", serif;
   background-color: #FDFBFD; 
   color: #1a1a1a;
+  
+  /* --- NATIVE APP BEHAVIORS --- */
+  overscroll-behavior-y: none; /* Kills the web "bounce" effect */
+  -webkit-tap-highlight-color: transparent; /* Kills the blue tap highlight */
+  -webkit-touch-callout: none; /* Disables long-press context menu */
+  user-select: none; /* Prevents accidental text selection on UI elements */
+}
+
+/* Allow text selection ONLY inside input fields */
+input, textarea, select {
+  user-select: auto; 
 }
 
 /* --- CUSTOM SLEEK SCROLLBARS --- */
@@ -29,52 +40,26 @@ body {
 }
 
 @layer utilities {
-  /* Hide scrollbar completely if needed */
-  .no-scrollbar::-webkit-scrollbar {
-    display: none;
-  }
-  .no-scrollbar {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-  /* --- ANIMATIONS --- */
-  @keyframes slideIn {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
+  /* Safe Area paddings for notched phones (iPhones) */
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+  .pt-safe { padding-top: env(safe-area-inset-top, 20px); }
 
+  /* Animations */
+  @keyframes slideInUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
   @keyframes zoomIn {
-    from {
-      opacity: 0;
-      transform: scale(0.95);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
   }
 
-  .animate-in {
-    animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  }
-  
-  .zoom-in-95 {
-    animation: zoomIn 0.2s ease-out forwards;
-  }
+  .animate-in-up { animation: slideInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  .zoom-in-95 { animation: zoomIn 0.2s ease-out forwards; }
 
-  /* --- TOAST NOTIFICATIONS --- */
-  .toast-success {
-    @apply bg-emerald-50/90 backdrop-blur-md border border-emerald-200 text-emerald-800 shadow-2xl;
-  }
-  
-  .toast-error {
-    @apply bg-rose-50/90 backdrop-blur-md border border-rose-200 text-rose-800 shadow-2xl;
-  }
+  .toast-success { @apply bg-emerald-50/90 backdrop-blur-md border border-emerald-200 text-emerald-800 shadow-2xl; }
+  .toast-error { @apply bg-rose-50/90 backdrop-blur-md border border-rose-200 text-rose-800 shadow-2xl; }
 }
