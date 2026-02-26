@@ -15,10 +15,28 @@ export default function Dashboard() {
   const [criticalItems, setCriticalItems] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => { fetchDashboardData(); }, []);
+  useEffect(() => { 
+      fetchDashboardData(); 
 
-  const fetchDashboardData = async () => {
-    setIsLoading(true);
+      // --- REALTIME COLLABORATION LISTENERS ---
+      const reqChannel = supabase.channel('dashboard_reqs')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
+            fetchDashboardData(false); // Silently refresh data on any change
+        }).subscribe();
+
+      const orderChannel = supabase.channel('dashboard_orders')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_procurement_orders' }, () => {
+            fetchDashboardData(false);
+        }).subscribe();
+
+      return () => {
+          supabase.removeChannel(reqChannel);
+          supabase.removeChannel(orderChannel);
+      };
+  }, []);
+
+  const fetchDashboardData = async (showLoading = true) => {
+    if (showLoading) setIsLoading(true);
     const todayStr = new Date().toISOString().split('T')[0];
 
     const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true });
@@ -43,7 +61,7 @@ export default function Dashboard() {
     setStats({ totalHosts: hostCount || 0, pendingOrders: orderCount || 0, pendingReqs: pendingReqsCount, expiringBatches: expiringList.length });
     setCriticalItems(expiringList);
     setRecentActivity((reqs || []).slice(0, 6));
-    setIsLoading(false);
+    if (showLoading) setIsLoading(false);
   };
 
   const hour = new Date().getHours();
@@ -69,9 +87,12 @@ export default function Dashboard() {
           <h1 className="text-3xl font-black tracking-tight text-[#6D2158]">{greeting}</h1>
           <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">Pulse of the Operation</p>
         </div>
-        <div className="bg-slate-100 px-4 py-2 rounded-xl text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2 w-fit">
-           <Calendar size={14} className="text-[#6D2158]"/>
-           {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+        <div className="bg-slate-100 px-4 py-2 rounded-xl text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2 w-fit shadow-inner">
+           <span className="relative flex h-2 w-2 mr-1">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+           </span>
+           Live Sync Active
         </div>
       </div>
 
@@ -133,7 +154,7 @@ export default function Dashboard() {
                    ) : (
                        <div className="space-y-3">
                            {recentActivity.map((log: any) => (
-                              <div key={log.id} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                              <div key={log.id} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 animate-in slide-in-from-top-2">
                                  <div className={`w-12 h-12 rounded-[1rem] flex items-center justify-center font-black text-lg shadow-sm ${log.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
                                     {log.villa_number}
                                  </div>

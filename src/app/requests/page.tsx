@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Plus, X, Wine, Wrench, Trash2, 
   Calendar, Split, Send, Check, Clock, 
@@ -32,6 +32,13 @@ type MasterItem = {
   is_minibar_item: boolean;
   micros_name?: string;
   image_url?: string; 
+};
+
+// --- NOTIFICATION HELPER ---
+const sendWebPush = (title: string, body: string) => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body, icon: '/icon-192.png' });
+    }
 };
 
 // --- HELPERS ---
@@ -111,11 +118,31 @@ export default function CoordinatorLog() {
   const [partialTarget, setPartialTarget] = useState<RequestRecord | null>(null);
   const [partialSelection, setPartialSelection] = useState<string[]>([]);
 
-  // INIT
+  // INIT & REALTIME SYNC
   useEffect(() => { 
+    // Ask for native notification permissions
+    if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+        Notification.requestPermission();
+    }
+
     fetchRecords(); 
     fetchCatalog(); 
     fetchSettings(); 
+
+    // Subscribe to realtime database changes for instant collaboration
+    const channel = supabase.channel('requests_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, (payload) => {
+          fetchRecords(); // Refresh list automatically
+          
+          if (payload.eventType === 'INSERT') {
+             const nr = payload.new as RequestRecord;
+             showNotification('success', `New ${nr.request_type} added for Villa ${nr.villa_number}`);
+             sendWebPush(`Villa ${nr.villa_number} - ${nr.request_type}`, `Requested by: ${nr.attendant_name}`);
+          }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
 
@@ -397,6 +424,19 @@ export default function CoordinatorLog() {
   const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))) as string[]];
   const amenityItems = masterCatalog.filter(i => !i.is_minibar_item);
 
+  const GuestCard = () => {
+      if (!guestInfo) return null;
+      return (
+        <div className={`mt-3 p-3 rounded-2xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
+            <div className="flex justify-between items-start">
+                <div><h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><User size={14} className="text-slate-400"/>{guestInfo.mainName}</h3></div>
+                {guestInfo.pkg && <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${guestInfo.pkg.color}`}>{guestInfo.pkg.type}</span>}
+            </div>
+            {guestInfo.isCheckout && <div className="mt-1 flex items-center gap-1 text-rose-600 font-bold text-[10px]"><AlertTriangle size={12}/> CHECKOUT TODAY</div>}
+        </div>
+      );
+  };
+
   return (
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
       
@@ -407,11 +447,12 @@ export default function CoordinatorLog() {
               <h1 className="text-2xl font-black tracking-tight text-[#6D2158]">Request Log</h1>
               
               {/* FIXED CALENDAR */}
-              <div className="flex items-center gap-2 mt-2 bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-200 w-fit">
+              <div className="flex items-center gap-2 mt-2 bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-200 w-fit relative cursor-pointer">
                   <Calendar size={14} className="text-[#6D2158]"/> 
+                  <span className="text-xs font-bold text-[#6D2158]">{selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
                   <input 
                       type="date" 
-                      className="bg-transparent text-xs font-bold text-[#6D2158] outline-none cursor-pointer w-full" 
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
                       value={selectedDate.toISOString().split('T')[0]} 
                       onChange={(e) => {
                           if (e.target.value) {
@@ -572,15 +613,7 @@ export default function CoordinatorLog() {
                      </div>
                   </div>
                   
-                  {guestInfo && (
-                      <div className={`mt-3 p-4 rounded-2xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
-                          <div className="flex justify-between items-start">
-                              <div><h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><User size={14} className="text-slate-400"/>{guestInfo.mainName}</h3></div>
-                              {guestInfo.pkg && <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${guestInfo.pkg.color}`}>{guestInfo.pkg.type}</span>}
-                          </div>
-                          {guestInfo.isCheckout && <div className="mt-1 flex items-center gap-1 text-rose-600 font-bold text-[10px]"><AlertTriangle size={12}/> CHECKOUT TODAY</div>}
-                      </div>
-                  )}
+                  <GuestCard />
                   
                   {mbCart.length > 0 && (
                      <div className="mt-4 p-4 bg-white rounded-3xl border-2 border-rose-50 flex flex-wrap gap-2 animate-in zoom-in-95 shadow-sm">
@@ -656,15 +689,7 @@ export default function CoordinatorLog() {
                      )}
                   </div>
                   
-                  {guestInfo && (
-                      <div className={`mt-3 p-4 rounded-2xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
-                          <div className="flex justify-between items-start">
-                              <div><h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><User size={14} className="text-slate-400"/>{guestInfo.mainName}</h3></div>
-                              {guestInfo.pkg && <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${guestInfo.pkg.color}`}>{guestInfo.pkg.type}</span>}
-                          </div>
-                          {guestInfo.isCheckout && <div className="mt-1 flex items-center gap-1 text-rose-600 font-bold text-[10px]"><AlertTriangle size={12}/> CHECKOUT TODAY</div>}
-                      </div>
-                  )}
+                  <GuestCard />
                   
                   <div className="flex bg-slate-200 p-1.5 rounded-2xl mb-6 mt-6 shrink-0">
                      <button onClick={() => setOtherMode('Catalog')} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${otherMode === 'Catalog' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Items</button>
@@ -676,7 +701,7 @@ export default function CoordinatorLog() {
                         {masterCatalog.filter(i => !i.is_minibar_item).map(item => {
                            const inCart = otherCart.find(c => c.name === (item.generic_name || item.article_name));
                            return (
-                               <button key={item.article_number} onClick={() => addToCart(item.generic_name || item.article_name, 'Other')} className={`bg-white p-3 rounded-3xl flex flex-col items-center gap-2 active:scale-95 transition-all overflow-hidden group relative border-2 ${inCart ? 'border-[#6D2158] shadow-md ring-4 ring-[#6D2158]/10' : 'border-slate-100'}`}>
+                               <button key={item.article_number} onClick={() => addToCart(item.generic_name || item.article_name, 'Other')} className={`bg-white p-3 rounded-3xl flex flex-col items-center gap-2 active:scale-95 transition-all overflow-hidden group relative border-2 ${inCart ? 'border-[#6D2158] shadow-md ring-4 ring-[#6D2158]/10' : 'border-slate-100 hover:border-slate-200'}`}>
                                   {inCart && <div className="absolute top-1 right-1 bg-[#6D2158] text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-in zoom-in">{inCart.qty}</div>}
                                   <div className="w-full aspect-square bg-slate-50 rounded-[1.2rem] flex items-center justify-center overflow-hidden h-16"><img src={item.image_url || '/placeholder.png'} alt="" className="w-full h-full object-contain p-2 group-hover:scale-110 transition-all"/></div>
                                   <span className="text-[10px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-8 flex items-center">{item.generic_name || item.article_name}</span>
