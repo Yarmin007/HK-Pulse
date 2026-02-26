@@ -52,6 +52,7 @@ const registerAndSubscribePush = async () => {
 
         // 1. Register Service Worker
         const registration = await navigator.serviceWorker.register('/sw.js');
+        await navigator.serviceWorker.ready;
         
         // 2. Request Notification Permission
         const permission = await Notification.requestPermission();
@@ -59,18 +60,20 @@ const registerAndSubscribePush = async () => {
 
         // 3. Subscribe to Web Push
         const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-        if (!vapidPublicKey) {
-            console.error("Missing VAPID Public Key in environment variables");
-            return false;
-        }
+        if (!vapidPublicKey) return false;
 
         const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
-        const subscription = await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: convertedVapidKey
-        });
+        
+        // Check if already subscribed to avoid creating duplicates
+        let subscription = await registration.pushManager.getSubscription();
+        if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: convertedVapidKey
+            });
+        }
 
-        // 4. Save to Supabase
+        // 4. Save to Supabase (Upsert ensures we don't have duplicates)
         const subData = JSON.parse(JSON.stringify(subscription));
         await supabase.from('hsk_push_subscriptions').upsert({
             endpoint: subData.endpoint,
@@ -167,16 +170,26 @@ export default function CoordinatorLog() {
   useEffect(() => { 
     if ('Notification' in window) {
         setNotifyPerm(Notification.permission);
+        // AUTO SUBSCRIBE DESKTOP/MOBILE IF THEY ALREADY ALLOWED IT
+        if (Notification.permission === 'granted') {
+            registerAndSubscribePush();
+        }
     }
 
     fetchRecords(); 
     fetchCatalog(); 
     fetchSettings(); 
 
-    // Subscribe to realtime database changes to update the UI
+    // Subscribe to realtime database changes for instant UI updates
     const channel = supabase.channel('requests_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
-          fetchRecords(); 
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, (payload) => {
+          fetchRecords(); // Refresh list automatically
+          if (payload.eventType === 'INSERT') {
+             const nr = payload.new as RequestRecord;
+             showNotification('success', `New ${nr.request_type} - Villa ${nr.villa_number}`);
+             // Note: Removed the local "new Notification()" here so we don't get double pings. 
+             // The Service Worker will handle the OS notification perfectly.
+          }
       })
       .subscribe();
 
@@ -192,6 +205,23 @@ export default function CoordinatorLog() {
       } else {
           setNotifyPerm('denied');
           showNotification('error', 'Notifications blocked or not supported on this device.');
+      }
+  };
+
+  // TEST PUSH FUNCTION
+  const triggerTestPush = async () => {
+      showNotification('success', 'Sending test push...');
+      try {
+          await fetch('/api/notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  title: `Test Notification Works!`,
+                  body: `Your background system is successfully connected.`
+              })
+          });
+      } catch (err) {
+          console.error("Test push failed", err);
       }
   };
 
@@ -373,8 +403,7 @@ export default function CoordinatorLog() {
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
       showNotification('success', isEditing ? "Updated" : "Saved"); 
 
-      // --- TRIGGER BACKGROUND PUSH NOTIFICATION ---
-      // This sends a signal to our backend to notify everyone else!
+      // --- TRIGGER BACKGROUND PUSH NOTIFICATION (Fires to SW of all devices) ---
       if (!isEditing) {
           fetch('/api/notify', {
               method: 'POST',
@@ -383,7 +412,7 @@ export default function CoordinatorLog() {
                   title: `Villa ${villaNumber} - ${reqType}`,
                   body: `Requested by: ${attendantName}`
               })
-          }).catch(console.error); // Silently catch errors so it doesn't break the UI
+          }).catch(console.error);
       }
 
     }
@@ -510,15 +539,14 @@ export default function CoordinatorLog() {
             <div>
               <h1 className="text-2xl font-black tracking-tight text-[#6D2158] flex items-center gap-2">
                 Request Log
-                {notifyPerm !== 'granted' && (
+                {notifyPerm !== 'granted' ? (
                     <button onClick={handleEnableNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Background Notifications">
                         <Bell size={14} className="animate-pulse" />
                     </button>
-                )}
-                {notifyPerm === 'granted' && (
-                    <span className="ml-2 text-emerald-500 bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Background Notifications Active">
+                ) : (
+                    <button onClick={triggerTestPush} className="ml-2 text-emerald-500 hover:text-emerald-600 active:scale-90 transition-transform bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Test Push Notifications">
                         <BellRing size={14} />
-                    </span>
+                    </button>
                 )}
               </h1>
               
