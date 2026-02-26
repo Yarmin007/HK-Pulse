@@ -1,10 +1,8 @@
 "use client";
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Search, Package, Droplets, Plus, 
-  ArrowRight, ArrowLeft, Calendar, 
-  TrendingDown, TrendingUp, Layers, FileText,
-  PieChart, Zap, Snail, Activity, MapPin, X, Printer
+  Search, Package, Plus, ArrowRight, ArrowLeft, Calendar, 
+  Layers, FileText, PieChart, Zap, MapPin, X, Printer, PackagePlus, ArrowDownUp
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import jsPDF from 'jspdf';
@@ -24,6 +22,7 @@ type MonthlyRecord = {
   month_year: string;
   master_id: string;
   store_name: string;
+  opening_stock: number;
   added_stock: number;
   consumed: number;
   damaged: number;
@@ -39,6 +38,7 @@ type InventoryRow = {
   itemName: string;
   category: string;
   unit: string;
+  storeName: string;
   openingStock: number; 
   added: number;
   consumed: number;
@@ -51,8 +51,8 @@ type InventoryRow = {
 };
 
 export default function PerpetualInventory() {
-  const [activeView, setActiveView] = useState<'Inventory' | 'Master List' | 'Insights'>('Inventory');
-  const [activeStore, setActiveStore] = useState<'All' | 'HK Main Store' | 'HK Chemical Store'>('All');
+  const [activeView, setActiveView] = useState<'Inventory' | 'Insights'>('Inventory');
+  const [activeStore, setActiveStore] = useState<'HK Main Store' | 'HK Chemical Store'>('HK Main Store');
   const [currentDate, setCurrentDate] = useState(new Date());
 
   const [masterList, setMasterList] = useState<MasterItem[]>([]);
@@ -61,7 +61,7 @@ export default function PerpetualInventory() {
   
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState<'Transaction' | 'Create Article'>('Transaction');
+  const [modalMode, setModalMode] = useState<'Initialize' | 'Log'>('Log');
 
   // --- SMART SEARCH STATE ---
   const [articleSearch, setArticleSearch] = useState('');
@@ -75,9 +75,6 @@ export default function PerpetualInventory() {
     rack: '',
     level: ''
   });
-  const [newArticle, setNewArticle] = useState({
-    article_number: '', item_name: '', category: '', unit: 'Pcs'
-  });
 
   // --- HELPERS ---
   const getMonthKey = (d: Date) => d.toISOString().slice(0, 7); 
@@ -85,25 +82,35 @@ export default function PerpetualInventory() {
   // --- FETCH DATA ---
   const fetchData = async () => {
     setIsLoading(true);
-    const { data: masters } = await supabase.from('hsk_master_catalog').select('*').order('item_name');
+    const { data: masters } = await supabase.from('hsk_master_catalog').select('id:article_number, article_number, item_name:article_name, category, unit').eq('is_minibar_item', false).order('article_name');
     if (masters) setMasterList(masters as MasterItem[]);
 
-    let query = supabase.from('hsk_monthly_stock').select('*');
-    if (activeStore !== 'All') query = query.eq('store_name', activeStore);
-    const { data: history } = await query;
+    const { data: history } = await supabase.from('hsk_monthly_stock').select('*');
     if (history) setAllHistory(history as MonthlyRecord[]);
+    
     setIsLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, [activeStore]);
+  useEffect(() => { fetchData(); }, []);
 
-  // --- CALCULATE INVENTORY ---
+  // --- CALCULATE INVENTORY FOR ACTIVE STORE ---
   const inventoryRows = useMemo(() => {
     const targetMonthKey = getMonthKey(currentDate);
+    const storeHistory = allHistory.filter(h => h.store_name === activeStore);
     const rows: InventoryRow[] = [];
 
+    // Group history by master_id
+    const historyByMaster = new Map<string, MonthlyRecord[]>();
+    storeHistory.forEach(rec => {
+        if (!historyByMaster.has(rec.master_id)) historyByMaster.set(rec.master_id, []);
+        historyByMaster.get(rec.master_id)!.push(rec);
+    });
+
+    // Only process items that actually have history in THIS store
     masterList.forEach(item => {
-      const itemHistory = allHistory.filter(r => r.master_id === item.id);
+      const itemHistory = historyByMaster.get(item.id) || [];
+      if (itemHistory.length === 0) return; // NOT INITIALIZED IN THIS STORE
+
       let opening = 0;
       let lastKnownRack = '', lastKnownLevel = '', lastKnownExpiry = '';
       let currentRecord: MonthlyRecord | undefined;
@@ -114,10 +121,13 @@ export default function PerpetualInventory() {
         if (rec.expiry_date) lastKnownExpiry = rec.expiry_date;
 
         if (rec.month_year < targetMonthKey) {
-           const netChange = (rec.added_stock || 0) - (rec.consumed || 0) - (rec.damaged || 0) - (rec.transferred || 0);
-           opening += netChange;
+           const netChange = (rec.opening_stock || 0) + (rec.added_stock || 0) - (rec.consumed || 0) - (rec.damaged || 0) - (rec.transferred || 0);
+           opening = netChange; // Rollover opening stock
         } else if (rec.month_year === targetMonthKey) {
            currentRecord = rec;
+           if (currentRecord.opening_stock !== undefined && currentRecord.opening_stock !== null) {
+               opening = currentRecord.opening_stock;
+           }
         }
       });
 
@@ -125,123 +135,50 @@ export default function PerpetualInventory() {
       const consumed = currentRecord?.consumed || 0;
       const others = (currentRecord?.damaged || 0) + (currentRecord?.transferred || 0);
       const closing = opening + added - consumed - others;
-      const hasActivity = added > 0 || consumed > 0 || others > 0;
-      const hasStock = closing > 0 || opening > 0;
       
-      if (hasStock || hasActivity || searchQuery) {
-        rows.push({
-          masterId: item.id,
-          articleNumber: item.article_number,
-          itemName: item.item_name,
-          category: item.category,
-          unit: item.unit,
-          openingStock: opening,
-          added, consumed, others, closingStock: closing,
-          rack: currentRecord?.rack || lastKnownRack,
-          level: currentRecord?.shelf_level || lastKnownLevel,
-          expiry: currentRecord?.expiry_date || lastKnownExpiry,
-          recordId: currentRecord?.id
-        });
-      }
+      rows.push({
+        masterId: item.id,
+        articleNumber: item.article_number,
+        itemName: item.item_name,
+        category: item.category,
+        unit: item.unit,
+        storeName: activeStore,
+        openingStock: opening,
+        added, consumed, others, closingStock: closing,
+        rack: currentRecord?.rack || lastKnownRack,
+        level: currentRecord?.shelf_level || lastKnownLevel,
+        expiry: currentRecord?.expiry_date || lastKnownExpiry,
+        recordId: currentRecord?.id
+      });
     });
     return rows.sort((a,b) => a.itemName.localeCompare(b.itemName));
-  }, [masterList, allHistory, currentDate, searchQuery]);
+  }, [masterList, allHistory, currentDate, activeStore]);
 
-  // --- PDF GENERATOR ---
-  const generatePDF = () => {
-    const doc = new jsPDF();
-    const monthName = currentDate.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-    const storeLabel = activeStore === 'All' ? 'All Stores' : activeStore.replace('HK ', '');
-
-    // -- HEADER --
-    doc.setFillColor(109, 33, 88); // #6D2158 (Your Brand Color)
-    doc.rect(0, 0, 210, 40, 'F'); // Top bar
-    
-    doc.setFontSize(22);
-    doc.setTextColor(255, 255, 255);
-    doc.text("INVENTORY STATEMENT", 14, 20);
-    
-    doc.setFontSize(10);
-    doc.setTextColor(255, 255, 255);
-    doc.text(`Department: Housekeeping | ${storeLabel}`, 14, 28);
-    doc.text(`Period: ${monthName}`, 14, 34);
-
-    // -- SUMMARY BOX --
-    const totalIn = inventoryRows.reduce((s, i) => s + i.added, 0);
-    const totalOut = inventoryRows.reduce((s, i) => s + i.consumed, 0);
-    
-    doc.setTextColor(50);
-    doc.setFontSize(10);
-    doc.text(`Total Stock In: ${totalIn}`, 14, 50);
-    doc.text(`Total Consumption: ${totalOut}`, 70, 50);
-    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 140, 50);
-
-    // -- TABLE --
-    const tableColumn = ["Article", "Unit", "Opening", "In", "Consumed", "Other", "Closing", "Loc"];
-    const tableRows = inventoryRows.map(row => [
-       `${row.itemName} \n#${row.articleNumber}`,
-       row.unit,
-       row.openingStock,
-       row.added > 0 ? `+${row.added}` : '-',
-       row.consumed > 0 ? `-${row.consumed}` : '-',
-       row.others > 0 ? `-${row.others}` : '-',
-       row.closingStock,
-       `${row.rack || '-'}/${row.level || '-'}`
-    ]);
-
-    autoTable(doc, {
-       startY: 55,
-       head: [tableColumn],
-       body: tableRows,
-       theme: 'grid',
-       headStyles: { fillColor: [109, 33, 88], textColor: 255, fontSize: 8, fontStyle: 'bold' },
-       bodyStyles: { fontSize: 8, cellPadding: 3 },
-       columnStyles: {
-          0: { cellWidth: 50 }, // Name is wider
-          6: { fontStyle: 'bold', textColor: [109, 33, 88] } // Closing Stock Bold
-       },
-       didParseCell: function(data) {
-           // Highlight rows with low stock or issues if needed
-       }
-    });
-
-    // -- FOOTER SIGNATURES --
-    const finalY = (doc as any).lastAutoTable.finalY + 30;
-    
-    doc.setLineWidth(0.5);
-    doc.line(14, finalY, 70, finalY); // Line 1
-    doc.line(120, finalY, 190, finalY); // Line 2
-    
-    doc.setFontSize(8);
-    doc.text("Checked By (Supervisor)", 14, finalY + 5);
-    doc.text("Approved By (Executive Housekeeper)", 120, finalY + 5);
-
-    doc.save(`HK_Inventory_${storeLabel}_${monthName}.pdf`);
-  };
-
-  // --- ACTIONS ---
+  // --- FILTERED SUGGESTIONS FOR MODALS ---
   const filteredSuggestions = useMemo(() => {
     if (!articleSearch) return [];
     const lower = articleSearch.toLowerCase();
-    return masterList.filter(m => 
-      m.item_name.toLowerCase().includes(lower) || 
-      m.article_number.toLowerCase().includes(lower)
-    ).slice(0, 5);
-  }, [articleSearch, masterList]);
+    
+    if (modalMode === 'Initialize') {
+        // Show master catalog items that are NOT currently in the store's inventory
+        const existingIds = new Set(inventoryRows.map(r => r.masterId));
+        return masterList.filter(m => !existingIds.has(m.id) && (m.item_name.toLowerCase().includes(lower) || m.article_number.includes(lower))).slice(0, 5);
+    } else {
+        // Show items ALREADY initialized in this store
+        const existingIds = new Set(inventoryRows.map(r => r.masterId));
+        return masterList.filter(m => existingIds.has(m.id) && (m.item_name.toLowerCase().includes(lower) || m.article_number.includes(lower))).slice(0, 5);
+    }
+  }, [articleSearch, masterList, inventoryRows, modalMode]);
 
   const handleSelectArticle = (item: MasterItem) => {
     setSelectedArticle(item);
     setArticleSearch(`${item.item_name} (#${item.article_number})`);
     setShowSuggestions(false);
     
-    const row = inventoryRows.find(r => r.masterId === item.id);
-    if(row) setTransData(prev => ({ ...prev, rack: row.rack, level: row.level }));
-  };
-
-  const handleSwitchToCreate = () => {
-    setNewArticle({ ...newArticle, item_name: articleSearch, article_number: '' });
-    setModalMode('Create Article');
-    setShowSuggestions(false);
+    if (modalMode === 'Log') {
+        const row = inventoryRows.find(r => r.masterId === item.id);
+        if(row) setTransData(prev => ({ ...prev, rack: row.rack, level: row.level }));
+    }
   };
 
   const handleSaveTransaction = async () => {
@@ -250,35 +187,50 @@ export default function PerpetualInventory() {
     const targetMonthKey = getMonthKey(currentDate);
     const existingRow = inventoryRows.find(r => r.masterId === selectedArticle.id);
     const existingRecordId = existingRow?.recordId;
-    const targetStore = activeStore === 'All' ? 'HK Main Store' : activeStore;
-    const deltaQty = transData.qty;
-    const updates: any = {};
     
-    if (transData.type === 'In') updates.added_stock = (existingRow?.added || 0) + deltaQty;
-    else if (transData.type === 'Consumed') updates.consumed = (existingRow?.consumed || 0) + deltaQty;
-    else if (transData.type === 'Damaged') updates.damaged = (existingRow?.others || 0) + deltaQty;
-    else if (transData.type === 'Transferred') updates.transferred = (existingRow?.others || 0) + deltaQty; 
-    
-    if (transData.rack) updates.rack = transData.rack;
-    if (transData.level) updates.shelf_level = transData.level;
-    if (transData.expiry) updates.expiry_date = transData.expiry;
-
-    if (existingRecordId) {
-      await supabase.from('hsk_monthly_stock').update(updates).eq('id', existingRecordId);
+    if (modalMode === 'Initialize') {
+        // Creating the very first record for this item in this store
+        await supabase.from('hsk_monthly_stock').insert({
+            month_year: targetMonthKey,
+            master_id: selectedArticle.id,
+            store_name: activeStore,
+            opening_stock: transData.qty, 
+            added_stock: 0,
+            consumed: 0,
+            damaged: 0,
+            transferred: 0,
+            rack: transData.rack,
+            shelf_level: transData.level,
+            expiry_date: transData.expiry
+        });
     } else {
-      await supabase.from('hsk_monthly_stock').insert({
-        month_year: targetMonthKey,
-        master_id: selectedArticle.id,
-        store_name: targetStore,
-        opening_stock: 0, 
-        added_stock: transData.type === 'In' ? deltaQty : 0,
-        consumed: transData.type === 'Consumed' ? deltaQty : 0,
-        damaged: transData.type === 'Damaged' ? deltaQty : 0,
-        transferred: transData.type === 'Transferred' ? deltaQty : 0,
-        rack: transData.rack,
-        shelf_level: transData.level,
-        expiry_date: transData.expiry
-      });
+        // Logging an In/Out Activity
+        const deltaQty = transData.qty;
+        const updates: any = {};
+        
+        if (transData.type === 'In') updates.added_stock = (existingRow?.added || 0) + deltaQty;
+        else if (transData.type === 'Consumed') updates.consumed = (existingRow?.consumed || 0) + deltaQty;
+        else if (transData.type === 'Damaged') updates.damaged = (existingRow?.others || 0) + deltaQty;
+        else if (transData.type === 'Transferred') updates.transferred = (existingRow?.others || 0) + deltaQty; 
+        
+        if (existingRecordId) {
+          // Update existing month record
+          await supabase.from('hsk_monthly_stock').update(updates).eq('id', existingRecordId);
+        } else {
+          // Carry over to new month if logging on an item that has history but no row for THIS month yet
+          await supabase.from('hsk_monthly_stock').insert({
+            month_year: targetMonthKey,
+            master_id: selectedArticle.id,
+            store_name: activeStore,
+            opening_stock: existingRow?.closingStock || 0, // Carry over stock
+            added_stock: transData.type === 'In' ? deltaQty : 0,
+            consumed: transData.type === 'Consumed' ? deltaQty : 0,
+            damaged: transData.type === 'Damaged' ? deltaQty : 0,
+            transferred: transData.type === 'Transferred' ? deltaQty : 0,
+            rack: existingRow?.rack || '',
+            shelf_level: existingRow?.level || '',
+          });
+        }
     }
 
     setIsModalOpen(false);
@@ -286,18 +238,6 @@ export default function PerpetualInventory() {
     setArticleSearch('');
     setSelectedArticle(null);
     fetchData(); 
-  };
-
-  const handleCreateArticle = async () => {
-    if(!newArticle.item_name || !newArticle.article_number) return alert("Details required");
-    const { data, error } = await supabase.from('hsk_master_catalog').insert(newArticle).select().single();
-    if (!error && data) {
-       await fetchData(); 
-       const newItem = data as MasterItem;
-       setSelectedArticle(newItem);
-       setArticleSearch(`${newItem.item_name} (#${newItem.article_number})`);
-       setModalMode('Transaction');
-    }
   };
 
   const fastMovers = inventoryRows.sort((a,b) => b.consumed - a.consumed).slice(0, 5).filter(i => i.consumed > 0);
@@ -318,7 +258,6 @@ export default function PerpetualInventory() {
         <div className="flex bg-white rounded-xl shadow-sm border border-slate-100 p-1">
            <button onClick={() => setActiveView('Inventory')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 ${activeView === 'Inventory' ? 'bg-[#6D2158] text-white' : 'text-slate-400 hover:text-[#6D2158]'}`}><FileText size={14}/> Log</button>
            <button onClick={() => setActiveView('Insights')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 ${activeView === 'Insights' ? 'bg-[#6D2158] text-white' : 'text-slate-400 hover:text-[#6D2158]'}`}><PieChart size={14}/> Insights</button>
-           <button onClick={() => setActiveView('Master List')} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 ${activeView === 'Master List' ? 'bg-[#6D2158] text-white' : 'text-slate-400 hover:text-[#6D2158]'}`}><Layers size={14}/> Catalog</button>
         </div>
       </div>
 
@@ -329,9 +268,9 @@ export default function PerpetualInventory() {
            {/* Store & Month */}
            <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
                <div className="bg-white p-2 rounded-xl border border-slate-100 flex items-center justify-between w-full md:w-64">
-                  {['All', 'HK Main Store', 'HK Chemical Store'].map(s => (
-                      <button key={s} onClick={() => setActiveStore(s as any)} className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase ${activeStore === s ? 'bg-slate-100 text-[#6D2158]' : 'text-slate-400'}`}>
-                        {s === 'All' ? 'All' : s.replace('HK ', '')}
+                  {['HK Main Store', 'HK Chemical Store'].map(s => (
+                      <button key={s} onClick={() => setActiveStore(s as any)} className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase ${activeStore === s ? 'bg-slate-100 text-[#6D2158]' : 'text-slate-400 hover:bg-slate-50'}`}>
+                        {s.replace('HK ', '')}
                       </button>
                   ))}
                </div>
@@ -347,11 +286,11 @@ export default function PerpetualInventory() {
            
            {/* Actions */}
            <div className="flex gap-2">
-               <button onClick={generatePDF} className="flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-slate-50">
-                  <Printer size={16}/> Print Report
+               <button onClick={() => { setModalMode('Initialize'); setIsModalOpen(true); }} className="flex items-center gap-2 px-4 py-3 bg-white border border-slate-200 text-[#6D2158] rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-slate-50 shadow-sm">
+                  <PackagePlus size={16}/> Add To Store
                </button>
-               <button onClick={() => { setModalMode('Transaction'); setIsModalOpen(true); }} className="flex items-center gap-2 px-6 py-3 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40">
-                  <Plus size={16}/> Record
+               <button onClick={() => { setModalMode('Log'); setIsModalOpen(true); }} className="flex items-center gap-2 px-6 py-3 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40">
+                  <ArrowDownUp size={16}/> Log Activity
                </button>
            </div>
         </div>
@@ -398,9 +337,9 @@ export default function PerpetualInventory() {
                          ) : <span className="text-slate-300 text-xs">-</span>}
                       </td>
                       <td className="p-4 text-center font-bold text-slate-400">{row.openingStock}</td>
-                      <td className="p-4 text-center font-bold text-emerald-600">+{row.added}</td>
-                      <td className="p-4 text-center font-bold text-rose-600">-{row.consumed}</td>
-                      <td className="p-4 text-center font-bold text-amber-600">-{row.others}</td>
+                      <td className="p-4 text-center font-bold text-emerald-600">{row.added > 0 ? `+${row.added}` : '-'}</td>
+                      <td className="p-4 text-center font-bold text-rose-600">{row.consumed > 0 ? `-${row.consumed}` : '-'}</td>
+                      <td className="p-4 text-center font-bold text-amber-600">{row.others > 0 ? `-${row.others}` : '-'}</td>
                       <td className="p-4 text-center">
                          <span className="px-3 py-1 bg-[#6D2158]/10 text-[#6D2158] rounded-lg font-bold">
                             {row.closingStock}
@@ -408,37 +347,18 @@ export default function PerpetualInventory() {
                       </td>
                    </tr>
                  ))}
+                 {inventoryRows.length === 0 && (
+                     <tr><td colSpan={7} className="p-10 text-center text-slate-400 italic font-bold">No items initialized in this store yet. Click "Add To Store" to begin.</td></tr>
+                 )}
               </tbody>
            </table>
         </div>
       </>
       )}
 
-      {/* --- MASTER LIST VIEW & INSIGHTS (Kept same logic, just hidden for brevity in display if needed, but included in full code) --- */}
-      {activeView === 'Master List' && (
-        <div className="mt-6 bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-           <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold">Article Catalog</h2>
-              <button onClick={() => { setModalMode('Create Article'); setIsModalOpen(true); }} className="px-6 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider">+ New Article</button>
-           </div>
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {masterList.map(item => (
-                 <div key={item.id} className="p-4 border border-slate-100 rounded-xl group">
-                    <div className="flex justify-between">
-                       <span className="text-xs font-bold text-slate-400">#{item.article_number}</span>
-                       <span className="text-[10px] font-bold uppercase bg-slate-100 px-2 rounded text-slate-500">{item.unit}</span>
-                    </div>
-                    <h3 className="text-lg font-bold mt-1 text-[#6D2158]">{item.item_name}</h3>
-                    <p className="text-xs font-bold text-slate-400 mt-1">{item.category}</p>
-                 </div>
-              ))}
-           </div>
-        </div>
-      )}
-
       {activeView === 'Insights' && (
          <div className="mt-6">
-             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden">
+             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 relative overflow-hidden max-w-md">
                 <h3 className="text-lg font-bold text-emerald-700 flex items-center gap-2"><Zap size={20}/> Fast Moving (Top 5)</h3>
                 <div className="space-y-3 mt-4">
                     {fastMovers.map((item, i) => (
@@ -463,66 +383,69 @@ export default function PerpetualInventory() {
               <button onClick={() => setIsModalOpen(false)} className="absolute top-4 right-4 text-slate-300 hover:text-rose-500"><X size={20}/></button>
 
               <div className="mb-6">
-                 <h3 className="text-lg font-bold text-[#6D2158]">{modalMode === 'Transaction' ? 'Record Transaction' : 'Register New Article'}</h3>
-                 {modalMode === 'Transaction' && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">{currentDate.toLocaleDateString('en-GB', { month: 'long' })} Activity</p>}
+                 <h3 className="text-lg font-bold text-[#6D2158]">{modalMode === 'Log' ? 'Record Activity (In/Out)' : `Initialize Item in ${activeStore}`}</h3>
+                 {modalMode === 'Log' && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">{currentDate.toLocaleDateString('en-GB', { month: 'long' })} Ledger</p>}
               </div>
               
-              {modalMode === 'Transaction' ? (
-                <div className="space-y-4">
-                   <div className="relative">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Search Article (Name or #)</label>
-                      <input 
-                         type="text" 
-                         value={articleSearch} 
-                         onChange={(e) => { setArticleSearch(e.target.value); setShowSuggestions(true); }}
-                         className="w-full p-3 border rounded-xl font-bold mt-1 text-sm bg-slate-50 focus:border-[#6D2158] outline-none"
-                         placeholder="Type to search..."
-                      />
-                      {showSuggestions && articleSearch.length > 0 && (
-                        <div className="absolute z-10 w-full bg-white border border-slate-200 rounded-xl shadow-xl mt-1 max-h-48 overflow-y-auto">
-                           {filteredSuggestions.map(item => (
-                              <div key={item.id} onClick={() => handleSelectArticle(item)} className="p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0">
-                                 <p className="text-sm font-bold text-slate-700">{item.item_name}</p>
-                                 <p className="text-[10px] text-slate-400">#{item.article_number}</p>
-                              </div>
-                           ))}
-                           {filteredSuggestions.length === 0 && (
-                              <button onClick={handleSwitchToCreate} className="w-full p-3 text-left text-emerald-600 font-bold text-xs hover:bg-emerald-50">
-                                + Create New Article: "{articleSearch}"
-                              </button>
-                           )}
-                        </div>
-                      )}
-                   </div>
+              <div className="space-y-4">
+                 <div className="relative">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">Search Article (Name or #)</label>
+                    <input 
+                       type="text" 
+                       value={articleSearch} 
+                       onChange={(e) => { setArticleSearch(e.target.value); setShowSuggestions(true); }}
+                       className="w-full p-3 border rounded-xl font-bold mt-1 text-sm bg-slate-50 focus:border-[#6D2158] outline-none"
+                       placeholder={modalMode === 'Initialize' ? "Search Master Catalog..." : "Search items currently in store..."}
+                    />
+                    {showSuggestions && articleSearch.length > 0 && (
+                      <div className="absolute z-10 w-full bg-white border border-slate-200 rounded-xl shadow-xl mt-1 max-h-48 overflow-y-auto">
+                         {filteredSuggestions.map(item => (
+                            <div key={item.id} onClick={() => handleSelectArticle(item)} className="p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 last:border-0">
+                               <p className="text-sm font-bold text-slate-700">{item.item_name}</p>
+                               <p className="text-[10px] text-slate-400">#{item.article_number}</p>
+                            </div>
+                         ))}
+                         {filteredSuggestions.length === 0 && (
+                            <div className="p-3 text-xs italic text-slate-400">No items found matching criteria.</div>
+                         )}
+                      </div>
+                    )}
+                 </div>
 
-                   {selectedArticle && (
-                   <>
-                       <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
-                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Rack</label><input type="text" placeholder="A1" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.rack} onChange={e => setTransData({...transData, rack: e.target.value})}/></div>
-                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Level</label><input type="text" placeholder="2" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.level} onChange={e => setTransData({...transData, level: e.target.value})}/></div>
-                       </div>
-                       <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-3">
-                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Action</label><select className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, type: e.target.value})}><option value="In">Stock In (+)</option><option value="Consumed">Consumption (-)</option><option value="Damaged">Damaged (-)</option><option value="Transferred">Transfer Out (-)</option></select></div>
-                          <div><label className="text-[10px] font-bold text-slate-400 uppercase">Quantity</label><input type="number" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, qty: Number(e.target.value)})}/></div>
-                       </div>
-                       <button onClick={handleSaveTransaction} className="w-full py-3 bg-[#6D2158] text-white rounded-xl font-bold mt-4 uppercase tracking-wider text-xs animate-in zoom-in">Save Record</button>
-                   </>
-                   )}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                   <input type="text" placeholder="Article # (Unique)" className="w-full p-3 border rounded-xl font-bold text-sm" value={newArticle.article_number} onChange={e => setNewArticle({...newArticle, article_number: e.target.value})} />
-                   <input type="text" placeholder="Item Name" className="w-full p-3 border rounded-xl font-bold text-sm" value={newArticle.item_name} onChange={e => setNewArticle({...newArticle, item_name: e.target.value})} />
-                   <div className="grid grid-cols-2 gap-4">
-                      <input type="text" placeholder="Category" className="w-full p-3 border rounded-xl font-bold text-sm" onChange={e => setNewArticle({...newArticle, category: e.target.value})} />
-                      <input type="text" placeholder="Unit (Pcs)" className="w-full p-3 border rounded-xl font-bold text-sm" onChange={e => setNewArticle({...newArticle, unit: e.target.value})} />
-                   </div>
-                   <div className="flex gap-2 mt-4">
-                      <button onClick={() => setModalMode('Transaction')} className="flex-1 py-3 text-slate-400 font-bold uppercase text-xs border border-slate-200 rounded-xl">Back</button>
-                      <button onClick={handleCreateArticle} className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold uppercase text-xs">Create Article</button>
-                   </div>
-                </div>
-              )}
+                 {selectedArticle && (
+                 <>
+                     {modalMode === 'Initialize' && (
+                         <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-2">
+                             <div><label className="text-[10px] font-bold text-slate-400 uppercase">Rack</label><input type="text" placeholder="A1" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.rack} onChange={e => setTransData({...transData, rack: e.target.value})}/></div>
+                             <div><label className="text-[10px] font-bold text-slate-400 uppercase">Level</label><input type="text" placeholder="2" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" value={transData.level} onChange={e => setTransData({...transData, level: e.target.value})}/></div>
+                             <div className="col-span-2"><label className="text-[10px] font-bold text-slate-400 uppercase">Opening Stock</label><input type="number" placeholder="0" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, qty: Number(e.target.value)})}/></div>
+                         </div>
+                     )}
+
+                     {modalMode === 'Log' && (
+                         <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-top-3">
+                             <div>
+                                 <label className="text-[10px] font-bold text-slate-400 uppercase">Action</label>
+                                 <select className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, type: e.target.value})}>
+                                     <option value="In">Stock In (+)</option>
+                                     <option value="Consumed">Consumption (-)</option>
+                                     <option value="Damaged">Damaged (-)</option>
+                                     <option value="Transferred">Transfer Out (-)</option>
+                                 </select>
+                             </div>
+                             <div>
+                                 <label className="text-[10px] font-bold text-slate-400 uppercase">Quantity</label>
+                                 <input type="number" className="w-full p-3 border rounded-xl font-bold mt-1 text-sm" onChange={e => setTransData({...transData, qty: Number(e.target.value)})}/>
+                             </div>
+                         </div>
+                     )}
+                     
+                     <button onClick={handleSaveTransaction} className="w-full py-3 bg-[#6D2158] text-white rounded-xl font-bold mt-4 uppercase tracking-wider text-xs animate-in zoom-in shadow-lg">
+                         {modalMode === 'Initialize' ? 'Initialize Item' : 'Save Record'}
+                     </button>
+                 </>
+                 )}
+              </div>
            </div>
         </div>
       )}

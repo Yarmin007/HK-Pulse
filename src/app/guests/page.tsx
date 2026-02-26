@@ -2,14 +2,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Edit3, X, ChevronLeft, ChevronRight,
-  FileSpreadsheet, Printer, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, FileText, Clock, Users, Briefcase, Calendar
+  FileSpreadsheet, Printer, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-// --- CONFIGURATION ---
 const TOTAL_VILLAS = 97;
 
 const getToday = () => {
@@ -20,53 +18,12 @@ const getToday = () => {
   return `${year}-${month}-${day}`;
 };
 
-// --- HELPERS ---
-
 const normalizeVilla = (raw: any): string | null => {
     if (!raw) return null;
     const str = String(raw).trim();
-    // Match only numeric part (e.g. "Villa 10" -> "10", "01" -> "1")
     const match = str.match(/^(\d{1,3})$/); 
     if (!match) return null;
     return parseInt(match[0], 10).toString();
-};
-
-const parseAnyDate = (val: any) => {
-    if (!val) return null;
-    // Excel Serial
-    if (typeof val === 'number' && val > 35000) {
-        const date = new Date(Math.round((val - 25569) * 86400 * 1000));
-        return date.toISOString().split('T')[0];
-    }
-    // Text Date
-    if (typeof val === 'string') {
-        const clean = val.trim().toUpperCase().split(' ')[0]; // Remove time
-        const parts = clean.split(/[-/]/);
-        if (parts.length === 3) {
-            let d = parts[0].padStart(2, '0');
-            let mStr = parts[1];
-            let y = parts[2];
-            if (y.length === 2) y = "20" + y;
-            const months: {[key:string]: string} = {
-                'JAN':'01', 'FEB':'02', 'MAR':'03', 'APR':'04', 'MAY':'05', 'JUN':'06',
-                'JUL':'07', 'AUG':'08', 'SEP':'09', 'OCT':'10', 'NOV':'11', 'DEC':'12'
-            };
-            const m = months[mStr] || (parseInt(mStr) < 13 ? mStr.padStart(2,'0') : null);
-            if (m && !isNaN(Number(d)) && !isNaN(Number(y))) {
-                return `${y}-${m}-${d}`;
-            }
-        }
-    }
-    return null;
-};
-
-const extractTime = (val: any) => {
-    if (!val) return "";
-    const str = String(val).trim();
-    const matchColon = str.match(/(\d{1,2}[:.]\d{2})/);
-    if (matchColon) return matchColon[1].replace('.', ':');
-    if (str.match(/^\d{4}$/)) return str.slice(0,2) + ":" + str.slice(2);
-    return "";
 };
 
 const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any = null) => {
@@ -80,24 +37,23 @@ const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any
   else if (upper.includes("KOKKO")) { title = "Mstr/Miss"; name = name.replace(/KOKKO/ig, ""); }
 
   let age = "";
-  const nameAgeMatch = name.match(/(\d+)\s*(Y|YR|YRS)/i);
-  if (nameAgeMatch) {
-      age = nameAgeMatch[1];
-      name = name.replace(nameAgeMatch[0], ""); 
-  }
-  if (!age && rawAgeNote) {
+  if (rawAgeNote) {
       const noteMatch = String(rawAgeNote).match(/(\d+)\s*(Y|YR|YRS|AP|AG)/i);
       if (noteMatch) age = noteMatch[1];
       else if (String(rawAgeNote).match(/^\d+$/)) age = String(rawAgeNote);
   }
 
-  name = name.replace(/[^a-zA-Z\s,]/g, "").replace(/\s+/g, " ").trim();
   if (name.includes(',')) {
-      const [last, first] = name.split(',');
-      name = `${first.trim()} ${last.trim()}`;
+      const parts = name.split(',').map(s => s.trim().replace(/[^a-zA-Z\s\-]/g, ""));
+      const last = parts[0];
+      const first = parts[1] || '';
+      if (parts.length > 2 && !title) title = parts[2];
+      name = `${first} ${last}`;
+  } else {
+      name = name.replace(/[^a-zA-Z\s\-]/g, "").replace(/\s+/g, " ").trim();
   }
-  name = name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
+  name = name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ').trim();
   let final = name;
   if (title && !final.toLowerCase().startsWith(title.toLowerCase())) final = `${title} ${final}`;
   if (age) final += ` (${age} yrs)`;
@@ -105,7 +61,6 @@ const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any
   return final;
 };
 
-// --- TYPES ---
 type GuestRecord = {
   id?: string;
   report_date: string;
@@ -121,6 +76,7 @@ type GuestRecord = {
   preferences?: string;
   arrival_time?: string;
   departure_time?: string;
+  stay_id?: string;
 };
 
 type ChangeLog = {
@@ -132,27 +88,11 @@ type ChangeLog = {
     newStatus: string;
 };
 
-type MemoStats = {
-    fileDate: string; 
-    quote: string;
-    dailyOcc: string;
-    guestInHouse: string;
-    children: string;
-    arrVillas: string;
-    depVillas: string;
-    moveVillas: string;
-    occVillas: string;
-    instructions: string[];
-};
-
 export default function HousekeepingSummaryPage() {
   const [selectedDate, setSelectedDate] = useState(getToday());
   const [masterList, setMasterList] = useState<GuestRecord[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0); 
   
-  const [memoStats, setMemoStats] = useState<MemoStats | null>(null);
-  const [showMemoModal, setShowMemoModal] = useState(false);
-
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [changes, setChanges] = useState<ChangeLog[]>([]);
   const [pendingData, setPendingData] = useState<GuestRecord[]>([]);
@@ -183,19 +123,9 @@ export default function HousekeepingSummaryPage() {
         fullList.push({ ...match, villa_number: villaNum });
       } else {
         fullList.push({
-          report_date: selectedDate,
-          villa_number: villaNum,
-          status: 'VAC',
-          guest_name: '',
-          pax_adults: 0,
-          pax_kids: 0,
-          gem_name: '',
-          meal_plan: '',
-          stay_dates: '',
-          remarks: '',
-          preferences: '',
-          arrival_time: '',
-          departure_time: ''
+          report_date: selectedDate, villa_number: villaNum, status: 'VAC', guest_name: '',
+          pax_adults: 0, pax_kids: 0, gem_name: '', meal_plan: '', stay_dates: '', remarks: '',
+          preferences: '', arrival_time: '', departure_time: '', stay_id: ''
         });
       }
     }
@@ -203,296 +133,263 @@ export default function HousekeepingSummaryPage() {
     setMasterList(fullList);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleSaveEdit = async () => {
+    if (!editingRecord) return;
     setIsProcessing(true);
-
-    const fileName = file.name.toLowerCase();
-    const reader = new FileReader();
-
-    reader.onload = (evt) => {
-        try {
-            const data = evt.target?.result;
-            if (fileName.endsWith('.txt') || fileName.endsWith('.csv')) {
-                processInHouseList(data as string);
-            } else {
-                const wb = XLSX.read(data, { type: 'binary' });
-                const ws = wb.Sheets[wb.SheetNames[0]];
-                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
-                processDailyMemo(rows);
-            }
-        } catch (err) {
-            alert("Error reading file.");
-            setIsProcessing(false);
-        }
-    };
-
-    if (fileName.endsWith('.txt') || fileName.endsWith('.csv')) {
-        reader.readAsText(file);
-    } else {
-        reader.readAsBinaryString(file);
+    
+    // Auto-generate stay_id if missing but has dates
+    let finalPayload = { ...editingRecord };
+    if (!finalPayload.stay_id && finalPayload.stay_dates) {
+        const arrStr = finalPayload.stay_dates.split('-')[0].trim().replace(/\//g, '');
+        finalPayload.stay_id = `${finalPayload.villa_number}_${arrStr}`;
     }
-    setFileInputKey(prev => prev + 1);
+    
+    const { id, ...payload } = finalPayload;
+    
+    const { error } = id 
+        ? await supabase.from('hsk_daily_summary').update(payload).eq('id', id) 
+        : await supabase.from('hsk_daily_summary').insert(payload);
+        
+    if (!error) { 
+        setIsEditOpen(false); 
+        fetchDailyData(); 
+        setEditingRecord(null);
+    } else {
+        alert("Error saving record: " + error.message);
+    }
+    setIsProcessing(false);
   };
 
-  // --- PARSER A: TEXT FILE ---
-  const processInHouseList = (text: string) => {
-      const lines = text.split('\n');
-      const newMap = new Map<string, GuestRecord>();
+  const handleFileProcess = (e: React.ChangeEvent<HTMLInputElement>, type: 'ARRDEP' | 'OCC') => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setIsProcessing(true);
 
-      masterList.forEach(r => newMap.set(r.villa_number, { 
-          ...r, status: 'VAC', guest_name: '', pax_adults: 0, pax_kids: 0, gem_name: '', meal_plan: '', stay_dates: '', arrival_time: '', departure_time: '' 
-      }));
-
-      lines.forEach(line => {
-          if (!line.trim() || line.startsWith('C9')) return; 
-          const cols = line.split('\t');
-          if (cols.length < 5) return;
-
-          const villa = normalizeVilla(cols[0]); 
-          if (!villa || !newMap.has(villa)) return;
-
-          const rec = newMap.get(villa)!;
-          const gem = cols[1]; 
-          const meal = cols[2]; 
-          const title = cols[3]; 
-          const nameRaw = cols[4]; 
-          const arrDateRaw = cols[17]; 
-          const depDateRaw = cols[19]; 
-
-          const fullName = formatGuestName(nameRaw, title);
-          
-          if (rec.guest_name) rec.guest_name += `, ${fullName}`;
-          else {
-              rec.guest_name = fullName;
-              rec.gem_name = gem;
-              rec.meal_plan = meal;
-              const d1 = parseAnyDate(arrDateRaw);
-              const d2 = parseAnyDate(depDateRaw);
-              if (d1 && d2) rec.stay_dates = `${d1.slice(5).replace('-','/')} - ${d2.slice(5).replace('-','/')}`;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+          try {
+              const data = evt.target?.result as string;
+              if (type === 'OCC') processOCCXML(data);
+              else processArrDepXML(data);
+          } catch (err) {
+              alert("Error parsing the XML file. Ensure it is a valid Opera export.");
+              setIsProcessing(false);
           }
-
-          const t = title ? title.toUpperCase() : "";
-          if (t.includes('MASTER') || t.includes('MISS') || t.includes('INF') || t.includes('BABY')) {
-              rec.pax_kids += 1;
-          } else {
-              rec.pax_adults += 1;
-          }
-
-          const arrISO = parseAnyDate(arrDateRaw);
-          const depISO = parseAnyDate(depDateRaw);
-          
-          if (arrISO === selectedDate) rec.status = 'ARR';
-          else if (depISO === selectedDate) rec.status = 'DEP';
-          else rec.status = 'OCC';
-      });
-
-      const newRecords = Array.from(newMap.values());
-      calculateDiff(newRecords, 'SYNC'); 
-      setIsProcessing(false);
+          e.target.value = '';
+          setFileInputKey(prev => prev + 1);
+      };
+      reader.readAsText(file);
   };
 
-  // --- PARSER B: DYNAMIC HEADER MAPPING FOR MEMO ---
-  const processDailyMemo = (rows: any[][]) => {
+  const processOCCXML = (xmlText: string) => {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+      const nodes = Array.from(xmlDoc.querySelectorAll('G_C9'));
+      
       const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
       const diffs: ChangeLog[] = [];
-      const stats: MemoStats = { fileDate:'', quote: '', dailyOcc: '', guestInHouse: '', children: '', arrVillas: '', depVillas: '', moveVillas: '', occVillas: '', instructions: [] };
-
-      // --- 1. PRE-SCAN: Find Section Start Rows ---
-      let idxMoves = -1, idxArr = -1, idxDep = -1;
+      const resByVilla: Record<string, any[]> = {};
       
-      rows.forEach((row, i) => {
-          const rowStr = row.map(c => String(c).toUpperCase()).join(' ');
-          
-          // Date Detection (Top of file)
-          if (i < 10 && !stats.fileDate) {
-              const dateMatch = rowStr.match(/(\d{1,2})[\/\s-](JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[\/\s-](\d{2,4})/i);
-              if (dateMatch) stats.fileDate = dateMatch[0];
+      nodes.forEach(node => {
+          const v = node.querySelector('C9')?.textContent?.trim();
+          if (v) {
+              if (!resByVilla[v]) resByVilla[v] = [];
+              resByVilla[v].push(node);
           }
-
-          if (rowStr.includes('ROOM MOVES')) idxMoves = i;
-          else if (rowStr.includes('ARRIVALS') && !rowStr.includes('VS')) idxArr = i;
-          else if (rowStr.includes('DEPARTURES')) idxDep = i;
       });
 
-      // --- 2. COLUMN FINDER HELPER ---
-      const findColumns = (startRow: number, scanLimit: number = 5) => {
-          // Defaults
-          let map = { villa: 1, toVilla: 2, name: 8, time: 10, date: 15 }; 
+      for (const [villa, resList] of Object.entries(resByVilla)) {
+          const cleanVilla = normalizeVilla(villa);
+          if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
           
-          for(let r = startRow; r < startRow + scanLimit && r < rows.length; r++) {
-              const row = rows[r].map(c => String(c).toUpperCase().trim());
-              // Look for "VILLA" or "NO"
-              const vIdx = row.findIndex(c => c === 'VILLA' || c === 'VILLA NO' || c === 'NO');
-              if (vIdx > -1) {
-                  map.villa = vIdx;
-                  // Try to find Name
-                  const nIdx = row.findIndex(c => c.includes('NAME') || c.includes('GUEST'));
-                  if (nIdx > -1) map.name = nIdx;
-                  // Try to find TO (for moves)
-                  const tIdx = row.findIndex(c => c === 'TO' || c.includes('TO VILLA'));
-                  if (tIdx > -1) map.toVilla = tIdx;
-                  return { map, headerRow: r };
-              }
-          }
-          return { map, headerRow: startRow }; // Fallback to defaults
-      };
+          const record = currentMap.get(cleanVilla)!;
+          let totalAdults = 0; let totalKids = 0;
+          let names: string[] = []; let mealPlan = 'RO'; let gemName = '';
+          let arrDate = ''; let depDate = '';
 
-      const getEndRow = (startIdx: number) => {
-          const indices = [idxMoves, idxArr, idxDep].filter(i => i > startIdx).sort((a,b) => a-b);
-          return indices[0] || rows.length;
-      };
-
-      // --- 3. PROCESS SECTIONS WITH DYNAMIC COLUMNS ---
-
-      // >>> MOVES <<<
-      if (idxMoves !== -1) {
-          const { map } = findColumns(idxMoves); // Find where "VILLA" column is
-          const endRow = getEndRow(idxMoves);
-          let lastToVilla: string | null = null;
-
-          for (let i = idxMoves + 1; i < endRow; i++) {
-              const row = rows[i];
-              if (!row || row.length === 0) { lastToVilla = null; continue; }
-              const rowStr = row.map(c => String(c).toUpperCase()).join(' ');
-              if (rowStr.includes('VILLA') || rowStr.includes('FROM')) continue; // Skip Header row
-
-              const fromV = normalizeVilla(row[map.villa]);
-              let toV = normalizeVilla(row[map.toVilla]); // Use detected column
-
-              if (fromV && !toV && lastToVilla) toV = lastToVilla;
-              if (toV) lastToVilla = toV;
-
-              if (fromV && toV && currentMap.has(fromV) && currentMap.has(toV)) {
-                  const fromRec = currentMap.get(fromV)!;
-                  const toRec = currentMap.get(toV)!;
-                  
-                  const isDayUse = rowStr.includes('DAY USE') || rowStr.includes('D/U');
-                  const isTMA = rowStr.includes('TMA') || rowStr.includes('SHUT');
-
-                  let newStatus = 'OCC';
-                  if (isTMA) newStatus = 'TMA';
-                  else if (isDayUse) newStatus = 'DAY USE';
-
-                  toRec.guest_name = fromRec.guest_name;
-                  toRec.status = newStatus; 
-                  toRec.preferences = fromRec.preferences;
-                  
-                  fromRec.guest_name = '';
-                  fromRec.status = 'VAC';
-                  
-                  diffs.push({ villa: `${fromV} -> ${toV}`, type: isTMA ? 'TMA' : (isDayUse ? 'DAY USE' : 'CHANGE'), oldGuest: `Move from ${fromV}`, newGuest: toRec.guest_name, oldStatus: 'OCC', newStatus });
-              }
-          }
-      }
-
-      // >>> ARRIVALS <<<
-      if (idxArr !== -1) {
-          const { map } = findColumns(idxArr);
-          const endRow = getEndRow(idxArr);
-
-          for (let i = idxArr + 1; i < endRow; i++) {
-              const row = rows[i];
-              if (!row || row.length === 0) continue;
-              const rowStr = row.map(c => String(c).toUpperCase()).join(' ');
-              if (rowStr.includes('VILLA') || rowStr.includes('STATUS')) continue;
-
-              const villa = normalizeVilla(row[map.villa]); // Use detected column
-              if (!villa || !currentMap.has(villa)) continue;
-
-              const record = currentMap.get(villa)!;
-              const rawName = row[map.name];
-              let cleanName = formatGuestName(String(rawName), "", row[12]); // Age usually around col 12
-
-              if (!cleanName || cleanName.length < 2) continue;
-
-              let timeFound = "";
-              let futureDate = "";
-              // Scan broadly for Time/Date
-              for (let c = 5; c < row.length; c++) {
-                  const val = row[c];
-                  const t = extractTime(val);
-                  if (t && !timeFound) timeFound = t;
-                  const d = parseAnyDate(val);
-                  if (d && d > selectedDate) futureDate = d;
-              }
-
-              const isTMA = rowStr.includes('TMA') || rowStr.includes('SHUT') || rowStr.includes('CREW');
+          resList.forEach(res => {
+              const rawName = res.querySelector('C36')?.textContent || '';
+              const title = res.querySelector('C33')?.textContent || '';
+              if (rawName) names.push(formatGuestName(rawName, title));
               
-              const oldStatus = record.status;
-              record.guest_name = cleanName;
-              record.status = isTMA ? 'TMA' : ((oldStatus === 'OCC' || oldStatus === 'DEP') ? 'DEP/ARR' : 'ARR');
-              record.arrival_time = timeFound;
+              totalAdults += parseInt(res.querySelector('C48')?.textContent || '0', 10);
+              totalKids += parseInt(res.querySelector('C51')?.textContent || '0', 10);
               
-              if (futureDate) {
-                  const arrShort = selectedDate.slice(5).replace('-','/');
-                  const depShort = futureDate.slice(5).replace('-','/');
-                  record.stay_dates = `${arrShort} - ${depShort}`;
-              }
+              const mPlan = res.querySelector('C30')?.textContent?.trim();
+              if (mPlan && mPlan !== 'RO') mealPlan = mPlan;
+              
+              const gem = res.querySelector('C27')?.textContent?.trim();
+              if (gem) gemName = gem;
 
-              diffs.push({ villa, type: isTMA ? 'TMA' : 'ARRIVAL', oldGuest: oldStatus, newGuest: cleanName, oldStatus, newStatus: record.status });
-          }
-      }
+              if (!arrDate) arrDate = res.querySelector('C81')?.textContent || '';
+              if (!depDate) depDate = res.querySelector('C87')?.textContent || '';
+          });
 
-      // >>> DEPARTURES <<<
-      if (idxDep !== -1) {
-          const { map } = findColumns(idxDep);
-          const endRow = getEndRow(idxDep);
-
-          for (let i = idxDep + 1; i < endRow; i++) {
-              const row = rows[i];
-              if (!row || row.length === 0) continue;
-              const rowStr = row.map(c => String(c).toUpperCase()).join(' ');
-              if (rowStr.includes('VILLA')) continue;
-
-              const villa = normalizeVilla(row[map.villa]);
-              if (!villa || !currentMap.has(villa)) continue;
-
-              const record = currentMap.get(villa)!;
-              const oldStatus = record.status;
-              if (!oldStatus.includes('DEP')) {
-                  record.status = oldStatus === 'ARR' ? 'DEP/ARR' : 'DEP';
-                  for (let c = 5; c < row.length; c++) {
-                      const t = extractTime(row[c]);
-                      if (t) { record.departure_time = t; break; }
-                  }
-                  diffs.push({ villa, type: 'DEPARTURE', oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus, newStatus: record.status });
+          let stayDates = '';
+          let stayId = '';
+          if (arrDate && depDate) {
+              const aParts = arrDate.split('-'); const dParts = depDate.split('-');
+              if (aParts.length === 3 && dParts.length === 3) {
+                  stayDates = `${aParts[0]}/${aParts[1]} - ${dParts[0]}/${dParts[1]}`;
+                  stayId = `${cleanVilla}_${aParts[2]}${aParts[1]}${aParts[0]}`; 
               }
           }
+
+          const oldStatus = record.status;
+          
+          if (!oldStatus.includes('ARR') && !oldStatus.includes('DEP')) {
+              record.status = 'OCC';
+          }
+          
+          record.guest_name = names.join(' & ');
+          record.pax_adults = totalAdults;
+          record.pax_kids = totalKids;
+          record.meal_plan = mealPlan;
+          record.stay_dates = stayDates;
+          record.gem_name = gemName;
+          record.stay_id = stayId;
+
+          diffs.push({
+              villa: cleanVilla, type: 'SYNC',
+              oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+              newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+          });
       }
 
-      // 4. STATS extraction (same as before)
-      // ... (Keep existing stats logic)
+      // AUTO CLEANUP: If existing record is OCC but not in the new XML, revert to VAC
+      currentMap.forEach((rec, vNum) => {
+          if (!resByVilla[vNum] && !resByVilla[vNum.padStart(2, '0')] && rec.status === 'OCC') {
+              diffs.push({
+                  villa: vNum, type: 'CHANGE', 
+                  oldGuest: rec.guest_name || 'Checked Out', newGuest: 'Vacant', 
+                  oldStatus: 'OCC', newStatus: 'VAC'
+              });
+              rec.status = 'VAC'; rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
+              rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
+          }
+      });
 
-      setMemoStats(stats);
       setChanges(diffs);
       setPendingData(Array.from(currentMap.values()));
       setDiffModalOpen(true);
       setIsProcessing(false);
   };
 
-  const calculateDiff = (newRecords: GuestRecord[], mode: 'NORMAL' | 'SYNC' = 'NORMAL') => {
+  const processArrDepXML = (xmlText: string) => {
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+      
+      const reservations = Array.from(xmlDoc.querySelectorAll('G_RESERVATION'));
+      const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
       const diffs: ChangeLog[] = [];
-      const currentMap = new Map(masterList.map(r => [r.villa_number, r]));
-
-      newRecords.forEach(newRec => {
-          const oldRec = currentMap.get(newRec.villa_number);
-          if (!oldRec) return;
-          if (oldRec.status !== newRec.status || oldRec.guest_name !== newRec.guest_name) {
-              diffs.push({
-                  villa: newRec.villa_number,
-                  type: mode === 'SYNC' ? 'SYNC' : (oldRec.status === 'VAC' ? 'ARRIVAL' : 'CHANGE'),
-                  oldGuest: oldRec.guest_name || 'Vacant',
-                  newGuest: newRec.guest_name || 'Vacant',
-                  oldStatus: oldRec.status,
-                  newStatus: newRec.status
-              });
+      const resByVilla: Record<string, any[]> = {};
+      
+      reservations.forEach(res => {
+          const v = res.querySelector('DISP_ROOM_NO')?.textContent?.trim();
+          if (v) {
+              if (!resByVilla[v]) resByVilla[v] = [];
+              resByVilla[v].push(res);
           }
       });
+
+      for (const [villa, resList] of Object.entries(resByVilla)) {
+          const cleanVilla = normalizeVilla(villa);
+          if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
+          
+          const record = currentMap.get(cleanVilla)!;
+          let totalAdults = 0; let totalKids = 0;
+          let names: string[] = []; let prefs: string[] = [];
+          let mealPlan = 'RO'; let arrDate = ''; let depDate = ''; let resStatus = '';
+
+          resList.forEach(res => {
+              const rawName = res.querySelector('FULL_NAME_NO_SHR_IND')?.textContent || res.querySelector('FULL_NAME')?.textContent || '';
+              if (rawName) names.push(formatGuestName(rawName));
+              
+              totalAdults += parseInt(res.querySelector('ADULTS')?.textContent || '0', 10);
+              totalKids += parseInt(res.querySelector('CHILDREN')?.textContent || '0', 10);
+              
+              if (!arrDate) arrDate = res.querySelector('ARRIVAL')?.textContent || '';
+              if (!depDate) depDate = res.querySelector('DEPARTURE')?.textContent || '';
+              if (!resStatus) resStatus = res.querySelector('SHORT_RESV_STATUS')?.textContent || '';
+
+              const rateCode = (res.querySelector('RATE_CODE')?.textContent || '').toUpperCase();
+              const products = (res.querySelector('PRODUCTS')?.textContent || '').toUpperCase();
+              
+              if (products.includes('LUN') || rateCode.includes('FB')) mealPlan = 'FB';
+              else if ((products.includes('DIN') || rateCode.includes('HB')) && mealPlan !== 'FB') mealPlan = 'HB';
+              else if ((products.includes('BFS') || rateCode.includes('BB') || rateCode.includes('PR')) && mealPlan === 'RO') mealPlan = 'BB';
+
+              const comments = res.querySelectorAll('RES_COMMENT');
+              comments.forEach(c => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
+          });
+
+          let stayDates = ''; let stayId = ''; let isArr = false; let isDep = false;
+
+          if (arrDate && depDate) {
+              const aParts = arrDate.split('-'); const dParts = depDate.split('-');
+              if (aParts.length === 3 && dParts.length === 3) {
+                  stayDates = `${aParts[0]}/${aParts[1]} - ${dParts[0]}/${dParts[1]}`;
+                  stayId = `${cleanVilla}_${aParts[2]}${aParts[1]}${aParts[0]}`; 
+                  const aFull = `20${aParts[2]}-${aParts[1]}-${aParts[0]}`;
+                  const dFull = `20${dParts[2]}-${dParts[1]}-${dParts[0]}`;
+                  if (aFull === selectedDate) isArr = true;
+                  if (dFull === selectedDate) isDep = true;
+              }
+          }
+
+          let finalStatus = 'OCC';
+          if (resStatus.includes('CKOT') && !isArr) finalStatus = 'VAC';
+          else if (isArr && isDep) finalStatus = 'DEP/ARR';
+          else if (isArr) finalStatus = 'ARR';
+          else if (isDep) finalStatus = 'DEP';
+
+          const oldStatus = record.status;
+          
+          record.guest_name = names.join(' & ');
+          record.pax_adults = totalAdults;
+          record.pax_kids = totalKids;
+          record.meal_plan = mealPlan;
+          record.stay_dates = stayDates;
+          record.status = finalStatus;
+          record.stay_id = stayId;
+          
+          const uniquePrefs = Array.from(new Set(prefs));
+          if (uniquePrefs.length > 0) record.preferences = uniquePrefs.join('\n\n');
+
+          diffs.push({
+              villa: cleanVilla, type: 'SYNC',
+              oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+              newGuest: record.guest_name, oldStatus: oldStatus, newStatus: finalStatus
+          });
+      }
+
+      // AUTO CLEANUP: If previously ARR/DEP but no longer in XML, revert them.
+      currentMap.forEach((rec, vNum) => {
+          if (!resByVilla[vNum] && !resByVilla[vNum.padStart(2, '0')]) {
+              const oldStatus = rec.status;
+              if (oldStatus.includes('ARR') || oldStatus.includes('DEP')) {
+                  let newStatus = 'VAC';
+                  if (oldStatus === 'DEP' || oldStatus === 'DEP/ARR') newStatus = 'OCC';
+                  
+                  diffs.push({
+                      villa: vNum, type: 'CHANGE', 
+                      oldGuest: rec.guest_name || 'Cancelled/Moved', newGuest: newStatus === 'VAC' ? 'Vacant' : rec.guest_name, 
+                      oldStatus: oldStatus, newStatus: newStatus
+                  });
+                  
+                  rec.status = newStatus;
+                  if (newStatus === 'VAC') {
+                      rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
+                      rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
+                  }
+              }
+          }
+      });
+
       setChanges(diffs);
-      setPendingData(newRecords);
+      setPendingData(Array.from(currentMap.values()));
       setDiffModalOpen(true);
+      setIsProcessing(false);
   };
 
   const handleApproveUpdate = async () => {
@@ -500,12 +397,7 @@ export default function HousekeepingSummaryPage() {
       await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
       const payload = pendingData.map(r => { 
           const { id, ...rest } = r; 
-          return {
-              ...rest,
-              report_date: selectedDate,
-              arrival_time: rest.arrival_time || '',
-              departure_time: rest.departure_time || ''
-          };
+          return { ...rest, report_date: selectedDate, arrival_time: rest.arrival_time || '', departure_time: rest.departure_time || '' };
       });
       await supabase.from('hsk_daily_summary').insert(payload);
       fetchDailyData();
@@ -531,7 +423,7 @@ export default function HousekeepingSummaryPage() {
               report_date: selectedDate, villa_number: r.villa_number, status: newStatus, guest_name: newGuest,
               pax_adults: (newStatus === 'VAC') ? 0 : r.pax_adults, pax_kids: (newStatus === 'VAC') ? 0 : r.pax_kids,
               gem_name: r.gem_name, meal_plan: r.meal_plan, stay_dates: (newStatus === 'VAC') ? '' : r.stay_dates,
-              remarks: '', preferences: r.preferences, arrival_time: '', departure_time: ''
+              remarks: '', preferences: r.preferences, arrival_time: '', departure_time: '', stay_id: r.stay_id
           };
       });
       await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
@@ -544,13 +436,6 @@ export default function HousekeepingSummaryPage() {
       const doc = new jsPDF('p', 'mm', 'a4');
       autoTable(doc, { head: [['Villa', 'Status', 'Guest', 'Pax', 'GEM']], body: masterList.map(r => [r.villa_number, r.status, r.guest_name, r.pax_adults+r.pax_kids, r.gem_name]) });
       doc.save(`HK_Summary_${selectedDate}.pdf`);
-  };
-  
-  const handleSaveEdit = async () => {
-    if (!editingRecord) return;
-    const { id, ...payload } = editingRecord;
-    const { error } = id ? await supabase.from('hsk_daily_summary').update(payload).eq('id', id) : await supabase.from('hsk_daily_summary').insert(payload);
-    if (!error) { setIsEditOpen(false); fetchDailyData(); }
   };
 
   const getStatusColor = (s: string) => {
@@ -584,12 +469,11 @@ export default function HousekeepingSummaryPage() {
              <h1 className="text-xl font-bold text-slate-800">Housekeeping Summary</h1>
              <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">
                 {new Date(selectedDate).toLocaleDateString('en-GB', { dateStyle: 'full' })}
-                {memoStats?.fileDate && <span className="ml-2 text-amber-600 bg-amber-50 px-2 py-0.5 rounded text-[10px]">File: {memoStats.fileDate}</span>}
              </p>
            </div>
         </div>
         
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
            <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
               <button onClick={() => changeDate(-1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronLeft size={16}/></button>
               <span className="px-4 text-xs font-bold text-slate-600 w-24 text-center">{new Date(selectedDate).toLocaleDateString('en-GB', {day:'2-digit', month:'short'})}</span>
@@ -600,16 +484,16 @@ export default function HousekeepingSummaryPage() {
                 {isRollingOver ? <Loader2 size={16} className="animate-spin"/> : <RotateCw size={16}/>} Roll Over
            </button>
 
-           {memoStats && (
-               <button onClick={() => setShowMemoModal(true)} className="flex items-center gap-2 bg-blue-50 border border-blue-100 text-blue-700 hover:bg-blue-100 px-4 py-2 rounded-lg text-xs font-bold transition-all">
-                   <FileText size={16}/> Memo Info
-               </button>
-           )}
-
-           <input key={fileInputKey} type="file" id="fileInput" className="hidden" accept=".xlsx,.xls,.xlsm,.csv,.txt" onChange={handleFileUpload} />
-           <button onClick={() => document.getElementById('fileInput')?.click()} className="flex items-center gap-2 bg-white border border-slate-200 hover:border-[#6D2158] text-slate-600 hover:text-[#6D2158] px-4 py-2 rounded-lg text-xs font-bold transition-all">
-              {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} Import
+           <input key={`occ-${fileInputKey}`} type="file" id="fileOcc" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'OCC')} />
+           <button onClick={() => document.getElementById('fileOcc')?.click()} className="flex items-center gap-2 bg-white border border-slate-200 hover:border-emerald-600 text-slate-600 hover:text-emerald-700 px-4 py-2 rounded-lg text-xs font-bold transition-all">
+              {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} OCC Report
            </button>
+
+           <input key={`arr-${fileInputKey}`} type="file" id="fileArrDep" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'ARRDEP')} />
+           <button onClick={() => document.getElementById('fileArrDep')?.click()} className="flex items-center gap-2 bg-[#6D2158] text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-[#5a1b49] transition-all">
+              {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} Arr/Dep Report
+           </button>
+           
            <button onClick={exportPDF} className="flex items-center gap-2 bg-[#6D2158] text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-[#5a1b49] transition-all"><Printer size={16}/> Print PDF</button>
         </div>
       </div>
@@ -627,7 +511,6 @@ export default function HousekeepingSummaryPage() {
                 <th className="py-3 px-4 w-32">GEM</th>
                 <th className="py-3 px-4 w-24">Meal</th>
                 <th className="py-3 px-4 w-32 text-right">Dates</th>
-                <th className="py-3 px-4 w-32 text-right">Time</th>
                 <th className="py-3 px-4 w-12"></th>
               </tr>
             </thead>
@@ -636,20 +519,42 @@ export default function HousekeepingSummaryPage() {
                 <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''}`}>
                   <td className="py-2 px-4"><span className="font-bold text-sm text-slate-700">{row.villa_number}</span></td>
                   <td className="py-2 px-4"><span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${getStatusColor(row.status)}`}>{row.status}</span></td>
+                  
+                  {/* CLEANER MULTI-LINE GUEST NAME DISPLAY WITH ICONS */}
                   <td className="py-2 px-4 cursor-pointer" onClick={() => { setEditingRecord(row); setIsEditOpen(true); }}>
-                    <div className="flex flex-col">
-                        <span className={`text-xs font-bold ${row.status === 'VAC' ? 'text-slate-200' : 'text-slate-700'} group-hover:text-[#6D2158] transition-colors leading-relaxed`}>{row.guest_name || '-'}</span>
+                    <div className="flex flex-col gap-1 py-1">
+                        {row.guest_name ? row.guest_name.split(' & ').map((name, idx) => {
+                            const isChild = name.includes('Mstr') || name.includes('Miss') || name.includes(' yrs)');
+                            return (
+                                <div key={idx} className="flex items-start gap-1.5">
+                                    {isChild ? (
+                                        <Baby size={12} className="text-amber-500 mt-0.5 shrink-0"/>
+                                    ) : (
+                                        <User size={12} className="text-slate-400 mt-0.5 shrink-0"/>
+                                    )}
+                                    <span className={`text-[11px] font-bold leading-tight group-hover:text-[#6D2158] transition-colors ${row.status === 'VAC' ? 'text-slate-300' : 'text-slate-700'}`}>
+                                        {name.trim()}
+                                    </span>
+                                </div>
+                            );
+                        }) : (
+                            <span className="text-xs font-bold text-slate-200">-</span>
+                        )}
                         {row.preferences && (<div className="flex items-center gap-1 mt-1 text-[9px] text-rose-500 font-bold"><Heart size={8} fill="currentColor"/> Note</div>)}
                     </div>
                   </td>
-                  <td className="py-2 px-4 text-center">{row.pax_adults > 0 && <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{row.pax_adults + row.pax_kids}</span>}</td>
+                  
+                  <td className="py-2 px-4 text-center">
+                      {(row.pax_adults > 0 || row.pax_kids > 0) && (
+                          <div className="flex flex-col items-center">
+                              <span className="text-[11px] font-black text-slate-600">{row.pax_adults + row.pax_kids}</span>
+                              {row.pax_kids > 0 && <span className="text-[8px] font-bold text-amber-500 uppercase">{row.pax_kids} Kids</span>}
+                          </div>
+                      )}
+                  </td>
                   <td className="py-2 px-4 text-[10px] font-bold text-slate-500 uppercase">{row.gem_name}</td>
                   <td className="py-2 px-4 text-[10px] text-slate-500 font-medium">{row.meal_plan}</td>
                   <td className="py-2 px-4 text-right text-[10px] font-mono text-slate-400">{row.stay_dates}</td>
-                  <td className="py-2 px-4 text-right text-[10px] font-mono text-slate-500">
-                      {row.arrival_time && <span className="block text-emerald-600">Arr: {row.arrival_time}</span>}
-                      {row.departure_time && <span className="block text-rose-600">Dep: {row.departure_time}</span>}
-                  </td>
                   <td className="py-2 px-4 text-right"><button onClick={() => { setEditingRecord(row); setIsEditOpen(true); }} className="p-1.5 text-slate-300 hover:text-[#6D2158] hover:bg-[#6D2158]/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"><Edit3 size={14}/></button></td>
                 </tr>
               ))}
@@ -658,38 +563,7 @@ export default function HousekeepingSummaryPage() {
         </div>
       </div>
 
-      {/* MEMO MODAL */}
-      {showMemoModal && memoStats && (
-          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6">
-              <div className="bg-white w-full max-w-lg rounded-2xl shadow-xl overflow-hidden p-6 relative">
-                  <button onClick={() => setShowMemoModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={20}/></button>
-                  <h3 className="text-xl font-bold text-[#6D2158] mb-4 flex items-center gap-2"><FileText/> Memo Insights</h3>
-                  
-                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 mb-4">
-                      <p className="text-xs font-bold text-slate-400 uppercase">Quote of the Day</p>
-                      <p className="text-sm font-medium text-slate-700 italic">"{memoStats.quote}"</p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 mb-4">
-                      <div className="p-3 bg-blue-50 rounded-lg"><p className="text-[10px] font-bold text-blue-400 uppercase">Occupancy</p><p className="text-lg font-black text-blue-700">{memoStats.dailyOcc}</p></div>
-                      <div className="p-3 bg-emerald-50 rounded-lg"><p className="text-[10px] font-bold text-emerald-400 uppercase">In House</p><p className="text-lg font-black text-emerald-700">{memoStats.guestInHouse} <span className="text-xs text-emerald-500 font-medium">({memoStats.children} Kids)</span></p></div>
-                      <div className="p-3 bg-purple-50 rounded-lg"><p className="text-[10px] font-bold text-purple-400 uppercase">Arrivals</p><p className="text-lg font-black text-purple-700">{memoStats.arrVillas}</p></div>
-                      <div className="p-3 bg-rose-50 rounded-lg"><p className="text-[10px] font-bold text-rose-400 uppercase">Departures</p><p className="text-lg font-black text-rose-700">{memoStats.depVillas}</p></div>
-                  </div>
-
-                  {memoStats.instructions.length > 0 && (
-                      <div>
-                          <p className="text-xs font-bold text-slate-400 uppercase mb-2">Special Instructions</p>
-                          <ul className="list-disc pl-4 space-y-1 text-xs font-medium text-slate-600">
-                              {memoStats.instructions.map((inst, i) => <li key={i}>{inst}</li>)}
-                          </ul>
-                      </div>
-                  )}
-              </div>
-          </div>
-      )}
-
-      {/* CHANGES MODAL & EDIT MODAL (Keep Existing) */}
+      {/* CHANGES MODAL */}
       {diffModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-6">
            <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
@@ -700,7 +574,7 @@ export default function HousekeepingSummaryPage() {
                         {changes[0]?.type === 'SYNC' ? 'Full Sync Detected' : 'Review Updates'}
                       </h3>
                       <p className="text-sm text-slate-500 mt-1">
-                          {changes.length === 0 ? "No updates detected." : `Found ${changes.length} changes to apply.`}
+                          {changes.length === 0 ? "The uploaded file matches the current database exactly." : `Found ${changes.length} changes to apply.`}
                       </p>
                   </div>
                   <button onClick={() => setDiffModalOpen(false)}><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
@@ -709,7 +583,7 @@ export default function HousekeepingSummaryPage() {
               <div className="overflow-y-auto p-0">
                   {changes.length === 0 ? (
                       <div className="p-12 text-center text-slate-400">
-                          <p>The uploaded file matches the current database exactly.</p>
+                          <p>Ready to sync.</p>
                       </div>
                   ) : (
                       <table className="w-full text-left text-sm">
@@ -765,6 +639,7 @@ export default function HousekeepingSummaryPage() {
         </div>
       )}
 
+      {/* EDIT MODAL */}
       {isEditOpen && editingRecord && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
            <div className="bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -786,9 +661,10 @@ export default function HousekeepingSummaryPage() {
                             <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">GEM</label><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold" value={editingRecord.gem_name} onChange={e => setEditingRecord({...editingRecord, gem_name: e.target.value})}/></div>
                         </div>
                         <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Guest Names (Group)</label><textarea className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold h-24 resize-none" value={editingRecord.guest_name} onChange={e => setEditingRecord({...editingRecord, guest_name: e.target.value})}/></div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Dates</label><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold" value={editingRecord.stay_dates} onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}/></div>
-                            <div><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Pax</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold" value={editingRecord.pax_adults} onChange={e => setEditingRecord({...editingRecord, pax_adults: parseInt(e.target.value)})}/></div>
+                        <div className="grid grid-cols-3 gap-4">
+                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Adults</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center" value={editingRecord.pax_adults} onChange={e => setEditingRecord({...editingRecord, pax_adults: parseInt(e.target.value) || 0})}/></div>
+                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Kids</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center" value={editingRecord.pax_kids} onChange={e => setEditingRecord({...editingRecord, pax_kids: parseInt(e.target.value) || 0})}/></div>
+                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Dates</label><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center" value={editingRecord.stay_dates} onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}/></div>
                         </div>
                      </div>
                  ) : (
@@ -798,7 +674,12 @@ export default function HousekeepingSummaryPage() {
                      </div>
                  )}
               </div>
-              <div className="p-6 pt-0"><button onClick={handleSaveEdit} className="w-full bg-[#6D2158] text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider shadow-md hover:bg-[#5a1b49] transition-all">Save Profile</button></div>
+              <div className="p-6 pt-0">
+                  <button onClick={handleSaveEdit} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider shadow-md hover:bg-[#5a1b49] transition-all flex justify-center items-center gap-2">
+                      {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Edit3 size={16}/>}
+                      Save Profile
+                  </button>
+              </div>
            </div>
         </div>
       )}

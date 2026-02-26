@@ -4,7 +4,7 @@ import {
   Settings, Save, Plus, Trash2, X, Search, Edit3, Image as ImageIcon,
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User,
-  Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock
+  Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -35,6 +35,9 @@ type MasterItem = {
   sort_order: number;
   image_url?: string; 
   has_expiry: boolean; 
+  par_level: number;
+  reorder_qty: number;
+  primary_supplier: string;
 };
 
 type Constant = {
@@ -56,7 +59,7 @@ export default function SettingsPage() {
   const defaultItemState: MasterItem = {
     article_number: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
     is_minibar_item: false, micros_name: '', sales_price: 0, avg_cost: 0, sort_order: 0,
-    image_url: '', has_expiry: false
+    image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: ''
   };
   
   const [currentItem, setCurrentItem] = useState<MasterItem>(defaultItemState);
@@ -64,11 +67,9 @@ export default function SettingsPage() {
   const [newConstantValue, setNewConstantValue] = useState('');
   const [activeConstantType, setActiveConstantType] = useState('');
 
-  // SYSTEM CONFIG STATE
   const [adminPin, setAdminPin] = useState('2026');
   const [systemTimezone, setSystemTimezone] = useState('Indian/Maldives');
 
-  // GEM DIRECTORY STATE
   const [gemName, setGemName] = useState('');
   const [gemMvpn, setGemMvpn] = useState('');
 
@@ -222,7 +223,6 @@ export default function SettingsPage() {
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   
-                  {/* PIN Config */}
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Lock size={14}/> Admin Access PIN</label>
                       <div className="flex gap-2">
@@ -232,7 +232,6 @@ export default function SettingsPage() {
                       <p className="text-[10px] text-slate-400 mt-2 font-bold">Used to lock the main dashboard from unauthorized access.</p>
                   </div>
 
-                  {/* Timezone Config */}
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Clock size={14}/> Global Website Timezone</label>
                       <div className="flex gap-2">
@@ -372,7 +371,7 @@ export default function SettingsPage() {
                         </div>
 
                         {currentItem.is_minibar_item && (
-                            <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
                                <div>
                                   <label className="text-[10px] font-bold text-rose-400 uppercase">Micros Name</label>
                                   <input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.micros_name || ''} onChange={e => setCurrentItem({...currentItem, micros_name: e.target.value})} />
@@ -389,6 +388,24 @@ export default function SettingsPage() {
                                   <label className="text-[10px] font-bold text-rose-400 uppercase">Sales Price ($)</label>
                                   <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sales_price ?? 0} onChange={e => setCurrentItem({...currentItem, sales_price: parseFloat(e.target.value) || 0})} />
                                </div>
+                            </div>
+                        )}
+
+                        {/* PROCUREMENT DETAILS FOR MAIN STORE */}
+                        {!currentItem.is_minibar_item && (
+                            <div className="md:col-span-2 p-4 bg-blue-50 rounded-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-4 animate-in fade-in">
+                                <div>
+                                    <label className="text-[10px] font-bold text-blue-500 uppercase flex items-center gap-1"><AlertTriangle size={10}/> Par Level (Min)</label>
+                                    <input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="e.g. 50" value={currentItem.par_level ?? 0} onChange={e => setCurrentItem({...currentItem, par_level: parseFloat(e.target.value) || 0})} />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold text-blue-500 uppercase flex items-center gap-1"><Box size={10}/> Reorder Qty (Box)</label>
+                                    <input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="e.g. 24" value={currentItem.reorder_qty ?? 0} onChange={e => setCurrentItem({...currentItem, reorder_qty: parseFloat(e.target.value) || 0})} />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-bold text-blue-500 uppercase flex items-center gap-1"><ShoppingCart size={10}/> Primary Supplier</label>
+                                    <input type="text" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="e.g. SIMDI" value={currentItem.primary_supplier || ''} onChange={e => setCurrentItem({...currentItem, primary_supplier: e.target.value})} />
+                                </div>
                             </div>
                         )}
                     </div>
