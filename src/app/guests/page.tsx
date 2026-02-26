@@ -137,7 +137,6 @@ export default function HousekeepingSummaryPage() {
     if (!editingRecord) return;
     setIsProcessing(true);
     
-    // Auto-generate stay_id if missing but has dates
     let finalPayload = { ...editingRecord };
     if (!finalPayload.stay_id && finalPayload.stay_dates) {
         const arrStr = finalPayload.stay_dates.split('-')[0].trim().replace(/\//g, '');
@@ -190,7 +189,7 @@ export default function HousekeepingSummaryPage() {
       const diffs: ChangeLog[] = [];
       const resByVilla: Record<string, any[]> = {};
       
-      nodes.forEach(node => {
+      nodes.forEach((node: any) => {
           const v = node.querySelector('C9')?.textContent?.trim();
           if (v) {
               if (!resByVilla[v]) resByVilla[v] = [];
@@ -256,7 +255,6 @@ export default function HousekeepingSummaryPage() {
           });
       }
 
-      // AUTO CLEANUP: If existing record is OCC but not in the new XML, revert to VAC
       currentMap.forEach((rec, vNum) => {
           if (!resByVilla[vNum] && !resByVilla[vNum.padStart(2, '0')] && rec.status === 'OCC') {
               diffs.push({
@@ -284,7 +282,7 @@ export default function HousekeepingSummaryPage() {
       const diffs: ChangeLog[] = [];
       const resByVilla: Record<string, any[]> = {};
       
-      reservations.forEach(res => {
+      reservations.forEach((res: any) => {
           const v = res.querySelector('DISP_ROOM_NO')?.textContent?.trim();
           if (v) {
               if (!resByVilla[v]) resByVilla[v] = [];
@@ -320,7 +318,8 @@ export default function HousekeepingSummaryPage() {
               else if ((products.includes('BFS') || rateCode.includes('BB') || rateCode.includes('PR')) && mealPlan === 'RO') mealPlan = 'BB';
 
               const comments = res.querySelectorAll('RES_COMMENT');
-              comments.forEach(c => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
+              // Fixed strict typing issue here
+              comments.forEach((c: any) => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
           });
 
           let stayDates = ''; let stayId = ''; let isArr = false; let isDep = false;
@@ -363,7 +362,6 @@ export default function HousekeepingSummaryPage() {
           });
       }
 
-      // AUTO CLEANUP: If previously ARR/DEP but no longer in XML, revert them.
       currentMap.forEach((rec, vNum) => {
           if (!resByVilla[vNum] && !resByVilla[vNum.padStart(2, '0')]) {
               const oldStatus = rec.status;
@@ -473,7 +471,7 @@ export default function HousekeepingSummaryPage() {
            </div>
         </div>
         
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-3">
            <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
               <button onClick={() => changeDate(-1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronLeft size={16}/></button>
               <span className="px-4 text-xs font-bold text-slate-600 w-24 text-center">{new Date(selectedDate).toLocaleDateString('en-GB', {day:'2-digit', month:'short'})}</span>
