@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, Plus, X, Wine, Wrench, Trash2, 
   Calendar, Split, Send, Check, Clock, 
@@ -32,6 +32,57 @@ type MasterItem = {
   is_minibar_item: boolean;
   micros_name?: string;
   image_url?: string; 
+};
+
+// --- WEB PUSH HELPERS ---
+function urlBase64ToUint8Array(base64String: string) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+}
+
+const registerAndSubscribePush = async () => {
+    try {
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+
+        // 1. Register Service Worker
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        
+        // 2. Request Notification Permission
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') return false;
+
+        // 3. Subscribe to Web Push
+        const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+        if (!vapidPublicKey) {
+            console.error("Missing VAPID Public Key in environment variables");
+            return false;
+        }
+
+        const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
+        const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: convertedVapidKey
+        });
+
+        // 4. Save to Supabase
+        const subData = JSON.parse(JSON.stringify(subscription));
+        await supabase.from('hsk_push_subscriptions').upsert({
+            endpoint: subData.endpoint,
+            auth: subData.keys.auth,
+            p256dh: subData.keys.p256dh
+        }, { onConflict: 'endpoint' });
+
+        return true;
+    } catch (err) {
+        console.error("Push registration failed", err);
+        return false;
+    }
 };
 
 // --- HELPERS ---
@@ -122,43 +173,25 @@ export default function CoordinatorLog() {
     fetchCatalog(); 
     fetchSettings(); 
 
-    // Subscribe to realtime database changes for instant collaboration
+    // Subscribe to realtime database changes to update the UI
     const channel = supabase.channel('requests_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, (payload) => {
-          
-          fetchRecords(); // Refresh list automatically
-          
-          if (payload.eventType === 'INSERT') {
-             const nr = payload.new as RequestRecord;
-             showNotification('success', `New ${nr.request_type} - Villa ${nr.villa_number}`);
-             
-             // Trigger Native Push Notification if permitted
-             if ('Notification' in window && Notification.permission === 'granted') {
-                 new Notification(`Villa ${nr.villa_number} - ${nr.request_type}`, {
-                     body: `By: ${nr.attendant_name}`,
-                     icon: '/icon-192.png'
-                 });
-             }
-          }
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
+          fetchRecords(); 
       })
-      .subscribe((status) => {
-          console.log("Realtime Sync Status:", status);
-      });
+      .subscribe();
 
     return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
 
-  const requestNotifications = () => {
-      if ('Notification' in window) {
-          Notification.requestPermission().then(permission => {
-              setNotifyPerm(permission);
-              if (permission === 'granted') {
-                  showNotification('success', 'Push Notifications Enabled!');
-              } else {
-                  showNotification('error', 'Notifications were blocked.');
-              }
-          });
+  const handleEnableNotifications = async () => {
+      const success = await registerAndSubscribePush();
+      if (success) {
+          setNotifyPerm('granted');
+          showNotification('success', 'Background Push Notifications Enabled!');
+      } else {
+          setNotifyPerm('denied');
+          showNotification('error', 'Notifications blocked or not supported on this device.');
       }
   };
 
@@ -320,13 +353,14 @@ export default function CoordinatorLog() {
 
     const dateStr = getTodayStr(selectedDate);
     const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`;
+    const attendantName = requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest");
 
     const payload = {
        villa_number: villaNumber,
        request_type: reqType,
        item_details: details,
        request_time: dbTimeStr, 
-       attendant_name: requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest"),
+       attendant_name: attendantName,
        guest_name: guestInfo ? guestInfo.mainName : '',
        package_tag: guestInfo?.pkg?.type || '',
     };
@@ -338,6 +372,20 @@ export default function CoordinatorLog() {
     if (!error) { 
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
       showNotification('success', isEditing ? "Updated" : "Saved"); 
+
+      // --- TRIGGER BACKGROUND PUSH NOTIFICATION ---
+      // This sends a signal to our backend to notify everyone else!
+      if (!isEditing) {
+          fetch('/api/notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  title: `Villa ${villaNumber} - ${reqType}`,
+                  body: `Requested by: ${attendantName}`
+              })
+          }).catch(console.error); // Silently catch errors so it doesn't break the UI
+      }
+
     }
   };
 
@@ -463,12 +511,12 @@ export default function CoordinatorLog() {
               <h1 className="text-2xl font-black tracking-tight text-[#6D2158] flex items-center gap-2">
                 Request Log
                 {notifyPerm !== 'granted' && (
-                    <button onClick={requestNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Notifications">
+                    <button onClick={handleEnableNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Background Notifications">
                         <Bell size={14} className="animate-pulse" />
                     </button>
                 )}
                 {notifyPerm === 'granted' && (
-                    <span className="ml-2 text-emerald-500 bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Notifications Active">
+                    <span className="ml-2 text-emerald-500 bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Background Notifications Active">
                         <BellRing size={14} />
                     </span>
                 )}
