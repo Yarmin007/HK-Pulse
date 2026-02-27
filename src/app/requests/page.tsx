@@ -2,10 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Search, Plus, X, Wine, Wrench, Trash2, 
-  Calendar, Split, Send, Check, Clock, 
-  Edit3, Trash, Wand2, Loader2, CheckCircle2, AlertTriangle, User, Bell, BellRing
+  Calendar, Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
+  CheckCircle2, AlertTriangle, User, Bell, BellRing, MessageCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { useConfirm } from '@/components/ConfirmProvider';
+import PageHeader from '@/components/PageHeader';
+import toast from 'react-hot-toast';
 
 // --- TYPES ---
 type RequestRecord = {
@@ -50,21 +53,17 @@ const registerAndSubscribePush = async () => {
     try {
         if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
 
-        // 1. Register Service Worker
         const registration = await navigator.serviceWorker.register('/sw.js');
         await navigator.serviceWorker.ready;
         
-        // 2. Request Notification Permission
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') return false;
 
-        // 3. Subscribe to Web Push
         const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
         if (!vapidPublicKey) return false;
 
         const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
         
-        // Check if already subscribed to avoid creating duplicates
         let subscription = await registration.pushManager.getSubscription();
         if (!subscription) {
             subscription = await registration.pushManager.subscribe({
@@ -73,7 +72,6 @@ const registerAndSubscribePush = async () => {
             });
         }
 
-        // 4. Save to Supabase (Upsert ensures we don't have duplicates)
         const subData = JSON.parse(JSON.stringify(subscription));
         await supabase.from('hsk_push_subscriptions').upsert({
             endpoint: subData.endpoint,
@@ -90,12 +88,12 @@ const registerAndSubscribePush = async () => {
 
 // --- HELPERS ---
 const getTodayStr = (dateObj: Date = new Date()) => {
-  const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+  const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(dateObj);
 };
 
 const formatLocalTime = (dateStr: string) => {
-    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
     return new Date(dateStr).toLocaleTimeString('en-US', {
         timeZone: tz,
         hour: '2-digit',
@@ -119,7 +117,10 @@ const extractMainGuest = (fullString: string) => {
 };
 
 export default function CoordinatorLog() {
+  const { confirmAction } = useConfirm(); // GLOBAL CONFIRM HOOK
+
   const [records, setRecords] = useState<RequestRecord[]>([]);
+  const [dailyGuests, setDailyGuests] = useState<Record<string, any>>({}); // MAPS GUEST INFO TO DASHBOARD CARDS
   const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
   const [gems, setGems] = useState<string[]>([]);
   
@@ -130,16 +131,12 @@ export default function CoordinatorLog() {
   const [isPartialOpen, setIsPartialOpen] = useState(false);
   const [notifyPerm, setNotifyPerm] = useState<string>('default');
 
-  // EDIT & CUSTOM PROMPT STATE
+  // EDIT STATE
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; id: string | null; title: string; message: string }>({
-      isOpen: false, id: null, title: '', message: ''
-  });
   
   // POST / BILL NUMBER MODAL
   const [postModal, setPostModal] = useState({ isOpen: false, id: '', chk: '' });
-  const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
   
   // FILTERS
@@ -170,7 +167,6 @@ export default function CoordinatorLog() {
   useEffect(() => { 
     if ('Notification' in window) {
         setNotifyPerm(Notification.permission);
-        // AUTO SUBSCRIBE DESKTOP/MOBILE IF THEY ALREADY ALLOWED IT
         if (Notification.permission === 'granted') {
             registerAndSubscribePush();
         }
@@ -180,16 +176,9 @@ export default function CoordinatorLog() {
     fetchCatalog(); 
     fetchSettings(); 
 
-    // Subscribe to realtime database changes for instant UI updates
     const channel = supabase.channel('requests_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, (payload) => {
-          fetchRecords(); // Refresh list automatically
-          if (payload.eventType === 'INSERT') {
-             const nr = payload.new as RequestRecord;
-             showNotification('success', `New ${nr.request_type} - Villa ${nr.villa_number}`);
-             // Note: Removed the local "new Notification()" here so we don't get double pings. 
-             // The Service Worker will handle the OS notification perfectly.
-          }
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
+          fetchRecords(); 
       })
       .subscribe();
 
@@ -201,28 +190,22 @@ export default function CoordinatorLog() {
       const success = await registerAndSubscribePush();
       if (success) {
           setNotifyPerm('granted');
-          showNotification('success', 'Background Push Notifications Enabled!');
+          toast.success('Background Push Notifications Enabled!');
       } else {
           setNotifyPerm('denied');
-          showNotification('error', 'Notifications blocked or not supported on this device.');
+          toast.error('Notifications blocked or not supported on this device.');
       }
   };
 
-  // TEST PUSH FUNCTION
   const triggerTestPush = async () => {
-      showNotification('success', 'Sending test push...');
+      toast.success('Sending test push...');
       try {
           await fetch('/api/notify', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  title: `Test Notification Works!`,
-                  body: `Your background system is successfully connected.`
-              })
+              body: JSON.stringify({ title: `Test Notification Works!`, body: `Your background system is successfully connected.` })
           });
-      } catch (err) {
-          console.error("Test push failed", err);
-      }
+      } catch (err) { console.error("Test push failed", err); }
   };
 
   // SMART FILTER UPDATE LOGIC
@@ -238,7 +221,7 @@ export default function CoordinatorLog() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typeFilter]);
 
-  // AUTO FETCH GUEST
+  // AUTO FETCH GUEST FOR MODAL
   useEffect(() => {
     const fetchGuest = async () => {
       if (!villaNumber || villaNumber.length < 1) { setGuestInfo(null); return; }
@@ -247,7 +230,12 @@ export default function CoordinatorLog() {
           const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr(selectedDate)).eq('villa_number', villaNumber).maybeSingle();
           if (data) {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
-            if(data.gem_name && !requesterSearch && otherModalType !== 'GEM') setRequesterSearch(data.gem_name);
+            
+            // Fix: DO NOT auto-fill GEM name if this is a Minibar request. Let the user type the VA Name.
+            if(data.gem_name && !requesterSearch && !isMinibarOpen && otherModalType !== 'GEM') {
+                setRequesterSearch(data.gem_name);
+            }
+
           } else { setGuestInfo(null); }
       } else {
           setGuestInfo(null);
@@ -256,7 +244,7 @@ export default function CoordinatorLog() {
     const timer = setTimeout(fetchGuest, 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [villaNumber, otherModalType, selectedDate]);
+  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen]);
 
   const fetchCatalog = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
@@ -270,12 +258,26 @@ export default function CoordinatorLog() {
 
   const fetchRecords = async () => {
     const dateStr = getTodayStr(selectedDate);
-    const { data } = await supabase.from('hsk_daily_requests').select('*').gte('request_time', `${dateStr}T00:00:00+05:00`).lte('request_time', `${dateStr}T23:59:59+05:00`).order('request_time', { ascending: false });
-    if (data) setRecords(data);
+    
+    // Fetch both Requests AND Guest Summary simultaneously
+    const [reqRes, guestRes] = await Promise.all([
+        supabase.from('hsk_daily_requests').select('*').gte('request_time', `${dateStr}T00:00:00+05:00`).lte('request_time', `${dateStr}T23:59:59+05:00`).order('request_time', { ascending: false }),
+        supabase.from('hsk_daily_summary').select('villa_number, meal_plan, stay_dates, status').eq('report_date', dateStr)
+    ]);
+    
+    if (reqRes.data) setRecords(reqRes.data);
+    
+    if (guestRes.data) {
+        const gMap: Record<string, any> = {};
+        guestRes.data.forEach(g => {
+            gMap[g.villa_number] = g;
+        });
+        setDailyGuests(gMap);
+    }
   };
 
   const handleOpenModal = (type: 'Minibar' | 'General' | 'GEM') => {
-    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
     setManualTime(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()));
     setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch('');
     setOtherCategory('General'); setIsEditing(false); setEditingId(null);
@@ -286,7 +288,7 @@ export default function CoordinatorLog() {
 
   const handleEditRecord = (record: RequestRecord) => {
     setVillaNumber(record.villa_number);
-    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
     setManualTime(new Date(record.request_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz }));
     setRequesterSearch(record.attendant_name);
     setIsEditing(true);
@@ -342,7 +344,7 @@ export default function CoordinatorLog() {
         if (data.villa && !villaNumber) setVillaNumber(data.villa);
         if (data.category && otherModalType !== 'GEM') setOtherCategory(data.category);
         setCustomNote(data.summary);
-        showNotification('success', 'Magic formatting applied!');
+        toast.success('Magic formatting applied!');
     } catch (err) {
         let v = "";
         const vMatch = customNote.match(/villa\s*(\d{1,3})/i);
@@ -362,13 +364,13 @@ export default function CoordinatorLog() {
         
         if (v && !villaNumber) setVillaNumber(v);
         setCustomNote(bulleted);
-        showNotification('success', 'Basic formatting applied');
+        toast.success('Basic formatting applied');
     }
     setIsMagicLoading(false);
   };
 
   const submitRequest = async (type: 'Minibar' | 'Other') => {
-    if (!villaNumber) { showNotification('error', "Villa Required"); return; }
+    if (!villaNumber) { toast.error("Villa Required"); return; }
     
     let details = '';
     let reqType = 'General';
@@ -382,7 +384,7 @@ export default function CoordinatorLog() {
     }
 
     const dateStr = getTodayStr(selectedDate);
-    const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`;
+    const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`; // Preserves +5 offset format for DB processing
     const attendantName = requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest");
 
     const payload = {
@@ -401,9 +403,8 @@ export default function CoordinatorLog() {
       
     if (!error) { 
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
-      showNotification('success', isEditing ? "Updated" : "Saved"); 
+      toast.success(isEditing ? "Updated" : "Saved"); 
 
-      // --- TRIGGER BACKGROUND PUSH NOTIFICATION (Fires to SW of all devices) ---
       if (!isEditing) {
           fetch('/api/notify', {
               method: 'POST',
@@ -414,7 +415,6 @@ export default function CoordinatorLog() {
               })
           }).catch(console.error);
       }
-
     }
   };
 
@@ -429,23 +429,26 @@ export default function CoordinatorLog() {
   };
 
   const confirmPost = async () => {
-      if (!postModal.chk) return alert("Enter CHK number");
+      if (!postModal.chk) return toast.error("Enter CHK number");
       await supabase.from('hsk_daily_requests').update({ is_posted: true, chk_number: postModal.chk }).eq('id', postModal.id);
       setRecords(records.map(r => r.id === postModal.id ? { ...r, is_posted: true, chk_number: postModal.chk } : r));
       setPostModal({ isOpen: false, id: '', chk: '' });
-      showNotification('success', 'Bill successfully linked');
+      toast.success('Bill successfully linked');
   };
 
-  const askDelete = (id: string) => { 
-      setConfirmModal({ isOpen: true, id, title: 'Delete Log?', message: 'Are you sure you want to remove this log?' }); 
-  };
-  
-  const deleteRecord = async () => {
-    if(!confirmModal.id) return;
-    await supabase.from('hsk_daily_requests').delete().eq('id', confirmModal.id);
-    setRecords(records.filter(r => r.id !== confirmModal.id));
-    setConfirmModal({ isOpen: false, id: null, title: '', message: '' });
-    showNotification('success', "Log Deleted");
+  const askDelete = async (id: string) => { 
+      const isConfirmed = await confirmAction({
+          title: 'Delete Log?',
+          message: 'Are you sure you want to remove this log? This cannot be undone.',
+          confirmText: 'Confirm Delete',
+          isDestructive: true
+      });
+      
+      if (isConfirmed) {
+          await supabase.from('hsk_daily_requests').delete().eq('id', id);
+          setRecords(prev => prev.filter(r => r.id !== id));
+          toast.success("Log Deleted");
+      }
   };
 
   const toggleStatus = async (id: string, field: 'is_sent' | 'is_done') => {
@@ -454,6 +457,27 @@ export default function CoordinatorLog() {
     const newValue = !record[field];
     setRecords(records.map(r => r.id === id ? { ...r, [field]: newValue } : r));
     await supabase.from('hsk_daily_requests').update({ [field]: newValue }).eq('id', id);
+  };
+
+  // --- WHATSAPP HELPER FUNCTION ---
+  const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
+      // Clean up the bullets before sending to whatsapp
+      const cleanDetails = (record.item_details || '')
+          .split(/\n|,/)
+          .map(s => s.trim().replace(/^[•\-\*]\s*/, ''))
+          .filter(Boolean)
+          .join('\n- ');
+
+      let text = '';
+      if (type === 'inform') {
+          text = `V${record.villa_number}\n- ${cleanDetails}`;
+          if (!record.is_sent) toggleStatus(record.id, 'is_sent'); // Automatically toggle standard inform state
+      } else {
+          text = `V${record.villa_number}\n- ${cleanDetails}\nDONE ✅`;
+          if (!record.is_done) toggleStatus(record.id, 'is_done'); // Automatically toggle standard done state
+      }
+
+      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
 
   const openPartialModal = (record: RequestRecord) => {
@@ -508,24 +532,37 @@ export default function CoordinatorLog() {
       return true;
   });
 
-  const showNotification = (type: 'success' | 'error', text: string) => { 
-      setToastMsg({ type, text }); 
-      setTimeout(() => setToastMsg(null), 3000); 
-  };
-
   const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
   const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))) as string[]];
   const amenityItems = masterCatalog.filter(i => !i.is_minibar_item);
 
+  // MODAL GUEST CARD
   const GuestCard = () => {
       if (!guestInfo) return null;
+      
+      let depDate = '-';
+      if (guestInfo.stay_dates) {
+          const parts = guestInfo.stay_dates.split('-');
+          if (parts.length > 1) depDate = parts[1].trim();
+          else depDate = guestInfo.stay_dates;
+      }
+
+      const mealPlan = guestInfo.meal_plan || 'RO';
+
       return (
-        <div className={`mt-3 p-3 rounded-2xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
+        <div className={`mt-3 p-4 rounded-2xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
             <div className="flex justify-between items-start">
-                <div><h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><User size={14} className="text-slate-400"/>{guestInfo.mainName}</h3></div>
-                {guestInfo.pkg && <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${guestInfo.pkg.color}`}>{guestInfo.pkg.type}</span>}
+                <div>
+                    <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><User size={14} className="text-slate-400"/>{guestInfo.mainName || 'Guest'}</h3>
+                    <p className="text-[10px] text-slate-500 font-bold mt-1 tracking-wide">
+                        Dep: <span className="text-slate-800">{depDate}</span>
+                    </p>
+                </div>
+                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider border bg-white ${guestInfo.pkg?.color || 'border-slate-200 text-slate-500'}`}>
+                    {mealPlan}
+                </span>
             </div>
-            {guestInfo.isCheckout && <div className="mt-1 flex items-center gap-1 text-rose-600 font-bold text-[10px]"><AlertTriangle size={12}/> CHECKOUT TODAY</div>}
+            {guestInfo.isCheckout && <div className="mt-2 flex items-center gap-1 text-rose-600 font-black text-[10px] uppercase tracking-widest"><AlertTriangle size={12}/> Checkout Today</div>}
         </div>
       );
   };
@@ -533,56 +570,37 @@ export default function CoordinatorLog() {
   return (
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
       
-      {/* NATIVE STICKY HEADER */}
-      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 pt-4 pb-3 shadow-sm flex flex-col gap-3">
-        <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-black tracking-tight text-[#6D2158] flex items-center gap-2">
-                Request Log
-                {notifyPerm !== 'granted' ? (
-                    <button onClick={handleEnableNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Background Notifications">
-                        <Bell size={14} className="animate-pulse" />
-                    </button>
-                ) : (
-                    <button onClick={triggerTestPush} className="ml-2 text-emerald-500 hover:text-emerald-600 active:scale-90 transition-transform bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Test Push Notifications">
-                        <BellRing size={14} />
-                    </button>
-                )}
-              </h1>
-              
-              {/* FIXED CALENDAR */}
-              <div className="flex items-center gap-2 mt-2 bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-200 w-fit relative cursor-pointer hover:border-[#6D2158] transition-colors">
-                  <Calendar size={14} className="text-[#6D2158]"/> 
-                  <span className="text-xs font-bold text-[#6D2158]">{selectedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                  <input 
-                      type="date" 
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" 
-                      value={selectedDate.toISOString().split('T')[0]} 
-                      onChange={(e) => {
-                          if (e.target.value) {
-                              const newDate = new Date(e.target.value);
-                              if (!isNaN(newDate.getTime())) setSelectedDate(newDate);
-                          }
-                      }}
-                  />
-              </div>
-
-            </div>
-            {/* Quick Add Buttons for Desktop & Mobile */}
-            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 items-center">
-                <button onClick={() => handleOpenModal('Minibar')} className="flex-1 md:flex-none justify-center bg-rose-600 text-white px-4 py-2.5 rounded-2xl font-bold uppercase text-[10px] shadow-md shadow-rose-600/20 active:scale-95 transition-all whitespace-nowrap">Minibar</button>
-                <button onClick={() => handleOpenModal('General')} className="flex-1 md:flex-none justify-center bg-[#6D2158] text-white px-4 py-2.5 rounded-2xl font-bold uppercase text-[10px] shadow-md shadow-[#6D2158]/20 active:scale-95 transition-all whitespace-nowrap">Gen Req</button>
-                <button onClick={() => handleOpenModal('GEM')} className="flex-1 md:flex-none justify-center bg-amber-500 text-white px-4 py-2.5 rounded-2xl font-bold uppercase text-[10px] shadow-md shadow-amber-500/20 active:scale-95 transition-all whitespace-nowrap">GEM Req</button>
-            </div>
+      <PageHeader 
+        title={
+          <>
+            Request Log
+            {notifyPerm !== 'granted' ? (
+                <button onClick={handleEnableNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Background Notifications">
+                    <Bell size={14} className="animate-pulse" />
+                </button>
+            ) : (
+                <button onClick={triggerTestPush} className="ml-2 text-emerald-500 hover:text-emerald-600 active:scale-90 transition-transform bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Test Push Notifications">
+                    <BellRing size={14} />
+                </button>
+            )}
+          </>
+        }
+        date={selectedDate}
+        onDateChange={setSelectedDate}
+        actions={
+          <div className="flex gap-2 overflow-x-auto no-scrollbar w-full md:w-auto">
+            <button onClick={() => handleOpenModal('Minibar')} className="btn-danger !px-4 !py-2.5">Minibar</button>
+            <button onClick={() => handleOpenModal('General')} className="btn-primary !px-4 !py-2.5">Gen Req</button>
+            <button onClick={() => handleOpenModal('GEM')} className="btn-primary !bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600 !px-4 !py-2.5 text-white">GEM Req</button>
+          </div>
+        }
+      >
+        <div className="relative mt-2">
+            <Search size={16} className="absolute left-4 top-4 text-slate-400" />
+            <input type="text" placeholder="Search Villa or Name..." className="input-field pl-12 py-3 text-[16px] md:text-sm" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
         </div>
 
-        <div className="relative">
-            <Search size={16} className="absolute left-3 top-3 text-slate-400" />
-            <input type="text" placeholder="Search Villa or Name..." className="w-full pl-10 pr-4 py-2.5 bg-slate-100 border-none rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-[#6D2158]/20 transition-all" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
-        </div>
-
-        {/* Filter Pills */}
-        <div className="flex flex-col gap-2.5 mt-1">
+        <div className="flex flex-col gap-2.5 mt-2">
             <div className="flex gap-2 overflow-x-auto no-scrollbar items-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Type</span>
                 {['All', 'Minibar', 'General', 'GEM'].map(t => (
@@ -602,24 +620,55 @@ export default function CoordinatorLog() {
                 ))}
             </div>
         </div>
-      </div>
+      </PageHeader>
 
       <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-32">
          {visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
              const isGemReq = r.request_type === 'GEM Request';
+             const isGeneralReq = r.request_type === 'General Request' || r.request_type === 'Cleaning' || r.request_type === 'Maintenance' || r.request_type === 'Amenities' || r.request_type === 'Laundry';
+             
+             // --- ATTACH LIVE GUEST INFO TO DASHBOARD CARDS ---
+             const gInfo = dailyGuests[r.villa_number] || dailyGuests[r.villa_number.replace('-1', '').replace('-2', '')];
+             
+             let depDate = '';
+             if (gInfo?.stay_dates) {
+                 const parts = gInfo.stay_dates.split('-');
+                 if (parts.length > 1) depDate = parts[1].trim();
+                 else depDate = gInfo.stay_dates;
+             }
+             
+             const mealPlan = gInfo?.meal_plan || r.package_tag || '';
+             const isCheckout = gInfo?.status?.includes('DEP');
+
              return (
-             <div key={r.id} className={`break-inside-avoid rounded-3xl border p-5 flex flex-col bg-white shadow-sm relative active:scale-[0.99] transition-transform hover:shadow-md ${r.request_type === 'Minibar' ? 'border-rose-100' : isGemReq ? 'border-amber-200' : 'border-slate-200'}`}>
+             <div key={r.id} className={`card-standard ${r.request_type === 'Minibar' ? 'border-rose-100' : isGemReq ? 'border-amber-200' : 'border-slate-200'} ${isCheckout ? 'bg-rose-50/40' : ''}`}>
                 <div className="flex justify-between items-start mb-3">
-                   <div className="flex items-center gap-3">
-                     <span className="text-2xl font-black text-slate-800 tracking-tight leading-none break-all">{r.villa_number}</span>
-                     <button onClick={() => handleEditRecord(r)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0" title="Edit"><Edit3 size={16}/></button>
+                   <div className="flex flex-col gap-1.5">
+                       <div className="flex items-center gap-2">
+                         <span className="text-2xl font-black text-slate-800 tracking-tight leading-none break-all">{r.villa_number}</span>
+                         <button onClick={() => handleEditRecord(r)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0" title="Edit"><Edit3 size={14}/></button>
+                       </div>
+                       
+                       {/* NATIVE BADGES FOR MEAL PLAN & DEP DATE */}
+                       <div className="flex items-center gap-1.5 flex-wrap">
+                           {mealPlan && <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[9px] font-black uppercase border border-slate-200">{mealPlan}</span>}
+                           {depDate && <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase border ${isCheckout ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>Dep: {depDate}</span>}
+                       </div>
                    </div>
+
                    <div className={`px-2.5 py-1 rounded-xl text-[9px] font-black uppercase tracking-wider shrink-0 shadow-sm ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600 border border-rose-100' : isGemReq ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>{r.request_type}</div>
                 </div>
+                
+                {/* FIX: DOUBLE BULLETS REMOVAL */}
                 <div className="mb-4 text-sm font-bold text-slate-600 leading-snug space-y-1">
-                    {(r.item_details || '').split(/\n|,/).map((item: string, idx: number) => (<div key={idx}>• {item.trim()}</div>))}
+                    {(r.item_details || '').split(/\n|,/).map((item: string, idx: number) => {
+                        const cleanItem = item.trim().replace(/^[•\-\*]\s*/, ''); // Strips out any existing bullet/dash/star
+                        if (!cleanItem) return null;
+                        return (<div key={idx}>• {cleanItem}</div>);
+                    })}
                 </div>
+
                 <div className="mt-auto pt-4 border-t border-slate-50 flex justify-between items-end">
                    <div className="mr-6">
                       <div className="text-[10px] text-slate-400 font-black uppercase">{r.attendant_name}</div>
@@ -638,17 +687,26 @@ export default function CoordinatorLog() {
                                  </button>
                              )}
                          </>
-                     ) : isGemReq ? (
+                     ) : (
                          <>
-                             <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`flex items-center gap-1.5 px-3 py-2 rounded-xl active:scale-90 transition-all text-[10px] font-black uppercase tracking-wider ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title="Informed">
-                                 <Send size={14}/> {r.is_sent ? 'Informed' : 'Inform'}
+                             {/* WhatsApp Inform */}
+                             <button onClick={() => handleWhatsApp(r, 'inform')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform" title="WhatsApp Inform">
+                                 <MessageCircle size={16} />
                              </button>
-                             <button onClick={() => toggleStatus(r.id, 'is_done')} className={`flex items-center gap-1.5 px-3 py-2 rounded-xl active:scale-90 transition-all text-[10px] font-black uppercase tracking-wider ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
-                                 <Check size={14}/> Done
+                             {/* Standard Inform Toggle */}
+                             <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title={r.is_sent ? 'Informed' : 'Inform'}>
+                                 <Send size={16}/>
+                             </button>
+
+                             {/* WhatsApp Done */}
+                             <button onClick={() => handleWhatsApp(r, 'done')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform flex items-center gap-0.5" title="WhatsApp Done">
+                                 <MessageCircle size={16}/><Check size={10} strokeWidth={4}/>
+                             </button>
+                             {/* Standard Done Toggle */}
+                             <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
+                                 <Check size={16}/>
                              </button>
                          </>
-                     ) : (
-                         <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600'}`} title="Done"><Check size={16}/></button>
                      )}
                      <button onClick={() => askDelete(r.id)} className="p-2.5 rounded-xl text-slate-300 hover:bg-rose-50 hover:text-rose-500 active:scale-90 transition-all"><Trash2 size={16}/></button>
                    </div>
@@ -658,49 +716,32 @@ export default function CoordinatorLog() {
          })}
       </div>
 
-      {/* CHK NUMBER MODAL */}
       {postModal.isOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
-              <div className="bg-white rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+          <div className="modal-overlay">
+              <div className="modal-content">
                   <h3 className="text-2xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight">Post Bill</h3>
                   <p className="text-[10px] font-bold text-slate-400 text-center mb-6 uppercase tracking-widest">Confirm CHK Number</p>
                   
                   <input 
                       type="number" 
-                      className="w-full text-center text-4xl font-black p-4 bg-slate-50 border-2 border-slate-100 rounded-3xl outline-none focus:border-[#6D2158] mb-6 shadow-inner"
+                      className="input-field text-center text-4xl mb-6 py-6"
                       value={postModal.chk}
                       onChange={e => setPostModal({...postModal, chk: e.target.value})}
                       autoFocus
                   />
 
                   <div className="flex flex-col gap-3">
-                      <button onClick={confirmPost} className="w-full py-5 bg-[#6D2158] text-white rounded-3xl font-black uppercase text-xs tracking-widest shadow-xl shadow-[#6D2158]/30 active:scale-95 transition-all">Link Bill & Post</button>
+                      <button onClick={confirmPost} className="btn-primary w-full py-5">Link Bill & Post</button>
                       <button onClick={() => setPostModal({isOpen: false, id: '', chk: ''})} className="w-full py-5 bg-slate-50 text-slate-500 rounded-3xl font-black uppercase text-[10px] tracking-widest active:scale-95 transition-all hover:bg-slate-100">Cancel</button>
                   </div>
               </div>
           </div>
       )}
 
-      {/* DELETE CONFIRMATION MODAL */}
-      {confirmModal.isOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
-              <div className="bg-white rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95 duration-200">
-                  <div className="w-20 h-20 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mb-6 mx-auto border-4 border-rose-100"><Trash size={32}/></div>
-                  <h3 className="text-2xl font-black text-slate-800 text-center mb-2 tracking-tight">{confirmModal.title}</h3>
-                  <p className="text-sm font-medium text-slate-500 text-center mb-8 px-2 leading-relaxed">{confirmModal.message}</p>
-                  <div className="flex flex-col gap-3">
-                      <button onClick={deleteRecord} className="w-full py-5 bg-rose-600 text-white rounded-3xl font-black uppercase text-xs tracking-widest shadow-xl shadow-rose-600/30 active:scale-95 transition-all">Confirm Delete</button>
-                      <button onClick={() => setConfirmModal({isOpen: false, id: null, title: '', message: ''})} className="w-full py-5 bg-slate-50 text-slate-500 rounded-3xl font-black uppercase text-[10px] tracking-widest active:scale-95 transition-all hover:bg-slate-100">Cancel</button>
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {/* MINIBAR ENTRY MODAL (NATIVE BOTTOM SHEET) */}
       {isMinibarOpen && (
-         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 animate-in fade-in duration-200">
-            <div className="bg-[#FDFBFD] w-full sm:max-w-md h-[90vh] sm:h-[85vh] sm:rounded-3xl rounded-t-[2.5rem] flex flex-col shadow-2xl animate-in slide-in-from-bottom-full duration-300 relative">
-               <div className="w-12 h-1.5 bg-slate-300 rounded-full mx-auto mt-4 sm:hidden shrink-0"></div>
+         <div className="bottom-sheet-overlay">
+            <div className="bottom-sheet-content">
+               <div className="drag-handle"></div>
                
                <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
                   <h3 className="text-xl font-black text-rose-700 tracking-tight flex items-center gap-2">
@@ -711,9 +752,9 @@ export default function CoordinatorLog() {
                
                <div className="flex-1 overflow-y-auto p-6 pb-32 custom-scrollbar">
                   <div className="flex gap-3 mb-4">
-                     <input type="text" placeholder="Villa" autoFocus className="w-24 p-4 bg-white border border-slate-200 rounded-2xl text-center font-black text-xl outline-none focus:border-rose-400 shadow-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+                     <input type="text" placeholder="Villa" autoFocus className="input-field w-24 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      <div className="flex-1 relative">
-                         <input type="text" placeholder="By..." className="w-full p-4 bg-white border border-slate-200 rounded-2xl font-bold text-sm outline-none focus:border-rose-400 shadow-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
+                         <input type="text" placeholder="VA Name (e.g. Ali)" className="input-field w-full text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
                      </div>
                   </div>
                   
@@ -731,8 +772,8 @@ export default function CoordinatorLog() {
                   )}
 
                   <div className="relative mt-6 mb-3">
-                      <Search size={16} className="absolute left-3 top-3.5 text-slate-400"/>
-                      <input type="text" placeholder="Find Item..." className="w-full pl-10 pr-4 py-3 bg-white border border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-rose-300 shadow-sm" value={mbItemSearch} onChange={(e) => setMbItemSearch(e.target.value)}/>
+                      <Search size={16} className="absolute left-4 top-4 text-slate-400"/>
+                      <input type="text" placeholder="Find Item..." className="input-field pl-12 text-[16px] md:text-sm" value={mbItemSearch} onChange={(e) => setMbItemSearch(e.target.value)}/>
                   </div>
                   
                   <div className="flex flex-wrap gap-2 mb-6 overflow-x-auto no-scrollbar pb-2">
@@ -757,7 +798,7 @@ export default function CoordinatorLog() {
                </div>
                
                <div className="p-4 bg-white/90 backdrop-blur-xl border-t border-slate-100 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] absolute bottom-0 w-full z-10">
-                  <button onClick={() => submitRequest('Minibar')} className="w-full bg-rose-600 text-white py-5 rounded-[1.5rem] font-black uppercase tracking-widest text-sm shadow-xl shadow-rose-600/20 active:scale-95 transition-all">
+                  <button onClick={() => submitRequest('Minibar')} className="btn-danger w-full py-5 text-sm">
                       {isEditing ? 'Confirm Update' : 'Save To Log'}
                   </button>
                </div>
@@ -765,11 +806,10 @@ export default function CoordinatorLog() {
          </div>
       )}
 
-      {/* OTHER / GEM MODAL BOTTOM SHEET */}
       {isOtherOpen && (
-         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 animate-in fade-in duration-200">
-            <div className={`bg-[#FDFBFD] w-full sm:max-w-md h-[90vh] sm:h-[85vh] rounded-t-[2.5rem] sm:rounded-3xl flex flex-col shadow-2xl animate-in slide-in-from-bottom-full duration-300 relative ${otherModalType === 'GEM' ? 'border-t-4 border-amber-400' : ''}`}>
-               <div className="w-12 h-1.5 bg-slate-300 rounded-full mx-auto mt-4 sm:hidden shrink-0"></div>
+         <div className="bottom-sheet-overlay">
+            <div className={`bottom-sheet-content ${otherModalType === 'GEM' ? 'border-t-4 border-amber-400' : ''}`}>
+               <div className="drag-handle"></div>
 
                <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
                   <h3 className={`text-xl font-black flex items-center gap-2 uppercase tracking-tight ${otherModalType === 'GEM' ? 'text-amber-600' : 'text-[#6D2158]'}`}>
@@ -779,17 +819,15 @@ export default function CoordinatorLog() {
                </div>
 
                <div className="flex-1 overflow-y-auto p-6 pb-32 custom-scrollbar">
-                  
                   <div className="flex gap-3 mb-4">
-                     <input type="text" placeholder="Villa" autoFocus className="w-24 p-4 bg-white border border-slate-200 rounded-2xl text-center font-black text-xl outline-none focus:border-[#6D2158] shadow-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
-                     
+                     <input type="text" placeholder="Villa" autoFocus className="input-field w-24 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      {otherModalType === 'GEM' ? (
-                         <select className="flex-1 p-4 bg-white border border-slate-200 rounded-2xl font-bold text-sm text-slate-700 outline-none focus:border-amber-500 shadow-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}>
+                         <select className="input-field flex-1 text-[16px] md:text-sm focus:border-amber-500" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}>
                              <option value="" disabled>Select GEM...</option>
                              {gems.map(g => <option key={g} value={g}>{g}</option>)}
                          </select>
                      ) : (
-                         <input type="text" placeholder="Requested By..." className="flex-1 p-4 bg-white border border-slate-200 rounded-2xl font-bold text-sm text-slate-700 outline-none focus:border-[#6D2158] shadow-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
+                         <input type="text" placeholder="Requested By..." className="input-field flex-1 text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
                      )}
                   </div>
                   
@@ -816,7 +854,7 @@ export default function CoordinatorLog() {
                   ) : (
                      <div className="flex flex-col gap-4 h-full pb-6">
                          {otherModalType !== 'GEM' && (
-                             <select value={otherCategory} onChange={e => setOtherCategory(e.target.value)} className="w-full p-4 bg-white border border-slate-200 rounded-2xl font-bold text-sm text-slate-700 outline-none focus:border-[#6D2158] shadow-sm">
+                             <select value={otherCategory} onChange={e => setOtherCategory(e.target.value)} className="input-field text-[16px] md:text-sm">
                                 <option value="General">General Request</option>
                                 <option value="Cleaning">Cleaning</option>
                                 <option value="Maintenance">Maintenance</option>
@@ -826,7 +864,7 @@ export default function CoordinatorLog() {
                          )}
                          <div className="relative flex-1 min-h-[200px]">
                              <textarea 
-                                 className="w-full h-full p-5 pr-14 bg-white border border-slate-200 rounded-3xl text-sm font-bold text-slate-700 outline-none focus:border-[#6D2158] shadow-inner resize-none leading-relaxed" 
+                                 className="input-field h-full pr-14 resize-none leading-relaxed text-[16px] md:text-sm" 
                                  placeholder="Paste your long request message here..." 
                                  value={customNote} 
                                  onChange={e => setCustomNote(e.target.value)}
@@ -845,7 +883,7 @@ export default function CoordinatorLog() {
                </div>
 
                <div className="p-4 bg-white/90 backdrop-blur-xl border-t border-slate-100 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] absolute bottom-0 w-full z-10">
-                  <button onClick={() => submitRequest('Other')} className={`w-full text-white py-5 rounded-[1.5rem] font-black uppercase tracking-widest text-sm shadow-xl active:scale-95 transition-all ${otherModalType === 'GEM' ? 'bg-amber-500 shadow-amber-600/20' : 'bg-[#6D2158] shadow-[#6D2158]/20'}`}>
+                  <button onClick={() => submitRequest('Other')} className={`btn-primary w-full py-5 text-sm ${otherModalType === 'GEM' ? '!bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600' : ''}`}>
                       {isEditing ? 'Confirm Update' : 'Save Request'}
                   </button>
                </div>
@@ -853,11 +891,10 @@ export default function CoordinatorLog() {
          </div>
       )}
 
-      {/* PARTIAL SEND MODAL BOTTOM SHEET */}
       {isPartialOpen && partialTarget && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-4">
+          <div className="bottom-sheet-overlay">
               <div className="bg-white rounded-t-[2.5rem] sm:rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300">
-                  <div className="w-12 h-1.5 bg-slate-300 rounded-full mx-auto mb-6 sm:hidden"></div>
+                  <div className="drag-handle mb-6"></div>
                   
                   <h3 className="text-2xl font-black text-slate-800 mb-2 flex items-center justify-center gap-2 uppercase tracking-tight"><Split size={24}/> Partial Send</h3>
                   <p className="text-xs font-bold text-slate-400 mb-8 uppercase text-center">Select items to mark as <b>SENT</b>.</p>
@@ -876,18 +913,12 @@ export default function CoordinatorLog() {
                           )})}
                   </div>
                   
-                  <button onClick={submitPartial} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-5 rounded-[1.5rem] font-black uppercase tracking-widest text-sm shadow-xl shadow-blue-200 mb-3 active:scale-95 transition-all">Confirm Dispatch</button>
-                  <button onClick={() => setIsPartialOpen(false)} className="w-full py-5 text-slate-400 bg-slate-50 rounded-[1.5rem] font-black text-sm uppercase active:scale-95 transition-transform">Cancel</button>
+                  <button onClick={submitPartial} className="btn-primary w-full py-5 text-sm !bg-blue-600 hover:!bg-blue-700 !shadow-blue-600/20 mb-3">Confirm Dispatch</button>
+                  <button onClick={() => setIsPartialOpen(false)} className="w-full py-5 text-slate-400 bg-slate-50 rounded-[1.5rem] font-black text-sm uppercase active:scale-95 transition-transform hover:bg-slate-100">Cancel</button>
               </div>
           </div>
       )}
 
-      {toastMsg && (
-          <div className={`fixed top-safe mt-4 left-4 right-4 z-[120] px-5 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-5 border-2 ${toastMsg.type === 'error' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
-              {toastMsg.type === 'error' ? <AlertTriangle size={24} /> : <CheckCircle2 size={24} />}
-              <span className="text-sm font-black uppercase tracking-wide">{toastMsg.text}</span>
-          </div>
-      )}
     </div>
   );
 }
