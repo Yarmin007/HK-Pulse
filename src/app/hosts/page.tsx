@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Search, Plus, X, CreditCard, Briefcase, 
-  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash
+  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -20,6 +20,7 @@ type Host = {
   company_mobile?: string;
   mvpn?: string;
   image_url?: string;
+  nicknames?: string; // ADDED NICKNAMES
 };
 
 export default function HostsProfilePage() {
@@ -39,6 +40,7 @@ export default function HostsProfilePage() {
     personal_mobile: '',
     company_mobile: '',
     mvpn: '',
+    nicknames: '', // ADDED NICKNAMES
     joining_date: new Date().toISOString().split('T')[0] 
   });
 
@@ -71,7 +73,7 @@ export default function HostsProfilePage() {
         toast.error(error.message);
     } else {
       setIsCreateModalOpen(false);
-      setNewHost({ role: 'Room Attendant', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', joining_date: new Date().toISOString().split('T')[0] });
+      setNewHost({ role: 'Room Attendant', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: new Date().toISOString().split('T')[0] });
       fetchHosts();
       toast.success("Host Profile Created");
     }
@@ -92,6 +94,7 @@ export default function HostsProfilePage() {
         personal_mobile: selectedHost.personal_mobile,
         company_mobile: selectedHost.company_mobile,
         mvpn: selectedHost.mvpn,
+        nicknames: selectedHost.nicknames, // ADDED NICKNAMES
         joining_date: selectedHost.joining_date
       })
       .eq('id', selectedHost.id);
@@ -125,7 +128,8 @@ export default function HostsProfilePage() {
     return (
       host.full_name.toLowerCase().includes(query) || 
       (host.host_id && host.host_id.toLowerCase().includes(query)) ||
-      host.role.toLowerCase().includes(query)
+      host.role.toLowerCase().includes(query) ||
+      (host.nicknames && host.nicknames.toLowerCase().includes(query)) // Search by nickname too
     );
   });
 
@@ -183,7 +187,7 @@ export default function HostsProfilePage() {
             type="text" 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search Name, Level or Host No..." 
+            placeholder="Search Name, Level, Host No, or Nickname..." 
             className="w-full pl-10 pr-4 py-2 text-xs font-bold border border-slate-200 rounded-xl focus:outline-none focus:border-[#6D2158] text-[#6D2158] placeholder-slate-300 transition-all shadow-inner"
           />
         </div>
@@ -220,6 +224,8 @@ export default function HostsProfilePage() {
                     <h3 className="text-lg font-bold text-slate-800 leading-tight group-hover:text-[#6D2158] transition-colors line-clamp-1">{host.full_name}</h3>
                 </div>
                 <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 line-clamp-1">{host.role}</p>
+                {host.nicknames && <p className="text-[10px] font-bold text-emerald-600 mb-2 italic">"{host.nicknames}"</p>}
+                
                 {host.status === 'Resigned' && <span className="text-[10px] font-black uppercase text-rose-500 tracking-widest mb-2">Resigned</span>}
                 <div className="mt-auto pt-3 flex items-center justify-between">
                     <LevelBadge level={host.host_level || 'ATM'} />
@@ -280,6 +286,11 @@ export default function HostsProfilePage() {
                       <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                          <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Briefcase size={16} /><span className="text-[10px] font-bold uppercase">Designation</span></div>
                          {isEditing ? <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.role} onChange={(e) => setSelectedHost({...selectedHost, role: e.target.value})} /> : <p className="text-sm font-bold text-slate-700">{selectedHost.role}</p>}
+                      </div>
+
+                      <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
+                         <div className="flex items-center gap-2 mb-2 text-emerald-700"><Tag size={16} /><span className="text-[10px] font-bold uppercase">Nicknames / AI Known As</span></div>
+                         {isEditing ? <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={selectedHost.nicknames || ''} onChange={(e) => setSelectedHost({...selectedHost, nicknames: e.target.value})} /> : <p className="text-sm font-bold text-emerald-800">{selectedHost.nicknames || 'None set'}</p>}
                       </div>
 
                       <div className="grid grid-cols-2 gap-4">
@@ -383,6 +394,11 @@ export default function HostsProfilePage() {
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Joining Date</label>
                            <input type="date" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.joining_date || ''} onChange={e => setNewHost({...newHost, joining_date: e.target.value})} />
                        </div>
+                   </div>
+
+                   <div>
+                       <label className="text-[10px] font-bold text-emerald-600 uppercase ml-1">Nicknames (Comma Separated)</label>
+                       <input type="text" className="w-full p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={newHost.nicknames || ''} onChange={e => setNewHost({...newHost, nicknames: e.target.value})} />
                    </div>
                </div>
 

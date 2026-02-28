@@ -7,7 +7,10 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   const pathname = usePathname();
   
   // Define which paths should hide the Sidebar and be full width
-  const isPublicView = pathname?.includes('/mobile') || pathname?.includes('/water/view');
+  const isPublicView = 
+      pathname?.includes('/mobile') || 
+      pathname?.includes('/water/view') || 
+      pathname?.includes('/minibar/finance');
 
   return (
     <div className="flex min-h-screen">

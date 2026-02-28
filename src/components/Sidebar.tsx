@@ -7,11 +7,11 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, Layers
+  Briefcase, Contact, UserCheck, Clock
 } from "lucide-react";
 
-// Grouping logic for the native menu
-const CORE_TABS = [
+// --- ADMIN SPECIFIC MENUS ---
+const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
@@ -40,6 +40,14 @@ const MINIBAR_ITEMS = [
   { name: "Finance P&L", icon: UtensilsCrossed, path: "/minibar/finance" },
 ];
 
+// --- STAFF SPECIFIC MENUS ---
+const STAFF_CORE_TABS = [
+  { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
+  { name: "My Schedule", icon: Calendar, path: "/schedule" },
+  { name: "My Profile", icon: Contact, path: "/profile" },
+];
+
+
 export default function Sidebar() {
   const pathname = usePathname();
   
@@ -52,10 +60,42 @@ export default function Sidebar() {
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
 
+  // --- ROLE BASED ACCESS STATE ---
+  const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
+
   useEffect(() => {
+      // 1. Read the saved session from the new Login system
+      const sessionData = localStorage.getItem('hk_pulse_session');
+      if (sessionData) {
+          try {
+              const parsed = JSON.parse(sessionData);
+              setUserRole(parsed.system_role || 'staff');
+          } catch (e) {
+              setUserRole('staff');
+          }
+      } else {
+          // Fallback just in case
+          const adminAuth = localStorage.getItem('hk_pulse_admin_auth');
+          if (adminAuth === 'true') setUserRole('admin');
+      }
+      
+      setIsLoaded(true);
       if (isMinibarRoute) setIsMinibarOpen(true);
       if (isTeamRoute) setIsTeamOpen(true);
   }, [pathname, isMinibarRoute, isTeamRoute]);
+
+  const handleLogout = () => {
+      localStorage.removeItem('hk_pulse_session');
+      localStorage.removeItem('hk_pulse_admin_auth');
+      window.location.href = '/'; // Forces app to reload and hit the AuthGuard lock
+  };
+
+  // Prevent UI flashing before role is determined
+  if (!isLoaded) return null; 
+
+  const isAdmin = userRole === 'admin';
+  const CORE_TABS = isAdmin ? ADMIN_CORE_TABS : STAFF_CORE_TABS;
 
   // SVG Logo Component
   const Logo = ({ className }: { className: string }) => (
@@ -77,9 +117,12 @@ export default function Sidebar() {
 
         <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto no-scrollbar">
           
-          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Core</div>
-          {[...CORE_TABS, ...MENU_ITEMS].map((item) => {
-            const isActive = pathname === item.path || pathname.startsWith(`${item.path}/`);
+          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">
+              {isAdmin ? 'Core' : 'Staff Portal'}
+          </div>
+          
+          {CORE_TABS.map((item) => {
+            const isActive = pathname === item.path || (item.path !== '/' && pathname.startsWith(`${item.path}/`));
             return (
               <Link 
                 key={item.path} href={item.path}
@@ -95,89 +138,113 @@ export default function Sidebar() {
             );
           })}
 
-          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
-          
-          {/* TEAM HUB */}
-          <div className="pt-1">
-            <button 
-              onClick={() => setIsTeamOpen(!isTeamOpen)}
-              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                isTeamRoute && !isTeamOpen
-                  ? "bg-blue-50 text-blue-700 border border-blue-100" 
-                  : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <Briefcase size={18} className={isTeamRoute ? "text-blue-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                <span className="text-xs font-bold tracking-wide">Team Hub</span>
-              </div>
-              {isTeamOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
+          {/* ADMIN ONLY MENUS */}
+          {isAdmin && (
+              <>
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Operations</div>
+                  {MENU_ITEMS.map((item) => {
+                    const isActive = pathname === item.path || pathname.startsWith(`${item.path}/`);
+                    return (
+                      <Link 
+                        key={item.path} href={item.path}
+                        className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                          isActive 
+                            ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" 
+                            : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                        }`}
+                      >
+                        <item.icon size={18} className={isActive ? "text-white" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                        <span className="text-xs font-bold tracking-wide">{item.name}</span>
+                      </Link>
+                    );
+                  })}
 
-            {isTeamOpen && (
-              <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                {TEAM_ITEMS.map((item) => {
-                  const isActive = pathname === item.path;
-                  return (
-                    <Link 
-                      key={item.path} href={item.path}
-                      className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                        isActive 
-                          ? "bg-blue-50 text-blue-700 font-black shadow-sm" 
-                          : "text-slate-500 hover:text-blue-700 hover:bg-slate-50"
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
+                  
+                  {/* TEAM HUB */}
+                  <div className="pt-1">
+                    <button 
+                      onClick={() => setIsTeamOpen(!isTeamOpen)}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isTeamRoute && !isTeamOpen
+                          ? "bg-blue-50 text-blue-700 border border-blue-100" 
+                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
                       }`}
                     >
-                      <item.icon size={14} className={isActive ? "text-blue-700" : "group-hover:text-blue-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                      <span className="text-[11px] tracking-wide">{item.name}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                      <div className="flex items-center gap-3">
+                        <Briefcase size={18} className={isTeamRoute ? "text-blue-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                        <span className="text-xs font-bold tracking-wide">Team Hub</span>
+                      </div>
+                      {isTeamOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
 
-          {/* MINIBAR */}
-          <div className="pt-1 pb-4">
-            <button 
-              onClick={() => setIsMinibarOpen(!isMinibarOpen)}
-              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                isMinibarRoute && !isMinibarOpen
-                  ? "bg-rose-50 text-rose-600 border border-rose-100" 
-                  : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <Wine size={18} className={isMinibarRoute ? "text-rose-600" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                <span className="text-xs font-bold tracking-wide">Minibar</span>
-              </div>
-              {isMinibarOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
+                    {isTeamOpen && (
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                        {TEAM_ITEMS.map((item) => {
+                          const isActive = pathname === item.path;
+                          return (
+                            <Link 
+                              key={item.path} href={item.path}
+                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                                isActive 
+                                  ? "bg-blue-50 text-blue-700 font-black shadow-sm" 
+                                  : "text-slate-500 hover:text-blue-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              <item.icon size={14} className={isActive ? "text-blue-700" : "group-hover:text-blue-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                              <span className="text-[11px] tracking-wide">{item.name}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
 
-            {isMinibarOpen && (
-              <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                {MINIBAR_ITEMS.map((item) => {
-                  const isActive = pathname === item.path;
-                  return (
-                    <Link 
-                      key={item.path} href={item.path}
-                      className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                        isActive 
-                          ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
-                          : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
+                  {/* MINIBAR */}
+                  <div className="pt-1 pb-4">
+                    <button 
+                      onClick={() => setIsMinibarOpen(!isMinibarOpen)}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isMinibarRoute && !isMinibarOpen
+                          ? "bg-rose-50 text-rose-600 border border-rose-100" 
+                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
                       }`}
                     >
-                      <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                      <span className="text-[11px] tracking-wide">{item.name}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                      <div className="flex items-center gap-3">
+                        <Wine size={18} className={isMinibarRoute ? "text-rose-600" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                        <span className="text-xs font-bold tracking-wide">Minibar</span>
+                      </div>
+                      {isMinibarOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+
+                    {isMinibarOpen && (
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                        {MINIBAR_ITEMS.map((item) => {
+                          const isActive = pathname === item.path;
+                          return (
+                            <Link 
+                              key={item.path} href={item.path}
+                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                                isActive 
+                                  ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
+                                  : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
+                              }`}
+                            >
+                              <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                              <span className="text-[11px] tracking-wide">{item.name}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+              </>
+          )}
+
         </nav>
 
         <div className="p-4 border-t border-slate-200/50 bg-white/50">
-          <button className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-all active:scale-95">
+          <button onClick={handleLogout} className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-all active:scale-95">
             <LogOut size={18} strokeWidth={2} />
             <span className="text-xs font-bold tracking-wide">Sign Out</span>
           </button>
@@ -200,26 +267,31 @@ export default function Sidebar() {
             )
          })}
          
-         {/* Hamburger Menu Trigger for Mobile Bottom Sheet */}
-         <button onClick={() => setIsMobileMenuOpen(true)} className="flex flex-col items-center justify-center w-full py-1 active:scale-90 transition-transform">
-            <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
-               <Menu size={22} strokeWidth={isMobileMenuOpen ? 2.5 : 2} />
-            </div>
-            <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
-         </button>
+         {isAdmin ? (
+             <button onClick={() => setIsMobileMenuOpen(true)} className="flex flex-col items-center justify-center w-full py-1 active:scale-90 transition-transform">
+                <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
+                   <Menu size={22} strokeWidth={isMobileMenuOpen ? 2.5 : 2} />
+                </div>
+                <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
+             </button>
+         ) : (
+             <button onClick={handleLogout} className="flex flex-col items-center justify-center w-full py-1 active:scale-90 transition-transform">
+                 <div className="p-1.5 rounded-xl transition-all text-slate-400">
+                    <LogOut size={22} strokeWidth={2} />
+                 </div>
+                 <span className="text-[10px] mt-1 font-bold text-slate-400">Sign Out</span>
+             </button>
+         )}
       </div>
 
       {/* ========================================================
-          3. MOBILE MENU BOTTOM SHEET (IOS STYLE)
+          3. MOBILE MENU BOTTOM SHEET (IOS STYLE - ADMIN ONLY)
           ======================================================== */}
-      {isMobileMenuOpen && (
+      {isMobileMenuOpen && isAdmin && (
          <div className="md:hidden fixed inset-0 z-[70] flex flex-col justify-end">
-             {/* Dark overlay backdrop */}
              <div className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-in fade-in" onClick={() => setIsMobileMenuOpen(false)}></div>
              
-             {/* Sliding Sheet */}
              <div className="relative bg-[#FDFBFD] w-full rounded-t-[2.5rem] p-6 pb-24 shadow-2xl animate-in-up flex flex-col max-h-[85vh]">
-                 {/* Drag indicator */}
                  <div className="w-12 h-1.5 bg-slate-300 rounded-full mx-auto mb-6"></div>
                  
                  <div className="flex justify-between items-center mb-6">
@@ -270,6 +342,10 @@ export default function Sidebar() {
                           ))}
                         </div>
                     </div>
+
+                    <button onClick={handleLogout} className="w-full py-4 bg-rose-50 text-rose-600 font-bold uppercase rounded-2xl tracking-widest text-xs">
+                        Sign Out
+                    </button>
 
                  </div>
              </div>
