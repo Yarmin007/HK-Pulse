@@ -1,13 +1,12 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
-  Search, Filter, Wand2, Loader2, UserCheck, 
-  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, AlertTriangle
+  Search, Wand2, Loader2, UserCheck, 
+  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { 
-  startOfMonth, endOfMonth, eachDayOfInterval, format, 
-  differenceInDays, parseISO, isAfter, isBefore 
+  eachDayOfInterval, format, differenceInDays, parseISO, isAfter, isBefore 
 } from 'date-fns';
 import toast from 'react-hot-toast';
 
@@ -18,8 +17,8 @@ const STATUS_COLORS: Record<string, string> = {
   'P': 'bg-slate-50 text-slate-700',
   'OT': 'bg-slate-100 text-slate-800 font-black',
   'O': 'bg-emerald-100 text-emerald-700 font-black',
-  'AL': 'bg-blue-100 text-blue-700 font-black',
-  'PH': 'bg-purple-100 text-purple-700 font-black',
+  'AL': 'bg-cyan-100 text-cyan-700 font-black', 
+  'PH': 'bg-blue-100 text-blue-700 font-black', 
   'SL': 'bg-rose-100 text-rose-700 font-black',
   'NP': 'bg-rose-200 text-rose-800 font-black',
   'A': 'bg-red-500 text-white font-black',
@@ -29,9 +28,64 @@ const STATUS_COLORS: Record<string, string> = {
   'EL': 'bg-orange-100 text-orange-700 font-black',
 };
 
+// --- OPTIMIZED CELL COMPONENT ---
+type AttendanceCellProps = {
+    initialVal: string;
+    hostId: string;
+    dateStr: string;
+    isFriday: boolean;
+    onSave: (hostId: string, dateStr: string, newStatus: string) => void;
+};
+
+const AttendanceCell = React.memo(({ initialVal, hostId, dateStr, isFriday, onSave }: AttendanceCellProps) => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [val, setVal] = useState(initialVal);
+
+    useEffect(() => { setVal(initialVal); }, [initialVal]);
+
+    const handleChange = (newVal: string) => {
+        setVal(newVal);
+        setIsEditing(false);
+        if (newVal !== initialVal) onSave(hostId, dateStr, newVal);
+    };
+
+    const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
+    const bgBase = isFriday ? 'bg-rose-50/30' : 'bg-white';
+
+    if (isEditing) {
+        return (
+            <td className="border-b border-r border-slate-200 p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle box-border">
+                <select 
+                    autoFocus
+                    onBlur={() => setIsEditing(false)}
+                    className={`w-full h-full appearance-none outline-none text-center text-[10px] font-bold cursor-pointer ${colorClass}`}
+                    value={val}
+                    onChange={(e) => handleChange(e.target.value)}
+                >
+                    <option value="" className="bg-white text-slate-400">-</option>
+                    {STATUS_CODES.map(c => <option key={c} value={c} className="bg-white text-slate-800">{c}</option>)}
+                </select>
+            </td>
+        );
+    }
+
+    return (
+        <td 
+            onClick={() => setIsEditing(true)}
+            className={`border-b border-r border-slate-200 p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle cursor-pointer hover:bg-blue-50 transition-colors box-border ${val ? colorClass : bgBase}`}
+        >
+            <div className="w-full h-full flex items-center justify-center text-[10px] font-bold">
+                {val || '-'}
+            </div>
+        </td>
+    );
+});
+AttendanceCell.displayName = 'AttendanceCell';
+
+
 export default function AttendancePage() {
   const [isLoading, setIsLoading] = useState(true);
-  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   
   // Data
   const [hosts, setHosts] = useState<any[]>([]);
@@ -44,94 +98,177 @@ export default function AttendancePage() {
   const [isParsing, setIsParsing] = useState(false);
   const [magicResults, setMagicResults] = useState<any>(null);
 
-  useEffect(() => {
-    fetchData();
-  }, [currentMonth]);
+  useEffect(() => { fetchData(); }, [selectedYear]);
 
   const fetchData = async () => {
     setIsLoading(true);
     
-    // 1. Fetch Hosts
     const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name');
     if (hostData) setHosts(hostData);
 
-    // 2. Fetch ALL Attendance (Need all history to calculate accurate balances)
     const { data: attData } = await supabase.from('hsk_attendance').select('*');
     if (attData) setAttendance(attData);
 
     setIsLoading(false);
   };
 
-  // --- MATH ENGINE: CALCULATE BALANCES ---
+  // --- AUTOMATED MATH ENGINE ---
   const hostBalances = useMemo(() => {
     const today = new Date();
+    const currentYearStart = new Date(selectedYear, 0, 1);
+    const SYSTEM_START_DATE = new Date(2026, 0, 1); // Ground Zero for system accruals
     
     return hosts.map(host => {
-      const joinDate = host.joining_date ? parseISO(host.joining_date) : parseISO('2025-01-01');
-      const hostRecords = attendance.filter(a => a.host_id === host.host_id);
-      
-      // 1. Accruals (Off & AL) - Stop counting if date is in the future
-      const daysSinceJoin = Math.max(0, differenceInDays(today, joinDate));
-      
-      // Penalty days pause accrual
-      const penaltyDays = hostRecords.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
-      const eligibleDays = Math.max(0, daysSinceJoin - penaltyDays);
-      
-      const earnedOffs = Math.floor(eligibleDays / 7);
-      const earnedAL = Math.floor(eligibleDays / 12);
-      
-      const takenOffs = hostRecords.filter(a => a.status_code === 'O').length;
-      const takenAL = hostRecords.filter(a => a.status_code === 'AL').length;
+      // Base CF values from DB (Represents balance exactly on Jan 1, 2026)
+      const baseCfOff = host.cf_off || 0;
+      const baseCfAL = host.cf_al || 0;
+      const baseCfPH = host.cf_ph || 0;
 
-      // 2. Fixed Quotas (Reset on Anniversary)
+      const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
+      const hostRecords = attendance.filter(a => a.host_id === host.host_id);
+
+      // --- 1. CALCULATE CARRIED FORWARD FOR THE SELECTED YEAR ---
+      let cfOff = baseCfOff;
+      let cfAL = baseCfAL;
+      let cfPH = baseCfPH;
+
+      if (selectedYear > 2026) {
+          // Accrue from Jan 1, 2026 (or join date if later) up to Dec 31 of (selectedYear - 1)
+          const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
+          const endOfPrevYear = new Date(selectedYear - 1, 11, 31);
+          
+          if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
+              const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1; // +1 for inclusive days
+              
+              const recordsBefore = hostRecords.filter(a => {
+                  const d = parseISO(a.date);
+                  return d >= accrualStart && d <= endOfPrevYear;
+              });
+
+              const penaltyBefore = recordsBefore.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+              const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
+              
+              cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
+              cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => a.status_code === 'AL').length;
+              cfPH -= recordsBefore.filter(a => a.status_code === 'PH').length;
+          }
+      } else if (selectedYear < 2026) {
+          // If viewing pre-system records, zero it out to avoid confusion
+          cfOff = 0; cfAL = 0; cfPH = 0;
+      }
+
+      // --- 2. CALCULATE THIS YEAR'S BALANCE ---
+      const startOfSelectedYear = new Date(selectedYear, 0, 1);
+      const trackingStartDateThisYear = isAfter(joinDate, startOfSelectedYear) ? joinDate : startOfSelectedYear;
+      
+      let earnedOffThis = 0;
+      let earnedALThis = 0;
+      let takenOffThis = 0;
+      let takenALThis = 0;
+      let takenPHThis = 0;
+
+      const calcDateThis = isBefore(today, new Date(selectedYear, 11, 31)) ? today : new Date(selectedYear, 11, 31);
+
+      if (isBefore(trackingStartDateThisYear, calcDateThis) || trackingStartDateThisYear.getTime() === calcDateThis.getTime()) {
+          const daysThisYear = differenceInDays(calcDateThis, trackingStartDateThisYear) + 1;
+          
+          const recordsThisYear = hostRecords.filter(a => {
+              const d = parseISO(a.date);
+              return d >= trackingStartDateThisYear && d <= new Date(selectedYear, 11, 31);
+          });
+          
+          const penaltyThis = recordsThisYear.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+          const eligibleThis = Math.max(0, daysThisYear - penaltyThis);
+          
+          earnedOffThis = (eligibleThis / 7);
+          earnedALThis = (eligibleThis / 12);
+          
+          takenOffThis = recordsThisYear.filter(a => a.status_code === 'O').length;
+          takenALThis = recordsThisYear.filter(a => a.status_code === 'AL').length;
+          takenPHThis = recordsThisYear.filter(a => a.status_code === 'PH').length;
+      }
+
+      // --- 3. FIXED QUOTAS ---
       let lastAnniversary = new Date(joinDate);
-      lastAnniversary.setFullYear(today.getFullYear());
-      if (isAfter(lastAnniversary, today)) {
-          lastAnniversary.setFullYear(today.getFullYear() - 1);
+      lastAnniversary.setFullYear(selectedYear);
+      if (isAfter(lastAnniversary, calcDateThis)) {
+          lastAnniversary.setFullYear(selectedYear - 1);
       }
       
-      const recordsThisYear = hostRecords.filter(a => isAfter(parseISO(a.date), lastAnniversary) || parseISO(a.date).getTime() === lastAnniversary.getTime());
+      const recordsSinceAnniversary = hostRecords.filter(a => {
+          const d = parseISO(a.date);
+          return isAfter(d, lastAnniversary) || d.getTime() === lastAnniversary.getTime();
+      });
       
-      const takenSL = recordsThisYear.filter(a => a.status_code === 'SL').length;
-      const takenEL = recordsThisYear.filter(a => a.status_code === 'EL').length;
+      const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
+      const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
 
       return {
         ...host,
-        balOff: earnedOffs - takenOffs,
-        balAL: earnedAL - takenAL,
+        cfOff: Number(cfOff.toFixed(1)),
+        cfAL: Number(cfAL.toFixed(1)),
+        cfPH: Number(cfPH.toFixed(1)),
+        balOff: (cfOff + earnedOffThis - takenOffThis).toFixed(1),
+        balAL: (cfAL + earnedALThis - takenALThis).toFixed(1),
+        balPH: (cfPH - takenPHThis).toFixed(1),
         balSL: 30 - takenSL,
         balEL: 10 - takenEL
       };
     });
-  }, [hosts, attendance]);
+  }, [hosts, attendance, selectedYear]);
 
   // --- GRID SETUP ---
-  const daysInMonth = useMemo(() => {
+  const daysInYear = useMemo(() => {
     return eachDayOfInterval({
-      start: startOfMonth(currentMonth),
-      end: endOfMonth(currentMonth)
+      start: new Date(selectedYear, 0, 1),
+      end: new Date(selectedYear, 11, 31)
     });
-  }, [currentMonth]);
+  }, [selectedYear]);
+
+  const monthsInYear = useMemo(() => {
+      const months = [];
+      for (let i = 0; i < 12; i++) {
+          const date = new Date(selectedYear, i, 1);
+          months.push({
+              name: format(date, 'MMMM'),
+              days: new Date(selectedYear, i + 1, 0).getDate()
+          });
+      }
+      return months;
+  }, [selectedYear]);
 
   // --- HANDLERS ---
-  const handleStatusChange = async (hostId: string, dateStr: string, newStatus: string) => {
-    // Optimistic UI Update
+  const handleStatusChange = useCallback(async (hostId: string, dateStr: string, newStatus: string) => {
     const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
     const newAtt = [...attendance];
     
+    let error;
     if (newStatus === '') {
         if (existingIdx > -1) newAtt.splice(existingIdx, 1);
-        await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
+        const res = await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
+        error = res.error;
     } else {
         if (existingIdx > -1) {
             newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: newStatus };
         } else {
             newAtt.push({ host_id: hostId, date: dateStr, status_code: newStatus });
         }
-        await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: newStatus }, { onConflict: 'host_id, date' });
+        const res = await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: newStatus }, { onConflict: 'host_id, date' });
+        error = res.error;
     }
     
+    if (error) toast.error('Failed to save status');
+    else toast.success('Saved');
+    
     setAttendance(newAtt);
+  }, [attendance]);
+
+  const handleCfChange = async (hostId: string, field: string, val: number | '') => {
+    const numericVal = val === '' ? 0 : val;
+    setHosts(prev => prev.map(h => h.host_id === hostId ? { ...h, [field]: numericVal } : h));
+    const { error } = await supabase.from('hsk_hosts').update({ [field]: numericVal }).eq('host_id', hostId);
+    if (error) toast.error(`Error saving carried forward balance: ${error.message}`);
+    else toast.success('CF Balance Updated');
   };
 
   const handleMagicParse = async () => {
@@ -141,10 +278,7 @@ export default function AttendancePage() {
         const res = await fetch('/api/magic-roster', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                text: magicText, 
-                date: format(currentMonth, 'yyyy-MM-dd') 
-            })
+            body: JSON.stringify({ text: magicText, date: `${selectedYear}-01-01` })
         });
         
         if (!res.ok) throw new Error("API Error");
@@ -152,7 +286,7 @@ export default function AttendancePage() {
         setMagicResults(data);
         toast.success("Parsed successfully!");
     } catch (err) {
-        toast.error("Failed to parse message. Please check format.");
+        toast.error("Failed to parse message.");
     }
     setIsParsing(false);
   };
@@ -178,7 +312,7 @@ export default function AttendancePage() {
         setIsMagicOpen(false);
         setMagicText('');
         setMagicResults(null);
-        fetchData(); // Refresh grid
+        fetchData();
     }
   };
 
@@ -194,17 +328,16 @@ export default function AttendancePage() {
              <UserCheck size={22} />
           </div>
           <div>
-            <h1 className="text-xl font-black text-[#6D2158] uppercase tracking-tight">Attendance & Leave</h1>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Automated HR Engine</p>
+            <h1 className="text-xl font-black text-[#6D2158] uppercase tracking-tight">Attendance and Leave Balance</h1>
           </div>
         </div>
         
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            {/* Month Navigator */}
-            <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200">
-                <button onClick={() => setCurrentMonth(startOfMonth(new Date(currentMonth.setMonth(currentMonth.getMonth() - 1))))} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronLeft size={16}/></button>
-                <div className="w-32 text-center font-bold text-sm text-[#6D2158] uppercase tracking-wider">{format(currentMonth, 'MMM yyyy')}</div>
-                <button onClick={() => setCurrentMonth(startOfMonth(new Date(currentMonth.setMonth(currentMonth.getMonth() + 1))))} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronRight size={16}/></button>
+            {/* Year Navigator */}
+            <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200 shadow-inner">
+                <button onClick={() => setSelectedYear(y => y - 1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronLeft size={16}/></button>
+                <div className="w-24 text-center font-black text-sm text-[#6D2158] tracking-widest">{selectedYear}</div>
+                <button onClick={() => setSelectedYear(y => y + 1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronRight size={16}/></button>
             </div>
 
             <div className="relative flex-1 md:w-48">
@@ -228,78 +361,120 @@ export default function AttendancePage() {
                   </div>
               ) : (
                   <div className="overflow-auto flex-1 custom-scrollbar w-full relative">
-                      <table className="w-max border-separate border-spacing-0 text-[10px] whitespace-nowrap bg-white">
-                          <thead className="sticky top-0 z-40 bg-white">
+                      <table className="w-max border-separate border-spacing-0 text-[10px] whitespace-nowrap bg-white table-fixed">
+                          <thead className="sticky top-0 z-[70] bg-white shadow-sm">
+                              {/* ROW 1: MASTER HEADERS */}
                               <tr>
-                                  <th rowSpan={2} className="sticky left-0 z-50 bg-slate-100 border-b-2 border-r border-slate-300 p-3 text-left w-48 min-w-[192px] shadow-[2px_0_5px_rgba(0,0,0,0.05)]">
+                                  {/* EXACT WIDTH CONFIGURATIONS APPLIED HERE TO PREVENT SCROLL DRIFTING */}
+                                  <th rowSpan={3} className="max-md:static md:sticky md:left-0 z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-2 text-center w-[40px] min-w-[40px] max-w-[40px] box-border text-slate-400">#</th>
+                                  <th rowSpan={3} className="max-md:static md:sticky md:left-[40px] z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-3 text-left w-[180px] min-w-[180px] max-w-[180px] box-border">
                                       <span className="block font-black uppercase text-slate-500 tracking-widest">Host Name</span>
-                                      <span className="block text-[8px] font-bold text-slate-400 mt-1">ID & Designation</span>
+                                      <span className="block text-[8px] font-bold text-slate-400 mt-1">ID, Role & Joined Date</span>
                                   </th>
+                                  <th colSpan={5} className="max-md:static md:sticky md:left-[220px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[200px] min-w-[200px] max-w-[200px] box-border">Live Balances</th>
                                   
-                                  {/* Balance Headers */}
-                                  <th colSpan={4} className="bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest">Live Balances</th>
+                                  {/* Months Headers */}
+                                  {monthsInYear.map(m => (
+                                      <th key={m.name} colSpan={m.days} className="bg-slate-100 border-b border-r border-slate-300 p-1 text-center font-bold text-slate-600 uppercase tracking-widest box-border">{m.name}</th>
+                                  ))}
+
+                                  {/* Carried Forward Header */}
+                                  <th colSpan={3} rowSpan={2} className="bg-slate-100 border-b border-l-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
+                                      DB Baseline CF
+                                  </th>
+                              </tr>
+
+                              {/* ROW 2: SUB HEADERS */}
+                              <tr>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[220px] z-[80] bg-emerald-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Off Days">OFF</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[260px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[300px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[340px] z-[80] bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[380px] z-[80] bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1 text-center font-bold text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Emergency Leave (10 Max)">EL</th>
                                   
-                                  {/* Days Headers */}
-                                  {daysInMonth.map((d, i) => (
-                                      <th key={i} className={`p-1.5 text-center border-b border-r border-slate-200 w-10 min-w-[40px] text-[9px] font-bold uppercase ${['Sat', 'Sun'].includes(format(d, 'E')) ? 'bg-rose-50 text-rose-500' : 'bg-slate-50 text-slate-400'}`}>
-                                          {format(d, 'E')}
+                                  {/* Days of Week */}
+                                  {daysInYear.map((d, i) => (
+                                      <th key={i} className={`p-1 text-center border-b border-r border-slate-200 text-[8px] font-bold uppercase box-border ${format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-500' : 'bg-slate-50 text-slate-400'}`}>
+                                          {format(d, 'eeeee')}
                                       </th>
                                   ))}
                               </tr>
+
+                              {/* ROW 3: DAY NUMBERS & CF SUBS */}
                               <tr>
-                                  <th className="bg-emerald-50 border-b-2 border-r border-slate-300 p-1.5 text-center font-bold text-emerald-700 w-12" title="Off Days">OFF</th>
-                                  <th className="bg-blue-50 border-b-2 border-r border-slate-300 p-1.5 text-center font-bold text-blue-700 w-12" title="Annual Leave">AL</th>
-                                  <th className="bg-rose-50 border-b-2 border-r border-slate-300 p-1.5 text-center font-bold text-rose-700 w-12" title="Sick Leave (30 Max)">SL</th>
-                                  <th className="bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1.5 text-center font-bold text-orange-700 w-12" title="Emergency Leave (10 Max)">EL</th>
-                                  
                                   {/* Day Numbers */}
-                                  {daysInMonth.map((d, i) => (
-                                      <th key={i} className={`p-1.5 text-center border-b-2 border-r border-slate-300 font-black text-xs ${['Sat', 'Sun'].includes(format(d, 'E')) ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}`}>
+                                  {daysInYear.map((d, i) => (
+                                      <th key={i} className={`p-1 text-center border-b-2 border-r border-slate-300 font-black text-[9px] box-border ${format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}`}>
                                           {format(d, 'd')}
                                       </th>
                                   ))}
+
+                                  {/* CF Columns Subheaders */}
+                                  <th className="bg-slate-50 border-b-2 border-r border-l-2 border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward OFF">OFF</th>
+                                  <th className="bg-slate-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward VAC (AL)">VAC</th>
+                                  <th className="bg-slate-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward PH">PH</th>
                               </tr>
                           </thead>
                           
                           <tbody className="font-medium">
-                              {filteredHosts.map(host => (
-                                  <tr key={host.id} className="hover:bg-blue-50/30 transition-colors group">
-                                      <td className="sticky left-0 z-30 bg-white group-hover:bg-blue-50/50 border-b border-r border-slate-200 p-3 shadow-[2px_0_5px_rgba(0,0,0,0.02)]">
-                                          <div className="font-bold text-slate-800 text-xs truncate w-44">{host.full_name}</div>
+                              {filteredHosts.map((host, index) => (
+                                  <tr key={host.id} className="hover:bg-slate-50 transition-colors group">
+                                      {/* FIXED INDEX COLUMN */}
+                                      <td className="max-md:static md:sticky md:left-0 z-50 bg-white border-b border-r border-slate-200 p-2 text-center font-black text-slate-300 w-[40px] min-w-[40px] max-w-[40px] box-border">
+                                          {index + 1}
+                                      </td>
+
+                                      {/* FIXED NAME COLUMN - Changed to completely solid backgrounds so nothing shows underneath */}
+                                      <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[180px] min-w-[180px] max-w-[180px] box-border">
+                                          <div className="font-bold text-slate-800 text-xs truncate w-40">{host.full_name}</div>
                                           <div className="text-[9px] text-slate-400 uppercase mt-0.5">{host.host_id} • {host.role}</div>
+                                          {host.joining_date ? (
+                                              <div className="text-[8px] text-emerald-600 font-bold mt-0.5">
+                                                  Joined: {format(parseISO(host.joining_date), 'dd MMM yyyy')}
+                                              </div>
+                                          ) : (
+                                              <div className="text-[8px] text-slate-300 font-bold mt-0.5">
+                                                  Joined: N/A
+                                              </div>
+                                          )}
                                       </td>
                                       
-                                      {/* BALANCES */}
-                                      <td className="border-b border-r border-slate-200 p-2 text-center font-black text-emerald-600 bg-emerald-50/30">{host.balOff}</td>
-                                      <td className="border-b border-r border-slate-200 p-2 text-center font-black text-blue-600 bg-blue-50/30">{host.balAL}</td>
-                                      <td className={`border-b border-r border-slate-200 p-2 text-center font-black bg-rose-50/30 ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-600'}`}>{host.balSL}</td>
-                                      <td className="border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-600 bg-orange-50/30">{host.balEL}</td>
+                                      {/* FIXED BALANCES COLUMNS - Made completely solid */}
+                                      <td className="max-md:static md:sticky md:left-[220px] z-50 bg-emerald-50 group-hover:bg-emerald-100 border-b border-r border-slate-200 p-2 text-center font-black text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balOff}</td>
+                                      <td className="max-md:static md:sticky md:left-[260px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
+                                      <td className="max-md:static md:sticky md:left-[300px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
+                                      <td className={`max-md:static md:sticky md:left-[340px] z-50 bg-rose-50 group-hover:bg-rose-100 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-700'}`}>{host.balSL}</td>
+                                      <td className="max-md:static md:sticky md:left-[380px] z-50 bg-orange-50 group-hover:bg-orange-100 border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balEL}</td>
 
-                                      {/* ATTENDANCE CELLS */}
-                                      {daysInMonth.map(date => {
+                                      {/* 365 ATTENDANCE CELLS */}
+                                      {daysInYear.map(date => {
                                           const dateStr = format(date, 'yyyy-MM-dd');
                                           const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
                                           const val = record ? record.status_code : '';
-                                          const colorClass = val ? STATUS_COLORS[val] : 'bg-white text-slate-300';
+                                          const isFriday = format(date, 'E') === 'Fri';
 
                                           return (
-                                              <td key={dateStr} className="border-b border-r border-slate-200 p-0 relative h-10 w-10">
-                                                  <select 
-                                                      className={`w-full h-full appearance-none outline-none text-center text-xs font-bold cursor-pointer transition-colors ${colorClass}`}
-                                                      value={val}
-                                                      onChange={(e) => handleStatusChange(host.host_id, dateStr, e.target.value)}
-                                                  >
-                                                      <option value="" className="bg-white text-slate-400">-</option>
-                                                      {STATUS_CODES.map(c => <option key={c} value={c} className="bg-white text-slate-800">{c}</option>)}
-                                                  </select>
-                                                  {record?.shift_note && (
-                                                      <div className="absolute bottom-0 left-0 right-0 text-[6px] text-center uppercase font-black text-black/40 truncate px-1 pointer-events-none">
-                                                          {record.shift_note}
-                                                      </div>
-                                                  )}
-                                              </td>
+                                              <AttendanceCell 
+                                                  key={dateStr}
+                                                  initialVal={val}
+                                                  hostId={host.host_id}
+                                                  dateStr={dateStr}
+                                                  isFriday={isFriday}
+                                                  onSave={handleStatusChange}
+                                              />
                                           );
                                       })}
+
+                                      {/* DB BASELINE CF INPUTS (Far Right) */}
+                                      <td className="border-b border-r border-l-2 border-slate-300 p-0 relative h-8 w-16 bg-emerald-50/30">
+                                          <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-emerald-700 focus:bg-emerald-100" value={host.cf_off === 0 ? '0' : host.cf_off || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_off', e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                                      </td>
+                                      <td className="border-b border-r border-slate-300 p-0 relative h-8 w-16 bg-cyan-50/30">
+                                          <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-cyan-700 focus:bg-cyan-100" value={host.cf_al === 0 ? '0' : host.cf_al || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_al', e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                                      </td>
+                                      <td className="border-b border-r border-slate-300 p-0 relative h-8 w-16 bg-blue-50/30">
+                                          <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-blue-700 focus:bg-blue-100" value={host.cf_ph === 0 ? '0' : host.cf_ph || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_ph', e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                                      </td>
                                   </tr>
                               ))}
                           </tbody>
