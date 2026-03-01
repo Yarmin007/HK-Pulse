@@ -11,7 +11,7 @@ import {
 import toast from 'react-hot-toast';
 
 // --- CONFIG ---
-const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT'];
+const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT'];
 
 const STATUS_COLORS: Record<string, string> = {
   'P': 'bg-slate-50 text-slate-700',
@@ -19,6 +19,7 @@ const STATUS_COLORS: Record<string, string> = {
   'O': 'bg-emerald-100 text-emerald-700 font-black',
   'AL': 'bg-cyan-100 text-cyan-700 font-black', 
   'PH': 'bg-blue-100 text-blue-700 font-black', 
+  'RR': 'bg-fuchsia-100 text-fuchsia-700 font-black',
   'SL': 'bg-rose-100 text-rose-700 font-black',
   'NP': 'bg-rose-200 text-rose-800 font-black',
   'A': 'bg-red-500 text-white font-black',
@@ -85,6 +86,9 @@ AttendanceCell.displayName = 'AttendanceCell';
 
 export default function AttendancePage() {
   const [isLoading, setIsLoading] = useState(true);
+  
+  // NEW: Precise Date Cutoff System
+  const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   
   // Data
@@ -103,8 +107,56 @@ export default function AttendancePage() {
   const fetchData = async () => {
     setIsLoading(true);
     
-    const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name');
-    if (hostData) setHosts(hostData);
+    const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned');
+    
+    if (hostData) {
+        // --- CUSTOM HOST SORTING LOGIC ---
+        const getDeptRank = (role: string, hostId: string) => {
+            const r = (role || '').toLowerCase();
+            const id = (hostId || '').toLowerCase();
+            if (id.includes('tf') || id.includes('int') || r.includes('task force') || r.includes('intern')) return 9;
+            if (r.includes('admin') || r.includes('exec') || r.includes('manager') || r.includes('coordinator') || r.includes('supervisor') || r.includes('clerk') || r.includes('secretary')) return 1;
+            if (r.includes('villa') || r.includes('hk att') || r.includes('room att')) return 2;
+            if (r.includes('public') || r.includes('pa ')) return 3;
+            if (r.includes('pool')) return 4;
+            if (r.includes('laundry') || r.includes('valet') || r.includes('presser') || r.includes('linen')) return 5;
+            if (r.includes('runner')) return 6;
+            if (r.includes('luggage') || r.includes('bell') || r.includes('porter')) return 7;
+            if (r.includes('tailor') || r.includes('seamstress') || r.includes('upholstery')) return 8;
+            if (r.includes('garden') || r.includes('landscap') || r.includes('botanist')) return 10;
+            return 11;
+        };
+
+        const getSeniorityRank = (level: string, role: string) => {
+            if (level === 'DA') return 1;
+            if (level === 'DB') return 2;
+            const r = (role || '').toLowerCase();
+            if (r.includes('senior')) return 3;
+            return 4;
+        };
+
+        const getHostNumber = (hostId: string) => {
+            const match = String(hostId).match(/\d+/);
+            return match ? parseInt(match[0], 10) : 999999;
+        };
+
+        const sortedHosts = hostData.sort((a, b) => {
+            // 1. Dept Hierarchy
+            const deptA = getDeptRank(a.role, a.host_id);
+            const deptB = getDeptRank(b.role, b.host_id);
+            if (deptA !== deptB) return deptA - deptB;
+
+            // 2. Seniority within Dept
+            const senA = getSeniorityRank(a.host_level, a.role);
+            const senB = getSeniorityRank(b.host_level, b.role);
+            if (senA !== senB) return senA - senB;
+
+            // 3. Lowest SSL code
+            return getHostNumber(a.host_id) - getHostNumber(b.host_id);
+        });
+
+        setHosts(sortedHosts);
+    }
 
     const { data: attData } = await supabase.from('hsk_attendance').select('*');
     if (attData) setAttendance(attData);
@@ -112,110 +164,83 @@ export default function AttendancePage() {
     setIsLoading(false);
   };
 
-  // --- AUTOMATED MATH ENGINE ---
+  // --- AUTOMATED MATH ENGINE (Now strictly uses Cutoff Date) ---
   const hostBalances = useMemo(() => {
-    const today = new Date();
-    const currentYearStart = new Date(selectedYear, 0, 1);
+    const targetDate = parseISO(cutoffDate);
     const SYSTEM_START_DATE = new Date(2026, 0, 1); // Ground Zero for system accruals
     
     return hosts.map(host => {
-      // Base CF values from DB (Represents balance exactly on Jan 1, 2026)
+      // DB Baseline (Represents absolute balance on Jan 1, 2026)
       const baseCfOff = host.cf_off || 0;
       const baseCfAL = host.cf_al || 0;
       const baseCfPH = host.cf_ph || 0;
 
       const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
+      const isExec = ['DA', 'DB'].includes(host.host_level);
+
       const hostRecords = attendance.filter(a => a.host_id === host.host_id);
-
-      // --- 1. CALCULATE CARRIED FORWARD FOR THE SELECTED YEAR ---
-      let cfOff = baseCfOff;
-      let cfAL = baseCfAL;
-      let cfPH = baseCfPH;
-
-      if (selectedYear > 2026) {
-          // Accrue from Jan 1, 2026 (or join date if later) up to Dec 31 of (selectedYear - 1)
-          const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
-          const endOfPrevYear = new Date(selectedYear - 1, 11, 31);
-          
-          if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
-              const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1; // +1 for inclusive days
-              
-              const recordsBefore = hostRecords.filter(a => {
-                  const d = parseISO(a.date);
-                  return d >= accrualStart && d <= endOfPrevYear;
-              });
-
-              const penaltyBefore = recordsBefore.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
-              const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
-              
-              cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
-              cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => a.status_code === 'AL').length;
-              cfPH -= recordsBefore.filter(a => a.status_code === 'PH').length;
-          }
-      } else if (selectedYear < 2026) {
-          // If viewing pre-system records, zero it out to avoid confusion
-          cfOff = 0; cfAL = 0; cfPH = 0;
-      }
-
-      // --- 2. CALCULATE THIS YEAR'S BALANCE ---
-      const startOfSelectedYear = new Date(selectedYear, 0, 1);
-      const trackingStartDateThisYear = isAfter(joinDate, startOfSelectedYear) ? joinDate : startOfSelectedYear;
       
-      let earnedOffThis = 0;
-      let earnedALThis = 0;
-      let takenOffThis = 0;
-      let takenALThis = 0;
-      let takenPHThis = 0;
+      // Filter out ANY records that occur AFTER our exact chosen cutoff date
+      const recordsUpToTarget = hostRecords.filter(a => {
+          const d = parseISO(a.date);
+          return d >= SYSTEM_START_DATE && d <= targetDate;
+      });
 
-      const calcDateThis = isBefore(today, new Date(selectedYear, 11, 31)) ? today : new Date(selectedYear, 11, 31);
+      const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
+      
+      let earnedOff = 0;
+      let earnedAL = 0;
 
-      if (isBefore(trackingStartDateThisYear, calcDateThis) || trackingStartDateThisYear.getTime() === calcDateThis.getTime()) {
-          const daysThisYear = differenceInDays(calcDateThis, trackingStartDateThisYear) + 1;
+      // Only accrue days if the cutoff date is actually after they joined
+      if (targetDate >= accrualStart) {
+          const daysActive = differenceInDays(targetDate, accrualStart) + 1;
+          const penaltyDays = recordsUpToTarget.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+          const eligibleDays = Math.max(0, daysActive - penaltyDays);
           
-          const recordsThisYear = hostRecords.filter(a => {
-              const d = parseISO(a.date);
-              return d >= trackingStartDateThisYear && d <= new Date(selectedYear, 11, 31);
-          });
-          
-          const penaltyThis = recordsThisYear.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
-          const eligibleThis = Math.max(0, daysThisYear - penaltyThis);
-          
-          earnedOffThis = (eligibleThis / 7);
-          earnedALThis = (eligibleThis / 12);
-          
-          takenOffThis = recordsThisYear.filter(a => a.status_code === 'O').length;
-          takenALThis = recordsThisYear.filter(a => a.status_code === 'AL').length;
-          takenPHThis = recordsThisYear.filter(a => a.status_code === 'PH').length;
+          earnedOff = eligibleDays / 7;
+          earnedAL = eligibleDays / 12;
       }
 
-      // --- 3. FIXED QUOTAS ---
+      // Tally Taken Leaves up to cutoff
+      const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
+      const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
+      const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
+
+      // Fixed Quotas (Reset on Anniversary before Cutoff)
       let lastAnniversary = new Date(joinDate);
-      lastAnniversary.setFullYear(selectedYear);
-      if (isAfter(lastAnniversary, calcDateThis)) {
-          lastAnniversary.setFullYear(selectedYear - 1);
+      lastAnniversary.setFullYear(targetDate.getFullYear());
+      if (isAfter(lastAnniversary, targetDate)) {
+          lastAnniversary.setFullYear(targetDate.getFullYear() - 1);
       }
       
       const recordsSinceAnniversary = hostRecords.filter(a => {
           const d = parseISO(a.date);
-          return isAfter(d, lastAnniversary) || d.getTime() === lastAnniversary.getTime();
+          return d >= lastAnniversary && d <= targetDate;
       });
       
       const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
       const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
+      const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
+
+      // Final Math Calculations
+      const balOffVal = baseCfOff + earnedOff - takenOff;
+      const balALVal = baseCfAL + earnedAL - takenAL;
+      const balPHVal = baseCfPH - takenPH;
+      const balRRVal = isExec ? 7 - takenRR : 0;
+      const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
 
       return {
         ...host,
-        cfOff: Number(cfOff.toFixed(1)),
-        cfAL: Number(cfAL.toFixed(1)),
-        cfPH: Number(cfPH.toFixed(1)),
-        balOff: (cfOff + earnedOffThis - takenOffThis).toFixed(1),
-        balAL: (cfAL + earnedALThis - takenALThis).toFixed(1),
-        balPH: (cfPH - takenPHThis).toFixed(1),
+        balOff: balOffVal.toFixed(1),
+        balAL: balALVal.toFixed(1),
+        balPH: balPHVal.toFixed(1),
+        balRR: isExec ? balRRVal.toString() : '-',
+        balTotal: totalBal.toFixed(1),
         balSL: 30 - takenSL,
         balEL: 10 - takenEL
       };
     });
-  }, [hosts, attendance, selectedYear]);
+  }, [hosts, attendance, cutoffDate]);
 
   // --- GRID SETUP ---
   const daysInYear = useMemo(() => {
@@ -238,6 +263,26 @@ export default function AttendancePage() {
   }, [selectedYear]);
 
   // --- HANDLERS ---
+  const handleCutoffChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const newDateStr = e.target.value;
+      if (!newDateStr) return;
+      setCutoffDate(newDateStr);
+      // Automatically jump the grid to the year of the cutoff date
+      setSelectedYear(parseInt(newDateStr.split('-')[0], 10));
+  };
+
+  const handleYearChange = (delta: number) => {
+      const newYear = selectedYear + delta;
+      setSelectedYear(newYear);
+      // Auto update cutoff date to Dec 31 of the selected year (or today if current year)
+      const thisYear = new Date().getFullYear();
+      if (newYear === thisYear) {
+          setCutoffDate(format(new Date(), 'yyyy-MM-dd'));
+      } else {
+          setCutoffDate(`${newYear}-12-31`);
+      }
+  };
+
   const handleStatusChange = useCallback(async (hostId: string, dateStr: string, newStatus: string) => {
     const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
     const newAtt = [...attendance];
@@ -322,25 +367,36 @@ export default function AttendancePage() {
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-sans text-slate-800 overflow-hidden">
       
       {/* HEADER */}
-      <div className="flex-none flex flex-col md:flex-row justify-between items-center bg-white border-b border-slate-200 px-6 py-4 z-10 shadow-sm gap-4">
-        <div className="flex items-center gap-3 w-full md:w-auto">
+      <div className="flex-none flex flex-col xl:flex-row justify-between items-center bg-white border-b border-slate-200 px-6 py-4 z-10 shadow-sm gap-4">
+        <div className="flex items-center gap-3 w-full xl:w-auto">
           <div className="bg-[#6D2158]/10 p-2.5 rounded-xl text-[#6D2158] hidden md:block">
              <UserCheck size={22} />
           </div>
           <div>
-            <h1 className="text-xl font-black text-[#6D2158] uppercase tracking-tight">Attendance and Leave Balance</h1>
+            <h1 className="text-xl font-black text-[#6D2158] uppercase tracking-tight">Attendance & Balances</h1>
           </div>
         </div>
         
-        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            {/* Year Navigator */}
-            <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200 shadow-inner">
-                <button onClick={() => setSelectedYear(y => y - 1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronLeft size={16}/></button>
-                <div className="w-24 text-center font-black text-sm text-[#6D2158] tracking-widest">{selectedYear}</div>
-                <button onClick={() => setSelectedYear(y => y + 1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronRight size={16}/></button>
+        <div className="flex flex-wrap items-center justify-end gap-3 w-full xl:w-auto">
+            {/* NEW: Exact Date Cutoff Picker */}
+            <div className="flex items-center bg-purple-50 p-1.5 rounded-xl border border-purple-200 shadow-inner">
+                <span className="text-[10px] font-bold text-purple-800 uppercase tracking-widest pl-2 pr-1 hidden sm:inline">Balances As Of:</span>
+                <input 
+                    type="date" 
+                    className="bg-transparent font-black text-sm text-[#6D2158] outline-none cursor-pointer px-2"
+                    value={cutoffDate}
+                    onChange={handleCutoffChange}
+                />
             </div>
 
-            <div className="relative flex-1 md:w-48">
+            {/* Year Navigator for the Grid */}
+            <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200 shadow-inner">
+                <button onClick={() => handleYearChange(-1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronLeft size={16}/></button>
+                <div className="w-20 text-center font-black text-sm text-[#6D2158] tracking-widest">{selectedYear}</div>
+                <button onClick={() => handleYearChange(1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronRight size={16}/></button>
+            </div>
+
+            <div className="relative flex-1 sm:w-48">
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={14}/>
                 <input type="text" placeholder="Search Host..." className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl font-bold text-xs bg-slate-50 focus:bg-white focus:border-[#6D2158] outline-none transition-all shadow-inner" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
             </div>
@@ -365,18 +421,24 @@ export default function AttendancePage() {
                           <thead className="sticky top-0 z-[70] bg-white shadow-sm">
                               {/* ROW 1: MASTER HEADERS */}
                               <tr>
-                                  {/* EXACT WIDTH CONFIGURATIONS APPLIED HERE TO PREVENT SCROLL DRIFTING */}
                                   <th rowSpan={3} className="max-md:static md:sticky md:left-0 z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-2 text-center w-[40px] min-w-[40px] max-w-[40px] box-border text-slate-400">#</th>
-                                  <th rowSpan={3} className="max-md:static md:sticky md:left-[40px] z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-3 text-left w-[180px] min-w-[180px] max-w-[180px] box-border">
+                                  <th rowSpan={3} className="max-md:static md:sticky md:left-[40px] z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-3 text-left w-[240px] min-w-[240px] max-w-[240px] box-border">
                                       <span className="block font-black uppercase text-slate-500 tracking-widest">Host Name</span>
                                       <span className="block text-[8px] font-bold text-slate-400 mt-1">ID, Role & Joined Date</span>
                                   </th>
-                                  <th colSpan={5} className="max-md:static md:sticky md:left-[220px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[200px] min-w-[200px] max-w-[200px] box-border">Live Balances</th>
+                                  <th colSpan={5} className="max-md:static md:sticky md:left-[280px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[210px] min-w-[210px] max-w-[210px] box-border">
+                                      Live Owed Balances
+                                  </th>
                                   
                                   {/* Months Headers */}
                                   {monthsInYear.map(m => (
                                       <th key={m.name} colSpan={m.days} className="bg-slate-100 border-b border-r border-slate-300 p-1 text-center font-bold text-slate-600 uppercase tracking-widest box-border">{m.name}</th>
                                   ))}
+
+                                  {/* Fixed Leaves Header */}
+                                  <th colSpan={2} rowSpan={2} className="bg-slate-100 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
+                                      Fixed Leaves
+                                  </th>
 
                                   {/* Carried Forward Header */}
                                   <th colSpan={3} rowSpan={2} className="bg-slate-100 border-b border-l-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
@@ -386,11 +448,12 @@ export default function AttendancePage() {
 
                               {/* ROW 2: SUB HEADERS */}
                               <tr>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[220px] z-[80] bg-emerald-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Off Days">OFF</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[260px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[300px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[340px] z-[80] bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[380px] z-[80] bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1 text-center font-bold text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Emergency Leave (10 Max)">EL</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[280px] z-[80] bg-emerald-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Off Days">OFF</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[320px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[360px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[400px] z-[80] bg-fuchsia-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Rest & Recreation (DA/DB Only)">RR</th>
+                                  {/* 100% Solid opacity total column requested */}
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[440px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
                                   
                                   {/* Days of Week */}
                                   {daysInYear.map((d, i) => (
@@ -400,7 +463,7 @@ export default function AttendancePage() {
                                   ))}
                               </tr>
 
-                              {/* ROW 3: DAY NUMBERS & CF SUBS */}
+                              {/* ROW 3: DAY NUMBERS & END SUBS */}
                               <tr>
                                   {/* Day Numbers */}
                                   {daysInYear.map((d, i) => (
@@ -408,6 +471,10 @@ export default function AttendancePage() {
                                           {format(d, 'd')}
                                       </th>
                                   ))}
+
+                                  {/* Fixed Leaves Subheaders */}
+                                  <th className="bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
+                                  <th className="bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1 text-center font-bold text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Emergency Leave (10 Max)">EL</th>
 
                                   {/* CF Columns Subheaders */}
                                   <th className="bg-slate-50 border-b-2 border-r border-l-2 border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward OFF">OFF</th>
@@ -424,27 +491,27 @@ export default function AttendancePage() {
                                           {index + 1}
                                       </td>
 
-                                      {/* FIXED NAME COLUMN - Changed to completely solid backgrounds so nothing shows underneath */}
-                                      <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[180px] min-w-[180px] max-w-[180px] box-border">
-                                          <div className="font-bold text-slate-800 text-xs truncate w-40">{host.full_name}</div>
-                                          <div className="text-[9px] text-slate-400 uppercase mt-0.5">{host.host_id} • {host.role}</div>
+                                      {/* FIXED NAME COLUMN - Widened to 240px with graceful truncation */}
+                                      <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[240px] min-w-[240px] max-w-[240px] box-border">
+                                          <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={host.full_name}>{host.full_name}</div>
+                                          <div className="text-[9px] text-slate-400 uppercase mt-0.5 truncate w-[220px]" title={`${host.host_id} • ${host.role}`}>{host.host_id} • {host.role}</div>
                                           {host.joining_date ? (
-                                              <div className="text-[8px] text-emerald-600 font-bold mt-0.5">
+                                              <div className="text-[8px] text-emerald-600 font-bold mt-0.5 truncate w-[220px]">
                                                   Joined: {format(parseISO(host.joining_date), 'dd MMM yyyy')}
                                               </div>
                                           ) : (
-                                              <div className="text-[8px] text-slate-300 font-bold mt-0.5">
+                                              <div className="text-[8px] text-slate-300 font-bold mt-0.5 truncate w-[220px]">
                                                   Joined: N/A
                                               </div>
                                           )}
                                       </td>
                                       
-                                      {/* FIXED BALANCES COLUMNS - Made completely solid */}
-                                      <td className="max-md:static md:sticky md:left-[220px] z-50 bg-emerald-50 group-hover:bg-emerald-100 border-b border-r border-slate-200 p-2 text-center font-black text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balOff}</td>
-                                      <td className="max-md:static md:sticky md:left-[260px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
-                                      <td className="max-md:static md:sticky md:left-[300px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
-                                      <td className={`max-md:static md:sticky md:left-[340px] z-50 bg-rose-50 group-hover:bg-rose-100 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-700'}`}>{host.balSL}</td>
-                                      <td className="max-md:static md:sticky md:left-[380px] z-50 bg-orange-50 group-hover:bg-orange-100 border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balEL}</td>
+                                      {/* FIXED BALANCES COLUMNS */}
+                                      <td className="max-md:static md:sticky md:left-[280px] z-50 bg-emerald-50 group-hover:bg-emerald-100 border-b border-r border-slate-200 p-2 text-center font-black text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balOff}</td>
+                                      <td className="max-md:static md:sticky md:left-[320px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
+                                      <td className="max-md:static md:sticky md:left-[360px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
+                                      <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
+                                      <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
 
                                       {/* 365 ATTENDANCE CELLS */}
                                       {daysInYear.map(date => {
@@ -464,6 +531,10 @@ export default function AttendancePage() {
                                               />
                                           );
                                       })}
+
+                                      {/* FIXED LEAVES (SL & EL) NOW AT THE END */}
+                                      <td className={`bg-rose-50/50 group-hover:bg-rose-50 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-700'}`}>{host.balSL}</td>
+                                      <td className="bg-orange-50/50 group-hover:bg-orange-50 border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balEL}</td>
 
                                       {/* DB BASELINE CF INPUTS (Far Right) */}
                                       <td className="border-b border-r border-l-2 border-slate-300 p-0 relative h-8 w-16 bg-emerald-50/30">
