@@ -44,7 +44,7 @@ export default function MySchedulePage() {
 
     if (data) {
         const shiftMap: Record<string, string> = {};
-        data.forEach((row: Shift) => {
+        data.forEach((row: { date: string; shift_type: string }) => {
             shiftMap[row.date] = row.shift_type;
         });
         setShifts(shiftMap);
