@@ -55,8 +55,8 @@ export default function Sidebar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Desktop Dropdown States
-  const isMinibarRoute = pathname.includes('/minibar');
-  const isTeamRoute = pathname.includes('/hosts') || pathname.includes('/attendance') || pathname.includes('/overtime');
+  const isMinibarRoute = pathname?.includes('/minibar');
+  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime');
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
 
@@ -122,7 +122,7 @@ export default function Sidebar() {
           </div>
           
           {CORE_TABS.map((item) => {
-            const isActive = pathname === item.path || (item.path !== '/' && pathname.startsWith(`${item.path}/`));
+            const isActive = pathname === item.path || (item.path !== '/' && pathname?.startsWith(`${item.path}/`));
             return (
               <Link 
                 key={item.path} href={item.path}
@@ -143,7 +143,7 @@ export default function Sidebar() {
               <>
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Operations</div>
                   {MENU_ITEMS.map((item) => {
-                    const isActive = pathname === item.path || pathname.startsWith(`${item.path}/`);
+                    const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
                     return (
                       <Link 
                         key={item.path} href={item.path}
@@ -256,7 +256,7 @@ export default function Sidebar() {
           ======================================================== */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[60] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
          {CORE_TABS.map((tab) => {
-            const isActive = pathname === tab.path || (tab.path !== '/' && pathname.startsWith(`${tab.path}/`));
+            const isActive = pathname === tab.path || (tab.path !== '/' && pathname?.startsWith(`${tab.path}/`));
             return (
               <Link key={tab.path} href={tab.path} className="flex flex-col items-center justify-center w-full py-1 active:scale-90 transition-transform">
                 <div className={`p-1.5 rounded-xl transition-all ${isActive ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>

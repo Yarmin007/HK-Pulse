@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
-import { Lock, User, ArrowRight, Loader2, AlertCircle, KeyRound } from 'lucide-react';
+import { Lock, User, ArrowRight, Loader2, AlertCircle, KeyRound, ShieldCheck } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 
@@ -34,6 +34,7 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     const isPublicRoute = 
         pathname?.includes('/water/view') || 
         pathname?.includes('/minibar/finance') || 
+        pathname?.includes('/inventory/store') ||
         pathname?.includes('/mobile'); 
 
     const session = localStorage.getItem('hk_pulse_session');
@@ -64,11 +65,11 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     if (isOnlyNumbers) query = query.ilike('host_id', `%${cleanInput}`);
     else query = query.ilike('host_id', cleanInput);
 
-    const { data, err } = await query;
+    const { data, error: fetchErr } = await query; // FIXED TYPO HERE
 
     setIsAuthenticating(false);
 
-    if (err || !data || data.length === 0) {
+    if (fetchErr || !data || data.length === 0) { // FIXED TYPO HERE
       return setError('Invalid Host ID or PIN');
     }
 
