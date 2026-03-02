@@ -1,19 +1,24 @@
 "use client";
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { 
   Users, ShoppingCart, Clock, AlertTriangle, 
   ArrowRight, CheckCircle2, Package,
-  Zap, Bell, ClipboardList, Wine, Calendar
+  Zap, Bell, ClipboardList, Wine, Calendar, User
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
-import { differenceInDays, parseISO } from 'date-fns';
+import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({ totalHosts: 0, pendingOrders: 0, pendingReqs: 0, expiringBatches: 0 });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [criticalItems, setCriticalItems] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // --- USER PROFILE & LEAVE BALANCES STATE ---
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [userAttendance, setUserAttendance] = useState<any[]>([]);
+  const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
 
   useEffect(() => { 
       fetchDashboardData(); 
@@ -39,6 +44,18 @@ export default function Dashboard() {
     if (showLoading) setIsLoading(true);
     const todayStr = new Date().toISOString().split('T')[0];
 
+    // 1. Fetch Logged-in User Profile & Attendance
+    const sessionData = localStorage.getItem('hk_pulse_session');
+    if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        const { data: hostData } = await supabase.from('hsk_hosts').select('*').eq('host_id', parsed.host_id).single();
+        if (hostData) setCurrentUser(hostData);
+        
+        const { data: attData } = await supabase.from('hsk_attendance').select('*').eq('host_id', parsed.host_id);
+        if (attData) setUserAttendance(attData);
+    }
+
+    // 2. Fetch Global Stats
     const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true });
     const { count: orderCount } = await supabase.from('hsk_procurement_orders').select('*', { count: 'exact', head: true }).neq('status', 'Completed');
     
@@ -64,6 +81,105 @@ export default function Dashboard() {
     if (showLoading) setIsLoading(false);
   };
 
+  // --- LEAVE BALANCE MATH ENGINE FOR SINGLE USER ---
+  const userBalances = useMemo(() => {
+      if (!currentUser) return null;
+
+      const targetDate = parseISO(cutoffDate);
+      const targetYear = targetDate.getFullYear();
+      const SYSTEM_START_DATE = new Date(2026, 0, 1); 
+      
+      const baseCfOff = currentUser.cf_off || 0;
+      const baseCfAL = currentUser.cf_al || 0;
+      const baseCfPH = currentUser.cf_ph || 0;
+
+      const joinDate = currentUser.joining_date ? parseISO(currentUser.joining_date) : SYSTEM_START_DATE;
+      const isExec = ['DA', 'DB'].includes(currentUser.host_level);
+
+      const recordsUpToTarget = userAttendance.filter(a => {
+          const d = parseISO(a.date);
+          return d >= SYSTEM_START_DATE && d <= targetDate;
+      });
+
+      // 1. Carried Forward (Calculated up to End of Previous Year)
+      let cfOff = baseCfOff; let cfAL = baseCfAL; let cfPH = baseCfPH;
+      if (targetYear > 2026) {
+          const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
+          const endOfPrevYear = new Date(targetYear - 1, 11, 31);
+          if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
+              const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1;
+              const recordsBefore = userAttendance.filter(a => {
+                  const d = parseISO(a.date);
+                  return d >= accrualStart && d <= endOfPrevYear;
+              });
+              const penaltyBefore = recordsBefore.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+              const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
+              
+              cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
+              cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => a.status_code === 'AL').length;
+              cfPH -= recordsBefore.filter(a => a.status_code === 'PH').length;
+          }
+      } else if (targetYear < 2026) {
+          cfOff = 0; cfAL = 0; cfPH = 0;
+      }
+
+      // 2. Accrual This Selected Year
+      const startOfTargetYear = new Date(targetYear, 0, 1);
+      const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
+      
+      let earnedOff = 0; let earnedAL = 0;
+      if (targetDate >= trackingStartThisYear) {
+          const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
+          const recordsThisYear = recordsUpToTarget.filter(a => {
+              const d = parseISO(a.date);
+              return d >= trackingStartThisYear && d <= targetDate;
+          });
+          const penaltyDays = recordsThisYear.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+          const eligibleDays = Math.max(0, daysActive - penaltyDays);
+          
+          earnedOff = eligibleDays / 7;
+          earnedAL = eligibleDays / 12;
+      }
+
+      // 3. Taken Leaves (Overall up to cutoff)
+      const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
+      const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
+      const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
+
+      // 4. Fixed Quotas (Reset on Anniversary)
+      let lastAnniversary = new Date(joinDate);
+      lastAnniversary.setFullYear(targetYear);
+      if (isAfter(lastAnniversary, targetDate)) {
+          lastAnniversary.setFullYear(targetYear - 1);
+      }
+      
+      const recordsSinceAnniversary = userAttendance.filter(a => {
+          const d = parseISO(a.date);
+          return d >= lastAnniversary && d <= targetDate;
+      });
+      
+      const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
+      const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
+      const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
+
+      const balOffVal = cfOff + earnedOff - takenOff;
+      const balALVal = cfAL + earnedAL - takenAL;
+      const balPHVal = cfPH - takenPH;
+      const balRRVal = isExec ? 7 - takenRR : 0;
+      const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
+
+      return {
+          balOff: balOffVal.toFixed(1),
+          balAL: balALVal.toFixed(1),
+          balPH: balPHVal.toFixed(1),
+          balRR: isExec ? balRRVal.toString() : '-',
+          balTotal: totalBal.toFixed(1),
+          balSL: 30 - takenSL,
+          balEL: 10 - takenEL
+      };
+  }, [currentUser, userAttendance, cutoffDate]);
+
+
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
 
@@ -78,25 +194,73 @@ export default function Dashboard() {
       );
   }
 
+  // Quick helper for balance cards
+  const BalanceCard = ({ label, value, color, isTotal = false }: any) => (
+      <div className={`p-4 rounded-2xl border flex flex-col justify-center items-center ${
+          isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform scale-105' : `bg-${color}-50 border-${color}-100`
+      }`}>
+          <span className={`text-[10px] font-bold uppercase tracking-widest text-center ${isTotal ? 'text-white/80' : `text-${color}-500`}`}>{label}</span>
+          <span className={`text-2xl font-black mt-1 ${isTotal ? 'text-white' : `text-${color}-700`}`}>{value}</span>
+      </div>
+  );
+
   return (
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
       
-      {/* NATIVE STICKY HEADER */}
-      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 py-5 md:px-8 md:py-6 shadow-sm flex flex-col md:flex-row justify-between md:items-end gap-4">
-        <div>
-          <h1 className="text-3xl font-black tracking-tight text-[#6D2158]">{greeting}</h1>
-          <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">Pulse of the Operation</p>
+      {/* NATIVE STICKY HEADER WITH PROFILE */}
+      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 py-5 md:px-8 md:py-6 shadow-sm flex flex-col xl:flex-row justify-between xl:items-end gap-6">
+        <div className="flex items-center gap-5">
+           <div className="w-16 h-16 md:w-20 md:h-20 rounded-[1.25rem] overflow-hidden bg-slate-100 border-2 border-slate-200 shrink-0 shadow-sm">
+               {currentUser?.image_url ? (
+                   <img src={currentUser.image_url} className="w-full h-full object-cover" alt="Profile" />
+               ) : (
+                   <User className="w-full h-full p-4 text-slate-300"/>
+               )}
+           </div>
+           <div>
+              <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">
+                  {greeting}, {currentUser?.full_name?.split(' ')[0] || 'User'}
+              </h1>
+              <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest flex items-center gap-2">
+                 {currentUser?.role || 'Staff'} • {currentUser?.host_id || 'Unknown ID'}
+                 <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active</span>
+              </p>
+           </div>
         </div>
-        <div className="bg-slate-100 px-4 py-2 rounded-xl text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2 w-fit shadow-inner">
-           <span className="relative flex h-2 w-2 mr-1">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-           </span>
-           Live Sync Active
+
+        <div className="flex flex-col items-start xl:items-end gap-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">My Leave Balances As Of</span>
+            <div className="bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-sm flex items-center gap-2 hover:border-[#6D2158] transition-colors cursor-pointer relative w-fit">
+                <Calendar size={16} className="text-[#6D2158]"/>
+                <span className="text-sm font-bold text-[#6D2158] tracking-wide">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
+                <input 
+                    type="date" 
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    value={cutoffDate}
+                    onChange={e => e.target.value && setCutoffDate(e.target.value)}
+                />
+            </div>
         </div>
       </div>
 
-      <div className="p-4 md:p-8 space-y-6">
+      <div className="p-4 md:p-8 space-y-8 pb-32">
+          
+          {/* USER BALANCES STRIP */}
+          {userBalances && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                  <BalanceCard label="Off Days" value={userBalances.balOff} color="emerald" />
+                  <BalanceCard label="Annual" value={userBalances.balAL} color="cyan" />
+                  <BalanceCard label="Public Hol" value={userBalances.balPH} color="blue" />
+                  {userBalances.balRR !== '-' && <BalanceCard label="Rest & Rec" value={userBalances.balRR} color="fuchsia" />}
+                  <BalanceCard label="Total Owed" value={userBalances.balTotal} isTotal />
+                  
+                  <div className="hidden lg:flex items-center justify-center"><div className="h-10 w-px bg-slate-300"></div></div>
+                  
+                  <BalanceCard label="Sick Lvl" value={userBalances.balSL} color="rose" />
+                  <BalanceCard label="Emergency" value={userBalances.balEL} color="orange" />
+              </div>
+          )}
+
           {/* KPI GRID */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6">
              <Link href="/requests" className="bg-white p-5 rounded-[2rem] shadow-sm border border-slate-100 hover:shadow-md active:scale-95 transition-all group flex flex-col">

@@ -4,9 +4,11 @@ import {
   Settings, Save, Plus, Trash2, X, Search, Edit3, Image as ImageIcon,
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User,
-  Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart
+  Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
+  Shield, KeyRound, History
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import toast from 'react-hot-toast';
 
 const CATEGORY_ICONS: any = {
   'Soft Drinks': Coffee, 'Juices': Coffee, 'Water': Droplet,
@@ -46,6 +48,16 @@ type Constant = {
   label: string;
 };
 
+type Host = {
+  id: string;
+  full_name: string;
+  host_id: string;
+  role: string;
+  system_role?: string;
+  pin?: string;
+  requires_pin_change?: boolean;
+};
+
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('Master List');
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,7 +85,14 @@ export default function SettingsPage() {
   const [gemName, setGemName] = useState('');
   const [gemMvpn, setGemMvpn] = useState('');
 
-  useEffect(() => { fetchMasterList(); fetchConstants(); }, []);
+  // --- ACCESS CONTROL STATE ---
+  const [hosts, setHosts] = useState<Host[]>([]);
+  const [hostSearch, setHostSearch] = useState('');
+  const [selectedLogHost, setSelectedLogHost] = useState<Host | null>(null);
+  const [hostLogs, setHostLogs] = useState<any[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+
+  useEffect(() => { fetchMasterList(); fetchConstants(); fetchHosts(); }, []);
 
   const fetchMasterList = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
@@ -89,6 +108,11 @@ export default function SettingsPage() {
         setAdminPin(pin);
         setSystemTimezone(tz);
     }
+  };
+
+  const fetchHosts = async () => {
+    const { data } = await supabase.from('hsk_hosts').select('*').order('full_name');
+    if (data) setHosts(data);
   };
 
   const handleEditItem = (item: MasterItem) => {
@@ -169,7 +193,35 @@ export default function SettingsPage() {
     }
     
     setIsUploading(false);
-    alert('System config updated successfully!');
+    toast.success('System config updated successfully!');
+  };
+
+  // --- ACCESS CONTROL HANDLERS ---
+  const updateHostRole = async (id: string, newRole: string) => {
+      await supabase.from('hsk_hosts').update({ system_role: newRole }).eq('id', id);
+      setHosts(hosts.map(h => h.id === id ? { ...h, system_role: newRole } : h));
+      toast.success("Role updated successfully!");
+  };
+
+  const resetHostPin = async (id: string, name: string) => {
+      if(!confirm(`Reset PIN for ${name} to '0000'? They will be forced to change it on next login.`)) return;
+      await supabase.from('hsk_hosts').update({ pin: '0000', requires_pin_change: true }).eq('id', id);
+      setHosts(hosts.map(h => h.id === id ? { ...h, pin: '0000', requires_pin_change: true } : h));
+      toast.success(`PIN reset to 0000 for ${name}`);
+  };
+
+  const viewHostLogs = async (host: Host) => {
+      setSelectedLogHost(host);
+      setHostLogs([]);
+      setIsLoadingLogs(true);
+      // Fetch latest 50 requests handled by this user
+      const { data } = await supabase.from('hsk_daily_requests')
+          .select('*')
+          .ilike('attendant_name', `%${host.full_name.split(' ')[0]}%`)
+          .order('request_time', { ascending: false })
+          .limit(50);
+      setHostLogs(data || []);
+      setIsLoadingLogs(false);
   };
 
   const filteredList = masterList.filter(item => 
@@ -211,18 +263,78 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
-         {['Master List', 'Minibar Menu', 'Expiry Setup', 'GEM Directory', 'System Config'].map(tab => (
+         {['Master List', 'Minibar Menu', 'Expiry Setup', 'GEM Directory', 'System Config', 'Access Control'].map(tab => (
             <button key={tab} onClick={() => { setActiveTab(tab); setIsFormOpen(false); }} className={`px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${activeTab === tab ? 'bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20' : 'bg-white text-slate-400 border border-slate-100 hover:border-[#6D2158]'}`}>{tab}</button>
          ))}
       </div>
 
-      {activeTab === 'System Config' ? (
+      {activeTab === 'Access Control' ? (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-in slide-in-from-right-4 duration-300">
+              <div className="p-5 border-b border-slate-100 flex flex-col md:flex-row justify-between md:items-center gap-4 bg-slate-50">
+                  <div>
+                      <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Shield size={16}/> Access & Roles</h3>
+                      <p className="text-[10px] font-bold text-slate-400 mt-1">Manage admin privileges, reset PINs, and view user activity logs.</p>
+                  </div>
+                  <div className="relative w-full md:w-64">
+                      <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
+                      <input type="text" placeholder="Search staff..." className="w-full pl-10 pr-4 py-2 border border-slate-200 bg-white rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" value={hostSearch} onChange={e => setHostSearch(e.target.value)} />
+                  </div>
+              </div>
+              <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                      <thead className="bg-slate-50 border-b border-slate-100">
+                          <tr>
+                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">Staff Member</th>
+                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">System Role</th>
+                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">PIN Status</th>
+                              <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Actions</th>
+                          </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                          {hosts.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map(host => (
+                              <tr key={host.id} className="hover:bg-slate-50 transition-colors">
+                                  <td className="p-4">
+                                      <div className="font-bold text-slate-800 text-sm">{host.full_name}</div>
+                                      <div className="text-[10px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
+                                  </td>
+                                  <td className="p-4">
+                                      <select 
+                                          className="p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer"
+                                          value={host.system_role || 'staff'}
+                                          onChange={(e) => updateHostRole(host.id, e.target.value)}
+                                      >
+                                          <option value="staff">Standard Staff</option>
+                                          <option value="admin">System Admin</option>
+                                      </select>
+                                  </td>
+                                  <td className="p-4">
+                                      {host.requires_pin_change ? (
+                                          <span className="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-amber-200">Needs Reset</span>
+                                      ) : (
+                                          <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-emerald-200">Active</span>
+                                      )}
+                                  </td>
+                                  <td className="p-4 text-right flex justify-end gap-2">
+                                      <button onClick={() => resetHostPin(host.id, host.full_name)} className="p-2 text-slate-400 hover:text-amber-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-amber-200 transition-colors" title="Reset PIN to 0000">
+                                          <KeyRound size={16}/>
+                                      </button>
+                                      <button onClick={() => viewHostLogs(host)} className="px-3 py-2 text-white bg-[#6D2158] hover:bg-[#5a1b49] rounded-lg shadow-md flex items-center gap-1.5 text-xs font-bold transition-colors">
+                                          <History size={14}/> Logs
+                                      </button>
+                                  </td>
+                              </tr>
+                          ))}
+                      </tbody>
+                  </table>
+              </div>
+          </div>
+      ) : activeTab === 'System Config' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
            
            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  
+                 
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Lock size={14}/> Admin Access PIN</label>
                       <div className="flex gap-2">
@@ -459,6 +571,55 @@ export default function SettingsPage() {
            </div>
         </div>
       )}
+
+      {/* --- LOGS MODAL --- */}
+      {selectedLogHost && (
+          <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+                  <div className="p-6 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
+                     <div>
+                         <h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><History size={20}/> {selectedLogHost.full_name}'s Activity</h3>
+                         <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">Latest 50 System Actions</p>
+                     </div>
+                     <button onClick={() => setSelectedLogHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="p-0 overflow-y-auto flex-1 bg-slate-50 custom-scrollbar">
+                     {isLoadingLogs ? (
+                         <div className="flex justify-center items-center py-20 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>
+                     ) : hostLogs.length === 0 ? (
+                         <div className="flex justify-center items-center py-20 text-slate-400 font-bold italic text-sm">No recent activity found.</div>
+                     ) : (
+                         <table className="w-full text-left text-xs">
+                             <thead className="bg-white sticky top-0 border-b border-slate-200 shadow-sm z-10">
+                                <tr>
+                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Time</th>
+                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Type</th>
+                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Villa</th>
+                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Details</th>
+                                </tr>
+                             </thead>
+                             <tbody className="divide-y divide-slate-100">
+                                {hostLogs.map(log => (
+                                    <tr key={log.id} className="hover:bg-white transition-colors">
+                                        <td className="p-4 font-medium text-slate-500 whitespace-nowrap">{new Date(log.request_time).toLocaleString('en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'})}</td>
+                                        <td className="p-4">
+                                            <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-wider ${log.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                                                {log.request_type}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 font-black text-[#6D2158] text-sm">{log.villa_number}</td>
+                                        <td className="p-4 text-slate-600 truncate max-w-xs" title={log.item_details}>{log.item_details.replace(/\n/g, ', ')}</td>
+                                    </tr>
+                                ))}
+                             </tbody>
+                         </table>
+                     )}
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }
