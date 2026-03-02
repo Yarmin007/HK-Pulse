@@ -187,11 +187,10 @@ export default function Dashboard() {
           earnedAL = eligibleDays / 12;
       }
 
-      // Calculate PH based on passed declared holidays
-      const accrualStartForPh = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
+      // Calculate PH based on passed declared holidays in this specific year
       publicHolidays.forEach(ph => {
           const phDate = parseISO(ph.date);
-          if (phDate >= accrualStartForPh && phDate <= targetDate) {
+          if (phDate >= trackingStartThisYear && phDate <= targetDate) {
               earnedPH += 1;
           }
       });
@@ -265,7 +264,6 @@ export default function Dashboard() {
       );
   }
 
-  // Quick helper for balance cards
   const BalanceCard = ({ label, value, color, isTotal = false }: any) => (
       <div className={`p-4 rounded-2xl border flex flex-col justify-center items-center ${
           isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform scale-105' : `bg-${color}-50 border-${color}-100`
@@ -309,14 +307,13 @@ export default function Dashboard() {
             
             {/* FULLY CLICKABLE DATE PICKER BOX */}
             <div className="relative cursor-pointer group w-fit">
-                {/* The invisible input covers the entire visual div below it */}
                 <input 
                     type="date" 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
                     value={cutoffDate}
                     onChange={e => e.target.value && setCutoffDate(e.target.value)}
                 />
-                <div className="flex items-center bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm group-hover:border-[#6D2158] transition-colors gap-2">
+                <div className="flex items-center bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm group-hover:border-[#6D2158] transition-colors gap-2 pointer-events-none">
                     <Calendar size={16} className="text-[#6D2158] shrink-0 group-focus-within:animate-pulse"/>
                     <span className="font-black text-sm text-[#6D2158] tracking-wide">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
                 </div>

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Search, Wand2, Loader2, UserCheck, 
-  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon
+  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { 
@@ -29,55 +29,31 @@ const STATUS_COLORS: Record<string, string> = {
   'EL': 'bg-orange-100 text-orange-700 font-black',
 };
 
-// --- OPTIMIZED CELL COMPONENT ---
+// --- OPTIMIZED MEMOIZED CELL COMPONENT ---
 type AttendanceCellProps = {
-    initialVal: string;
-    hostId: string;
+    val: string;
+    note: string;
     dateStr: string;
     isFriday: boolean;
-    onSave: (hostId: string, dateStr: string, newStatus: string) => void;
+    isPH: boolean;
+    onOpenEdit: (dateStr: string, val: string, note: string) => void;
 };
 
-const AttendanceCell = React.memo(({ initialVal, hostId, dateStr, isFriday, onSave }: AttendanceCellProps) => {
-    const [isEditing, setIsEditing] = useState(false);
-    const [val, setVal] = useState(initialVal);
-
-    useEffect(() => { setVal(initialVal); }, [initialVal]);
-
-    const handleChange = (newVal: string) => {
-        setVal(newVal);
-        setIsEditing(false);
-        if (newVal !== initialVal) onSave(hostId, dateStr, newVal);
-    };
-
+const AttendanceCell = React.memo(({ val, note, dateStr, isFriday, isPH, onOpenEdit }: AttendanceCellProps) => {
     const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
-    const bgBase = isFriday ? 'bg-rose-50/30' : 'bg-white';
-
-    if (isEditing) {
-        return (
-            <td className="border-b border-r border-slate-200 p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle box-border">
-                <select 
-                    autoFocus
-                    onBlur={() => setIsEditing(false)}
-                    className={`w-full h-full appearance-none outline-none text-center text-[10px] font-bold cursor-pointer ${colorClass}`}
-                    value={val}
-                    onChange={(e) => handleChange(e.target.value)}
-                >
-                    <option value="" className="bg-white text-slate-400">-</option>
-                    {STATUS_CODES.map(c => <option key={c} value={c} className="bg-white text-slate-800">{c}</option>)}
-                </select>
-            </td>
-        );
-    }
+    const bgBase = isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
+    const hasNote = !!note;
 
     return (
         <td 
-            onClick={() => setIsEditing(true)}
-            className={`border-b border-r border-slate-200 p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle cursor-pointer hover:bg-blue-50 transition-colors box-border ${val ? colorClass : bgBase}`}
+            onClick={() => onOpenEdit(dateStr, val, note)}
+            className={`border-b border-r border-slate-200 p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle cursor-pointer hover:opacity-70 transition-opacity box-border relative ${val ? colorClass : bgBase}`}
         >
             <div className="w-full h-full flex items-center justify-center text-[10px] font-bold">
                 {val || '-'}
             </div>
+            {/* Red dot indicator if a comment exists */}
+            {hasNote && <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm" title={note}></div>}
         </td>
     );
 });
@@ -87,7 +63,7 @@ AttendanceCell.displayName = 'AttendanceCell';
 export default function AttendancePage() {
   const [isLoading, setIsLoading] = useState(true);
   
-  // NEW: Precise Date Cutoff System
+  // Date & Grid Setup
   const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   
@@ -95,6 +71,10 @@ export default function AttendancePage() {
   const [hosts, setHosts] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [publicHolidays, setPublicHolidays] = useState<{date: string, name: string}[]>([]);
+
+  // Cell Edit Modal State (For Notes & Status)
+  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string } | null>(null);
 
   // Magic Paste State
   const [isMagicOpen, setIsMagicOpen] = useState(false);
@@ -107,10 +87,19 @@ export default function AttendancePage() {
   const fetchData = async () => {
     setIsLoading(true);
     
+    // Fetch Holidays for PH Calc
+    const { data: constData } = await supabase.from('hsk_constants').select('*').eq('type', 'public_holiday');
+    if (constData) {
+        const parsedHolidays = constData.map((c: any) => {
+            const [d, n] = c.label.split('::');
+            return { date: d, name: n };
+        });
+        setPublicHolidays(parsedHolidays);
+    }
+
     const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned');
     
     if (hostData) {
-        // --- CUSTOM HOST SORTING LOGIC ---
         const getDeptRank = (role: string, hostId: string) => {
             const r = (role || '').toLowerCase();
             const id = (hostId || '').toLowerCase();
@@ -141,17 +130,14 @@ export default function AttendancePage() {
         };
 
         const sortedHosts = hostData.sort((a, b) => {
-            // 1. Dept Hierarchy
             const deptA = getDeptRank(a.role, a.host_id);
             const deptB = getDeptRank(b.role, b.host_id);
             if (deptA !== deptB) return deptA - deptB;
 
-            // 2. Seniority within Dept
             const senA = getSeniorityRank(a.host_level, a.role);
             const senB = getSeniorityRank(b.host_level, b.role);
             if (senA !== senB) return senA - senB;
 
-            // 3. Lowest SSL code
             return getHostNumber(a.host_id) - getHostNumber(b.host_id);
         });
 
@@ -164,23 +150,22 @@ export default function AttendancePage() {
     setIsLoading(false);
   };
 
-  // --- AUTOMATED MATH ENGINE (Now strictly uses Cutoff Date) ---
   const hostBalances = useMemo(() => {
     const targetDate = parseISO(cutoffDate);
-    const SYSTEM_START_DATE = new Date(2026, 0, 1); // Ground Zero for system accruals
+    const targetYear = targetDate.getFullYear();
+    const SYSTEM_START_DATE = new Date(2026, 0, 1); 
     
     return hosts.map(host => {
-      // DB Baseline (Represents absolute balance on Jan 1, 2026)
       const baseCfOff = host.cf_off || 0;
       const baseCfAL = host.cf_al || 0;
       const baseCfPH = host.cf_ph || 0;
 
       const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
       const isExec = ['DA', 'DB'].includes(host.host_level);
+      const isIntern = (host.role || '').toLowerCase().includes('intern');
 
       const hostRecords = attendance.filter(a => a.host_id === host.host_id);
       
-      // Filter out ANY records that occur AFTER our exact chosen cutoff date
       const recordsUpToTarget = hostRecords.filter(a => {
           const d = parseISO(a.date);
           return d >= SYSTEM_START_DATE && d <= targetDate;
@@ -190,8 +175,8 @@ export default function AttendancePage() {
       
       let earnedOff = 0;
       let earnedAL = 0;
+      let earnedPH = 0;
 
-      // Only accrue days if the cutoff date is actually after they joined
       if (targetDate >= accrualStart) {
           const daysActive = differenceInDays(targetDate, accrualStart) + 1;
           const penaltyDays = recordsUpToTarget.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
@@ -201,12 +186,21 @@ export default function AttendancePage() {
           earnedAL = eligibleDays / 12;
       }
 
-      // Tally Taken Leaves up to cutoff
+      // Calculate PH based on passed declared holidays in this specific year
+      const startOfTargetYear = new Date(targetYear, 0, 1);
+      const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
+      
+      publicHolidays.forEach(ph => {
+          const phDate = parseISO(ph.date);
+          if (phDate >= trackingStartThisYear && phDate <= targetDate) {
+              earnedPH += 1;
+          }
+      });
+
       const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
       const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
       const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
 
-      // Fixed Quotas (Reset on Anniversary before Cutoff)
       let lastAnniversary = new Date(joinDate);
       lastAnniversary.setFullYear(targetDate.getFullYear());
       if (isAfter(lastAnniversary, targetDate)) {
@@ -222,17 +216,16 @@ export default function AttendancePage() {
       const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
       const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
 
-      // Final Math Calculations
       const balOffVal = baseCfOff + earnedOff - takenOff;
-      const balALVal = baseCfAL + earnedAL - takenAL;
-      const balPHVal = baseCfPH - takenPH;
+      const balALVal = isIntern ? 0 : (baseCfAL + earnedAL - takenAL);
+      const balPHVal = baseCfPH + earnedPH - takenPH;
       const balRRVal = isExec ? 7 - takenRR : 0;
       const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
 
       return {
         ...host,
         balOff: balOffVal.toFixed(1),
-        balAL: balALVal.toFixed(1),
+        balAL: isIntern ? '0.0' : balALVal.toFixed(1),
         balPH: balPHVal.toFixed(1),
         balRR: isExec ? balRRVal.toString() : '-',
         balTotal: totalBal.toFixed(1),
@@ -240,7 +233,7 @@ export default function AttendancePage() {
         balEL: 10 - takenEL
       };
     });
-  }, [hosts, attendance, cutoffDate]);
+  }, [hosts, attendance, cutoffDate, publicHolidays]);
 
   // --- GRID SETUP ---
   const daysInYear = useMemo(() => {
@@ -267,14 +260,12 @@ export default function AttendancePage() {
       const newDateStr = e.target.value;
       if (!newDateStr) return;
       setCutoffDate(newDateStr);
-      // Automatically jump the grid to the year of the cutoff date
       setSelectedYear(parseInt(newDateStr.split('-')[0], 10));
   };
 
   const handleYearChange = (delta: number) => {
       const newYear = selectedYear + delta;
       setSelectedYear(newYear);
-      // Auto update cutoff date to Dec 31 of the selected year (or today if current year)
       const thisYear = new Date().getFullYear();
       if (newYear === thisYear) {
           setCutoffDate(format(new Date(), 'yyyy-MM-dd'));
@@ -283,30 +274,36 @@ export default function AttendancePage() {
       }
   };
 
-  const handleStatusChange = useCallback(async (hostId: string, dateStr: string, newStatus: string) => {
+  const handleSaveCell = async () => {
+    if (!editCell) return;
+    const { hostId, dateStr, status, note } = editCell;
+    
     const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
     const newAtt = [...attendance];
     
     let error;
-    if (newStatus === '') {
+    if (status === '') {
+        // If they cleared the status, delete the record
         if (existingIdx > -1) newAtt.splice(existingIdx, 1);
         const res = await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
         error = res.error;
     } else {
+        // Upsert the record with the status and the note
         if (existingIdx > -1) {
-            newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: newStatus };
+            newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status, shift_note: note };
         } else {
-            newAtt.push({ host_id: hostId, date: dateStr, status_code: newStatus });
+            newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note });
         }
-        const res = await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: newStatus }, { onConflict: 'host_id, date' });
+        const res = await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: status, shift_note: note }, { onConflict: 'host_id, date' });
         error = res.error;
     }
     
-    if (error) toast.error('Failed to save status');
-    else toast.success('Saved');
+    if (error) toast.error('Failed to save entry');
+    else toast.success('Entry Saved');
     
     setAttendance(newAtt);
-  }, [attendance]);
+    setEditCell(null); // Close modal
+  };
 
   const handleCfChange = async (hostId: string, field: string, val: number | '') => {
     const numericVal = val === '' ? 0 : val;
@@ -378,30 +375,39 @@ export default function AttendancePage() {
         </div>
         
         <div className="flex flex-wrap items-center justify-end gap-3 w-full xl:w-auto">
-            {/* NEW: Exact Date Cutoff Picker */}
-            <div className="flex items-center bg-purple-50 p-1.5 rounded-xl border border-purple-200 shadow-inner">
-                <span className="text-[10px] font-bold text-purple-800 uppercase tracking-widest pl-2 pr-1 hidden sm:inline">Balances As Of:</span>
-                <input 
-                    type="date" 
-                    className="bg-transparent font-black text-sm text-[#6D2158] outline-none cursor-pointer px-2"
-                    value={cutoffDate}
-                    onChange={handleCutoffChange}
-                />
+            {/* FULLY CLICKABLE Exact Date Cutoff Picker */}
+            <div className="flex flex-col items-start sm:items-end">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 ml-1">Balances As Of</span>
+                <div className="relative cursor-pointer group w-fit">
+                    <input 
+                        type="date" 
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                        value={cutoffDate}
+                        onChange={handleCutoffChange}
+                    />
+                    <div className="flex items-center bg-purple-50 px-4 py-2.5 rounded-xl border border-purple-200 shadow-inner group-hover:bg-purple-100 transition-colors gap-2 pointer-events-none">
+                        <CalIcon size={14} className="text-[#6D2158] shrink-0 group-focus-within:animate-pulse"/>
+                        <span className="font-black text-sm text-[#6D2158]">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
+                    </div>
+                </div>
             </div>
 
             {/* Year Navigator for the Grid */}
-            <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200 shadow-inner">
-                <button onClick={() => handleYearChange(-1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronLeft size={16}/></button>
-                <div className="w-20 text-center font-black text-sm text-[#6D2158] tracking-widest">{selectedYear}</div>
-                <button onClick={() => handleYearChange(1)} className="p-1.5 hover:bg-white rounded-lg text-slate-500"><ChevronRight size={16}/></button>
+            <div className="flex flex-col items-start sm:items-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 ml-1">Grid Year</span>
+                <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200 shadow-inner">
+                    <button onClick={() => handleYearChange(-1)} className="p-1 hover:bg-white rounded-lg text-slate-500"><ChevronLeft size={16}/></button>
+                    <div className="w-16 text-center font-black text-sm text-[#6D2158] tracking-widest">{selectedYear}</div>
+                    <button onClick={() => handleYearChange(1)} className="p-1 hover:bg-white rounded-lg text-slate-500"><ChevronRight size={16}/></button>
+                </div>
             </div>
 
-            <div className="relative flex-1 sm:w-48">
+            <div className="relative flex-1 sm:w-48 mt-5">
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={14}/>
                 <input type="text" placeholder="Search Host..." className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl font-bold text-xs bg-slate-50 focus:bg-white focus:border-[#6D2158] outline-none transition-all shadow-inner" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
             </div>
 
-            <button onClick={() => setIsMagicOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-emerald-700 transition-all">
+            <button onClick={() => setIsMagicOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-emerald-700 transition-all mt-5">
                 <Wand2 size={14}/> Magic Paste
             </button>
         </div>
@@ -456,21 +462,33 @@ export default function AttendancePage() {
                                   <th rowSpan={2} className="max-md:static md:sticky md:left-[440px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
                                   
                                   {/* Days of Week */}
-                                  {daysInYear.map((d, i) => (
-                                      <th key={i} className={`p-1 text-center border-b border-r border-slate-200 text-[8px] font-bold uppercase box-border ${format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-500' : 'bg-slate-50 text-slate-400'}`}>
-                                          {format(d, 'eeeee')}
-                                      </th>
-                                  ))}
+                                  {daysInYear.map((d, i) => {
+                                      const dateStr = format(d, 'yyyy-MM-dd');
+                                      const isPH = publicHolidays.some(ph => ph.date === dateStr);
+                                      const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
+                                      
+                                      return (
+                                          <th key={i} title={phName} className={`p-1 text-center border-b border-r border-slate-200 text-[8px] font-bold uppercase box-border ${isPH ? 'bg-blue-100 text-blue-700' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-500' : 'bg-slate-50 text-slate-400'}`}>
+                                              {format(d, 'eeeee')}
+                                          </th>
+                                      )
+                                  })}
                               </tr>
 
                               {/* ROW 3: DAY NUMBERS & END SUBS */}
                               <tr>
                                   {/* Day Numbers */}
-                                  {daysInYear.map((d, i) => (
-                                      <th key={i} className={`p-1 text-center border-b-2 border-r border-slate-300 font-black text-[9px] box-border ${format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}`}>
-                                          {format(d, 'd')}
-                                      </th>
-                                  ))}
+                                  {daysInYear.map((d, i) => {
+                                      const dateStr = format(d, 'yyyy-MM-dd');
+                                      const isPH = publicHolidays.some(ph => ph.date === dateStr);
+                                      const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
+
+                                      return (
+                                          <th key={i} title={phName} className={`p-1 text-center border-b-2 border-r border-slate-300 font-black text-[9px] box-border ${isPH ? 'bg-blue-100 text-blue-800' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}`}>
+                                              {format(d, 'd')}
+                                          </th>
+                                      )
+                                  })}
 
                                   {/* Fixed Leaves Subheaders */}
                                   <th className="bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
@@ -491,7 +509,7 @@ export default function AttendancePage() {
                                           {index + 1}
                                       </td>
 
-                                      {/* FIXED NAME COLUMN - Widened to 240px with graceful truncation */}
+                                      {/* FIXED NAME COLUMN */}
                                       <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[240px] min-w-[240px] max-w-[240px] box-border">
                                           <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={host.full_name}>{host.full_name}</div>
                                           <div className="text-[9px] text-slate-400 uppercase mt-0.5 truncate w-[220px]" title={`${host.host_id} • ${host.role}`}>{host.host_id} • {host.role}</div>
@@ -518,16 +536,19 @@ export default function AttendancePage() {
                                           const dateStr = format(date, 'yyyy-MM-dd');
                                           const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
                                           const val = record ? record.status_code : '';
+                                          const note = record ? record.shift_note : '';
                                           const isFriday = format(date, 'E') === 'Fri';
+                                          const isPH = publicHolidays.some(ph => ph.date === dateStr);
 
                                           return (
                                               <AttendanceCell 
                                                   key={dateStr}
-                                                  initialVal={val}
-                                                  hostId={host.host_id}
+                                                  val={val}
+                                                  note={note || ''}
                                                   dateStr={dateStr}
                                                   isFriday={isFriday}
-                                                  onSave={handleStatusChange}
+                                                  isPH={isPH}
+                                                  onOpenEdit={(d, v, n) => setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr: d, status: v, note: n })}
                                               />
                                           );
                                       })}
@@ -554,6 +575,65 @@ export default function AttendancePage() {
               )}
           </div>
       </div>
+
+      {/* CELL EDITOR MODAL */}
+      {editCell && (
+          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 animate-in zoom-in-95 flex flex-col relative">
+                  <div className="flex justify-between items-start mb-6 border-b border-slate-100 pb-4">
+                      <div>
+                          <h3 className="font-black text-xl text-[#6D2158] flex items-center gap-2">
+                              <CalIcon size={20}/> {format(parseISO(editCell.dateStr), 'dd MMM yyyy')}
+                          </h3>
+                          <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">{editCell.hostName}</p>
+                      </div>
+                      <button onClick={() => setEditCell(null)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-colors text-slate-500"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="mb-6">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><UserCheck size={14}/> Set Status Code</label>
+                      <div className="grid grid-cols-4 gap-2">
+                          {STATUS_CODES.map(code => {
+                              const isSelected = editCell.status === code;
+                              return (
+                                  <button 
+                                      key={code}
+                                      onClick={() => setEditCell({...editCell, status: code})}
+                                      className={`p-3 rounded-xl text-xs font-black border-2 transition-all active:scale-95 ${isSelected ? 'border-[#6D2158] bg-[#6D2158]/10 text-[#6D2158] shadow-sm' : 'border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200'}`}
+                                  >
+                                      {code}
+                                  </button>
+                              );
+                          })}
+                          <button 
+                              onClick={() => setEditCell({...editCell, status: ''})}
+                              className={`p-3 rounded-xl text-xs font-black border-2 transition-all active:scale-95 ${editCell.status === '' ? 'border-rose-500 bg-rose-50 text-rose-600 shadow-sm' : 'border-slate-100 bg-slate-50 text-slate-500 hover:border-rose-200 hover:text-rose-500'}`}
+                              title="Clear Entry"
+                          >
+                              CLR
+                          </button>
+                      </div>
+                  </div>
+
+                  <div className="mb-6">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark</label>
+                      <textarea 
+                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium outline-none focus:border-[#6D2158] resize-none h-28 shadow-inner"
+                          placeholder="Type notes here..."
+                          value={editCell.note}
+                          onChange={e => setEditCell({...editCell, note: e.target.value})}
+                      />
+                  </div>
+
+                  <button 
+                      onClick={handleSaveCell}
+                      className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-purple-900/20 hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2"
+                  >
+                      <Save size={16}/> Save Entry
+                  </button>
+              </div>
+          </div>
+      )}
 
       {/* MAGIC PASTE MODAL */}
       {isMagicOpen && (
