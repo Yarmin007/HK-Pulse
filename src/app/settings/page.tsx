@@ -5,7 +5,7 @@ import {
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
-  Shield, KeyRound, History
+  Shield, KeyRound, History, Plane
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -92,6 +92,10 @@ export default function SettingsPage() {
   const [hostLogs, setHostLogs] = useState<any[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
+  // --- PUBLIC HOLIDAY STATE ---
+  const [holidayName, setHolidayName] = useState('');
+  const [holidayDate, setHolidayDate] = useState('');
+
   useEffect(() => { fetchMasterList(); fetchConstants(); fetchHosts(); }, []);
 
   const fetchMasterList = async () => {
@@ -170,6 +174,13 @@ export default function SettingsPage() {
     if (!error) { setNewConstantValue(''); fetchConstants(); }
   };
 
+  const handleAddHoliday = async () => {
+    if (!holidayName.trim() || !holidayDate) return toast.error("Please enter both the date and the name of the holiday.");
+    const label = `${holidayDate}::${holidayName.trim()}`;
+    const { error } = await supabase.from('hsk_constants').insert({ type: 'public_holiday', label });
+    if (!error) { setHolidayName(''); setHolidayDate(''); fetchConstants(); toast.success("Public Holiday Added!"); }
+  };
+
   const handleAddGem = async () => {
     if (!gemName.trim() || !gemMvpn.trim()) return alert("Please enter both Name and MVPN");
     const label = `${gemName.trim()} - ${gemMvpn.trim()}`;
@@ -237,7 +248,7 @@ export default function SettingsPage() {
   const ListManager = ({ type, title, icon: Icon, placeholder }: any) => {
     const list = constants.filter(c => c.type === type);
     return (
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-6 h-fit">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
         <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
         <div className="flex gap-2 mb-4">
           <input type="text" placeholder={placeholder} className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={activeConstantType === type ? newConstantValue : ''} onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}/>
@@ -331,6 +342,7 @@ export default function SettingsPage() {
       ) : activeTab === 'System Config' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
            
+           {/* CORE SYSTEM */}
            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -359,6 +371,33 @@ export default function SettingsPage() {
                       <p className="text-[10px] text-slate-400 mt-2 font-bold">Adjusts all logs, inventory, and timestamps across the platform.</p>
                   </div>
 
+              </div>
+           </div>
+
+           {/* HOLIDAYS MANAGER */}
+           <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
+              <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Plane size={20}/> Declared Public Holidays</h3>
+              <div className="flex flex-col sm:flex-row gap-3 mb-4">
+                 <input type="date" className="p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayDate} onChange={e=>setHolidayDate(e.target.value)} />
+                 <input type="text" placeholder="Holiday Name (e.g. Eid al-Fitr)" className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayName} onChange={e=>setHolidayName(e.target.value)} />
+                 <button onClick={handleAddHoliday} className="px-6 py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-[#5a1b49]">Add Holiday</button>
+              </div>
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+                 {constants.filter(c => c.type === 'public_holiday').sort((a,b) => a.label.localeCompare(b.label)).map(item => {
+                    const [d, n] = item.label.split('::');
+                    return (
+                     <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-200 transition-all">
+                        <div className="flex items-center gap-4">
+                            <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs">{d}</span>
+                            <span className="font-bold text-slate-700 text-sm">{n}</span>
+                        </div>
+                        <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2"><Trash2 size={16}/></button>
+                     </div>
+                    )
+                 })}
+                 {constants.filter(c => c.type === 'public_holiday').length === 0 && (
+                     <p className="text-center text-slate-400 italic text-sm py-4">No public holidays configured.</p>
+                 )}
               </div>
            </div>
 
