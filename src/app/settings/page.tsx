@@ -79,7 +79,6 @@ export default function SettingsPage() {
   const [newConstantValue, setNewConstantValue] = useState('');
   const [activeConstantType, setActiveConstantType] = useState('');
 
-  const [adminPin, setAdminPin] = useState('2026');
   const [systemTimezone, setSystemTimezone] = useState('Indian/Maldives');
 
   const [gemName, setGemName] = useState('');
@@ -107,9 +106,7 @@ export default function SettingsPage() {
     const { data } = await supabase.from('hsk_constants').select('*').order('label');
     if (data) {
         setConstants(data);
-        const pin = data.find(c => c.type === 'admin_pin')?.label || '2026';
         const tz = data.find(c => c.type === 'system_timezone')?.label || 'Indian/Maldives';
-        setAdminPin(pin);
         setSystemTimezone(tz);
     }
   };
@@ -249,6 +246,7 @@ export default function SettingsPage() {
       setSelectedLogHost(host);
       setHostLogs([]);
       setIsLoadingLogs(true);
+      // Fetch latest 50 requests handled by this user
       const { data } = await supabase.from('hsk_daily_requests')
           .select('*')
           .ilike('attendant_name', `%${host.full_name.split(' ')[0]}%`)
@@ -295,14 +293,18 @@ export default function SettingsPage() {
         const rankB = parseInt(b.label.split('::')[1] || '999');
         return rankA - rankB;
     });
+    
     const [roleName, setRoleName] = useState('');
     const [roleRank, setRoleRank] = useState('');
+
+    // Extract unique roles from the Hosts database
+    const uniqueRoles = Array.from(new Set(hosts.map(h => h.role).filter(Boolean))).sort((a,b) => a.localeCompare(b));
 
     const handleAdd = async () => {
         if (!roleName.trim() || !roleRank.trim()) return;
         const label = `${roleName.trim()}::${roleRank.trim()}`;
         const { error } = await supabase.from('hsk_constants').insert({ type, label });
-        if (!error) { setRoleName(''); setRoleRank(''); fetchConstants(); }
+        if (!error) { setRoleName(''); setRoleRank(''); fetchConstants(); toast.success("Role rank added!"); }
     };
 
     return (
@@ -310,9 +312,18 @@ export default function SettingsPage() {
         <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
         <p className="text-[10px] text-slate-400 mb-3 font-bold">Assign a rank (1 = Top) to sort roles across all lists.</p>
         <div className="flex gap-2 mb-4">
-          <input type="text" placeholder="Role (e.g. Supervisor)" className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleName} onChange={(e) => setRoleName(e.target.value)}/>
+          <select 
+            className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" 
+            value={roleName} 
+            onChange={(e) => setRoleName(e.target.value)}
+          >
+              <option value="" disabled>Select Role...</option>
+              {uniqueRoles.map((role) => (
+                  <option key={role} value={role}>{role}</option>
+              ))}
+          </select>
           <input type="number" placeholder="Rank" className="w-20 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleRank} onChange={(e) => setRoleRank(e.target.value)}/>
-          <button onClick={handleAdd} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs">Add</button>
+          <button onClick={handleAdd} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:bg-[#5a1b49] transition-colors">Add</button>
         </div>
         <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
            {list.map(item => {
@@ -410,17 +421,8 @@ export default function SettingsPage() {
            {/* CORE SYSTEM */}
            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
                  
-                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                      <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Lock size={14}/> Admin Access PIN</label>
-                      <div className="flex gap-2">
-                          <input type="text" className="flex-1 p-3 rounded-lg border font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={adminPin} onChange={e => setAdminPin(e.target.value)} />
-                          <button onClick={() => handleSaveSystemConfig('admin_pin', adminPin)} className="px-6 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-2 font-bold">Used to lock the main dashboard from unauthorized access.</p>
-                  </div>
-
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Clock size={14}/> Global Website Timezone</label>
                       <div className="flex gap-2">
