@@ -115,8 +115,32 @@ export default function SettingsPage() {
   };
 
   const fetchHosts = async () => {
-    const { data } = await supabase.from('hsk_hosts').select('*').order('full_name');
-    if (data) setHosts(data);
+    const [hostRes, constRes] = await Promise.all([
+        supabase.from('hsk_hosts').select('*'),
+        supabase.from('hsk_constants').select('*').eq('type', 'role_rank')
+    ]);
+    
+    if (hostRes.data) {
+        let roleRanks: Record<string, number> = {};
+        if (constRes.data) {
+            constRes.data.forEach(c => {
+                const [role, rank] = c.label.split('::');
+                if (role && rank) roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
+            });
+        }
+
+        const sortedHosts = hostRes.data.sort((a, b) => {
+            const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
+            const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
+            
+            if (rankA !== rankB) return rankA - rankB;
+
+            const numA = parseInt((a.host_id || '').replace(/\D/g, ''), 10) || 999999;
+            const numB = parseInt((b.host_id || '').replace(/\D/g, ''), 10) || 999999;
+            return numA - numB;
+        });
+        setHosts(sortedHosts);
+    }
   };
 
   const handleEditItem = (item: MasterItem) => {
@@ -225,7 +249,6 @@ export default function SettingsPage() {
       setSelectedLogHost(host);
       setHostLogs([]);
       setIsLoadingLogs(true);
-      // Fetch latest 50 requests handled by this user
       const { data } = await supabase.from('hsk_daily_requests')
           .select('*')
           .ilike('attendant_name', `%${host.full_name.split(' ')[0]}%`)
@@ -261,6 +284,48 @@ export default function SettingsPage() {
                 <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
              </div>
            ))}
+        </div>
+      </div>
+    );
+  };
+
+  const RankManager = ({ type, title, icon: Icon }: any) => {
+    const list = constants.filter(c => c.type === type).sort((a,b) => {
+        const rankA = parseInt(a.label.split('::')[1] || '999');
+        const rankB = parseInt(b.label.split('::')[1] || '999');
+        return rankA - rankB;
+    });
+    const [roleName, setRoleName] = useState('');
+    const [roleRank, setRoleRank] = useState('');
+
+    const handleAdd = async () => {
+        if (!roleName.trim() || !roleRank.trim()) return;
+        const label = `${roleName.trim()}::${roleRank.trim()}`;
+        const { error } = await supabase.from('hsk_constants').insert({ type, label });
+        if (!error) { setRoleName(''); setRoleRank(''); fetchConstants(); }
+    };
+
+    return (
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
+        <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
+        <p className="text-[10px] text-slate-400 mb-3 font-bold">Assign a rank (1 = Top) to sort roles across all lists.</p>
+        <div className="flex gap-2 mb-4">
+          <input type="text" placeholder="Role (e.g. Supervisor)" className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleName} onChange={(e) => setRoleName(e.target.value)}/>
+          <input type="number" placeholder="Rank" className="w-20 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleRank} onChange={(e) => setRoleRank(e.target.value)}/>
+          <button onClick={handleAdd} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs">Add</button>
+        </div>
+        <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+           {list.map(item => {
+             const [name, rank] = item.label.split('::');
+             return (
+             <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
+                <div>
+                  <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs mr-3">Rank {rank}</span>
+                  <span className="font-bold text-slate-600 text-sm">{name}</span>
+                </div>
+                <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
+             </div>
+           )})}
         </div>
       </div>
     );
@@ -341,7 +406,7 @@ export default function SettingsPage() {
           </div>
       ) : activeTab === 'System Config' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
-           
+            
            {/* CORE SYSTEM */}
            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
@@ -401,6 +466,7 @@ export default function SettingsPage() {
               </div>
            </div>
 
+           <RankManager type="role_rank" title="Role Sorting Ranks" icon={Briefcase} />
            <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." />
            <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." />
         </div>

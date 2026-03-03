@@ -20,11 +20,12 @@ type Host = {
   company_mobile?: string;
   mvpn?: string;
   image_url?: string;
-  nicknames?: string; // ADDED NICKNAMES
+  nicknames?: string;
 };
 
 export default function HostsProfilePage() {
   const [hostList, setHostList] = useState<Host[]>([]);
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -34,25 +35,52 @@ export default function HostsProfilePage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   
   const [newHost, setNewHost] = useState<Partial<Host>>({
-    role: 'Room Attendant',
+    role: '',
     host_level: 'ATM',
     status: 'Active',
     personal_mobile: '',
     company_mobile: '',
     mvpn: '',
-    nicknames: '', // ADDED NICKNAMES
+    nicknames: '',
     joining_date: new Date().toISOString().split('T')[0] 
   });
 
   // --- FETCH DATA ---
   const fetchHosts = async () => {
     setIsLoading(true);
-    const { data, error } = await supabase
-      .from('hsk_hosts')
-      .select('*')
-      .order('full_name', { ascending: true });
+    const [hostRes, constRes] = await Promise.all([
+        supabase.from('hsk_hosts').select('*'),
+        supabase.from('hsk_constants').select('*').eq('type', 'role_rank')
+    ]);
     
-    if (data) setHostList(data);
+    if (hostRes.data) {
+        let roleRanks: Record<string, number> = {};
+        let roles: string[] = [];
+        
+        if (constRes.data) {
+            constRes.data.forEach(c => {
+                const [role, rank] = c.label.split('::');
+                if (role && rank) {
+                    roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
+                    roles.push(role.trim());
+                }
+            });
+            setAvailableRoles(roles.sort((a,b) => a.localeCompare(b)));
+        }
+
+        const sortedHosts = hostRes.data.sort((a, b) => {
+            const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
+            const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
+            
+            if (rankA !== rankB) return rankA - rankB;
+
+            const numA = parseInt((a.host_id || '').replace(/\D/g, ''), 10) || 999999;
+            const numB = parseInt((b.host_id || '').replace(/\D/g, ''), 10) || 999999;
+            return numA - numB;
+        });
+
+        setHostList(sortedHosts);
+    }
     setIsLoading(false);
   };
 
@@ -62,6 +90,7 @@ export default function HostsProfilePage() {
   const handleCreateHost = async () => {
     if (!newHost.full_name) return toast.error("Full Name is required");
     if (!newHost.host_id) return toast.error("Host No is required");
+    if (!newHost.role) return toast.error("Designation is required");
 
     const hostToSave = {
       ...newHost,
@@ -73,7 +102,7 @@ export default function HostsProfilePage() {
         toast.error(error.message);
     } else {
       setIsCreateModalOpen(false);
-      setNewHost({ role: 'Room Attendant', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: new Date().toISOString().split('T')[0] });
+      setNewHost({ role: '', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: new Date().toISOString().split('T')[0] });
       fetchHosts();
       toast.success("Host Profile Created");
     }
@@ -94,7 +123,7 @@ export default function HostsProfilePage() {
         personal_mobile: selectedHost.personal_mobile,
         company_mobile: selectedHost.company_mobile,
         mvpn: selectedHost.mvpn,
-        nicknames: selectedHost.nicknames, // ADDED NICKNAMES
+        nicknames: selectedHost.nicknames,
         joining_date: selectedHost.joining_date
       })
       .eq('id', selectedHost.id);
@@ -129,7 +158,7 @@ export default function HostsProfilePage() {
       host.full_name.toLowerCase().includes(query) || 
       (host.host_id && host.host_id.toLowerCase().includes(query)) ||
       host.role.toLowerCase().includes(query) ||
-      (host.nicknames && host.nicknames.toLowerCase().includes(query)) // Search by nickname too
+      (host.nicknames && host.nicknames.toLowerCase().includes(query))
     );
   });
 
@@ -285,7 +314,12 @@ export default function HostsProfilePage() {
 
                       <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                          <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Briefcase size={16} /><span className="text-[10px] font-bold uppercase">Designation</span></div>
-                         {isEditing ? <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.role} onChange={(e) => setSelectedHost({...selectedHost, role: e.target.value})} /> : <p className="text-sm font-bold text-slate-700">{selectedHost.role}</p>}
+                         {isEditing ? (
+                             <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.role} onChange={(e) => setSelectedHost({...selectedHost, role: e.target.value})}>
+                                 <option value="" disabled>Select Role</option>
+                                 {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+                             </select>
+                         ) : <p className="text-sm font-bold text-slate-700">{selectedHost.role}</p>}
                       </div>
 
                       <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
@@ -388,7 +422,10 @@ export default function HostsProfilePage() {
                    <div className="grid grid-cols-2 gap-4">
                        <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Designation</label>
-                           <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="Room Attendant" value={newHost.role || ''} onChange={e => setNewHost({...newHost, role: e.target.value})} />
+                           <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.role || ''} onChange={e => setNewHost({...newHost, role: e.target.value})}>
+                               <option value="" disabled>Select Role</option>
+                               {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+                           </select>
                        </div>
                        <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Joining Date</label>

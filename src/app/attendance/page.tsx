@@ -31,7 +31,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 // Global keystroke buffer for fast Excel-like typing
 let keyBuffer = '';
-let keyTimer: any = null;
+let keyTimer: NodeJS.Timeout | null = null;
 
 // --- OPTIMIZED MEMOIZED CELL COMPONENT ---
 type AttendanceCellProps = {
@@ -51,7 +51,9 @@ type AttendanceCellProps = {
 const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, isPH, isToday, rIdx, cIdx, onOpenEdit, onQuickSave }: AttendanceCellProps) => {
     const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
     const bgBase = isToday ? 'bg-amber-50/60 border-amber-200' : isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
-    const hasNoteOrShift = !!note || !!shiftType;
+    
+    // Only trigger the red dot if there is an actual text note
+    const hasNote = !!note && note.trim() !== '';
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTableCellElement>) => {
         let nextR = rIdx;
@@ -84,30 +86,25 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
             return;
         }
 
-        // Quick Type Status Code
+        // Quick Type Status Code (Smart detection for multi-letter codes like AL, PH)
         const char = e.key.toUpperCase();
         if (/^[A-Z]$/.test(char)) {
             e.preventDefault();
             keyBuffer += char;
-            clearTimeout(keyTimer);
+            if (keyTimer) clearTimeout(keyTimer);
 
-            const exactMatch = STATUS_CODES.find(c => c === keyBuffer);
-            if (exactMatch) {
-                onQuickSave(exactMatch, rIdx, cIdx);
-                keyBuffer = '';
-            } else {
-                const partialMatch = STATUS_CODES.some(c => c.startsWith(keyBuffer));
-                if (!partialMatch) {
+            keyTimer = setTimeout(() => {
+                const exactMatch = STATUS_CODES.find(c => c === keyBuffer);
+                if (exactMatch) {
+                    onQuickSave(exactMatch, rIdx, cIdx);
+                } else {
                     const fallbackMatch = STATUS_CODES.find(c => c === char);
                     if (fallbackMatch) {
                         onQuickSave(fallbackMatch, rIdx, cIdx);
-                        keyBuffer = '';
-                    } else {
-                        keyBuffer = '';
                     }
                 }
-            }
-            keyTimer = setTimeout(() => { keyBuffer = ''; }, 500);
+                keyBuffer = '';
+            }, 300); // Wait 300ms to allow typing 2 letters
         }
     };
 
@@ -121,28 +118,28 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
                 if (e.detail === 2) onOpenEdit();
             }}
             onKeyDown={handleKeyDown}
-            className={`border-b border-r p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle cursor-cell transition-colors box-border relative select-none [&.cell-selected]:bg-blue-100 [&.cell-selected]:ring-2 [&.cell-selected]:ring-inset [&.cell-selected]:ring-blue-600 [&.cell-selected]:z-20 ${val ? colorClass : bgBase} ${!isToday && !val ? 'border-slate-200' : ''}`}
+            className={`border-b border-r p-0 h-10 w-10 min-w-[40px] max-w-[40px] align-middle cursor-cell transition-colors box-border relative select-none [&.cell-selected]:bg-blue-100 [&.cell-selected]:ring-2 [&.cell-selected]:ring-inset [&.cell-selected]:ring-blue-600 [&.cell-selected]:z-20 ${val ? colorClass : bgBase} ${!isToday && !val ? 'border-slate-200' : ''}`}
         >
-            <div className="w-full h-full flex items-center justify-center text-[10px] font-bold pointer-events-none">
-                {val || '-'}
+            <div className="w-full h-full flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-[11px] font-bold leading-none">{val || '-'}</span>
+                {shiftType && <span className="text-[7px] leading-none font-bold opacity-60 mt-1 truncate w-full text-center px-0.5">{shiftType}</span>}
             </div>
-            {hasNoteOrShift && <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm pointer-events-none" title={`${shiftType ? `Shift: ${shiftType}` : ''} ${note ? `\nNote: ${note}` : ''}`}></div>}
+            {hasNote && <div className="absolute top-1 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm pointer-events-none" title={`Note: ${note}`}></div>}
         </td>
     );
 });
 AttendanceCell.displayName = 'AttendanceCell';
 
-
 export default function AttendancePage() {
   const [isLoading, setIsLoading] = useState(true);
+  const [isScrolled, setIsScrolled] = useState(false); // Prevents visual jump from Jan 1
   
   // Date & Grid Setup
   const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const todayStr = format(new Date(), 'yyyy-MM-dd');
-  const todayRef = useRef<HTMLTableCellElement>(null);
-  const lastFocusedCell = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastFocusedCell = useRef<string | null>(null);
   
   // Data
   const [hosts, setHosts] = useState<any[]>([]);
@@ -163,23 +160,21 @@ export default function AttendancePage() {
   // EXCEL ENGINE STATE
   const [isDragging, setIsDragging] = useState(false);
   const selectionRef = useRef({ r1: -1, c1: -1, r2: -1, c2: -1 });
-  const bulkKeyBuffer = useRef('');
-  const bulkKeyTimer = useRef<any>(null);
 
   useEffect(() => { fetchData(); }, [selectedYear]);
 
-  // Auto-Scroll to Today on initial load
+  // Seamless Auto-Scroll to Today instantly (Prevents Jumping)
   useEffect(() => {
       if (!isLoading && scrollRef.current) {
-          setTimeout(() => {
+          requestAnimationFrame(() => {
               const todayCol = document.getElementById('today-col');
               if (todayCol && scrollRef.current) {
-                  scrollRef.current.scrollTo({
-                      left: todayCol.offsetLeft - 490 - 32, // 490px sticky headers + padding
-                      behavior: 'smooth'
-                  });
+                  scrollRef.current.scrollLeft = Math.max(0, todayCol.offsetLeft - 490 - 32); 
               }
-          }, 300);
+              requestAnimationFrame(() => {
+                  setIsScrolled(true); // Fades in beautifully after positioning is complete
+              });
+          });
       }
   }, [isLoading, selectedYear]);
 
@@ -199,71 +194,57 @@ export default function AttendancePage() {
 
   const fetchData = async () => {
     setIsLoading(true);
+    setIsScrolled(false);
     
-    const { data: constData } = await supabase.from('hsk_constants').select('*').eq('type', 'public_holiday');
+    const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank']);
+    
+    let roleRanks: Record<string, number> = {};
     if (constData) {
-        const parsedHolidays = constData.map((c: any) => {
-            const [d, n] = c.label.split('::');
-            return { date: d, name: n };
-        });
+        const parsedHolidays = constData
+            .filter(c => c.type === 'public_holiday')
+            .map((c: any) => {
+                const [d, n] = c.label.split('::');
+                return { date: d, name: n };
+            });
         setPublicHolidays(parsedHolidays);
+
+        constData.filter(c => c.type === 'role_rank').forEach(c => {
+            const [role, rank] = c.label.split('::');
+            if (role && rank) roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
+        });
     }
 
     const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned');
     
     if (hostData) {
-        const getDeptRank = (role: string, hostId: string) => {
-            const r = (role || '').toLowerCase();
-            const id = (hostId || '').toLowerCase();
-            if (id.includes('tf') || id.includes('int') || r.includes('task force') || r.includes('intern')) return 9;
-            if (r.includes('admin') || r.includes('exec') || r.includes('manager') || r.includes('coordinator') || r.includes('supervisor') || r.includes('clerk') || r.includes('secretary')) return 1;
-            if (r.includes('villa') || r.includes('hk att') || r.includes('room att')) return 2;
-            if (r.includes('public') || r.includes('pa ')) return 3;
-            if (r.includes('pool')) return 4;
-            if (r.includes('laundry') || r.includes('valet') || r.includes('presser') || r.includes('linen')) return 5;
-            if (r.includes('runner')) return 6;
-            if (r.includes('luggage') || r.includes('bell') || r.includes('porter')) return 7;
-            if (r.includes('tailor') || r.includes('seamstress') || r.includes('upholstery')) return 8;
-            if (r.includes('garden') || r.includes('landscap') || r.includes('botanist')) return 10;
-            return 11;
-        };
-
-        const getSeniorityRank = (level: string, role: string) => {
-            if (level === 'DA') return 1;
-            if (level === 'DB') return 2;
-            const r = (role || '').toLowerCase();
-            if (r.includes('senior')) return 3;
-            return 4;
-        };
-
-        const getHostNumber = (hostId: string) => {
-            const match = String(hostId).match(/\d+/);
-            return match ? parseInt(match[0], 10) : 999999;
-        };
-
         const sortedHosts = hostData.sort((a, b) => {
-            const deptA = getDeptRank(a.role, a.host_id);
-            const deptB = getDeptRank(b.role, b.host_id);
-            if (deptA !== deptB) return deptA - deptB;
-
-            const senA = getSeniorityRank(a.host_level, a.role);
-            const senB = getSeniorityRank(b.host_level, b.role);
-            if (senA !== senB) return senA - senB;
-
-            return getHostNumber(a.host_id) - getHostNumber(b.host_id);
+            const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
+            const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
+            if (rankA !== rankB) return rankA - rankB;
+            
+            const numA = parseInt((a.host_id || '').replace(/\D/g, ''), 10) || 999999;
+            const numB = parseInt((b.host_id || '').replace(/\D/g, ''), 10) || 999999;
+            return numA - numB;
         });
-
         setHosts(sortedHosts);
     }
 
     const { data: attData } = await supabase.from('hsk_attendance').select('*');
-    if (attData) setAttendance(attData);
+    if (attData) {
+        const normalizedAtt = attData.map(a => ({
+            ...a,
+            date: a.date.split('T')[0] // Strips any time data to ensure perfect date string matching
+        }));
+        setAttendance(normalizedAtt);
+    }
 
     setIsLoading(false);
   };
 
   const hostBalances = useMemo(() => {
     const targetDate = parseISO(cutoffDate);
+    const targetYear = targetDate.getFullYear();
+    const endOfTargetYear = new Date(targetYear, 11, 31);
     const SYSTEM_START_DATE = new Date(2026, 0, 1); 
     
     return hosts.map(host => {
@@ -277,9 +258,16 @@ export default function AttendancePage() {
 
       const hostRecords = attendance.filter(a => a.host_id === host.host_id);
       
+      // Accrual looks at days active up to target Date
       const recordsUpToTarget = hostRecords.filter(a => {
           const d = parseISO(a.date);
           return d >= SYSTEM_START_DATE && d <= targetDate;
+      });
+
+      // Deductions look at ALL leaves taken in the calendar year, so future bookings reduce balances instantly
+      const recordsForDeduction = hostRecords.filter(a => {
+          const d = parseISO(a.date);
+          return d >= SYSTEM_START_DATE && d <= endOfTargetYear;
       });
 
       const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
@@ -304,9 +292,9 @@ export default function AttendancePage() {
           }
       });
 
-      const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
-      const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
-      const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
+      const takenOff = recordsForDeduction.filter(a => a.status_code === 'O').length;
+      const takenAL = recordsForDeduction.filter(a => a.status_code === 'AL').length;
+      const takenPH = recordsForDeduction.filter(a => a.status_code === 'PH').length;
 
       let lastAnniversary = new Date(joinDate);
       lastAnniversary.setFullYear(targetDate.getFullYear());
@@ -316,7 +304,7 @@ export default function AttendancePage() {
       
       const recordsSinceAnniversary = hostRecords.filter(a => {
           const d = parseISO(a.date);
-          return d >= lastAnniversary && d <= targetDate;
+          return d >= lastAnniversary && d <= endOfTargetYear;
       });
       
       const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
@@ -410,6 +398,7 @@ export default function AttendancePage() {
       updateSelectionVisuals();
   };
 
+  // ROBUST BULK SAVE (DRAG OR HIGHLIGHT & TYPE)
   const applyBulkStatus = async (status: string) => {
       const { r1, c1, r2, c2 } = selectionRef.current;
       if (r1 === -1) return;
@@ -417,36 +406,63 @@ export default function AttendancePage() {
       const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
       const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
 
-      const updates: any[] = [];
-      const deletes: any[] = [];
-
-      const newAtt = [...attendance];
-
-      for (let r = minR; r <= maxR; r++) {
-          for (let c = minC; c <= maxC; c++) {
-              const hostId = filteredHosts[r].host_id;
-              const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
-              
-              const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
-              
-              if (status === '') {
-                  if (existingIdx > -1) newAtt.splice(existingIdx, 1);
-                  deletes.push(supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr }));
-              } else {
-                  if (existingIdx > -1) {
-                      newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+      // Instantly Update UI State Optimistically
+      setAttendance(prev => {
+          const newAtt = [...prev];
+          for (let r = minR; r <= maxR; r++) {
+              for (let c = minC; c <= maxC; c++) {
+                  const hostId = filteredHosts[r].host_id;
+                  const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+                  const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+                  
+                  if (status === '') {
+                      if (existingIdx > -1) newAtt.splice(existingIdx, 1);
                   } else {
-                      newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+                      if (existingIdx > -1) {
+                          newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+                      } else {
+                          newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+                      }
                   }
-                  updates.push({ host_id: hostId, date: dateStr, status_code: status });
               }
           }
-      }
+          return newAtt;
+      });
 
-      setAttendance(newAtt); 
+      // Background DB Sync wrapped in toast
+      const dbTask = async () => {
+          for (let r = minR; r <= maxR; r++) {
+              for (let c = minC; c <= maxC; c++) {
+                  const hostId = filteredHosts[r].host_id;
+                  const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+                  
+                  const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', hostId).eq('date', dateStr);
+                  if (fetchErr) throw fetchErr;
 
-      if (deletes.length > 0) await Promise.all(deletes);
-      if (updates.length > 0) await supabase.from('hsk_attendance').upsert(updates, { onConflict: 'host_id, date' });
+                  if (status === '') {
+                      if (existing && existing.length > 0) {
+                          const { error } = await supabase.from('hsk_attendance').delete().eq('host_id', hostId).eq('date', dateStr);
+                          if (error) throw error;
+                      }
+                  } else {
+                      const payload = { host_id: hostId, date: dateStr, status_code: status };
+                      if (existing && existing.length > 0) {
+                          const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
+                          if (error) throw error;
+                      } else {
+                          const { error } = await supabase.from('hsk_attendance').insert(payload);
+                          if (error) throw error;
+                      }
+                  }
+              }
+          }
+      };
+
+      toast.promise(dbTask(), {
+          loading: 'Saving...',
+          success: status === '' ? 'Cleared' : 'Saved',
+          error: 'Save failed'
+      });
   };
 
   const handleGlobalKeyDown = (e: React.KeyboardEvent) => {
@@ -498,31 +514,6 @@ export default function AttendancePage() {
           applyBulkStatus('');
           return;
       }
-
-      const char = e.key.toUpperCase();
-      if (/^[A-Z]$/.test(char)) {
-          e.preventDefault();
-          bulkKeyBuffer.current += char;
-          clearTimeout(bulkKeyTimer.current);
-
-          const exactMatch = STATUS_CODES.find(c => c === bulkKeyBuffer.current);
-          if (exactMatch) {
-              applyBulkStatus(exactMatch);
-              bulkKeyBuffer.current = '';
-          } else {
-              const partialMatch = STATUS_CODES.some(c => c.startsWith(bulkKeyBuffer.current));
-              if (!partialMatch) {
-                  const fallbackMatch = STATUS_CODES.find(c => c === char);
-                  if (fallbackMatch) {
-                      applyBulkStatus(fallbackMatch);
-                      bulkKeyBuffer.current = '';
-                  } else {
-                      bulkKeyBuffer.current = '';
-                  }
-              }
-          }
-          bulkKeyTimer.current = setTimeout(() => { bulkKeyBuffer.current = ''; }, 500);
-      }
   };
 
   const handleCopy = (e: React.ClipboardEvent) => {
@@ -548,7 +539,8 @@ export default function AttendancePage() {
       toast.success('Copied to clipboard');
   };
 
-  const handlePaste = (e: React.ClipboardEvent) => {
+  // ROBUST PASTE
+  const handlePaste = async (e: React.ClipboardEvent) => {
       const { r1, c1 } = selectionRef.current;
       if (r1 === -1) return;
       e.preventDefault();
@@ -556,46 +548,74 @@ export default function AttendancePage() {
       const pasteData = e.clipboardData.getData('text');
       const rows = pasteData.split('\n').map(r => r.split('\t'));
       
-      const updates = [];
-      const newAtt = [...attendance];
+      let updateCount = 0;
+      const tasks: { hostId: string, dateStr: string, val: string }[] = [];
 
-      for(let i=0; i<rows.length; i++) {
-          if (r1 + i >= filteredHosts.length || !rows[i][0]) continue;
-          const hostId = filteredHosts[r1 + i].host_id;
-          
-          for(let j=0; j<rows[i].length; j++) {
-              if (c1 + j >= daysInYear.length) continue;
-              const dateStr = format(daysInYear[c1 + j], 'yyyy-MM-dd');
-              let val = rows[i][j].trim().toUpperCase();
-              if (val === 'V') val = 'AL'; 
+      setAttendance(prev => {
+          const newAtt = [...prev];
+          for(let i=0; i<rows.length; i++) {
+              if (r1 + i >= filteredHosts.length || !rows[i][0]) continue;
+              const hostId = filteredHosts[r1 + i].host_id;
               
-              if (STATUS_CODES.includes(val) || val === '') {
-                  updates.push({ host_id: hostId, date: dateStr, status_code: val });
+              for(let j=0; j<rows[i].length; j++) {
+                  if (c1 + j >= daysInYear.length) continue;
+                  const dateStr = format(daysInYear[c1 + j], 'yyyy-MM-dd');
+                  let val = rows[i][j].trim().toUpperCase();
+                  if (val === 'V') val = 'AL'; 
                   
-                  const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
-                  if (val === '') {
-                      if (existingIdx > -1) newAtt.splice(existingIdx, 1);
-                  } else {
-                      if (existingIdx > -1) newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: val };
-                      else newAtt.push({ host_id: hostId, date: dateStr, status_code: val });
+                  if (STATUS_CODES.includes(val) || val === '') {
+                      updateCount++;
+                      tasks.push({ hostId, dateStr, val });
+                      const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+                      
+                      if (val === '') {
+                          if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+                      } else {
+                          if (existingIdx > -1) {
+                              newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: val };
+                          } else {
+                              newAtt.push({ host_id: hostId, date: dateStr, status_code: val });
+                          }
+                      }
                   }
               }
           }
-      }
+          return newAtt;
+      });
 
-      if (updates.length > 0) {
-          setAttendance(newAtt);
-          const toDelete = updates.filter(u => u.status_code === '');
-          const toUpsert = updates.filter(u => u.status_code !== '');
-          
-          toDelete.forEach(d => supabase.from('hsk_attendance').delete().match({ host_id: d.host_id, date: d.date }));
-          if (toUpsert.length > 0) supabase.from('hsk_attendance').upsert(toUpsert, { onConflict: 'host_id, date' }).then();
-          
-          toast.success(`Pasted ${updates.length} cells`);
-          
-          selectionRef.current.r2 = r1 + rows.length - 1;
-          selectionRef.current.c2 = c1 + rows[0].length - 1;
-          updateSelectionVisuals();
+      if (updateCount > 0) {
+          const dbTask = async () => {
+              for (const t of tasks) {
+                  const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', t.hostId).eq('date', t.dateStr);
+                  if (fetchErr) throw fetchErr;
+
+                  if (t.val === '') {
+                      if (existing && existing.length > 0) {
+                          const { error } = await supabase.from('hsk_attendance').delete().eq('host_id', t.hostId).eq('date', t.dateStr);
+                          if (error) throw error;
+                      }
+                  } else {
+                      const payload = { host_id: t.hostId, date: t.dateStr, status_code: t.val };
+                      if (existing && existing.length > 0) {
+                          const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
+                          if (error) throw error;
+                      } else {
+                          const { error } = await supabase.from('hsk_attendance').insert(payload);
+                          if (error) throw error;
+                      }
+                  }
+              }
+          };
+
+          toast.promise(dbTask(), {
+              loading: `Pasting ${updateCount} cells...`,
+              success: 'Paste saved',
+              error: 'Paste failed to save'
+          }).then(() => {
+              selectionRef.current.r2 = r1 + rows.length - 1;
+              selectionRef.current.c2 = c1 + rows[0].length - 1;
+              updateSelectionVisuals();
+          });
       }
   };
 
@@ -619,56 +639,112 @@ export default function AttendancePage() {
       }
   };
 
+  // ROBUST QUICKSAVE (FOR INDIVIDUAL TYPING)
   const quickSaveCell = async (hostId: string, dateStr: string, status: string, rIdx: number, cIdx: number) => {
       lastFocusedCell.current = `cell-${rIdx}-${cIdx}`; 
       
-      const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
-      const newAtt = [...attendance];
-      
-      if (status === '') {
-          if (existingIdx > -1) newAtt.splice(existingIdx, 1);
-          await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
-      } else {
-          if (existingIdx > -1) {
-              newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+      setAttendance(prev => {
+          const newAtt = [...prev];
+          const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+          if (status === '') {
+              if (existingIdx > -1) newAtt.splice(existingIdx, 1);
           } else {
-              newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+              if (existingIdx > -1) {
+                  newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+              } else {
+                  newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+              }
           }
-          await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: status }, { onConflict: 'host_id, date' });
-      }
-      setAttendance(newAtt);
+          return newAtt;
+      });
+
+      const dbTask = async () => {
+          if (status === '') {
+              const { error } = await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
+              if (error) throw error;
+          } else {
+              // Try to fetch existing to keep shift_note/shift_type intact if quick editing
+              const { data: existing } = await supabase.from('hsk_attendance').select('*').match({ host_id: hostId, date: dateStr }).maybeSingle();
+              
+              const payload = { 
+                  host_id: hostId, 
+                  date: dateStr, 
+                  status_code: status,
+                  shift_note: existing?.shift_note || null,
+                  shift_type: existing?.shift_type || null
+              };
+              
+              const { error } = await supabase.from('hsk_attendance').upsert(payload, { onConflict: 'host_id, date' });
+              if (error) {
+                  if (existing) {
+                      const { error: updErr } = await supabase.from('hsk_attendance').update({ status_code: status }).eq('id', existing.id);
+                      if (updErr) throw updErr;
+                  } else {
+                      const { error: insErr } = await supabase.from('hsk_attendance').insert(payload);
+                      if (insErr) throw insErr;
+                  }
+              }
+          }
+      };
+
+      toast.promise(dbTask(), {
+          loading: 'Saving...',
+          success: status === '' ? 'Cleared' : 'Saved',
+          error: 'Save failed'
+      });
   };
 
+  // ROBUST MODAL SAVE
   const handleSaveCell = async () => {
     if (!editCell) return;
     const { hostId, dateStr, status, note, shiftType } = editCell;
     
-    const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
-    const newAtt = [...attendance];
-    
-    let error;
-    if (status === '') {
-        if (existingIdx > -1) newAtt.splice(existingIdx, 1);
-        const res = await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
-        error = res.error;
-    } else {
-        if (existingIdx > -1) {
-            newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status, shift_note: note, shift_type: shiftType };
+    setAttendance(prev => {
+        const newAtt = [...prev];
+        const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+        if (status === '' && !note && !shiftType) {
+            if (existingIdx > -1) newAtt.splice(existingIdx, 1);
         } else {
-            newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType });
+            if (existingIdx > -1) {
+                newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status, shift_note: note, shift_type: shiftType };
+            } else {
+                newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType });
+            }
         }
-        const res = await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType }, { onConflict: 'host_id, date' });
-        error = res.error;
-    }
-    
-    if (error) toast.error('Failed to save entry');
-    else toast.success('Entry Saved');
-    
-    setAttendance(newAtt);
-    setEditCell(null); 
-    if (selectionRef.current.r1 !== -1) {
-        document.getElementById(`cell-${selectionRef.current.r1}-${selectionRef.current.c1}`)?.focus();
-    }
+        return newAtt;
+    });
+
+    const dbTask = async () => {
+        const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', hostId).eq('date', dateStr);
+        if (fetchErr) throw fetchErr;
+
+        if (status === '' && !note && !shiftType) {
+            if (existing && existing.length > 0) {
+                const { error } = await supabase.from('hsk_attendance').delete().eq('host_id', hostId).eq('date', dateStr);
+                if (error) throw error;
+            }
+        } else {
+            const payload = { host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType };
+            if (existing && existing.length > 0) {
+                const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
+                if (error) throw error;
+            } else {
+                const { error } = await supabase.from('hsk_attendance').insert(payload);
+                if (error) throw error;
+            }
+        }
+    };
+
+    toast.promise(dbTask(), {
+        loading: 'Saving entry...',
+        success: 'Entry saved',
+        error: 'Failed to save entry'
+    }).then(() => {
+        setEditCell(null); 
+        if (selectionRef.current.r1 !== -1) {
+            document.getElementById(`cell-${selectionRef.current.r1}-${selectionRef.current.c1}`)?.focus();
+        }
+    });
   };
 
   const handleCfChange = async (hostId: string, field: string, val: number | '') => {
@@ -700,6 +776,7 @@ export default function AttendancePage() {
     setIsParsing(false);
   };
 
+  // ROBUST MAGIC SAVE
   const handleMagicSave = async () => {
     if (!magicResults || !magicResults.records) return;
     setIsParsing(true);
@@ -723,26 +800,35 @@ export default function AttendancePage() {
         }
     }
     
-    const payload = magicResults.records.map((r: any) => ({
-        host_id: r.host_id,
-        date: magicResults.date,
-        status_code: r.status_code,
-        shift_type: r.shift_type || ''
-    }));
+    const dbTask = async () => {
+        for (const r of magicResults.records) {
+            const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', r.host_id).eq('date', magicResults.date);
+            if (fetchErr) throw fetchErr;
 
-    const { error } = await supabase.from('hsk_attendance').upsert(payload, { onConflict: 'host_id, date' });
-    
-    setIsParsing(false);
-    if (error) {
-        toast.error("Error saving roster: " + error.message);
-    } else {
-        toast.success("Roster Applied!");
+            const payload = { host_id: r.host_id, date: magicResults.date, status_code: r.status_code, shift_type: r.shift_type || '' };
+
+            if (existing && existing.length > 0) {
+                const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
+                if (error) throw error;
+            } else {
+                const { error } = await supabase.from('hsk_attendance').insert(payload);
+                if (error) throw error;
+            }
+        }
+    };
+
+    toast.promise(dbTask(), {
+        loading: 'Applying roster...',
+        success: 'Roster applied successfully',
+        error: 'Failed to apply roster'
+    }).then(() => {
+        setIsParsing(false);
         setIsMagicOpen(false);
         setMagicText('');
         setMagicResults(null);
         setLinkMappings({});
-        fetchData();
-    }
+        fetchData(); // Refresh UI
+    });
   };
 
   return (
@@ -807,7 +893,7 @@ export default function AttendancePage() {
               ) : (
                   <div 
                       ref={scrollRef}
-                      className="overflow-auto flex-1 custom-scrollbar w-full relative outline-none"
+                      className={`overflow-auto flex-1 custom-scrollbar w-full relative outline-none transition-opacity duration-500 ${isScrolled ? 'opacity-100' : 'opacity-0'}`}
                       tabIndex={0} 
                       onKeyDown={handleGlobalKeyDown}
                       onCopy={handleCopy}
@@ -837,7 +923,7 @@ export default function AttendancePage() {
                                               id={isToday ? 'today-col' : undefined}
                                               title={phName} 
                                               rowSpan={2} 
-                                              className={`p-1 text-center border-b-2 border-r border-slate-300 box-border w-8 min-w-[32px] max-w-[32px] ${isToday ? 'bg-amber-300 text-amber-950 border-amber-400 shadow-inner ring-1 ring-amber-400 z-10' : isPH ? 'bg-blue-100 text-blue-800' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-600'}`}
+                                              className={`p-1 text-center border-b-2 border-r border-slate-300 box-border w-10 min-w-[40px] max-w-[40px] ${isToday ? 'bg-amber-300 text-amber-950 border-amber-400 shadow-inner ring-1 ring-amber-400 z-10' : isPH ? 'bg-blue-100 text-blue-800' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-600'}`}
                                           >
                                               <div className="flex flex-col items-center justify-center leading-tight">
                                                   <span className={`text-[8px] uppercase tracking-widest ${isToday ? 'text-amber-700 font-black' : 'text-slate-400 font-bold'}`}>{format(d, 'MMM')}</span>
@@ -997,7 +1083,7 @@ export default function AttendancePage() {
                       <input 
                           type="text"
                           className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-[#6D2158] shadow-inner"
-                          placeholder="e.g. Morning, Night, Jetty A..."
+                          placeholder="e.g. Morning, Night, 08:00..."
                           value={editCell.shiftType}
                           onChange={e => setEditCell({...editCell, shiftType: e.target.value})}
                       />
@@ -1007,7 +1093,7 @@ export default function AttendancePage() {
                       <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark (Optional)</label>
                       <textarea 
                           className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium outline-none focus:border-[#6D2158] resize-none h-24 shadow-inner"
-                          placeholder="Type notes here..."
+                          placeholder="Type special instructions here... (Adds red dot)"
                           value={editCell.note}
                           onChange={e => setEditCell({...editCell, note: e.target.value})}
                       />
