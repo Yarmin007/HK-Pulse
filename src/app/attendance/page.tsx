@@ -1,8 +1,8 @@
 "use client";
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, Wand2, Loader2, UserCheck, 
-  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText
+  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { 
@@ -29,31 +29,104 @@ const STATUS_COLORS: Record<string, string> = {
   'EL': 'bg-orange-100 text-orange-700 font-black',
 };
 
+// Global keystroke buffer for fast Excel-like typing
+let keyBuffer = '';
+let keyTimer: any = null;
+
 // --- OPTIMIZED MEMOIZED CELL COMPONENT ---
 type AttendanceCellProps = {
     val: string;
     note: string;
+    shiftType: string;
     dateStr: string;
     isFriday: boolean;
     isPH: boolean;
-    onOpenEdit: (dateStr: string, val: string, note: string) => void;
+    isToday: boolean;
+    rIdx: number;
+    cIdx: number;
+    onOpenEdit: () => void;
+    onQuickSave: (status: string, rIdx: number, cIdx: number) => void;
 };
 
-const AttendanceCell = React.memo(({ val, note, dateStr, isFriday, isPH, onOpenEdit }: AttendanceCellProps) => {
+const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, isPH, isToday, rIdx, cIdx, onOpenEdit, onQuickSave }: AttendanceCellProps) => {
     const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
-    const bgBase = isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
-    const hasNote = !!note;
+    const bgBase = isToday ? 'bg-amber-50/60 border-amber-200' : isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
+    const hasNoteOrShift = !!note || !!shiftType;
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTableCellElement>) => {
+        let nextR = rIdx;
+        let nextC = cIdx;
+
+        // Excel Navigation
+        if (e.key === 'ArrowRight') nextC++;
+        else if (e.key === 'ArrowLeft') nextC--;
+        else if (e.key === 'ArrowDown') nextR++;
+        else if (e.key === 'ArrowUp') nextR--;
+
+        if (nextR !== rIdx || nextC !== cIdx) {
+            e.preventDefault();
+            const nextCell = document.getElementById(`cell-${nextR}-${nextC}`);
+            if (nextCell) nextCell.focus();
+            return;
+        }
+
+        // Open Modal
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            onOpenEdit();
+            return;
+        }
+
+        // Clear Cell
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+            e.preventDefault();
+            onQuickSave('', rIdx, cIdx);
+            return;
+        }
+
+        // Quick Type Status Code
+        const char = e.key.toUpperCase();
+        if (/^[A-Z]$/.test(char)) {
+            e.preventDefault();
+            keyBuffer += char;
+            clearTimeout(keyTimer);
+
+            const exactMatch = STATUS_CODES.find(c => c === keyBuffer);
+            if (exactMatch) {
+                onQuickSave(exactMatch, rIdx, cIdx);
+                keyBuffer = '';
+            } else {
+                const partialMatch = STATUS_CODES.some(c => c.startsWith(keyBuffer));
+                if (!partialMatch) {
+                    const fallbackMatch = STATUS_CODES.find(c => c === char);
+                    if (fallbackMatch) {
+                        onQuickSave(fallbackMatch, rIdx, cIdx);
+                        keyBuffer = '';
+                    } else {
+                        keyBuffer = '';
+                    }
+                }
+            }
+            keyTimer = setTimeout(() => { keyBuffer = ''; }, 500);
+        }
+    };
 
     return (
         <td 
-            onClick={() => onOpenEdit(dateStr, val, note)}
-            className={`border-b border-r border-slate-200 p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle cursor-pointer hover:opacity-70 transition-opacity box-border relative ${val ? colorClass : bgBase}`}
+            id={`cell-${rIdx}-${cIdx}`}
+            data-r={rIdx}
+            data-c={cIdx}
+            tabIndex={0}
+            onClick={(e) => {
+                if (e.detail === 2) onOpenEdit();
+            }}
+            onKeyDown={handleKeyDown}
+            className={`border-b border-r p-0 h-8 w-8 min-w-[32px] max-w-[32px] align-middle cursor-cell transition-colors box-border relative select-none [&.cell-selected]:bg-blue-100 [&.cell-selected]:ring-2 [&.cell-selected]:ring-inset [&.cell-selected]:ring-blue-600 [&.cell-selected]:z-20 ${val ? colorClass : bgBase} ${!isToday && !val ? 'border-slate-200' : ''}`}
         >
-            <div className="w-full h-full flex items-center justify-center text-[10px] font-bold">
+            <div className="w-full h-full flex items-center justify-center text-[10px] font-bold pointer-events-none">
                 {val || '-'}
             </div>
-            {/* Red dot indicator if a comment exists */}
-            {hasNote && <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm" title={note}></div>}
+            {hasNoteOrShift && <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm pointer-events-none" title={`${shiftType ? `Shift: ${shiftType}` : ''} ${note ? `\nNote: ${note}` : ''}`}></div>}
         </td>
     );
 });
@@ -66,6 +139,10 @@ export default function AttendancePage() {
   // Date & Grid Setup
   const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
+  const todayRef = useRef<HTMLTableCellElement>(null);
+  const lastFocusedCell = useRef<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   
   // Data
   const [hosts, setHosts] = useState<any[]>([]);
@@ -73,21 +150,56 @@ export default function AttendancePage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [publicHolidays, setPublicHolidays] = useState<{date: string, name: string}[]>([]);
 
-  // Cell Edit Modal State (For Notes & Status)
-  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string } | null>(null);
+  // Cell Edit Modal State
+  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string } | null>(null);
 
   // Magic Paste State
   const [isMagicOpen, setIsMagicOpen] = useState(false);
   const [magicText, setMagicText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [magicResults, setMagicResults] = useState<any>(null);
+  const [linkMappings, setLinkMappings] = useState<Record<string, string>>({});
+
+  // EXCEL ENGINE STATE
+  const [isDragging, setIsDragging] = useState(false);
+  const selectionRef = useRef({ r1: -1, c1: -1, r2: -1, c2: -1 });
+  const bulkKeyBuffer = useRef('');
+  const bulkKeyTimer = useRef<any>(null);
 
   useEffect(() => { fetchData(); }, [selectedYear]);
+
+  // Auto-Scroll to Today on initial load
+  useEffect(() => {
+      if (!isLoading && scrollRef.current) {
+          setTimeout(() => {
+              const todayCol = document.getElementById('today-col');
+              if (todayCol && scrollRef.current) {
+                  scrollRef.current.scrollTo({
+                      left: todayCol.offsetLeft - 490 - 32, // 490px sticky headers + padding
+                      behavior: 'smooth'
+                  });
+              }
+          }, 300);
+      }
+  }, [isLoading, selectedYear]);
+
+  // Restore Excel Focus after a quick save re-render
+  useEffect(() => {
+      if (lastFocusedCell.current) {
+          document.getElementById(lastFocusedCell.current)?.focus();
+      }
+  }, [attendance]);
+
+  // Global Mouse Up (End Dragging)
+  useEffect(() => {
+      const handleGlobalMouseUp = () => setIsDragging(false);
+      window.addEventListener('mouseup', handleGlobalMouseUp);
+      return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, []);
 
   const fetchData = async () => {
     setIsLoading(true);
     
-    // Fetch Holidays for PH Calc
     const { data: constData } = await supabase.from('hsk_constants').select('*').eq('type', 'public_holiday');
     if (constData) {
         const parsedHolidays = constData.map((c: any) => {
@@ -152,7 +264,6 @@ export default function AttendancePage() {
 
   const hostBalances = useMemo(() => {
     const targetDate = parseISO(cutoffDate);
-    const targetYear = targetDate.getFullYear();
     const SYSTEM_START_DATE = new Date(2026, 0, 1); 
     
     return hosts.map(host => {
@@ -186,13 +297,9 @@ export default function AttendancePage() {
           earnedAL = eligibleDays / 12;
       }
 
-      // Calculate PH based on passed declared holidays in this specific year
-      const startOfTargetYear = new Date(targetYear, 0, 1);
-      const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
-      
       publicHolidays.forEach(ph => {
           const phDate = parseISO(ph.date);
-          if (phDate >= trackingStartThisYear && phDate <= targetDate) {
+          if (phDate >= accrualStart && phDate <= targetDate) {
               earnedPH += 1;
           }
       });
@@ -235,7 +342,6 @@ export default function AttendancePage() {
     });
   }, [hosts, attendance, cutoffDate, publicHolidays]);
 
-  // --- GRID SETUP ---
   const daysInYear = useMemo(() => {
     return eachDayOfInterval({
       start: new Date(selectedYear, 0, 1),
@@ -255,7 +361,246 @@ export default function AttendancePage() {
       return months;
   }, [selectedYear]);
 
-  // --- HANDLERS ---
+  const filteredHosts = hostBalances.filter(h => h.full_name.toLowerCase().includes(searchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(searchQuery.toLowerCase()));
+
+  // --- EXCEL ENGINE FUNCTIONS ---
+
+  const updateSelectionVisuals = () => {
+      document.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
+      const { r1, c1, r2, c2 } = selectionRef.current;
+      if (r1 === -1) return;
+
+      const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
+      const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
+
+      for(let r=minR; r<=maxR; r++) {
+          for(let c=minC; c<=maxC; c++) {
+              document.getElementById(`cell-${r}-${c}`)?.classList.add('cell-selected');
+          }
+      }
+      
+      document.getElementById(`cell-${r2}-${c2}`)?.focus({ preventScroll: true });
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+      const td = (e.target as HTMLElement).closest('td[data-r]');
+      if (!td) return;
+      const r = parseInt(td.getAttribute('data-r')!);
+      const c = parseInt(td.getAttribute('data-c')!);
+      
+      if (e.shiftKey && selectionRef.current.r1 !== -1) {
+          selectionRef.current.r2 = r;
+          selectionRef.current.c2 = c;
+      } else {
+          selectionRef.current = { r1: r, c1: c, r2: r, c2: c };
+      }
+      
+      setIsDragging(true);
+      updateSelectionVisuals();
+  };
+
+  const handleMouseOver = (e: React.MouseEvent) => {
+      if (!isDragging) return;
+      const td = (e.target as HTMLElement).closest('td[data-r]');
+      if (!td) return;
+      const r = parseInt(td.getAttribute('data-r')!);
+      const c = parseInt(td.getAttribute('data-c')!);
+      selectionRef.current.r2 = r;
+      selectionRef.current.c2 = c;
+      updateSelectionVisuals();
+  };
+
+  const applyBulkStatus = async (status: string) => {
+      const { r1, c1, r2, c2 } = selectionRef.current;
+      if (r1 === -1) return;
+
+      const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
+      const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
+
+      const updates: any[] = [];
+      const deletes: any[] = [];
+
+      const newAtt = [...attendance];
+
+      for (let r = minR; r <= maxR; r++) {
+          for (let c = minC; c <= maxC; c++) {
+              const hostId = filteredHosts[r].host_id;
+              const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+              
+              const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+              
+              if (status === '') {
+                  if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+                  deletes.push(supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr }));
+              } else {
+                  if (existingIdx > -1) {
+                      newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+                  } else {
+                      newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+                  }
+                  updates.push({ host_id: hostId, date: dateStr, status_code: status });
+              }
+          }
+      }
+
+      setAttendance(newAtt); 
+
+      if (deletes.length > 0) await Promise.all(deletes);
+      if (updates.length > 0) await supabase.from('hsk_attendance').upsert(updates, { onConflict: 'host_id, date' });
+  };
+
+  const handleGlobalKeyDown = (e: React.KeyboardEvent) => {
+      const { r1, c1, r2, c2 } = selectionRef.current;
+      if (r1 === -1) return;
+
+      if (e.key.startsWith('Arrow')) {
+          e.preventDefault();
+          let nextR = r2; let nextC = c2;
+          
+          if (e.key === 'ArrowRight') nextC = Math.min(nextC + 1, daysInYear.length - 1);
+          if (e.key === 'ArrowLeft') nextC = Math.max(nextC - 1, 0);
+          if (e.key === 'ArrowDown') nextR = Math.min(nextR + 1, filteredHosts.length - 1);
+          if (e.key === 'ArrowUp') nextR = Math.max(nextR - 1, 0);
+
+          if (e.shiftKey) {
+              selectionRef.current.r2 = nextR;
+              selectionRef.current.c2 = nextC;
+          } else {
+              selectionRef.current = { r1: nextR, c1: nextC, r2: nextR, c2: nextC };
+          }
+          updateSelectionVisuals();
+          
+          const nextCell = document.getElementById(`cell-${nextR}-${nextC}`);
+          if (nextCell && scrollRef.current) {
+              const container = scrollRef.current;
+              const cellRect = nextCell.getBoundingClientRect();
+              const contRect = container.getBoundingClientRect();
+              
+              if (cellRect.right > contRect.right) container.scrollBy({ left: cellRect.right - contRect.right + 50, behavior: 'smooth' });
+              if (cellRect.left < contRect.left + 490) container.scrollBy({ left: cellRect.left - contRect.left - 490 - 50, behavior: 'smooth' });
+              if (cellRect.bottom > contRect.bottom) container.scrollBy({ top: cellRect.bottom - contRect.bottom + 50, behavior: 'smooth' });
+              if (cellRect.top < contRect.top + 100) container.scrollBy({ top: cellRect.top - contRect.top - 100, behavior: 'smooth' });
+          }
+          return;
+      }
+
+      if (e.key === 'Enter') {
+          e.preventDefault();
+          const host = filteredHosts[r1];
+          const dateStr = format(daysInYear[c1], 'yyyy-MM-dd');
+          const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
+          setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: record?.status_code || '', note: record?.shift_note || '', shiftType: record?.shift_type || '' });
+          return;
+      }
+
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          applyBulkStatus('');
+          return;
+      }
+
+      const char = e.key.toUpperCase();
+      if (/^[A-Z]$/.test(char)) {
+          e.preventDefault();
+          bulkKeyBuffer.current += char;
+          clearTimeout(bulkKeyTimer.current);
+
+          const exactMatch = STATUS_CODES.find(c => c === bulkKeyBuffer.current);
+          if (exactMatch) {
+              applyBulkStatus(exactMatch);
+              bulkKeyBuffer.current = '';
+          } else {
+              const partialMatch = STATUS_CODES.some(c => c.startsWith(bulkKeyBuffer.current));
+              if (!partialMatch) {
+                  const fallbackMatch = STATUS_CODES.find(c => c === char);
+                  if (fallbackMatch) {
+                      applyBulkStatus(fallbackMatch);
+                      bulkKeyBuffer.current = '';
+                  } else {
+                      bulkKeyBuffer.current = '';
+                  }
+              }
+          }
+          bulkKeyTimer.current = setTimeout(() => { bulkKeyBuffer.current = ''; }, 500);
+      }
+  };
+
+  const handleCopy = (e: React.ClipboardEvent) => {
+      const { r1, c1, r2, c2 } = selectionRef.current;
+      if (r1 === -1) return;
+      e.preventDefault();
+
+      const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
+      const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
+      
+      let tsv = '';
+      for(let r = minR; r <= maxR; r++) {
+          let row = [];
+          for(let c = minC; c <= maxC; c++) {
+              const hostId = filteredHosts[r].host_id;
+              const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+              const val = attendance.find(a => a.host_id === hostId && a.date === dateStr)?.status_code || '';
+              row.push(val);
+          }
+          tsv += row.join('\t') + '\n';
+      }
+      e.clipboardData.setData('text/plain', tsv);
+      toast.success('Copied to clipboard');
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+      const { r1, c1 } = selectionRef.current;
+      if (r1 === -1) return;
+      e.preventDefault();
+
+      const pasteData = e.clipboardData.getData('text');
+      const rows = pasteData.split('\n').map(r => r.split('\t'));
+      
+      const updates = [];
+      const newAtt = [...attendance];
+
+      for(let i=0; i<rows.length; i++) {
+          if (r1 + i >= filteredHosts.length || !rows[i][0]) continue;
+          const hostId = filteredHosts[r1 + i].host_id;
+          
+          for(let j=0; j<rows[i].length; j++) {
+              if (c1 + j >= daysInYear.length) continue;
+              const dateStr = format(daysInYear[c1 + j], 'yyyy-MM-dd');
+              let val = rows[i][j].trim().toUpperCase();
+              if (val === 'V') val = 'AL'; 
+              
+              if (STATUS_CODES.includes(val) || val === '') {
+                  updates.push({ host_id: hostId, date: dateStr, status_code: val });
+                  
+                  const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+                  if (val === '') {
+                      if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+                  } else {
+                      if (existingIdx > -1) newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: val };
+                      else newAtt.push({ host_id: hostId, date: dateStr, status_code: val });
+                  }
+              }
+          }
+      }
+
+      if (updates.length > 0) {
+          setAttendance(newAtt);
+          const toDelete = updates.filter(u => u.status_code === '');
+          const toUpsert = updates.filter(u => u.status_code !== '');
+          
+          toDelete.forEach(d => supabase.from('hsk_attendance').delete().match({ host_id: d.host_id, date: d.date }));
+          if (toUpsert.length > 0) supabase.from('hsk_attendance').upsert(toUpsert, { onConflict: 'host_id, date' }).then();
+          
+          toast.success(`Pasted ${updates.length} cells`);
+          
+          selectionRef.current.r2 = r1 + rows.length - 1;
+          selectionRef.current.c2 = c1 + rows[0].length - 1;
+          updateSelectionVisuals();
+      }
+  };
+
+  // --- STANDARD HANDLERS ---
+
   const handleCutoffChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const newDateStr = e.target.value;
       if (!newDateStr) return;
@@ -274,27 +619,45 @@ export default function AttendancePage() {
       }
   };
 
+  const quickSaveCell = async (hostId: string, dateStr: string, status: string, rIdx: number, cIdx: number) => {
+      lastFocusedCell.current = `cell-${rIdx}-${cIdx}`; 
+      
+      const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
+      const newAtt = [...attendance];
+      
+      if (status === '') {
+          if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+          await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
+      } else {
+          if (existingIdx > -1) {
+              newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+          } else {
+              newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+          }
+          await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: status }, { onConflict: 'host_id, date' });
+      }
+      setAttendance(newAtt);
+  };
+
   const handleSaveCell = async () => {
     if (!editCell) return;
-    const { hostId, dateStr, status, note } = editCell;
+    const { hostId, dateStr, status, note, shiftType } = editCell;
     
     const existingIdx = attendance.findIndex(a => a.host_id === hostId && a.date === dateStr);
     const newAtt = [...attendance];
     
     let error;
     if (status === '') {
-        // If they cleared the status, delete the record
         if (existingIdx > -1) newAtt.splice(existingIdx, 1);
         const res = await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
         error = res.error;
     } else {
-        // Upsert the record with the status and the note
         if (existingIdx > -1) {
-            newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status, shift_note: note };
+            newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status, shift_note: note, shift_type: shiftType };
         } else {
-            newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note });
+            newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType });
         }
-        const res = await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: status, shift_note: note }, { onConflict: 'host_id, date' });
+        const res = await supabase.from('hsk_attendance').upsert({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType }, { onConflict: 'host_id, date' });
         error = res.error;
     }
     
@@ -302,7 +665,10 @@ export default function AttendancePage() {
     else toast.success('Entry Saved');
     
     setAttendance(newAtt);
-    setEditCell(null); // Close modal
+    setEditCell(null); 
+    if (selectionRef.current.r1 !== -1) {
+        document.getElementById(`cell-${selectionRef.current.r1}-${selectionRef.current.c1}`)?.focus();
+    }
   };
 
   const handleCfChange = async (hostId: string, field: string, val: number | '') => {
@@ -316,6 +682,7 @@ export default function AttendancePage() {
   const handleMagicParse = async () => {
     if (!magicText.trim()) return;
     setIsParsing(true);
+    setLinkMappings({}); 
     try {
         const res = await fetch('/api/magic-roster', {
             method: 'POST',
@@ -336,12 +703,31 @@ export default function AttendancePage() {
   const handleMagicSave = async () => {
     if (!magicResults || !magicResults.records) return;
     setIsParsing(true);
+
+    for (const [unrecName, hostId] of Object.entries(linkMappings)) {
+        if (!hostId) continue;
+        const host = hosts.find(h => h.host_id === hostId);
+        if (host) {
+            const existingNicks = host.nicknames ? host.nicknames.split(',').map((s: string) => s.trim()) : [];
+            if (!existingNicks.includes(unrecName)) {
+                existingNicks.push(unrecName);
+                const newNicksStr = existingNicks.join(', ');
+                await supabase.from('hsk_hosts').update({ nicknames: newNicksStr }).eq('host_id', hostId);
+            }
+            magicResults.records.push({
+                host_id: hostId,
+                full_name: host.full_name,
+                status_code: 'P', 
+                shift_type: ''
+            });
+        }
+    }
     
     const payload = magicResults.records.map((r: any) => ({
         host_id: r.host_id,
         date: magicResults.date,
         status_code: r.status_code,
-        shift_note: r.shift_note || ''
+        shift_type: r.shift_type || ''
     }));
 
     const { error } = await supabase.from('hsk_attendance').upsert(payload, { onConflict: 'host_id, date' });
@@ -354,11 +740,10 @@ export default function AttendancePage() {
         setIsMagicOpen(false);
         setMagicText('');
         setMagicResults(null);
+        setLinkMappings({});
         fetchData();
     }
   };
-
-  const filteredHosts = hostBalances.filter(h => h.full_name.toLowerCase().includes(searchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(searchQuery.toLowerCase()));
 
   return (
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-sans text-slate-800 overflow-hidden">
@@ -375,7 +760,6 @@ export default function AttendancePage() {
         </div>
         
         <div className="flex flex-wrap items-center justify-end gap-3 w-full xl:w-auto">
-            {/* FULLY CLICKABLE Exact Date Cutoff Picker */}
             <div className="flex flex-col items-start sm:items-end">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 ml-1">Balances As Of</span>
                 <div className="relative cursor-pointer group w-fit">
@@ -392,7 +776,6 @@ export default function AttendancePage() {
                 </div>
             </div>
 
-            {/* Year Navigator for the Grid */}
             <div className="flex flex-col items-start sm:items-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 ml-1">Grid Year</span>
                 <div className="flex items-center bg-slate-50 p-1.5 rounded-xl border border-slate-200 shadow-inner">
@@ -422,13 +805,19 @@ export default function AttendancePage() {
                       <span className="font-bold tracking-widest uppercase text-xs">Loading Roster...</span>
                   </div>
               ) : (
-                  <div className="overflow-auto flex-1 custom-scrollbar w-full relative">
-                      <table className="w-max border-separate border-spacing-0 text-[10px] whitespace-nowrap bg-white table-fixed">
+                  <div 
+                      ref={scrollRef}
+                      className="overflow-auto flex-1 custom-scrollbar w-full relative outline-none"
+                      tabIndex={0} 
+                      onKeyDown={handleGlobalKeyDown}
+                      onCopy={handleCopy}
+                      onPaste={handlePaste}
+                  >
+                      <table className="w-max border-separate border-spacing-0 text-[10px] whitespace-nowrap bg-white table-fixed select-none">
                           <thead className="sticky top-0 z-[70] bg-white shadow-sm">
-                              {/* ROW 1: MASTER HEADERS */}
                               <tr>
-                                  <th rowSpan={3} className="max-md:static md:sticky md:left-0 z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-2 text-center w-[40px] min-w-[40px] max-w-[40px] box-border text-slate-400">#</th>
-                                  <th rowSpan={3} className="max-md:static md:sticky md:left-[40px] z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-3 text-left w-[240px] min-w-[240px] max-w-[240px] box-border">
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-0 z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-2 text-center w-[40px] min-w-[40px] max-w-[40px] box-border text-slate-400">#</th>
+                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[40px] z-[80] bg-slate-100 border-b-2 border-r border-slate-300 p-3 text-left w-[240px] min-w-[240px] max-w-[240px] box-border">
                                       <span className="block font-black uppercase text-slate-500 tracking-widest">Host Name</span>
                                       <span className="block text-[8px] font-bold text-slate-400 mt-1">ID, Role & Joined Date</span>
                                   </th>
@@ -436,80 +825,61 @@ export default function AttendancePage() {
                                       Live Owed Balances
                                   </th>
                                   
-                                  {/* Months Headers */}
-                                  {monthsInYear.map(m => (
-                                      <th key={m.name} colSpan={m.days} className="bg-slate-100 border-b border-r border-slate-300 p-1 text-center font-bold text-slate-600 uppercase tracking-widest box-border">{m.name}</th>
-                                  ))}
+                                  {daysInYear.map((d, i) => {
+                                      const dateStr = format(d, 'yyyy-MM-dd');
+                                      const isToday = dateStr === todayStr;
+                                      const isPH = publicHolidays.some(ph => ph.date === dateStr);
+                                      const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
 
-                                  {/* Fixed Leaves Header */}
-                                  <th colSpan={2} rowSpan={2} className="bg-slate-100 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
+                                      return (
+                                          <th 
+                                              key={i} 
+                                              id={isToday ? 'today-col' : undefined}
+                                              title={phName} 
+                                              rowSpan={2} 
+                                              className={`p-1 text-center border-b-2 border-r border-slate-300 box-border w-8 min-w-[32px] max-w-[32px] ${isToday ? 'bg-amber-300 text-amber-950 border-amber-400 shadow-inner ring-1 ring-amber-400 z-10' : isPH ? 'bg-blue-100 text-blue-800' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-600'}`}
+                                          >
+                                              <div className="flex flex-col items-center justify-center leading-tight">
+                                                  <span className={`text-[8px] uppercase tracking-widest ${isToday ? 'text-amber-700 font-black' : 'text-slate-400 font-bold'}`}>{format(d, 'MMM')}</span>
+                                                  <span className={`text-[9px] uppercase mt-0.5 ${isToday ? 'font-black' : 'font-bold'}`}>{format(d, 'eee')}</span>
+                                                  <span className={`text-xs font-black ${isToday ? 'text-amber-950 text-sm' : ''}`}>{format(d, 'dd')}</span>
+                                              </div>
+                                          </th>
+                                      )
+                                  })}
+
+                                  <th colSpan={2} className="bg-slate-100 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
                                       Fixed Leaves
                                   </th>
 
-                                  {/* Carried Forward Header */}
-                                  <th colSpan={3} rowSpan={2} className="bg-slate-100 border-b border-l-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
+                                  <th colSpan={3} className="bg-slate-100 border-b border-l-2 border-slate-300 p-2 text-center font-black uppercase text-slate-500 tracking-widest box-border">
                                       DB Baseline CF
                                   </th>
                               </tr>
 
-                              {/* ROW 2: SUB HEADERS */}
                               <tr>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[280px] z-[80] bg-emerald-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Off Days">OFF</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[320px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[360px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[400px] z-[80] bg-fuchsia-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Rest & Recreation (DA/DB Only)">RR</th>
-                                  {/* 100% Solid opacity total column requested */}
-                                  <th rowSpan={2} className="max-md:static md:sticky md:left-[440px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
+                                  <th className="max-md:static md:sticky md:left-[280px] z-[80] bg-emerald-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Off Days">OFF</th>
+                                  <th className="max-md:static md:sticky md:left-[320px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
+                                  <th className="max-md:static md:sticky md:left-[360px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
+                                  <th className="max-md:static md:sticky md:left-[400px] z-[80] bg-fuchsia-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Rest & Recreation (DA/DB Only)">RR</th>
+                                  <th className="max-md:static md:sticky md:left-[440px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
                                   
-                                  {/* Days of Week */}
-                                  {daysInYear.map((d, i) => {
-                                      const dateStr = format(d, 'yyyy-MM-dd');
-                                      const isPH = publicHolidays.some(ph => ph.date === dateStr);
-                                      const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
-                                      
-                                      return (
-                                          <th key={i} title={phName} className={`p-1 text-center border-b border-r border-slate-200 text-[8px] font-bold uppercase box-border ${isPH ? 'bg-blue-100 text-blue-700' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-500' : 'bg-slate-50 text-slate-400'}`}>
-                                              {format(d, 'eeeee')}
-                                          </th>
-                                      )
-                                  })}
-                              </tr>
-
-                              {/* ROW 3: DAY NUMBERS & END SUBS */}
-                              <tr>
-                                  {/* Day Numbers */}
-                                  {daysInYear.map((d, i) => {
-                                      const dateStr = format(d, 'yyyy-MM-dd');
-                                      const isPH = publicHolidays.some(ph => ph.date === dateStr);
-                                      const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
-
-                                      return (
-                                          <th key={i} title={phName} className={`p-1 text-center border-b-2 border-r border-slate-300 font-black text-[9px] box-border ${isPH ? 'bg-blue-100 text-blue-800' : format(d, 'E') === 'Fri' ? 'bg-rose-50 text-rose-700' : 'bg-white text-slate-700'}`}>
-                                              {format(d, 'd')}
-                                          </th>
-                                      )
-                                  })}
-
-                                  {/* Fixed Leaves Subheaders */}
                                   <th className="bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
                                   <th className="bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1 text-center font-bold text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Emergency Leave (10 Max)">EL</th>
 
-                                  {/* CF Columns Subheaders */}
                                   <th className="bg-slate-50 border-b-2 border-r border-l-2 border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward OFF">OFF</th>
                                   <th className="bg-slate-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward VAC (AL)">VAC</th>
                                   <th className="bg-slate-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-slate-600 w-16 box-border" title="Carried Forward PH">PH</th>
                               </tr>
                           </thead>
                           
-                          <tbody className="font-medium">
-                              {filteredHosts.map((host, index) => (
-                                  <tr key={host.id} className="hover:bg-slate-50 transition-colors group">
-                                      {/* FIXED INDEX COLUMN */}
+                          <tbody onMouseDown={handleMouseDown} onMouseOver={handleMouseOver} className="font-medium">
+                              {filteredHosts.map((host, hostIdx) => (
+                                  <tr key={host.id} className="hover:bg-slate-50/50 transition-colors group">
                                       <td className="max-md:static md:sticky md:left-0 z-50 bg-white border-b border-r border-slate-200 p-2 text-center font-black text-slate-300 w-[40px] min-w-[40px] max-w-[40px] box-border">
-                                          {index + 1}
+                                          {hostIdx + 1}
                                       </td>
 
-                                      {/* FIXED NAME COLUMN */}
                                       <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[240px] min-w-[240px] max-w-[240px] box-border">
                                           <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={host.full_name}>{host.full_name}</div>
                                           <div className="text-[9px] text-slate-400 uppercase mt-0.5 truncate w-[220px]" title={`${host.host_id} • ${host.role}`}>{host.host_id} • {host.role}</div>
@@ -524,40 +894,47 @@ export default function AttendancePage() {
                                           )}
                                       </td>
                                       
-                                      {/* FIXED BALANCES COLUMNS */}
                                       <td className="max-md:static md:sticky md:left-[280px] z-50 bg-emerald-50 group-hover:bg-emerald-100 border-b border-r border-slate-200 p-2 text-center font-black text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balOff}</td>
                                       <td className="max-md:static md:sticky md:left-[320px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
                                       <td className="max-md:static md:sticky md:left-[360px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
                                       <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
                                       <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
 
-                                      {/* 365 ATTENDANCE CELLS */}
-                                      {daysInYear.map(date => {
+                                      {daysInYear.map((date, dateIdx) => {
                                           const dateStr = format(date, 'yyyy-MM-dd');
                                           const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
                                           const val = record ? record.status_code : '';
                                           const note = record ? record.shift_note : '';
+                                          const shift = record ? record.shift_type : '';
                                           const isFriday = format(date, 'E') === 'Fri';
                                           const isPH = publicHolidays.some(ph => ph.date === dateStr);
+                                          const isToday = dateStr === todayStr;
 
                                           return (
                                               <AttendanceCell 
                                                   key={dateStr}
                                                   val={val}
                                                   note={note || ''}
+                                                  shiftType={shift || ''}
                                                   dateStr={dateStr}
                                                   isFriday={isFriday}
                                                   isPH={isPH}
-                                                  onOpenEdit={(d, v, n) => setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr: d, status: v, note: n })}
+                                                  isToday={isToday}
+                                                  rIdx={hostIdx}
+                                                  cIdx={dateIdx}
+                                                  onOpenEdit={() => {
+                                                      selectionRef.current = { r1: hostIdx, c1: dateIdx, r2: hostIdx, c2: dateIdx };
+                                                      updateSelectionVisuals();
+                                                      setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr: dateStr, status: val, note: note || '', shiftType: shift || '' })
+                                                  }}
+                                                  onQuickSave={(newStatus, r, c) => quickSaveCell(host.host_id, dateStr, newStatus, r, c)}
                                               />
                                           );
                                       })}
 
-                                      {/* FIXED LEAVES (SL & EL) NOW AT THE END */}
                                       <td className={`bg-rose-50/50 group-hover:bg-rose-50 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-700'}`}>{host.balSL}</td>
                                       <td className="bg-orange-50/50 group-hover:bg-orange-50 border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balEL}</td>
 
-                                      {/* DB BASELINE CF INPUTS (Far Right) */}
                                       <td className="border-b border-r border-l-2 border-slate-300 p-0 relative h-8 w-16 bg-emerald-50/30">
                                           <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-emerald-700 focus:bg-emerald-100" value={host.cf_off === 0 ? '0' : host.cf_off || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_off', e.target.value === '' ? '' : parseFloat(e.target.value))} />
                                       </td>
@@ -615,10 +992,21 @@ export default function AttendancePage() {
                       </div>
                   </div>
 
+                  <div className="mb-4">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><Clock size={14}/> Duty / Shift (Optional)</label>
+                      <input 
+                          type="text"
+                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-[#6D2158] shadow-inner"
+                          placeholder="e.g. Morning, Night, Jetty A..."
+                          value={editCell.shiftType}
+                          onChange={e => setEditCell({...editCell, shiftType: e.target.value})}
+                      />
+                  </div>
+
                   <div className="mb-6">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark (Optional)</label>
                       <textarea 
-                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium outline-none focus:border-[#6D2158] resize-none h-28 shadow-inner"
+                          className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium outline-none focus:border-[#6D2158] resize-none h-24 shadow-inner"
                           placeholder="Type notes here..."
                           value={editCell.note}
                           onChange={e => setEditCell({...editCell, note: e.target.value})}
@@ -638,7 +1026,7 @@ export default function AttendancePage() {
       {/* MAGIC PASTE MODAL */}
       {isMagicOpen && (
           <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-              <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+              <div className="bg-white w-full max-w-4xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
                   <div className="p-5 bg-emerald-600 text-white flex justify-between items-center shrink-0">
                       <div>
                           <h3 className="text-lg font-black flex items-center gap-2"><Wand2 size={20}/> Magic Roster Parse</h3>
@@ -649,10 +1037,10 @@ export default function AttendancePage() {
 
                   <div className="flex-1 flex flex-col md:flex-row min-h-0">
                       {/* INPUT AREA */}
-                      <div className="w-full md:w-1/2 p-5 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col gap-3 shrink-0">
+                      <div className="w-full md:w-[40%] p-5 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col gap-3 shrink-0">
                           <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Paste Message Here</label>
                           <textarea 
-                              className="flex-1 p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono outline-none focus:border-emerald-500 resize-none"
+                              className="flex-1 p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono outline-none focus:border-emerald-500 resize-none shadow-inner"
                               placeholder="e.g.&#10;Tomorrow's Duty:&#10;Off: Nimal, Ziyad&#10;Morning: Shamil, Eeku"
                               value={magicText}
                               onChange={e => setMagicText(e.target.value)}
@@ -668,7 +1056,7 @@ export default function AttendancePage() {
                       </div>
 
                       {/* RESULTS AREA */}
-                      <div className="w-full md:w-1/2 p-0 flex flex-col bg-slate-50 overflow-hidden">
+                      <div className="w-full md:w-[60%] p-0 flex flex-col bg-slate-50 overflow-hidden">
                           {!magicResults ? (
                               <div className="flex-1 flex flex-col items-center justify-center text-slate-300 p-8 text-center">
                                   <CalIcon size={48} strokeWidth={1} className="mb-4 opacity-50"/>
@@ -677,33 +1065,78 @@ export default function AttendancePage() {
                               </div>
                           ) : (
                               <div className="flex flex-col h-full">
-                                  <div className="p-4 bg-white border-b border-slate-200 shrink-0">
-                                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Detected Date: <span className="text-[#6D2158] ml-1">{magicResults.date}</span></p>
-                                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Department: <span className="text-emerald-600 ml-1">{magicResults.department}</span></p>
+                                  <div className="p-4 bg-white border-b border-slate-200 shrink-0 flex justify-between">
+                                      <div>
+                                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Detected Date: <span className="text-[#6D2158] ml-1">{magicResults.date}</span></p>
+                                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Department: <span className="text-emerald-600 ml-1">{magicResults.department}</span></p>
+                                      </div>
+                                      <div className="text-right">
+                                          <span className="text-2xl font-black text-slate-800">{magicResults.records.length}</span>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase">Matches</p>
+                                      </div>
                                   </div>
-                                  <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                                      {magicResults.records.map((r: any, idx: number) => (
-                                          <div key={idx} className="bg-white p-3 rounded-xl border border-slate-200 flex justify-between items-center shadow-sm">
-                                              <div>
-                                                  <p className="font-bold text-slate-800 text-sm">{r.full_name}</p>
-                                                  <p className="text-[10px] text-slate-400 font-mono">{r.host_id}</p>
+                                  
+                                  <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+                                      
+                                      {/* UNRECOGNIZED NAMES MAPPING UI */}
+                                      {magicResults.unrecognized && magicResults.unrecognized.length > 0 && (
+                                          <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
+                                              <h4 className="text-xs font-black text-rose-700 uppercase tracking-widest mb-3 flex items-center gap-2">
+                                                  Unrecognized Staff ({magicResults.unrecognized.length})
+                                              </h4>
+                                              <div className="space-y-3">
+                                                  {magicResults.unrecognized.map((name: string, idx: number) => (
+                                                      <div key={idx} className="flex items-center gap-3">
+                                                          <div className="w-1/3 font-bold text-sm text-slate-700 truncate" title={name}>"{name}"</div>
+                                                          <ArrowRight size={14} className="text-slate-400 shrink-0"/>
+                                                          <select 
+                                                              className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-rose-400"
+                                                              value={linkMappings[name] || ''}
+                                                              onChange={(e) => setLinkMappings({...linkMappings, [name]: e.target.value})}
+                                                          >
+                                                              <option value="">-- Ignore --</option>
+                                                              {hosts.map(h => (
+                                                                  <option key={h.host_id} value={h.host_id}>{h.full_name} ({h.host_id})</option>
+                                                              ))}
+                                                          </select>
+                                                      </div>
+                                                  ))}
                                               </div>
-                                              <div className="text-right">
-                                                  <span className={`px-2 py-1 rounded text-xs font-black ${STATUS_COLORS[r.status_code] || 'bg-slate-100 text-slate-600'}`}>{r.status_code}</span>
-                                                  {r.shift_note && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">{r.shift_note}</p>}
-                                              </div>
+                                              <p className="text-[10px] font-bold text-rose-500 mt-3 italic">Linking a name will permanently save it as their nickname.</p>
                                           </div>
-                                      ))}
-                                      {magicResults.records.length === 0 && <p className="text-center text-slate-400 italic text-sm mt-10">No valid staff matched.</p>}
+                                      )}
+
+                                      {/* RECOGNIZED RECORDS */}
+                                      {magicResults.records.length > 0 && (
+                                          <div className="space-y-2">
+                                              <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Matched Records</h4>
+                                              {magicResults.records.map((r: any, idx: number) => (
+                                                  <div key={idx} className="bg-white p-3 rounded-xl border border-slate-200 flex justify-between items-center shadow-sm">
+                                                      <div>
+                                                          <p className="font-bold text-slate-800 text-sm">{r.full_name}</p>
+                                                          <p className="text-[10px] text-slate-400 font-mono">{r.host_id}</p>
+                                                      </div>
+                                                      <div className="text-right">
+                                                          <span className={`px-2 py-1 rounded text-xs font-black ${STATUS_COLORS[r.status_code] || 'bg-slate-100 text-slate-600'}`}>{r.status_code}</span>
+                                                          {r.shift_type && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">{r.shift_type}</p>}
+                                                      </div>
+                                                  </div>
+                                              ))}
+                                          </div>
+                                      )}
+                                      
+                                      {magicResults.records.length === 0 && (!magicResults.unrecognized || magicResults.unrecognized.length === 0) && (
+                                          <p className="text-center text-slate-400 italic text-sm mt-10">No valid staff matched.</p>
+                                      )}
                                   </div>
                                   <div className="p-4 bg-white border-t border-slate-200 shrink-0">
                                       <button 
                                           onClick={handleMagicSave} 
-                                          disabled={isParsing || magicResults.records.length === 0}
+                                          disabled={isParsing || (magicResults.records.length === 0 && Object.values(linkMappings).filter(Boolean).length === 0)}
                                           className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-lg hover:bg-emerald-700 disabled:opacity-50"
                                       >
                                           {isParsing ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>}
-                                          Save to Roster
+                                          Apply & Save Roster
                                       </button>
                                   </div>
                               </div>

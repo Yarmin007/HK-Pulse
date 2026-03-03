@@ -42,11 +42,12 @@ export async function POST(req: Request) {
         INSTRUCTIONS:
         1. Extract the Date mentioned in the message. If no date is found, use the Target Roster Date provided above.
         2. Identify EVERY staff member mentioned in the message. Match them to their closest Official Host ID using their Full Name or their [Nicknames].
-        3. Determine their shift status based on the context:
+        3. If you CANNOT confidently match a name to the Official Staff List, put their name as a string in the "unrecognized" array.
+        4. Determine their shift status based on the context:
             - If they are under "OFF", "Day Off", etc -> Status: 'O'
             - If they are under "LEAVE", "VAC" -> Status: 'AL' (or SL, PH etc if specified)
-            - If they are assigned to an area/time/shift -> Status: 'P' (Present). Also extract their shift_note (e.g. "Morning", "Night", "7:30am", "Jetty A,B,C").
-            - IGNORE casuals or people not on the official staff list.
+            - If they are assigned to an area/time/shift -> Status: 'P' (Present). Also extract their shift assignment (e.g. "Morning", "Night", "7:30am", "Jetty A,B,C") into "shift_type".
+            - IGNORE casuals or people not on the official staff list unless they appear to be a misspelling of a staff member.
 
         Return strictly ONLY a raw JSON object in this exact format. Do not use markdown backticks like \`\`\`json. Just the raw braces:
         {
@@ -57,8 +58,12 @@ export async function POST(req: Request) {
                     "host_id": "SSL 1234",
                     "full_name": "Mapped Full Name",
                     "status_code": "P" or "O" or "AL",
-                    "shift_note": "Morning" or "Off" or "Leave" or specific assignment
+                    "shift_type": "Morning" or "Off" or "Leave" or specific assignment
                 }
+            ],
+            "unrecognized": [
+                "Name of person 1 you couldn't match",
+                "Name of person 2 you couldn't match"
             ]
         }
         `;
