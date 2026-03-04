@@ -5,9 +5,7 @@ import {
   ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { 
-  eachDayOfInterval, format, differenceInDays, parseISO, isAfter, isBefore 
-} from 'date-fns';
+import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
 import toast from 'react-hot-toast';
 
 // --- CONFIG ---
@@ -52,14 +50,16 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
     const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
     const bgBase = isToday ? 'bg-amber-50/60 border-amber-200' : isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
     
-    // Only trigger the red dot if there is an actual text note
+    // RED DOT: Only shows if there is an actual text note
     const hasNote = !!note && note.trim() !== '';
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTableCellElement>) => {
+        // CRITICAL: Stop event from bubbling to the global table handler
+        e.stopPropagation();
+
         let nextR = rIdx;
         let nextC = cIdx;
 
-        // Excel Navigation
         if (e.key === 'ArrowRight') nextC++;
         else if (e.key === 'ArrowLeft') nextC--;
         else if (e.key === 'ArrowDown') nextR++;
@@ -72,21 +72,18 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
             return;
         }
 
-        // Open Modal
         if (e.key === 'Enter') {
             e.preventDefault();
             onOpenEdit();
             return;
         }
 
-        // Clear Cell
         if (e.key === 'Backspace' || e.key === 'Delete') {
             e.preventDefault();
             onQuickSave('', rIdx, cIdx);
             return;
         }
 
-        // Quick Type Status Code (Smart detection for multi-letter codes like AL, PH)
         const char = e.key.toUpperCase();
         if (/^[A-Z]$/.test(char)) {
             e.preventDefault();
@@ -104,7 +101,7 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
                     }
                 }
                 keyBuffer = '';
-            }, 300); // Wait 300ms to allow typing 2 letters
+            }, 300); 
         }
     };
 
@@ -122,6 +119,7 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
         >
             <div className="w-full h-full flex flex-col items-center justify-center pointer-events-none">
                 <span className="text-[11px] font-bold leading-none">{val || '-'}</span>
+                {/* DUTY TIME: Shows purely as small text below */}
                 {shiftType && <span className="text-[7px] leading-none font-bold opacity-60 mt-1 truncate w-full text-center px-0.5">{shiftType}</span>}
             </div>
             {hasNote && <div className="absolute top-1 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm pointer-events-none" title={`Note: ${note}`}></div>}
@@ -130,9 +128,10 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
 });
 AttendanceCell.displayName = 'AttendanceCell';
 
+
 export default function AttendancePage() {
   const [isLoading, setIsLoading] = useState(true);
-  const [isScrolled, setIsScrolled] = useState(false); // Prevents visual jump from Jan 1
+  const [isScrolled, setIsScrolled] = useState(false); 
   
   // Date & Grid Setup
   const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -163,7 +162,7 @@ export default function AttendancePage() {
 
   useEffect(() => { fetchData(); }, [selectedYear]);
 
-  // Seamless Auto-Scroll to Today instantly (Prevents Jumping)
+  // Seamless Auto-Scroll to Today instantly
   useEffect(() => {
       if (!isLoading && scrollRef.current) {
           requestAnimationFrame(() => {
@@ -171,26 +170,122 @@ export default function AttendancePage() {
               if (todayCol && scrollRef.current) {
                   scrollRef.current.scrollLeft = Math.max(0, todayCol.offsetLeft - 490 - 32); 
               }
-              requestAnimationFrame(() => {
-                  setIsScrolled(true); // Fades in beautifully after positioning is complete
-              });
+              requestAnimationFrame(() => setIsScrolled(true));
           });
       }
   }, [isLoading, selectedYear]);
 
-  // Restore Excel Focus after a quick save re-render
   useEffect(() => {
       if (lastFocusedCell.current) {
           document.getElementById(lastFocusedCell.current)?.focus();
       }
   }, [attendance]);
 
-  // Global Mouse Up (End Dragging)
   useEffect(() => {
       const handleGlobalMouseUp = () => setIsDragging(false);
       window.addEventListener('mouseup', handleGlobalMouseUp);
       return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
   }, []);
+
+  // ============================================================================
+  // STRICT STRING DATES (PREVENTS ALL TIMEZONE DRIFT)
+  // ============================================================================
+  const daysInYear = useMemo(() => {
+      const days: string[] = [];
+      const isLeap = (selectedYear % 4 === 0 && selectedYear % 100 !== 0) || (selectedYear % 400 === 0);
+      const daysInMonths = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      
+      for (let m = 0; m < 12; m++) {
+          for (let d = 1; d <= daysInMonths[m]; d++) {
+              days.push(`${selectedYear}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+          }
+      }
+      return days;
+  }, [selectedYear]);
+
+  // ============================================================================
+  // BULLETPROOF DATABASE SAVE ENGINE
+  // ============================================================================
+  const saveToDatabase = async (hostId: string, dateStr: string, status: string, note?: string, shift?: string) => {
+      const { data: existingArr, error: fetchErr } = await supabase.from('hsk_attendance')
+          .select('id, shift_note, shift_type')
+          .eq('host_id', hostId)
+          .eq('date', dateStr)
+          .limit(1); 
+          
+      if (fetchErr) throw fetchErr;
+      const existing = existingArr?.[0];
+
+      // Clean up accidental duplicates from past bugs
+      if (existingArr && existingArr.length > 1) {
+          const extraIds = existingArr.slice(1).map(r => r.id);
+          await supabase.from('hsk_attendance').delete().in('id', extraIds);
+      }
+
+      const finalNote = note !== undefined ? note : (existing?.shift_note || null);
+      const finalShift = shift !== undefined ? shift : (existing?.shift_type || null);
+
+      if (status === '' && (!finalNote || finalNote.trim() === '') && (!finalShift || finalShift.trim() === '')) {
+          if (existing && existing.id) {
+              const { error } = await supabase.from('hsk_attendance').delete().eq('id', existing.id);
+              if (error) throw error;
+          }
+      } else {
+          const payload = {
+              host_id: hostId,
+              date: dateStr,
+              status_code: status,
+              shift_note: finalNote,
+              shift_type: finalShift
+          };
+
+          if (existing && existing.id) {
+              const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing.id);
+              if (error) throw error;
+          } else {
+              const { error } = await supabase.from('hsk_attendance').insert(payload);
+              if (error) throw error;
+          }
+      }
+  };
+
+  const loadAttendanceOnly = async () => {
+      // 🚀 INFINITE PAGINATION LOOP FIX (Never drops data) 🚀
+      let allData: any[] = [];
+      let from = 0;
+      let step = 1000;
+      let hasMore = true;
+
+      while (hasMore) {
+          const { data, error } = await supabase
+              .from('hsk_attendance')
+              .select('*')
+              .range(from, from + step - 1);
+
+          if (error) {
+              console.error("Error fetching attendance:", error);
+              break;
+          }
+
+          if (data && data.length > 0) {
+              allData.push(...data);
+              from += step;
+              if (data.length < step) hasMore = false;
+          } else {
+              hasMore = false;
+          }
+      }
+
+      if (allData.length > 0) {
+          const normalizedAtt = allData.map(a => ({
+              ...a,
+              date: a.date.includes('T') ? a.date.split('T')[0] : a.date 
+          }));
+          setAttendance(normalizedAtt);
+      } else {
+          setAttendance([]);
+      }
+  };
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -229,15 +324,7 @@ export default function AttendancePage() {
         setHosts(sortedHosts);
     }
 
-    const { data: attData } = await supabase.from('hsk_attendance').select('*');
-    if (attData) {
-        const normalizedAtt = attData.map(a => ({
-            ...a,
-            date: a.date.split('T')[0] // Strips any time data to ensure perfect date string matching
-        }));
-        setAttendance(normalizedAtt);
-    }
-
+    await loadAttendanceOnly();
     setIsLoading(false);
   };
 
@@ -258,13 +345,11 @@ export default function AttendancePage() {
 
       const hostRecords = attendance.filter(a => a.host_id === host.host_id);
       
-      // Accrual looks at days active up to target Date
       const recordsUpToTarget = hostRecords.filter(a => {
           const d = parseISO(a.date);
           return d >= SYSTEM_START_DATE && d <= targetDate;
       });
 
-      // Deductions look at ALL leaves taken in the calendar year, so future bookings reduce balances instantly
       const recordsForDeduction = hostRecords.filter(a => {
           const d = parseISO(a.date);
           return d >= SYSTEM_START_DATE && d <= endOfTargetYear;
@@ -330,25 +415,6 @@ export default function AttendancePage() {
     });
   }, [hosts, attendance, cutoffDate, publicHolidays]);
 
-  const daysInYear = useMemo(() => {
-    return eachDayOfInterval({
-      start: new Date(selectedYear, 0, 1),
-      end: new Date(selectedYear, 11, 31)
-    });
-  }, [selectedYear]);
-
-  const monthsInYear = useMemo(() => {
-      const months = [];
-      for (let i = 0; i < 12; i++) {
-          const date = new Date(selectedYear, i, 1);
-          months.push({
-              name: format(date, 'MMMM'),
-              days: new Date(selectedYear, i + 1, 0).getDate()
-          });
-      }
-      return months;
-  }, [selectedYear]);
-
   const filteredHosts = hostBalances.filter(h => h.full_name.toLowerCase().includes(searchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(searchQuery.toLowerCase()));
 
   // --- EXCEL ENGINE FUNCTIONS ---
@@ -398,7 +464,6 @@ export default function AttendancePage() {
       updateSelectionVisuals();
   };
 
-  // ROBUST BULK SAVE (DRAG OR HIGHLIGHT & TYPE)
   const applyBulkStatus = async (status: string) => {
       const { r1, c1, r2, c2 } = selectionRef.current;
       if (r1 === -1) return;
@@ -406,22 +471,29 @@ export default function AttendancePage() {
       const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
       const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
 
-      // Instantly Update UI State Optimistically
+      // Instantly Update UI Optimistically 
       setAttendance(prev => {
           const newAtt = [...prev];
           for (let r = minR; r <= maxR; r++) {
               for (let c = minC; c <= maxC; c++) {
                   const hostId = filteredHosts[r].host_id;
-                  const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+                  const dateStr = daysInYear[c];
                   const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
                   
                   if (status === '') {
-                      if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+                      if (existingIdx > -1) {
+                          const existing = newAtt[existingIdx];
+                          if (!existing.shift_note && !existing.shift_type) {
+                              newAtt.splice(existingIdx, 1);
+                          } else {
+                              newAtt[existingIdx] = { ...existing, status_code: '' };
+                          }
+                      }
                   } else {
                       if (existingIdx > -1) {
                           newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
                       } else {
-                          newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+                          newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: '', shift_type: '' });
                       }
                   }
               }
@@ -429,25 +501,26 @@ export default function AttendancePage() {
           return newAtt;
       });
 
-      // Background DB Sync wrapped in toast
+      // Background DB Sync
       const dbTask = async () => {
           for (let r = minR; r <= maxR; r++) {
               for (let c = minC; c <= maxC; c++) {
                   const hostId = filteredHosts[r].host_id;
-                  const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+                  const dateStr = daysInYear[c];
                   
-                  const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', hostId).eq('date', dateStr);
+                  const { data: existingArr, error: fetchErr } = await supabase.from('hsk_attendance').select('id').match({ host_id: hostId, date: dateStr }).limit(1);
                   if (fetchErr) throw fetchErr;
+                  const existing = existingArr && existingArr.length > 0 ? existingArr[0] : null;
 
                   if (status === '') {
-                      if (existing && existing.length > 0) {
-                          const { error } = await supabase.from('hsk_attendance').delete().eq('host_id', hostId).eq('date', dateStr);
+                      if (existing) {
+                          const { error } = await supabase.from('hsk_attendance').delete().eq('id', existing.id);
                           if (error) throw error;
                       }
                   } else {
                       const payload = { host_id: hostId, date: dateStr, status_code: status };
-                      if (existing && existing.length > 0) {
-                          const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
+                      if (existing) {
+                          const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing.id);
                           if (error) throw error;
                       } else {
                           const { error } = await supabase.from('hsk_attendance').insert(payload);
@@ -503,7 +576,7 @@ export default function AttendancePage() {
       if (e.key === 'Enter') {
           e.preventDefault();
           const host = filteredHosts[r1];
-          const dateStr = format(daysInYear[c1], 'yyyy-MM-dd');
+          const dateStr = daysInYear[c1];
           const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
           setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: record?.status_code || '', note: record?.shift_note || '', shiftType: record?.shift_type || '' });
           return;
@@ -514,6 +587,7 @@ export default function AttendancePage() {
           applyBulkStatus('');
           return;
       }
+      // No more A-Z processing here, handled in Cell component
   };
 
   const handleCopy = (e: React.ClipboardEvent) => {
@@ -529,7 +603,7 @@ export default function AttendancePage() {
           let row = [];
           for(let c = minC; c <= maxC; c++) {
               const hostId = filteredHosts[r].host_id;
-              const dateStr = format(daysInYear[c], 'yyyy-MM-dd');
+              const dateStr = daysInYear[c];
               const val = attendance.find(a => a.host_id === hostId && a.date === dateStr)?.status_code || '';
               row.push(val);
           }
@@ -539,7 +613,6 @@ export default function AttendancePage() {
       toast.success('Copied to clipboard');
   };
 
-  // ROBUST PASTE
   const handlePaste = async (e: React.ClipboardEvent) => {
       const { r1, c1 } = selectionRef.current;
       if (r1 === -1) return;
@@ -559,7 +632,7 @@ export default function AttendancePage() {
               
               for(let j=0; j<rows[i].length; j++) {
                   if (c1 + j >= daysInYear.length) continue;
-                  const dateStr = format(daysInYear[c1 + j], 'yyyy-MM-dd');
+                  const dateStr = daysInYear[c1 + j];
                   let val = rows[i][j].trim().toUpperCase();
                   if (val === 'V') val = 'AL'; 
                   
@@ -586,24 +659,7 @@ export default function AttendancePage() {
       if (updateCount > 0) {
           const dbTask = async () => {
               for (const t of tasks) {
-                  const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', t.hostId).eq('date', t.dateStr);
-                  if (fetchErr) throw fetchErr;
-
-                  if (t.val === '') {
-                      if (existing && existing.length > 0) {
-                          const { error } = await supabase.from('hsk_attendance').delete().eq('host_id', t.hostId).eq('date', t.dateStr);
-                          if (error) throw error;
-                      }
-                  } else {
-                      const payload = { host_id: t.hostId, date: t.dateStr, status_code: t.val };
-                      if (existing && existing.length > 0) {
-                          const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
-                          if (error) throw error;
-                      } else {
-                          const { error } = await supabase.from('hsk_attendance').insert(payload);
-                          if (error) throw error;
-                      }
-                  }
+                  await saveToDatabase(t.hostId, t.dateStr, t.val);
               }
           };
 
@@ -618,8 +674,6 @@ export default function AttendancePage() {
           });
       }
   };
-
-  // --- STANDARD HANDLERS ---
 
   const handleCutoffChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const newDateStr = e.target.value;
@@ -639,70 +693,49 @@ export default function AttendancePage() {
       }
   };
 
-  // ROBUST QUICKSAVE (FOR INDIVIDUAL TYPING)
   const quickSaveCell = async (hostId: string, dateStr: string, status: string, rIdx: number, cIdx: number) => {
       lastFocusedCell.current = `cell-${rIdx}-${cIdx}`; 
       
+      // Optimistic UI Update Instantly
       setAttendance(prev => {
           const newAtt = [...prev];
           const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+          
           if (status === '') {
-              if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+              if (existingIdx > -1) {
+                  const existing = newAtt[existingIdx];
+                  if (!existing.shift_note && !existing.shift_type) {
+                      newAtt.splice(existingIdx, 1);
+                  } else {
+                      newAtt[existingIdx] = { ...existing, status_code: '' };
+                  }
+              }
           } else {
               if (existingIdx > -1) {
                   newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
               } else {
-                  newAtt.push({ host_id: hostId, date: dateStr, status_code: status });
+                  newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: '', shift_type: '' });
               }
           }
           return newAtt;
       });
 
-      const dbTask = async () => {
-          if (status === '') {
-              const { error } = await supabase.from('hsk_attendance').delete().match({ host_id: hostId, date: dateStr });
-              if (error) throw error;
-          } else {
-              // Try to fetch existing to keep shift_note/shift_type intact if quick editing
-              const { data: existing } = await supabase.from('hsk_attendance').select('*').match({ host_id: hostId, date: dateStr }).maybeSingle();
-              
-              const payload = { 
-                  host_id: hostId, 
-                  date: dateStr, 
-                  status_code: status,
-                  shift_note: existing?.shift_note || null,
-                  shift_type: existing?.shift_type || null
-              };
-              
-              const { error } = await supabase.from('hsk_attendance').upsert(payload, { onConflict: 'host_id, date' });
-              if (error) {
-                  if (existing) {
-                      const { error: updErr } = await supabase.from('hsk_attendance').update({ status_code: status }).eq('id', existing.id);
-                      if (updErr) throw updErr;
-                  } else {
-                      const { error: insErr } = await supabase.from('hsk_attendance').insert(payload);
-                      if (insErr) throw insErr;
-                  }
-              }
-          }
-      };
-
-      toast.promise(dbTask(), {
+      toast.promise(saveToDatabase(hostId, dateStr, status), {
           loading: 'Saving...',
           success: status === '' ? 'Cleared' : 'Saved',
           error: 'Save failed'
       });
   };
 
-  // ROBUST MODAL SAVE
   const handleSaveCell = async () => {
     if (!editCell) return;
     const { hostId, dateStr, status, note, shiftType } = editCell;
     
+    // Optimistic UI Update Instantly
     setAttendance(prev => {
         const newAtt = [...prev];
         const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
-        if (status === '' && !note && !shiftType) {
+        if (status === '' && (!note || note.trim() === '') && (!shiftType || shiftType.trim() === '')) {
             if (existingIdx > -1) newAtt.splice(existingIdx, 1);
         } else {
             if (existingIdx > -1) {
@@ -714,28 +747,7 @@ export default function AttendancePage() {
         return newAtt;
     });
 
-    const dbTask = async () => {
-        const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', hostId).eq('date', dateStr);
-        if (fetchErr) throw fetchErr;
-
-        if (status === '' && !note && !shiftType) {
-            if (existing && existing.length > 0) {
-                const { error } = await supabase.from('hsk_attendance').delete().eq('host_id', hostId).eq('date', dateStr);
-                if (error) throw error;
-            }
-        } else {
-            const payload = { host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType };
-            if (existing && existing.length > 0) {
-                const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
-                if (error) throw error;
-            } else {
-                const { error } = await supabase.from('hsk_attendance').insert(payload);
-                if (error) throw error;
-            }
-        }
-    };
-
-    toast.promise(dbTask(), {
+    toast.promise(saveToDatabase(hostId, dateStr, status, note, shiftType), {
         loading: 'Saving entry...',
         success: 'Entry saved',
         error: 'Failed to save entry'
@@ -776,7 +788,6 @@ export default function AttendancePage() {
     setIsParsing(false);
   };
 
-  // ROBUST MAGIC SAVE
   const handleMagicSave = async () => {
     if (!magicResults || !magicResults.records) return;
     setIsParsing(true);
@@ -802,18 +813,7 @@ export default function AttendancePage() {
     
     const dbTask = async () => {
         for (const r of magicResults.records) {
-            const { data: existing, error: fetchErr } = await supabase.from('hsk_attendance').select('id').eq('host_id', r.host_id).eq('date', magicResults.date);
-            if (fetchErr) throw fetchErr;
-
-            const payload = { host_id: r.host_id, date: magicResults.date, status_code: r.status_code, shift_type: r.shift_type || '' };
-
-            if (existing && existing.length > 0) {
-                const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing[0].id);
-                if (error) throw error;
-            } else {
-                const { error } = await supabase.from('hsk_attendance').insert(payload);
-                if (error) throw error;
-            }
+            await saveToDatabase(r.host_id, magicResults.date, r.status_code, undefined, r.shift_type);
         }
     };
 
@@ -827,7 +827,7 @@ export default function AttendancePage() {
         setMagicText('');
         setMagicResults(null);
         setLinkMappings({});
-        fetchData(); // Refresh UI
+        fetchData(); // Trigger full refresh to align UI
     });
   };
 
@@ -911,8 +911,8 @@ export default function AttendancePage() {
                                       Live Owed Balances
                                   </th>
                                   
-                                  {daysInYear.map((d, i) => {
-                                      const dateStr = format(d, 'yyyy-MM-dd');
+                                  {daysInYear.map((dateStr, i) => {
+                                      const d = parseISO(dateStr);
                                       const isToday = dateStr === todayStr;
                                       const isPH = publicHolidays.some(ph => ph.date === dateStr);
                                       const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
@@ -986,13 +986,13 @@ export default function AttendancePage() {
                                       <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
                                       <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
 
-                                      {daysInYear.map((date, dateIdx) => {
-                                          const dateStr = format(date, 'yyyy-MM-dd');
+                                      {daysInYear.map((dateStr, dateIdx) => {
                                           const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
                                           const val = record ? record.status_code : '';
                                           const note = record ? record.shift_note : '';
                                           const shift = record ? record.shift_type : '';
-                                          const isFriday = format(date, 'E') === 'Fri';
+                                          const d = parseISO(dateStr);
+                                          const isFriday = format(d, 'E') === 'Fri';
                                           const isPH = publicHolidays.some(ph => ph.date === dateStr);
                                           const isToday = dateStr === todayStr;
 
@@ -1136,7 +1136,7 @@ export default function AttendancePage() {
                               disabled={isParsing || !magicText}
                               className="w-full py-4 bg-slate-800 text-white rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-lg disabled:opacity-50"
                           >
-                              {isParsing && !magicResults ? <Loader2 size={16} className="animate-spin"/> : <Wand2 size={16}/>}
+                              {isParsing ? <Loader2 size={16} className="animate-spin"/> : <Wand2 size={16}/>}
                               Parse with AI
                           </button>
                       </div>
