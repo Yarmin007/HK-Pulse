@@ -363,7 +363,8 @@ export default function AttendancePage() {
 
       if (targetDate >= accrualStart) {
           const daysActive = differenceInDays(targetDate, accrualStart) + 1;
-          const penaltyDays = recordsUpToTarget.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+          // MODIFIED: 'SL' and 'EL' are no longer penalized, they are eligible days.
+          const penaltyDays = recordsUpToTarget.filter(a => ['NP', 'A'].includes(a.status_code)).length;
           const eligibleDays = Math.max(0, daysActive - penaltyDays);
           
           earnedOff = eligibleDays / 7;
