@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
-import { Lock, User, ArrowRight, Loader2, AlertCircle, KeyRound, ShieldCheck } from 'lucide-react';
+import { Lock, User, ArrowRight, Loader2, AlertCircle, KeyRound, ShieldCheck, Download, Smartphone, Share, Plus } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 
@@ -10,6 +10,12 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
+  // PWA Install State
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [isIOS, setIsIOS] = useState(false);
+  const [showIOSGuide, setShowIOSGuide] = useState(false);
+  const [hasCheckedPWA, setHasCheckedPWA] = useState(false);
+
   // Login State
   const [hostId, setHostId] = useState('');
   const [pin, setPin] = useState('');
@@ -23,14 +29,30 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    // 1. Sync Timezone
+    // 1. PWA Logic & Environment Check
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    
+    // Check if iOS (Safe check for SSR)
+    const isIOSDevice = typeof navigator !== 'undefined' && 
+        (/iPad|iPhone|iPod/.test(navigator.userAgent) && 
+        !(window as any).MSStream);
+    
+    setIsIOS(isIOSDevice);
+    setHasCheckedPWA(true);
+
+    // 2. Sync Timezone
     const syncGlobalSettings = async () => {
       const { data } = await supabase.from('hsk_constants').select('type,label').eq('type', 'system_timezone').maybeSingle();
       if (data) localStorage.setItem('hk_pulse_timezone', data.label);
     };
     syncGlobalSettings();
 
-    // 2. ONLY Water View and Minibar Finance are public
+    // 3. Public vs Private Routes
     const isPublicRoute = 
         pathname?.includes('/water/view') || 
         pathname?.includes('/minibar/finance') || 
@@ -48,7 +70,16 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     }
     
     setIsLoading(false);
+
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, [pathname]);
+
+  const handleAndroidInstall = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') setInstallPrompt(null);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,7 +88,6 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     setIsAuthenticating(true);
     setError('');
     
-    // SMART SEARCH: Allows staff to just type "1383" instead of "SSL 1383"
     const cleanInput = hostId.trim();
     const isOnlyNumbers = /^\d+$/.test(cleanInput);
     
@@ -65,11 +95,11 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     if (isOnlyNumbers) query = query.ilike('host_id', `%${cleanInput}`);
     else query = query.ilike('host_id', cleanInput);
 
-    const { data, error: fetchErr } = await query; // FIXED TYPO HERE
+    const { data, error: fetchErr } = await query;
 
     setIsAuthenticating(false);
 
-    if (fetchErr || !data || data.length === 0) { // FIXED TYPO HERE
+    if (fetchErr || !data || data.length === 0) {
       return setError('Invalid Host ID or PIN');
     }
 
@@ -132,7 +162,6 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 font-antiqua">
       <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300">
         
-        {/* ORIGINAL BEAUTIFUL HEADER */}
         <div className="p-10 bg-gradient-to-b from-[#6D2158] to-[#902468] flex flex-col items-center text-white">
           {!needsReset ? (
               <svg viewBox="0 0 779.0408 559.8364" className="h-16 w-auto mb-6 text-white drop-shadow-lg">
@@ -149,53 +178,83 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
 
         <div className="p-8 bg-white">
         {!needsReset ? (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-2">Host No (e.g. 1383)</label>
-                <div className="relative mt-1 flex items-center bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden focus-within:border-[#6D2158] transition-all">
-                  <div className="pl-4 pr-2 py-4 text-slate-400 font-black flex items-center gap-2"><User size={16} /></div>
-                  <input 
-                    type="text" 
-                    placeholder="Enter Host ID" 
-                    value={hostId}
-                    onChange={(e) => setHostId(e.target.value.toUpperCase())}
-                    className="w-full pr-4 py-4 bg-transparent text-slate-800 font-bold text-lg outline-none placeholder:text-slate-300"
-                    required
-                  />
+            <>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-2">Host No (e.g. 1383)</label>
+                  <div className="relative mt-1 flex items-center bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden focus-within:border-[#6D2158] transition-all">
+                    <div className="pl-4 pr-2 py-4 text-slate-400 font-black flex items-center gap-2"><User size={16} /></div>
+                    <input 
+                      type="text" 
+                      placeholder="Enter Host ID" 
+                      value={hostId}
+                      onChange={(e) => setHostId(e.target.value.toUpperCase())}
+                      className="w-full pr-4 py-4 bg-transparent text-slate-800 font-bold text-lg outline-none placeholder:text-slate-300"
+                      required
+                    />
+                  </div>
                 </div>
-              </div>
 
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-2">Secure PIN</label>
-                <div className="relative mt-1 flex items-center bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden focus-within:border-[#6D2158] transition-all">
-                  <div className="pl-4 pr-2 py-4 text-slate-400 font-black flex items-center gap-2"><Lock size={16} /></div>
-                  <input 
-                    type="password" 
-                    inputMode="numeric"
-                    maxLength={4}
-                    placeholder="••••" 
-                    value={pin}
-                    onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-                    className="w-full pr-4 py-4 bg-transparent text-slate-800 font-black text-2xl tracking-[0.3em] outline-none placeholder:text-slate-300 placeholder:tracking-normal"
-                    required
-                  />
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 ml-2">Secure PIN</label>
+                  <div className="relative mt-1 flex items-center bg-slate-50 border border-slate-200 rounded-2xl overflow-hidden focus-within:border-[#6D2158] transition-all">
+                    <div className="pl-4 pr-2 py-4 text-slate-400 font-black flex items-center gap-2"><Lock size={16} /></div>
+                    <input 
+                      type="password" 
+                      inputMode="numeric"
+                      maxLength={4}
+                      placeholder="••••" 
+                      value={pin}
+                      onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                      className="w-full pr-4 py-4 bg-transparent text-slate-800 font-black text-2xl tracking-[0.3em] outline-none placeholder:text-slate-300 placeholder:tracking-normal"
+                      required
+                    />
+                  </div>
                 </div>
-              </div>
 
-              {error && (
-                <div className="bg-rose-50 border border-rose-100 p-3 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-bold animate-in fade-in">
-                  <AlertCircle size={16} className="shrink-0"/> {error}
+                {error && (
+                  <div className="bg-rose-50 border border-rose-100 p-3 rounded-xl flex items-center gap-2 text-rose-600 text-xs font-bold animate-in fade-in">
+                    <AlertCircle size={16} className="shrink-0"/> {error}
+                  </div>
+                )}
+
+                <button 
+                  type="submit" 
+                  disabled={isAuthenticating}
+                  className="w-full mt-2 py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isAuthenticating ? <Loader2 size={18} className="animate-spin" /> : <><ArrowRight size={18} /> Access Portal</>}
+                </button>
+              </form>
+
+              {/* PWA INSTALL UI */}
+              {hasCheckedPWA && (
+                <div className="mt-8 pt-6 border-t border-slate-100 flex flex-col gap-3">
+                  {installPrompt && (
+                    <button onClick={handleAndroidInstall} className="flex items-center justify-center gap-2 w-full py-3 bg-slate-800 text-white rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-slate-900 transition-all">
+                      <Download size={16}/> Install on Android
+                    </button>
+                  )}
+                  
+                  {isIOS && (
+                    <button onClick={() => setShowIOSGuide(!showIOSGuide)} className="flex items-center justify-center gap-2 w-full py-3 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-slate-200 transition-all border border-slate-200">
+                      <Smartphone size={16}/> Install on iPhone
+                    </button>
+                  )}
+
+                  {showIOSGuide && (
+                    <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 animate-in slide-in-from-top-2">
+                      <h4 className="text-[10px] font-black uppercase text-blue-700 mb-2">iOS Installation Steps:</h4>
+                      <ul className="text-[11px] text-blue-800 space-y-2">
+                        <li className="flex items-center gap-2 font-bold"><Share size={12}/> 1. Tap the "Share" button at bottom</li>
+                        <li className="flex items-center gap-2 font-bold"><Plus className="bg-white rounded border border-blue-200" size={12}/> 2. Scroll and tap "Add to Home Screen"</li>
+                        <li className="flex items-center gap-2 font-bold"><ShieldCheck size={12}/> 3. Launch from your home screen</li>
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
-
-              <button 
-                type="submit" 
-                disabled={isAuthenticating}
-                className="w-full mt-2 py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isAuthenticating ? <Loader2 size={18} className="animate-spin" /> : <><ArrowRight size={18} /> Access Portal</>}
-              </button>
-            </form>
+            </>
         ) : (
             <form onSubmit={handleResetPin} className="space-y-4 animate-in fade-in">
               <p className="text-sm font-medium text-slate-500 text-center mb-6 leading-relaxed">
