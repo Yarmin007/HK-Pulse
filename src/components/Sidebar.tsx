@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock
+  Briefcase, Contact, UserCheck, Clock, RefreshCw
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -35,6 +35,7 @@ const TEAM_ITEMS = [
 const MINIBAR_ITEMS = [
   { name: "Live Inventory Matrix", icon: Box, path: "/minibar/inventory" },
   { name: "Expiry Control", icon: Calendar, path: "/minibar/expiry" },
+  { name: "Expiry Removals", icon: RefreshCw, path: "/minibar/removals" },
   { name: "Minibar Sales", icon: Zap, path: "/minibar/sales" },
   { name: "Finance P&L", icon: UtensilsCrossed, path: "/minibar/finance" },
 ];
