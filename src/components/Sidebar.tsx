@@ -13,7 +13,6 @@ import {
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "Water Prod.", icon: Droplets, path: "/water" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
 ];
@@ -21,6 +20,7 @@ const ADMIN_CORE_TABS = [
 const MENU_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocation", icon: ListChecks, path: "/allocation" },
+  { name: "Water Production", icon: Droplets, path: "/water" }, // RESTORED FOR ADMIN
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Print Hub", icon: Printer, path: "/print" },
   { name: "Settings", icon: Settings, path: "/settings" },
@@ -170,7 +170,7 @@ export default function Sidebar() {
             );
           })}
 
-          {isAdmin ? (
+          {isAdmin && (
               <>
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Operations</div>
                   {MENU_ITEMS.map((item) => {
@@ -270,7 +270,9 @@ export default function Sidebar() {
                     )}
                   </div>
               </>
-          ) : (
+          )}
+
+          {!isAdmin && (
               <>
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">More Options</div>
                   {STAFF_MENU_ITEMS.map((item) => {
