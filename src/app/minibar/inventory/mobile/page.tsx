@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Lock, ArrowRight, User, MapPin, Search, 
-  Plus, Minus, Save, CheckCircle2, Loader2, ChevronLeft, Wine, AlertCircle, Trash2, AlertTriangle
+  Plus, Minus, Save, CheckCircle2, Loader2, ChevronLeft, Wine, AlertCircle, Trash2, AlertTriangle, Clock, ListChecks
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -13,7 +13,7 @@ const getLocalToday = () => {
         timeZone: tz, 
         year: 'numeric', month: '2-digit', day: '2-digit' 
     }).format(new Date());
-    return str; // Returns YYYY-MM-DD
+    return str; 
 };
 
 // --- CUSTOM SORTING LOGIC ---
@@ -78,31 +78,27 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     });
 };
 
-export default function MinibarInventoryApp() {
+export default function MyTasksResponsive() {
   const [isMounted, setIsMounted] = useState(false);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [isLoading, setIsLoading] = useState(false);
+  const [step, setStep] = useState<2 | 3>(2);
+  const [isLoading, setIsLoading] = useState(true);
   
-  // Auth State
-  const [sslInput, setSslInput] = useState('');
-  const [authError, setAuthError] = useState('');
   const [currentHost, setCurrentHost] = useState<Host | null>(null);
+  const [dailyTask, setDailyTask] = useState<{shift_type?: string, shift_note?: string} | null>(null);
 
-  // Villa State
+  const [invStatus, setInvStatus] = useState<'OPEN' | 'CLOSED'>('CLOSED');
+  const [activePeriod, setActivePeriod] = useState<string>('');
+
   const [assignedVillas, setAssignedVillas] = useState<string[]>([]);
   const [completedVillas, setCompletedVillas] = useState<string[]>([]);
   const [selectedVilla, setSelectedVilla] = useState('');
   
-  // MONTHLY STATE
-  const [activePeriod, setActivePeriod] = useState<string>('');
   const [previousSubmissions, setPreviousSubmissions] = useState<Record<string, Record<string, number>>>({});
 
-  // Catalog & Counting State
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [activeCategory, setActiveCategory] = useState('All');
 
-  // Custom Modal & Toast States
   const [showSuccess, setShowSuccess] = useState(false);
   const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [confirmModal, setConfirmModal] = useState<{
@@ -115,16 +111,94 @@ export default function MinibarInventoryApp() {
   }>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
   useEffect(() => {
-    // Also sync timezone on mobile app load
     const syncTimezone = async () => {
         const { data } = await supabase.from('hsk_constants').select('label').eq('type', 'system_timezone').maybeSingle();
         if (data && data.label) localStorage.setItem('hk_pulse_timezone', data.label);
     };
     syncTimezone();
 
+    const sessionData = localStorage.getItem('hk_pulse_session');
+    if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        setCurrentHost({ id: parsed.id, full_name: parsed.full_name, host_id: parsed.host_id });
+        loadInitialData(parsed.host_id);
+    } else {
+        window.location.href = '/';
+    }
+
     setIsMounted(true);
     fetchCatalog();
   }, []);
+
+  const loadInitialData = async (hostId: string) => {
+      setIsLoading(true);
+
+      const todayStr = getLocalToday();
+      const { data: att } = await supabase.from('hsk_attendance')
+        .select('shift_type, shift_note')
+        .eq('host_id', hostId)
+        .eq('date', todayStr)
+        .maybeSingle();
+
+      if (att) setDailyTask(att);
+
+      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
+      const status = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
+      const period = constData?.find(c => c.type === 'mb_active_period')?.label;
+      const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
+      const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
+
+      setInvStatus(status as 'OPEN' | 'CLOSED');
+      if (period) setActivePeriod(period);
+
+      if (period) {
+          const allocDate = `${period}-01`;
+          const { data: allocations } = await supabase
+              .from('hsk_minibar_allocations')
+              .select('villas')
+              .eq('date', allocDate)
+              .eq('host_id', hostId)
+              .maybeSingle();
+
+          if (allocations && allocations.villas) {
+              const parsed = parseVillas(allocations.villas, dvList);
+              setAssignedVillas(parsed);
+          }
+
+          const [y, m] = period.split('-').map(Number);
+          const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
+          const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
+          
+          const { data: submissions } = await supabase
+              .from('hsk_villa_minibar_inventory')
+              .select('villa_number, inventory_data, logged_at')
+              .gte('logged_at', startOfMonthUTC)
+              .lt('logged_at', startOfNextMonthUTC)
+              .eq('host_id', hostId)
+              .order('logged_at', { ascending: false }); 
+
+          if (submissions) {
+              const done = Array.from(new Set(submissions.map(s => s.villa_number)));
+              setCompletedVillas(done);
+
+              const prevData: Record<string, Record<string, number>> = {};
+              submissions.forEach(sub => {
+                  if (!prevData[sub.villa_number]) {
+                      const itemMap: Record<string, number> = {};
+                      if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
+                          sub.inventory_data.forEach((item: any) => {
+                              itemMap[item.article_number] = item.qty;
+                          });
+                      }
+                      prevData[sub.villa_number] = itemMap;
+                  }
+              });
+              setPreviousSubmissions(prevData);
+          }
+      }
+
+      setIsLoading(false);
+  };
 
   const fetchCatalog = async () => {
     const { data: catRes } = await supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true);
@@ -145,124 +219,6 @@ export default function MinibarInventoryApp() {
       setTimeout(() => setToastMsg(null), 4000);
   };
 
-  // --- STEP 1: STRICT SSL LOGIN ---
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const val = sslInput.trim();
-    if (!val) return;
-    
-    setIsLoading(true);
-    setAuthError('');
-
-    const inputDigits = val.replace(/\D/g, '');
-    if (!inputDigits) {
-        setAuthError('Please enter a valid numeric Host ID.');
-        setIsLoading(false);
-        return;
-    }
-
-    // 1. Fetch Global Settings (Status, Period, Double Villas)
-    const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
-    const status = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
-    const period = constData?.find(c => c.type === 'mb_active_period')?.label;
-    const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
-    const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
-
-    if (status !== 'OPEN') {
-        setAuthError('Inventory is currently LOCKED by Admin.');
-        setIsLoading(false);
-        return;
-    }
-
-    if (!period) {
-        setAuthError('System Error: No Active Period set.');
-        setIsLoading(false);
-        return;
-    }
-
-    setActivePeriod(period);
-
-    // 2. Fetch Host Data
-    const { data: hosts, error: hostErr } = await supabase.from('hsk_hosts').select('*');
-    if (hostErr || !hosts) {
-      setAuthError('Database connection error. Try again.');
-      setIsLoading(false);
-      return;
-    }
-
-    const foundHost = hosts.find(h => {
-        const dbIdDigits = (h.host_id || '').replace(/\D/g, '');
-        return dbIdDigits === inputDigits;
-    });
-
-    if (!foundHost) {
-      setAuthError('Host Number not recognized. Access denied.');
-      setIsLoading(false);
-      return;
-    }
-
-    // 3. Fetch Monthly Allocations (Stored under 'YYYY-MM-01')
-    const allocDate = `${period}-01`;
-    const { data: allocations, error: allocErr } = await supabase
-        .from('hsk_minibar_allocations')
-        .select('villas')
-        .eq('date', allocDate)
-        .eq('host_id', foundHost.host_id)
-        .maybeSingle();
-
-    if (allocErr) {
-        setAuthError('System Error: Allocations table missing.');
-        setIsLoading(false);
-        return;
-    }
-
-    if (!allocations || !allocations.villas) {
-        setAuthError(`Welcome ${foundHost.full_name.split(' ')[0]}, but you have NO VILLAS assigned for this month.`);
-        setIsLoading(false);
-        return;
-    }
-
-    const parsed = parseVillas(allocations.villas, dvList);
-    setAssignedVillas(parsed);
-
-    // 4. FETCH PREVIOUS SUBMISSIONS FOR THIS MONTH TO PRE-FILL COUNTS
-    const [y, m] = period.split('-').map(Number);
-    const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
-    const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
-    
-    const { data: submissions } = await supabase
-        .from('hsk_villa_minibar_inventory')
-        .select('villa_number, inventory_data, logged_at')
-        .gte('logged_at', startOfMonthUTC)
-        .lt('logged_at', startOfNextMonthUTC)
-        .eq('host_id', foundHost.host_id)
-        .order('logged_at', { ascending: false }); 
-
-    if (submissions) {
-        const done = Array.from(new Set(submissions.map(s => s.villa_number)));
-        setCompletedVillas(done);
-
-        const prevData: Record<string, Record<string, number>> = {};
-        submissions.forEach(sub => {
-            if (!prevData[sub.villa_number]) {
-                const itemMap: Record<string, number> = {};
-                if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
-                    sub.inventory_data.forEach((item: any) => {
-                        itemMap[item.article_number] = item.qty;
-                    });
-                }
-                prevData[sub.villa_number] = itemMap;
-            }
-        });
-        setPreviousSubmissions(prevData);
-    }
-
-    setCurrentHost(foundHost);
-    setStep(2);
-    setIsLoading(false);
-  };
-
-  // --- STEP 2: START INVENTORY ---
   const startAudit = (villa: string) => {
     setSelectedVilla(villa);
     
@@ -277,7 +233,6 @@ export default function MinibarInventoryApp() {
     setStep(3);
   };
 
-  // --- STEP 3: QUICK FILL ACTIONS & ONE-CLICK SUBMIT ---
   const requestAllOk = () => {
       setConfirmModal({
           isOpen: true,
@@ -292,25 +247,16 @@ export default function MinibarInventoryApp() {
                   const name = (item.generic_name || item.article_name || '').toLowerCase();
                   let par = 1; 
                   
-                  if (cat.includes('soft') || cat.includes('juice') || cat.includes('water') || cat.includes('beverage') || cat.includes('beer')) {
-                      par = 2;
-                  } else if (cat.includes('wine') || cat.includes('spirit') || cat.includes('liquor') || cat.includes('hard') || cat.includes('alcohol') || cat.includes('bite') || cat.includes('sweet') || cat.includes('food') || cat.includes('snack')) {
-                      par = 1;
-                  }
+                  if (cat.includes('soft') || cat.includes('juice') || cat.includes('water') || cat.includes('beverage') || cat.includes('beer')) par = 2;
+                  else if (cat.includes('wine') || cat.includes('spirit') || cat.includes('liquor') || cat.includes('hard') || cat.includes('alcohol') || cat.includes('bite') || cat.includes('sweet') || cat.includes('food') || cat.includes('snack')) par = 1;
                   
-                  if (name.includes('light tonic') || name.includes('indian tonic') || name.includes('ginger beer') || name.includes('ginger ale')) {
-                      par = 1;
-                  }
-
-                  if (name.includes('zero') || name.includes('fanta')) {
-                      par = 0;
-                  }
+                  if (name.includes('light tonic') || name.includes('indian tonic') || name.includes('ginger beer') || name.includes('ginger ale')) par = 1;
+                  if (name.includes('zero') || name.includes('fanta')) par = 0;
                   
                   newCounts[item.article_number] = par;
               });
               setCounts(newCounts);
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              
               executeSaveInventory(newCounts);
           }
       });
@@ -328,7 +274,6 @@ export default function MinibarInventoryApp() {
               catalog.forEach(item => { newCounts[item.article_number] = 0; });
               setCounts(newCounts);
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              
               executeSaveInventory(newCounts);
           }
       });
@@ -360,16 +305,11 @@ export default function MinibarInventoryApp() {
     setIsLoading(true);
 
     const finalCounts = overrideCounts || counts;
-
     const countedItems = Object.entries(finalCounts)
         .filter(([_, qty]) => qty > 0)
         .map(([artNo, qty]) => {
             const item = catalog.find(c => c.article_number === artNo);
-            return {
-                article_number: artNo,
-                name: item?.generic_name || item?.article_name,
-                qty
-            };
+            return { article_number: artNo, name: item?.generic_name || item?.article_name, qty };
         });
 
     const payload = {
@@ -377,7 +317,6 @@ export default function MinibarInventoryApp() {
         host_id: currentHost?.host_id,
         host_name: currentHost?.full_name,
         inventory_data: countedItems,
-        // DB timestamp handles itself automatically on insert, we just rely on it matching the month
         logged_at: new Date().toISOString() 
     };
 
@@ -386,7 +325,6 @@ export default function MinibarInventoryApp() {
     setIsLoading(false);
 
     if (error) {
-        console.error("Save Error Details:", error);
         showNotification('error', `DB Error: Please contact Admin. Make sure table & RLS exist!`);
     } else {
         setCompletedVillas(prev => Array.from(new Set([...prev, selectedVilla])));
@@ -406,197 +344,208 @@ export default function MinibarInventoryApp() {
   if (!isMounted) return null;
 
   return (
-    <div className="min-h-[100dvh] bg-slate-50 md:bg-slate-100 flex items-center justify-center p-0 md:p-6 font-antiqua">
+    <div className="min-h-screen bg-[#FDFBFD] p-4 md:p-8 font-antiqua text-slate-800 pb-24">
       
-      <div className="w-full max-w-md h-[100dvh] md:h-[85vh] bg-white md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col relative">
+      <div className="max-w-5xl mx-auto w-full flex flex-col animate-in fade-in">
         
-        {/* --- STEP 1: AUTHENTICATION --- */}
-        {step === 1 && (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 bg-gradient-to-b from-[#6D2158] to-[#902468] text-white">
-                <div className="w-20 h-20 bg-white/10 rounded-full flex items-center justify-center mb-6 shadow-inner border border-white/20">
-                    <Wine size={32} className="text-white"/>
-                </div>
-                <h1 className="text-3xl font-black tracking-tight mb-2">Minibar Inventory</h1>
-                <p className="text-white/70 text-sm mb-12 uppercase tracking-widest font-bold">Attendant Portal</p>
-
-                <form onSubmit={handleLogin} className="w-full space-y-4">
-                    <div>
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-white/70 ml-2">Host Number</label>
-                        <div className="relative mt-1 flex items-center bg-white/10 border border-white/20 rounded-2xl overflow-hidden focus-within:bg-white/20 transition-all">
-                            <div className="pl-4 pr-2 py-4 text-white/60 font-black flex items-center gap-2">
-                                <Lock size={16} />
-                                <span>SSL</span>
-                            </div>
-                            <input 
-                                type="number" 
-                                autoFocus
-                                className="w-full pr-4 py-4 bg-transparent text-white font-bold text-2xl outline-none placeholder:text-white/30"
-                                placeholder="10245"
-                                value={sslInput}
-                                onChange={e => setSslInput(e.target.value)}
-                            />
-                        </div>
-                    </div>
-                    
-                    {authError && <div className="bg-rose-500/20 border border-rose-500/50 p-3 rounded-xl flex flex-col gap-1 text-rose-200 text-xs font-bold animate-in fade-in"><div className="flex items-center gap-2"><AlertCircle size={16} className="shrink-0"/> {authError}</div></div>}
-
-                    <button disabled={isLoading || !sslInput} className="w-full py-4 bg-white text-[#6D2158] rounded-2xl font-black uppercase tracking-widest shadow-xl hover:bg-slate-50 disabled:opacity-50 disabled:shadow-none transition-all flex items-center justify-center gap-2 mt-4">
-                        {isLoading ? <Loader2 className="animate-spin" size={20}/> : 'Login securely'} <ArrowRight size={18}/>
-                    </button>
-                </form>
-            </div>
-        )}
-
-        {/* --- STEP 2: VILLA SELECTION --- */}
+        {/* --- STEP 2: DASHBOARD / VILLA SELECTION --- */}
         {step === 2 && currentHost && (
-            <div className="flex-1 flex flex-col bg-slate-50 min-h-0 relative">
-                <div className="bg-[#6D2158] p-6 text-white pb-10 rounded-b-[2.5rem] shadow-md shrink-0">
-                    <p className="text-xs font-bold text-white/60 uppercase tracking-widest mb-1">Welcome back,</p>
-                    <h2 className="text-2xl font-black flex items-center gap-2 truncate"><User size={24}/> {currentHost.full_name.split(' ')[0]}</h2>
+            <>
+                <div className="flex items-center gap-5 mb-8 bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100">
+                   <div className="w-16 h-16 rounded-2xl bg-[#6D2158] text-white flex items-center justify-center text-2xl font-black shadow-lg shrink-0">
+                      {currentHost.full_name.charAt(0)}
+                   </div>
+                   <div>
+                     <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">My Tasks</h1>
+                     <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">
+                        {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+                     </p>
+                   </div>
                 </div>
 
-                <div className="flex-1 p-6 -mt-6 overflow-y-auto pb-10">
-                    <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 mb-6 animate-in slide-in-from-bottom-4">
-                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-4">
-                            <MapPin size={24} />
+                {isLoading ? (
+                    <div className="flex justify-center py-20"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>
+                ) : (
+                    <div className="space-y-6">
+                        
+                        {/* TODAY'S ALLOCATION CARD */}
+                        <div className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-2">
+                            <h3 className="text-xl font-bold text-slate-800 mb-1">Today's Allocation</h3>
+                            <p className="text-xs text-slate-400 mb-6 font-medium">Your assigned duty for today.</p>
+                            
+                            <div className="flex flex-col gap-4">
+                                <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                    <div className="p-3 bg-white rounded-xl shadow-sm"><Clock size={20} className="text-[#6D2158]" /></div>
+                                    <div>
+                                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Duty Time</span>
+                                        <span className="font-bold text-lg text-slate-700">{dailyTask?.shift_type || 'No duty assigned'}</span>
+                                    </div>
+                                </div>
+                                {dailyTask?.shift_note && (
+                                    <div className="flex items-start gap-4 bg-blue-50 p-4 rounded-2xl border border-blue-100">
+                                        <div className="p-3 bg-white rounded-xl shadow-sm"><ListChecks size={20} className="text-blue-600" /></div>
+                                        <div>
+                                            <span className="block text-[10px] font-bold text-blue-400 uppercase tracking-widest">Task / Area</span>
+                                            <span className="font-bold text-lg text-blue-900 leading-snug">{dailyTask.shift_note}</span>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                        <h3 className="text-lg font-bold text-slate-800 mb-1">Your Assigned Villas</h3>
-                        <p className="text-xs text-slate-400 mb-6 font-medium">Tap a villa number below to begin inventory.</p>
 
-                        <div className="grid grid-cols-3 gap-3">
-                            {assignedVillas.map(villa => {
-                                const isDone = completedVillas.includes(villa);
-                                return (
-                                    <button 
-                                        key={villa}
-                                        onClick={() => startAudit(villa)}
-                                        className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158]'}`}
-                                    >
-                                        {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
-                                        <span className={`font-black ${villa.includes('-') ? 'text-xl' : 'text-2xl'}`}>{villa}</span>
-                                        <span className="text-[9px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
-                                    </button>
-                                );
-                            })}
-                        </div>
+                        {/* MINIBAR INVENTORY CARD (ONLY VISIBLE IF ASSIGNED) */}
+                        {assignedVillas.length > 0 && (
+                            <div className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
+                                <div className="flex justify-between items-start mb-6">
+                                    <div>
+                                        <h3 className="text-xl font-bold text-slate-800 mb-1">Minibar Inventory</h3>
+                                        <p className="text-xs text-slate-400 font-medium">
+                                            {invStatus === 'OPEN' ? 'Tap a villa to begin auditing.' : `Locked • Upcoming: ${activePeriod}`}
+                                        </p>
+                                    </div>
+                                    {invStatus === 'CLOSED' && (
+                                        <div className="bg-rose-50 text-rose-600 p-3 rounded-2xl border border-rose-100">
+                                            <Lock size={20}/>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {invStatus === 'CLOSED' ? (
+                                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 text-center">
+                                        <AlertCircle size={32} className="mx-auto text-slate-300 mb-3"/>
+                                        <p className="text-base font-bold text-slate-600 mb-2">Inventory is currently Locked.</p>
+                                        <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">
+                                            Assigned Villas: {assignedVillas.join(', ')}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4">
+                                        {assignedVillas.map(villa => {
+                                            const isDone = completedVillas.includes(villa);
+                                            return (
+                                                <button 
+                                                    key={villa}
+                                                    onClick={() => startAudit(villa)}
+                                                    className={`aspect-square rounded-3xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
+                                                >
+                                                    {isDone && <CheckCircle2 size={16} className="absolute top-3 right-3 text-emerald-500"/>}
+                                                    <span className={`font-black ${villa.includes('-') ? 'text-2xl md:text-3xl' : 'text-3xl md:text-4xl'}`}>{villa}</span>
+                                                    <span className="text-[10px] md:text-xs font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                     </div>
-                </div>
-            </div>
+                )}
+            </>
         )}
 
-        {/* --- STEP 3: INVENTORY ENTRY --- */}
+        {/* --- STEP 3: INVENTORY ENTRY GRID --- */}
         {step === 3 && currentHost && (
-            <div className="flex-1 flex flex-col bg-white min-h-0 relative">
+            <div className="flex-1 flex flex-col animate-in slide-in-from-right-8 duration-300">
                 
                 {/* Header */}
-                <div className="bg-[#6D2158] text-white pt-6 pb-4 px-4 flex flex-col shrink-0 shadow-md z-20">
-                    <div className="flex items-center justify-between mb-2">
-                        <button onClick={() => setStep(2)} className="p-2 bg-white/10 rounded-full"><ChevronLeft size={20}/></button>
-                        <div className="text-center">
-                            <p className="text-[10px] font-bold text-white/60 uppercase tracking-widest flex items-center justify-center gap-1">Inventorying</p>
-                            <h2 className="text-xl font-black">Villa {selectedVilla}</h2>
+                <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-100 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div className="flex items-center gap-4">
+                        <button onClick={() => setStep(2)} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-full transition-colors text-slate-500"><ChevronLeft size={20}/></button>
+                        <div>
+                            <h2 className="text-2xl font-black text-[#6D2158]">Villa {selectedVilla}</h2>
+                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Audit Mode</p>
                         </div>
-                        <div className="w-9"></div>
                     </div>
                     
-                    <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 px-2 mt-2">
-                        {categories.map(cat => (
-                            <button 
-                                key={cat} 
-                                onClick={() => setActiveCategory(cat)}
-                                className={`px-4 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-colors border ${activeCategory === cat ? 'bg-white text-[#6D2158] border-white' : 'bg-transparent text-white border-white/30'}`}
-                            >
-                                {cat}
-                            </button>
-                        ))}
+                    <div className="flex gap-2 w-full md:w-auto">
+                        <button onClick={requestEmptyMinibar} className="flex-1 md:flex-none px-6 py-3 bg-rose-50 text-rose-600 rounded-xl text-xs font-black uppercase tracking-widest border border-rose-100 hover:bg-rose-100 transition-all flex items-center justify-center gap-2">
+                            <Trash2 size={16}/> Empty
+                        </button>
+                        <button onClick={requestAllOk} className="flex-1 md:flex-none px-6 py-3 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-black uppercase tracking-widest border border-emerald-200 hover:bg-emerald-100 transition-all flex items-center justify-center gap-2">
+                            <CheckCircle2 size={16}/> All OK
+                        </button>
                     </div>
                 </div>
 
-                {/* --- QUICK ACTION BUTTONS --- */}
-                <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex gap-2 shadow-sm z-10 shrink-0">
-                    <button onClick={requestAllOk} className="flex-1 bg-emerald-100 text-emerald-700 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex items-center justify-center gap-1 shadow-sm">
-                        <CheckCircle2 size={16}/> All OK
-                    </button>
-                    <button onClick={requestEmptyMinibar} className="flex-1 bg-rose-100 text-rose-700 py-3 rounded-xl text-[11px] font-black uppercase tracking-widest border border-rose-200 active:scale-95 transition-all flex items-center justify-center gap-1 shadow-sm">
-                        <Trash2 size={16}/> Empty
-                    </button>
+                {/* Category Filters */}
+                <div className="flex gap-2 overflow-x-auto no-scrollbar pb-4 mb-2">
+                    {categories.map(cat => (
+                        <button 
+                            key={cat} 
+                            onClick={() => setActiveCategory(cat)}
+                            className={`px-5 py-2.5 rounded-full text-xs font-bold whitespace-nowrap transition-colors border shadow-sm ${activeCategory === cat ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}
+                        >
+                            {cat}
+                        </button>
+                    ))}
                 </div>
 
-                {/* Items List */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 pb-[100px]">
+                {/* Items Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 pb-32">
                     {catalog.filter(i => activeCategory === 'All' || i.category === activeCategory).map(item => (
-                        <div key={item.article_number} className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between gap-4 animate-in slide-in-from-bottom-2">
+                        <div key={item.article_number} className="bg-white p-4 rounded-3xl shadow-sm border border-slate-100 flex items-center justify-between gap-4">
                             
-                            <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center shrink-0 border border-slate-100 overflow-hidden">
-                                {item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Wine size={20} className="text-slate-300"/>}
+                            <div className="w-14 h-14 bg-slate-50 rounded-2xl flex items-center justify-center shrink-0 border border-slate-100 overflow-hidden">
+                                {item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Wine size={24} className="text-slate-300"/>}
                             </div>
                             
-                            <div className="flex-1 pr-2">
-                                <h4 className="text-sm font-bold text-slate-800 leading-tight">{item.generic_name || item.article_name}</h4>
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{item.category}</p>
+                            <div className="flex-1 pr-2 min-w-0">
+                                <h4 className="text-sm font-bold text-slate-800 leading-tight truncate" title={item.generic_name || item.article_name}>{item.generic_name || item.article_name}</h4>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">{item.category}</p>
                             </div>
 
                             {/* Counter Controls */}
                             <div className="flex items-center bg-slate-50 rounded-xl border border-slate-200 p-1 shrink-0">
-                                <button 
-                                    onClick={() => updateCount(item.article_number, -1)} 
-                                    className="w-8 h-8 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"
-                                >
-                                    <Minus size={16}/>
+                                <button onClick={() => updateCount(item.article_number, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
+                                    <Minus size={18}/>
                                 </button>
-                                <span className="w-8 text-center font-black text-[#6D2158] text-lg">
+                                <span className="w-10 text-center font-black text-[#6D2158] text-xl">
                                     {counts[item.article_number] || 0}
                                 </span>
-                                <button 
-                                    onClick={() => updateCount(item.article_number, 1)} 
-                                    className="w-8 h-8 flex items-center justify-center bg-[#6D2158] rounded-lg shadow-sm text-white active:scale-95 transition-all"
-                                >
-                                    <Plus size={16}/>
+                                <button onClick={() => updateCount(item.article_number, 1)} className="w-10 h-10 flex items-center justify-center bg-[#6D2158] rounded-lg shadow-sm text-white active:scale-95 transition-all">
+                                    <Plus size={18}/>
                                 </button>
                             </div>
                         </div>
                     ))}
                 </div>
 
-                {/* Sticky Bottom Bar */}
-                <div className="absolute bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-100 shadow-[0_-10px_20px_rgba(0,0,0,0.03)] z-20">
-                    <button onClick={requestSaveInventory} disabled={isLoading} className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
-                        {isLoading ? <Loader2 className="animate-spin" size={20}/> : <><Save size={18}/> Manual Submit</>}
-                    </button>
+                {/* Fixed Bottom Submit Bar */}
+                <div className="fixed bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                    <div className="max-w-5xl mx-auto">
+                        <button onClick={requestSaveInventory} disabled={isLoading} className="w-full py-4 md:py-5 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-purple-900/20 active:scale-95 transition-all flex items-center justify-center gap-2">
+                            {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><Save size={20}/> Submit Audit for Villa {selectedVilla}</>}
+                        </button>
+                    </div>
                 </div>
             </div>
         )}
 
         {/* --- CUSTOM TOAST NOTIFICATION --- */}
         {toastMsg && (
-            <div className={`absolute top-4 left-4 right-4 z-[100] px-4 py-3 rounded-2xl shadow-xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 ${toastMsg.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
-                {toastMsg.type === 'error' ? <AlertTriangle size={18}/> : <CheckCircle2 size={18}/>}
-                <p className="text-xs font-bold leading-tight">{toastMsg.text}</p>
+            <div className={`fixed top-6 right-6 z-[100] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 ${toastMsg.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
+                {toastMsg.type === 'error' ? <AlertTriangle size={20}/> : <CheckCircle2 size={20}/>}
+                <p className="text-sm font-bold leading-tight">{toastMsg.text}</p>
             </div>
         )}
 
         {/* --- CUSTOM CONFIRMATION MODAL --- */}
         {confirmModal.isOpen && (
-            <div className="absolute inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-                <div className="bg-white w-full rounded-3xl p-6 shadow-2xl animate-in zoom-in-95">
-                    <h3 className={`text-xl font-black mb-2 tracking-tight ${confirmModal.isDestructive ? 'text-rose-600' : 'text-[#6D2158]'}`}>
+            <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 text-center">
+                    <h3 className={`text-2xl font-black mb-2 tracking-tight ${confirmModal.isDestructive ? 'text-rose-600' : 'text-[#6D2158]'}`}>
                         {confirmModal.title}
                     </h3>
                     <p className="text-sm text-slate-500 font-medium mb-8 leading-relaxed">
                         {confirmModal.message}
                     </p>
-                    <div className="flex gap-3">
-                        <button 
-                            onClick={() => setConfirmModal(prev => ({...prev, isOpen: false}))}
-                            className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all"
-                        >
-                            Cancel
-                        </button>
-                        <button 
-                            onClick={confirmModal.onConfirm}
-                            className={`flex-1 py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2 ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}
-                        >
+                    <div className="flex flex-col gap-3">
+                        <button onClick={confirmModal.onConfirm} className={`w-full py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2 ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}>
                             <Save size={16}/> {confirmModal.confirmText}
+                        </button>
+                        <button onClick={() => setConfirmModal(prev => ({...prev, isOpen: false}))} className="w-full py-4 bg-slate-50 text-slate-500 rounded-2xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all hover:bg-slate-100">
+                            Cancel
                         </button>
                     </div>
                 </div>
@@ -605,14 +554,14 @@ export default function MinibarInventoryApp() {
 
         {/* --- SUCCESS OVERLAY --- */}
         {showSuccess && (
-            <div className="absolute inset-0 z-[90] bg-emerald-600 flex flex-col items-center justify-center text-white p-8 animate-in fade-in zoom-in-95 duration-300">
+            <div className="fixed inset-0 z-[90] bg-emerald-600 flex flex-col items-center justify-center text-white p-8 animate-in fade-in zoom-in-95 duration-300">
                 <div className="w-24 h-24 bg-white/20 rounded-full flex items-center justify-center mb-6">
                     <CheckCircle2 size={64} className="text-white"/>
                 </div>
-                <h2 className="text-3xl font-black text-center mb-2">Saved!</h2>
-                <p className="text-center font-medium text-emerald-100 mb-10">Villa {selectedVilla} inventory has been successfully logged.</p>
+                <h2 className="text-4xl font-black text-center mb-2">Saved!</h2>
+                <p className="text-center font-medium text-emerald-100 mb-12 text-lg">Villa {selectedVilla} inventory has been logged.</p>
                 
-                <button onClick={resetFlow} className="w-full py-4 bg-white text-emerald-700 rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all">
+                <button onClick={resetFlow} className="px-10 py-5 bg-white text-emerald-700 rounded-2xl font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all hover:scale-105">
                     Log Next Villa
                 </button>
             </div>

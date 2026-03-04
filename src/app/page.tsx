@@ -8,7 +8,18 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
-import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
+import { differenceInDays, parseISO, isAfter, isBefore, format, isSameDay, startOfWeek, endOfWeek, addDays } from 'date-fns';
+
+const getPayrollPeriod = (date = new Date()) => {
+  const d = new Date(date);
+  let year = d.getFullYear();
+  let month = d.getMonth();
+  if (d.getDate() >= 21) {
+      return { start: new Date(year, month, 21), end: new Date(year, month + 1, 20) };
+  } else {
+      return { start: new Date(year, month - 1, 21), end: new Date(year, month, 20) };
+  }
+};
 
 export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
@@ -22,7 +33,12 @@ export default function Dashboard() {
   // --- USER PROFILE & LEAVE BALANCES STATE ---
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [userAttendance, setUserAttendance] = useState<any[]>([]);
-  const [mySchedule, setMySchedule] = useState<any[]>([]);
+  
+  // Payroll Attendance State
+  const [myAttendance, setMyAttendance] = useState<any[]>([]);
+  const [payrollStart, setPayrollStart] = useState<Date>(new Date());
+  const [payrollEnd, setPayrollEnd] = useState<Date>(new Date());
+
   const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isHolidayModalOpen, setIsHolidayModalOpen] = useState(false);
   
@@ -77,6 +93,7 @@ export default function Dashboard() {
         const { data: hostData } = await supabase.from('hsk_hosts').select('*').eq('host_id', loggedHostId).single();
         if (hostData) setCurrentUser(hostData);
         
+        // Fetch ALL attendance for leave balances
         const { data: attData } = await supabase.from('hsk_attendance').select('*').eq('host_id', loggedHostId);
         if (attData) setUserAttendance(attData);
     } else {
@@ -109,17 +126,18 @@ export default function Dashboard() {
         setCriticalItems(expiringList);
         setRecentActivity((reqs || []).slice(0, 6));
     } else if (loggedHostId) {
-        const nextWeek = new Date();
-        nextWeek.setDate(nextWeek.getDate() + 6);
-        const nextWeekStr = format(nextWeek, 'yyyy-MM-dd');
-        
-        const { data: roster } = await supabase.from('hsk_roster')
-            .select('*')
+        // Staff Dashboard: Fetch Payroll Attendance
+        const { start, end } = getPayrollPeriod(new Date());
+        setPayrollStart(start);
+        setPayrollEnd(end);
+
+        const { data: payrollAtt } = await supabase.from('hsk_attendance')
+            .select('date, status_code, shift_type')
             .eq('host_id', loggedHostId)
-            .gte('date', todayStr)
-            .lte('date', nextWeekStr);
+            .gte('date', format(start, 'yyyy-MM-dd'))
+            .lte('date', format(end, 'yyyy-MM-dd'));
             
-        setMySchedule(roster || []);
+        setMyAttendance(payrollAtt || []);
     }
 
     if (showLoading) setIsLoading(false);
@@ -233,21 +251,84 @@ export default function Dashboard() {
       };
   }, [currentUser, userAttendance, cutoffDate, publicHolidays]);
 
-  const next7Days = useMemo(() => {
-      return Array.from({ length: 7 }).map((_, i) => {
-          const d = new Date();
-          d.setDate(d.getDate() + i);
-          return d;
-      });
-  }, []);
+  const renderPayrollGrid = () => {
+      // Create a grid that encapsulates the entire payroll period, padded to full weeks
+      const startDate = startOfWeek(payrollStart);
+      const endDate = endOfWeek(payrollEnd);
 
-  const getShiftIcon = (shift: string) => {
-      if (!shift) return <Calendar size={20} className="text-slate-400" />;
-      if (shift.toUpperCase() === 'OFF' || shift.toUpperCase() === 'O') return <Coffee size={20} className="text-blue-500" />;
-      if (shift.toUpperCase() === 'VAC' || shift === 'AL') return <Plane size={20} className="text-amber-500" />;
-      if (shift.toLowerCase().includes('morn')) return <Sun size={20} className="text-emerald-500" />;
-      if (shift.toLowerCase().includes('even') || shift.toLowerCase().includes('night')) return <Moon size={20} className="text-indigo-500" />;
-      return <Clock size={20} className="text-[#6D2158]" />;
+      const rows = [];
+      let days = [];
+      let day = startDate;
+
+      while (day <= endDate) {
+          for (let i = 0; i < 7; i++) {
+              const dateStr = format(day, 'yyyy-MM-dd');
+              const record = myAttendance.find(a => a.date === dateStr);
+              const isCurrentPeriod = day >= payrollStart && day <= payrollEnd;
+              const isToday = isSameDay(day, new Date());
+
+              const status = record?.status_code || '';
+              const duty = record?.shift_type || '';
+
+              // Color Logic
+              let bgClass = 'bg-white border-slate-200';
+              let textClass = 'text-slate-700';
+              let badgeClass = 'bg-slate-100 text-slate-500 border-slate-200';
+
+              if (status === 'O' || status === 'OFF') { 
+                  bgClass = 'bg-blue-50/50 border-blue-100'; 
+                  textClass = 'text-blue-800'; 
+                  badgeClass = 'bg-blue-100 text-blue-700 border-blue-200';
+              } else if (status === 'AL' || status === 'VAC') { 
+                  bgClass = 'bg-cyan-50/50 border-cyan-100'; 
+                  textClass = 'text-cyan-800'; 
+                  badgeClass = 'bg-cyan-100 text-cyan-700 border-cyan-200';
+              } else if (status === 'P') { 
+                  bgClass = 'bg-emerald-50/50 border-emerald-100'; 
+                  textClass = 'text-emerald-800'; 
+                  badgeClass = 'bg-emerald-100 text-emerald-700 border-emerald-200';
+              } else if (status === 'SL' || status === 'A' || status === 'NP') { 
+                  bgClass = 'bg-rose-50/50 border-rose-100'; 
+                  textClass = 'text-rose-800'; 
+                  badgeClass = 'bg-rose-100 text-rose-700 border-rose-200';
+              } else if (status === 'PH' || status === 'RR') { 
+                  bgClass = 'bg-fuchsia-50/50 border-fuchsia-100'; 
+                  textClass = 'text-fuchsia-800'; 
+                  badgeClass = 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200';
+              }
+
+              if (!isCurrentPeriod) {
+                  bgClass = 'bg-slate-50/30 border-transparent opacity-40';
+              }
+
+              days.push(
+                  <div 
+                      key={dateStr} 
+                      className={`min-h-[75px] xl:min-h-[95px] p-2 flex flex-col rounded-2xl border-2 transition-all ${bgClass} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-2 shadow-md transform scale-105 z-10 bg-white' : ''}`}
+                  >
+                      <span className={`text-xs xl:text-sm font-black mb-1 ${isToday ? 'text-[#6D2158]' : textClass}`}>
+                          {format(day, 'd')} <span className="text-[9px] font-normal opacity-60 ml-0.5">{format(day, 'MMM')}</span>
+                      </span>
+                     
+                      {isCurrentPeriod && status && (
+                          <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest w-fit mb-1 border shadow-sm ${badgeClass}`}>
+                              {status}
+                          </span>
+                      )}
+
+                      {isCurrentPeriod && duty && (
+                          <div className={`mt-auto flex items-center gap-1 text-[9px] font-bold uppercase ${textClass} opacity-80`}>
+                              <Clock size={10} className="shrink-0"/> <span className="truncate">{duty}</span>
+                          </div>
+                      )}
+                  </div>
+              );
+              day = addDays(day, 1);
+          }
+          rows.push(<div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 xl:mb-3" key={day.toString()}>{days}</div>);
+          days = [];
+      }
+      return <div className="mt-2">{rows}</div>;
   };
 
   const hour = new Date().getHours();
@@ -460,42 +541,27 @@ export default function Dashboard() {
                   </div>
               </>
           ) : (
-              /* STAFF ONLY: UPCOMING SCHEDULE GRID */
+              /* STAFF ONLY: PAYROLL MONTH ATTENDANCE GRID */
               <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden flex flex-col animate-in fade-in">
                   <div className="p-6 md:p-8 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
                      <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-3">
-                        <Calendar size={18}/> My Upcoming Schedule
+                        <Calendar size={18}/> My Attendance ({format(payrollStart, 'MMM d')} - {format(payrollEnd, 'MMM d')})
                      </h3>
-                     <Link href="/schedule" className="text-[10px] bg-white px-4 py-2 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] hover:shadow-md uppercase tracking-wider active:scale-95 transition-all">Full Month</Link>
+                     <Link href="/schedule" className="text-[10px] bg-white px-4 py-2 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] hover:shadow-md uppercase tracking-wider active:scale-95 transition-all">Full History</Link>
                   </div>
-                  <div className="p-6 md:p-8 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
-                      {next7Days.map((date, i) => {
-                          const dateStr = format(date, 'yyyy-MM-dd');
-                          const shift = mySchedule.find(s => s.date === dateStr)?.shift_type || 'TBA';
-                          const isToday = i === 0;
-
-                          return (
-                              <div key={dateStr} className={`p-5 rounded-3xl border-2 flex flex-col items-center justify-center text-center transition-all ${
-                                  isToday ? 'border-[#6D2158] bg-[#6D2158]/5 shadow-md transform scale-105' : 'border-slate-100 bg-white hover:border-slate-300 hover:shadow-sm'
-                              }`}>
-                                  <div className="mb-4 bg-white p-3 rounded-full shadow-sm border border-slate-50">
-                                      {getShiftIcon(shift)}
-                                  </div>
-                                  <span className={`text-[10px] font-black uppercase tracking-widest mb-1 ${isToday ? 'text-[#6D2158]' : 'text-slate-400'}`}>
-                                      {isToday ? 'Today' : format(date, 'EEEE')}
-                                  </span>
-                                  <span className="text-2xl font-black text-slate-800 mb-3">{format(date, 'd MMM')}</span>
-                                  <span className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${
-                                      shift === 'OFF' ? 'bg-blue-100 text-blue-700' :
-                                      shift === 'VAC' ? 'bg-amber-100 text-amber-700' :
-                                      shift === 'TBA' ? 'bg-slate-100 text-slate-500' :
-                                      'bg-emerald-100 text-emerald-700'
-                                  }`}>
-                                      {shift}
-                                  </span>
+                  
+                  <div className="p-4 md:p-8">
+                      {/* DAY NAMES */}
+                      <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2">
+                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+                              <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
+                                  {d}
                               </div>
-                          );
-                      })}
+                          ))}
+                      </div>
+
+                      {/* GRID */}
+                      {renderPayrollGrid()}
                   </div>
               </div>
           )}

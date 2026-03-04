@@ -1,18 +1,12 @@
 "use client";
 import React, { useState, useEffect } from 'react';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Loader2, Coffee, Sun, Moon, Plane, User } from 'lucide-react';
+import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Loader2, User, Clock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, format, isSameMonth, isSameDay, parseISO } from 'date-fns';
-
-type Shift = {
-  id: string;
-  date: string;
-  shift_type: string;
-};
+import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, format, isSameMonth, isSameDay } from 'date-fns';
 
 export default function MySchedulePage() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [shifts, setShifts] = useState<Record<string, string>>({});
+  const [attendance, setAttendance] = useState<Record<string, any>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [hostInfo, setHostInfo] = useState<{name: string, id: string} | null>(null);
 
@@ -36,27 +30,36 @@ export default function MySchedulePage() {
     const endDate = format(endOfWeek(endOfMonth(monthDate)), 'yyyy-MM-dd');
 
     const { data } = await supabase
-        .from('hsk_roster')
-        .select('date, shift_type')
+        .from('hsk_attendance')
+        .select('date, status_code, shift_type')
         .eq('host_id', hostId)
         .gte('date', startDate)
         .lte('date', endDate);
 
     if (data) {
-        const shiftMap: Record<string, string> = {};
-        data.forEach((row: { date: string; shift_type: string }) => {
-            shiftMap[row.date] = row.shift_type;
+        const attMap: Record<string, any> = {};
+        data.forEach((row) => {
+            attMap[row.date] = row;
         });
-        setShifts(shiftMap);
+        setAttendance(attMap);
     }
     
     setIsLoading(false);
   };
 
-  const nextMonth = () => setCurrentMonth(addDays(currentMonth, 31));
-  const prevMonth = () => setCurrentMonth(addDays(currentMonth, -31));
+  const nextMonth = () => {
+      const d = new Date(currentMonth);
+      d.setMonth(d.getMonth() + 1);
+      setCurrentMonth(d);
+  };
+  
+  const prevMonth = () => {
+      const d = new Date(currentMonth);
+      d.setMonth(d.getMonth() - 1);
+      setCurrentMonth(d);
+  };
 
-  // --- CALENDAR GRID RENDERER ---
+  // --- DESKTOP-FRIENDLY CALENDAR GRID RENDERER ---
   const renderCells = () => {
     const monthStart = startOfMonth(currentMonth);
     const monthEnd = endOfMonth(monthStart);
@@ -66,68 +69,91 @@ export default function MySchedulePage() {
     const rows = [];
     let days = [];
     let day = startDate;
-    let formattedDate = '';
 
     while (day <= endDate) {
       for (let i = 0; i < 7; i++) {
-        formattedDate = format(day, 'yyyy-MM-dd');
-        const shiftType = shifts[formattedDate];
+        const dateStr = format(day, 'yyyy-MM-dd');
+        const record = attendance[dateStr];
         const isCurrentMonth = isSameMonth(day, monthStart);
         const isToday = isSameDay(day, new Date());
 
-        // Styling logic based on shift type
-        let bgStyle = 'bg-white text-slate-700';
-        let icon = null;
+        const status = record?.status_code || '';
+        const duty = record?.shift_type || '';
 
-        if (shiftType === 'OFF') {
-            bgStyle = 'bg-blue-50 border-blue-200 text-blue-700';
-            icon = <Coffee size={14} className="text-blue-500 mb-1" />;
-        } else if (shiftType === 'Morning') {
-            bgStyle = 'bg-emerald-50 border-emerald-200 text-emerald-700';
-            icon = <Sun size={14} className="text-emerald-500 mb-1" />;
-        } else if (shiftType === 'Evening') {
-            bgStyle = 'bg-indigo-50 border-indigo-200 text-indigo-700';
-            icon = <Moon size={14} className="text-indigo-500 mb-1" />;
-        } else if (shiftType === 'VAC') {
-            bgStyle = 'bg-amber-50 border-amber-200 text-amber-700';
-            icon = <Plane size={14} className="text-amber-500 mb-1" />;
+        // Color Logic
+        let bgClass = 'bg-white hover:bg-slate-50 border-slate-200';
+        let textClass = 'text-slate-700';
+        let badgeClass = 'bg-slate-100 text-slate-500 border-slate-200';
+
+        if (status === 'O' || status === 'OFF') { 
+            bgClass = 'bg-blue-50/50 border-blue-100 hover:bg-blue-50'; 
+            textClass = 'text-blue-800'; 
+            badgeClass = 'bg-blue-100 text-blue-700 border-blue-200';
+        } else if (status === 'AL' || status === 'VAC') { 
+            bgClass = 'bg-cyan-50/50 border-cyan-100 hover:bg-cyan-50'; 
+            textClass = 'text-cyan-800'; 
+            badgeClass = 'bg-cyan-100 text-cyan-700 border-cyan-200';
+        } else if (status === 'P') { 
+            bgClass = 'bg-emerald-50/50 border-emerald-100 hover:bg-emerald-50'; 
+            textClass = 'text-emerald-800'; 
+            badgeClass = 'bg-emerald-100 text-emerald-700 border-emerald-200';
+        } else if (status === 'SL' || status === 'A' || status === 'NP') { 
+            bgClass = 'bg-rose-50/50 border-rose-100 hover:bg-rose-50'; 
+            textClass = 'text-rose-800'; 
+            badgeClass = 'bg-rose-100 text-rose-700 border-rose-200';
+        } else if (status === 'PH' || status === 'RR') { 
+            bgClass = 'bg-fuchsia-50/50 border-fuchsia-100 hover:bg-fuchsia-50'; 
+            textClass = 'text-fuchsia-800'; 
+            badgeClass = 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200';
         }
 
         if (!isCurrentMonth) {
-            bgStyle = 'bg-slate-50 text-slate-300 border-transparent';
-            icon = null;
+            bgClass = 'bg-slate-50/50 border-transparent opacity-40';
         }
 
         days.push(
-          <div key={day.toString()} className={`aspect-square p-1 sm:p-2 flex flex-col items-center justify-center rounded-xl sm:rounded-2xl border-2 transition-all ${bgStyle} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-2' : ''}`}>
-             {icon}
-             <span className={`text-sm sm:text-lg font-black ${!isCurrentMonth ? 'opacity-50' : ''}`}>{format(day, 'd')}</span>
-             {shiftType && isCurrentMonth && (
-                 <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-wider mt-1">{shiftType}</span>
+          <div 
+            key={dateStr} 
+            className={`min-h-[90px] xl:min-h-[110px] p-2 xl:p-3 flex flex-col rounded-2xl border-2 transition-all ${bgClass} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-2 shadow-md transform scale-105 z-10 bg-white' : ''}`}
+          >
+             <span className={`text-sm xl:text-lg font-black mb-1 ${isToday ? 'text-[#6D2158]' : textClass}`}>
+                 {format(day, 'd')}
+             </span>
+             
+             {isCurrentMonth && status && (
+                 <span className={`px-2 py-0.5 rounded-lg text-[9px] xl:text-[10px] font-black uppercase tracking-widest w-fit mb-1 border shadow-sm ${badgeClass}`}>
+                     {status}
+                 </span>
+             )}
+
+             {isCurrentMonth && duty && (
+                 <div className={`mt-auto flex items-center gap-1 text-[9px] xl:text-[10px] font-bold uppercase ${textClass} opacity-80`}>
+                     <Clock size={10} className="shrink-0"/> <span className="truncate">{duty}</span>
+                 </div>
              )}
           </div>
         );
         day = addDays(day, 1);
       }
-      rows.push(<div className="grid grid-cols-7 gap-2 sm:gap-3 mb-2 sm:mb-3" key={day.toString()}>{days}</div>);
+      rows.push(<div className="grid grid-cols-7 gap-2 xl:gap-4 mb-2 xl:mb-4" key={day.toString()}>{days}</div>);
       days = [];
     }
-    return <div className="mt-4">{rows}</div>;
+    return <div className="mt-2">{rows}</div>;
   };
 
   if (!hostInfo) return <div className="min-h-screen bg-[#FDFBFD] flex justify-center items-center"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>;
 
   return (
-    <div className="min-h-screen bg-[#FDFBFD] p-4 sm:p-6 pb-24 font-antiqua text-[#6D2158] max-w-3xl mx-auto">
+    <div className="min-h-screen bg-[#FDFBFD] p-4 sm:p-6 pb-24 font-antiqua text-[#6D2158] max-w-6xl mx-auto">
       
       {/* HEADER */}
       <div className="flex flex-col mb-8 bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100">
-         <div className="flex items-center gap-4 mb-4">
-             <div className="w-14 h-14 bg-[#6D2158] text-white rounded-full flex items-center justify-center font-bold text-xl shadow-md">
+         <div className="flex items-center gap-4">
+             <div className="w-14 h-14 bg-[#6D2158] text-white rounded-full flex items-center justify-center font-bold text-xl shadow-md shrink-0">
                  {hostInfo.name.charAt(0)}
              </div>
              <div>
-                 <h1 className="text-2xl font-black tracking-tight text-slate-800">{hostInfo.name}</h1>
+                 <h1 className="text-2xl font-black tracking-tight text-slate-800 line-clamp-1">{hostInfo.name}</h1>
                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1 flex items-center gap-1">
                     <User size={12}/> Host ID: {hostInfo.id}
                  </p>
@@ -135,20 +161,22 @@ export default function MySchedulePage() {
          </div>
       </div>
 
-      {/* CALENDAR CONTROLS */}
-      <div className="bg-white p-4 sm:p-6 rounded-[2rem] shadow-xl border border-slate-100">
+      {/* CALENDAR CONTROLS & GRID */}
+      <div className="bg-white p-4 sm:p-6 xl:p-8 rounded-[2.5rem] shadow-xl border border-slate-100 overflow-hidden">
           <div className="flex justify-between items-center mb-6">
-              <button onClick={prevMonth} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-full text-slate-500 transition-colors"><ChevronLeft size={20}/></button>
-              <h2 className="text-xl font-black uppercase tracking-widest text-[#6D2158] flex items-center gap-2">
-                  <CalendarIcon size={20}/> {format(currentMonth, 'MMMM yyyy')}
-              </h2>
-              <button onClick={nextMonth} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-full text-slate-500 transition-colors"><ChevronRight size={20}/></button>
+              <button onClick={prevMonth} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-full text-slate-500 transition-colors shadow-sm"><ChevronLeft size={20}/></button>
+              <div className="text-center">
+                  <h2 className="text-lg xl:text-xl font-black uppercase tracking-widest text-[#6D2158] flex items-center justify-center gap-2">
+                      <CalendarIcon size={20}/> {format(currentMonth, 'MMMM yyyy')}
+                  </h2>
+              </div>
+              <button onClick={nextMonth} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-full text-slate-500 transition-colors shadow-sm"><ChevronRight size={20}/></button>
           </div>
 
           {/* DAY NAMES */}
-          <div className="grid grid-cols-7 gap-2 sm:gap-3 mb-2">
+          <div className="grid grid-cols-7 gap-2 xl:gap-4 mb-2">
               {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-                  <div key={d} className="text-center text-[10px] sm:text-xs font-black uppercase text-slate-400 tracking-widest">
+                  <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
                       {d}
                   </div>
               ))}
@@ -156,7 +184,7 @@ export default function MySchedulePage() {
 
           {/* GRID */}
           {isLoading ? (
-              <div className="h-64 flex justify-center items-center"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>
+              <div className="h-[400px] flex justify-center items-center"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>
           ) : (
               renderCells()
           )}

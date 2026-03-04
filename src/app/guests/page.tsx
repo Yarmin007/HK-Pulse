@@ -108,6 +108,7 @@ type ChangeLog = {
 };
 
 export default function HousekeepingSummaryPage() {
+  const [isAdmin, setIsAdmin] = useState(false);
   const [selectedDate, setSelectedDate] = useState(getToday());
   const [masterList, setMasterList] = useState<GuestRecord[]>([]);
   const [fileInputKey, setFileInputKey] = useState(0); 
@@ -132,6 +133,15 @@ export default function HousekeepingSummaryPage() {
   };
 
   useEffect(() => {
+    // Check Auth for Read Only State
+    const sessionData = localStorage.getItem('hk_pulse_session');
+    if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        setIsAdmin(parsed.system_role === 'admin');
+    } else if (localStorage.getItem('hk_pulse_admin_auth') === 'true') {
+        setIsAdmin(true);
+    }
+
     fetchDailyData();
 
     const channel = supabase
@@ -662,12 +672,6 @@ export default function HousekeepingSummaryPage() {
       toast.success("Rollover Complete!");
   };
 
-  const exportPDF = () => {
-      const doc = new jsPDF('p', 'mm', 'a4');
-      autoTable(doc, { head: [['Villa', 'Status', 'Guest', 'Pax', 'GEM']], body: masterList.map(r => [r.villa_number, r.status, r.guest_name, r.pax_adults+r.pax_kids, r.gem_name]) });
-      doc.save(`HK_Summary_${selectedDate}.pdf`);
-  };
-
   const getStatusColor = (s: string) => {
       const st = s?.toUpperCase() || 'VAC';
       if(st === 'VM/VAC') return 'text-slate-500 bg-slate-200 border border-slate-300';
@@ -720,25 +724,28 @@ export default function HousekeepingSummaryPage() {
               <button onClick={() => changeDate(1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronRight size={16}/></button>
            </div>
            
-           <button onClick={handleRollOver} disabled={isRollingOver} className="flex items-center gap-2 bg-amber-50 border border-amber-100 text-amber-700 hover:bg-amber-100 px-3 py-2 rounded-lg text-xs font-bold transition-all">
-                {isRollingOver ? <Loader2 size={16} className="animate-spin"/> : <RotateCw size={16}/>} <span className="hidden sm:inline">Roll Over</span>
-           </button>
+           {isAdmin && (
+               <>
+                   <button onClick={handleRollOver} disabled={isRollingOver} className="flex items-center gap-2 bg-amber-50 border border-amber-100 text-amber-700 hover:bg-amber-100 px-3 py-2 rounded-lg text-xs font-bold transition-all">
+                        {isRollingOver ? <Loader2 size={16} className="animate-spin"/> : <RotateCw size={16}/>} <span className="hidden sm:inline">Roll Over</span>
+                   </button>
 
-           <input key={`occ-${fileInputKey}`} type="file" id="fileOcc" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'OCC')} />
-           <button onClick={() => document.getElementById('fileOcc')?.click()} className="flex items-center gap-2 bg-white border border-slate-200 hover:border-emerald-600 text-slate-600 hover:text-emerald-700 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm">
-              {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span className="hidden sm:inline">OCC Report</span>
-           </button>
+                   <input key={`occ-${fileInputKey}`} type="file" id="fileOcc" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'OCC')} />
+                   <button onClick={() => document.getElementById('fileOcc')?.click()} className="flex items-center gap-2 bg-white border border-slate-200 hover:border-emerald-600 text-slate-600 hover:text-emerald-700 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm">
+                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span className="hidden sm:inline">OCC Report</span>
+                   </button>
 
-           <input key={`arr-${fileInputKey}`} type="file" id="fileXML" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'ARRDEP_XML')} />
-           <button onClick={() => document.getElementById('fileXML')?.click()} className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm">
-              {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span className="hidden sm:inline">Arrivals</span>
-           </button>
+                   <input key={`arr-${fileInputKey}`} type="file" id="fileXML" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'ARRDEP_XML')} />
+                   <button onClick={() => document.getElementById('fileXML')?.click()} className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm">
+                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span className="hidden sm:inline">Arrivals</span>
+                   </button>
 
-           <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".xlsm,.xlsx,.xls,.xml" onChange={(e) => handleFileProcess(e, 'OPERATIONAL_MEMO')} />
-           <button onClick={() => document.getElementById('fileMemo')?.click()} className="flex items-center gap-2 bg-[#6D2158] text-white px-3 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-[#5a1b49] transition-all">
-              {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span className="hidden sm:inline">Arr/Dep Memo</span>
-           </button>
-
+                   <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".xlsm,.xlsx,.xls,.xml" onChange={(e) => handleFileProcess(e, 'OPERATIONAL_MEMO')} />
+                   <button onClick={() => document.getElementById('fileMemo')?.click()} className="flex items-center gap-2 bg-[#6D2158] text-white px-3 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-[#5a1b49] transition-all">
+                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span className="hidden sm:inline">Arr/Dep Memo</span>
+                   </button>
+               </>
+           )}
         </div>
       </div>
 
@@ -766,7 +773,7 @@ export default function HousekeepingSummaryPage() {
                   {/* STICKY VILLA COLUMN WITH INLINE MOVE BUTTON */}
                   <td className="py-2 px-4 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-50">
                       <div className="flex items-center gap-2">
-                          <button onClick={() => { setMoveData({from: row.villa_number, to: '', type: 'VM/OCC'}); setIsMoveModalOpen(true); }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
+                          <button onClick={() => { if(isAdmin){ setMoveData({from: row.villa_number, to: '', type: 'VM/OCC'}); setIsMoveModalOpen(true); } }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
                               <ArrowRightLeft size={12}/>
                           </button>
                           <span className="font-bold text-sm text-slate-700">{row.villa_number}</span>
@@ -775,7 +782,7 @@ export default function HousekeepingSummaryPage() {
 
                   <td className="py-2 px-4"><span className={`px-2 py-1 rounded text-[10px] font-bold uppercase ${getStatusColor(row.status)}`}>{row.status}</span></td>
                   
-                  <td className="py-2 px-4 cursor-pointer" onClick={() => { setEditingRecord(row); setIsEditOpen(true); }}>
+                  <td className="py-2 px-4 cursor-pointer" onClick={() => { if(isAdmin){ setEditingRecord(row); setIsEditOpen(true); } }}>
                     <div className="flex flex-col gap-1 py-1">
                         {row.guest_name ? row.guest_name.split(' & ').map((name, idx) => {
                             const isChild = name.includes('Mstr') || name.includes('Miss') || name.includes(' yrs)');
@@ -786,7 +793,7 @@ export default function HousekeepingSummaryPage() {
                                     ) : (
                                         <User size={12} className="text-slate-400 mt-0.5 shrink-0"/>
                                     )}
-                                    <span className={`text-[11px] font-bold leading-tight group-hover:text-[#6D2158] transition-colors ${row.status === 'VAC' ? 'text-slate-300' : 'text-slate-700'}`}>
+                                    <span className={`text-[11px] font-bold leading-tight transition-colors ${isAdmin ? 'group-hover:text-[#6D2158]' : ''} ${row.status === 'VAC' ? 'text-slate-300' : 'text-slate-700'}`}>
                                         {name.trim()}
                                     </span>
                                 </div>
@@ -813,7 +820,11 @@ export default function HousekeepingSummaryPage() {
                       {row.arrival_time && <span className="block text-emerald-600">Arr: {row.arrival_time}</span>}
                       {row.departure_time && <span className="block text-rose-600">Dep: {row.departure_time}</span>}
                   </td>
-                  <td className="py-2 px-4 text-right"><button onClick={() => { setEditingRecord(row); setIsEditOpen(true); }} className="p-1.5 text-slate-300 hover:text-[#6D2158] hover:bg-[#6D2158]/10 rounded-lg transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100"><Edit3 size={14}/></button></td>
+                  <td className="py-2 px-4 text-right">
+                    {isAdmin && (
+                        <button onClick={() => { setEditingRecord(row); setIsEditOpen(true); }} className="p-1.5 text-slate-300 hover:text-[#6D2158] hover:bg-[#6D2158]/10 rounded-lg transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100"><Edit3 size={14}/></button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
