@@ -3,7 +3,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Download, AlertTriangle, Calendar, FileText } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-// --- TYPES ---
 type DailyRecord = {
   dateStr: string; 
   day: number;
@@ -324,7 +323,8 @@ export default function WaterProductionPage() {
   if (!isMounted) return null;
 
   return (
-    <div className="h-screen flex flex-col bg-white text-slate-900 font-sans text-xs">
+    // FIX: Using absolute inset-0 overrides any top padding from layouts, ensuring mobile visibility
+    <div className="absolute inset-0 md:static z-[60] md:z-10 flex flex-col bg-slate-100 text-slate-900 font-sans text-xs overflow-hidden">
       <style dangerouslySetInnerHTML={{__html: `
         input[type="number"]::-webkit-inner-spin-button,
         input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -334,7 +334,7 @@ export default function WaterProductionPage() {
       {errorMessage && <div className="bg-red-500 text-white text-center py-1 font-bold flex justify-center items-center gap-2"><AlertTriangle size={12}/> {errorMessage}</div>}
 
       <div className="bg-white border-b border-slate-300 shadow-sm shrink-0 z-40">
-        <div className="px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div className="px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 mt-8 md:mt-0">
             <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
                 <div className="flex items-center gap-3">
                     <div className="bg-[#6D2158] p-2 rounded-lg text-white shadow-md"><Droplets size={20} /></div>
@@ -361,7 +361,7 @@ export default function WaterProductionPage() {
         </div>
         
         {/* STATS AREA */}
-        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 overflow-x-auto">
+        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 overflow-x-auto no-scrollbar">
             <div className="flex gap-3 min-w-max">
                 <StatCard label="Total L" val={(stats.l_still + stats.l_spk).toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
                 <StatCard label="Still L" val={stats.l_still.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
@@ -409,7 +409,7 @@ export default function WaterProductionPage() {
       {/* --- DESKTOP VIEW: SPREADSHEET --- */}
       <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4">
         <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
-            <div className="overflow-auto flex-1">
+            <div className="overflow-auto flex-1 custom-scrollbar">
                 <table className="w-full table-fixed border-collapse text-[10px]">
                     <thead className="bg-slate-50 border-b-2 border-slate-300">
                         <tr>
@@ -418,7 +418,6 @@ export default function WaterProductionPage() {
                             <GroupHeader label="500 ML" color="bg-blue-50 text-blue-900 border-blue-200" span={4} />
                             <GroupHeader label="350 ML" color="bg-purple-50 text-purple-900 border-purple-200" span={6} />
                             <GroupHeader label="250 / 200 ML" color="bg-amber-50 text-amber-900 border-amber-200" span={3} />
-                            {/* --- ADDED DAILY TOTALS HEADER --- */}
                             <GroupHeader label="DAILY TOTALS (L)" color="bg-indigo-50 text-indigo-900 border-indigo-200" span={4} />
                         </tr>
                         <tr className="text-[9px] font-bold text-slate-600 uppercase">
@@ -426,7 +425,6 @@ export default function WaterProductionPage() {
                             <SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="TROPIC" span={1} /><SubGroupHeader label="RETURN" span={1} dim /><SubGroupHeader label="BRK" span={1} end isRed />
                             <SubGroupHeader label="SPA" span={1} /><SubGroupHeader label="WS" span={1} /><SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
                             <SubGroupHeader label="TMA" span={1} /><SubGroupHeader label="BRK" span={2} end isRed />
-                            {/* --- ADDED DAILY TOTALS SUBHEADER --- */}
                             <SubGroupHeader label="STILL" span={2} />
                             <SubGroupHeader label="SPARK" span={2} end />
                         </tr>
@@ -435,7 +433,6 @@ export default function WaterProductionPage() {
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
                             <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="STILL" dim /><ColHeader label="SPK" dim /><ColHeader label="-" brk end />
                             <ColHeader label="250" /><ColHeader label="250" brk /><ColHeader label="200" brk end />
-                            {/* --- ADDED DAILY TOTALS COLUMNS --- */}
                             <ColHeader label="PROD" highlight />
                             <ColHeader label="RET" dim />
                             <ColHeader label="PROD" highlight />
@@ -446,7 +443,6 @@ export default function WaterProductionPage() {
                         {records.map((r, i) => {
                             const hasData = hasRowData(r);
                             
-                            // CALCULATE ROW TOTALS IN LITERS
                             const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
                             const stillRetL = (r.b1000_ret_still * 1) + (r.b500_ret_still * 0.5) + (r.b350_ret_still * 0.35);
                             const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
@@ -459,7 +455,6 @@ export default function WaterProductionPage() {
                                         <Cell key={idx} val={r[col.key]} onChange={(v) => handleChange(i, col.key as string, v)} bg={col.bg} isBreak={col.isBreak} dim={col.dim} end={col.end} showDash={hasRowData(r)} />
                                     ))}
                                     
-                                    {/* --- ADDED DAILY TOTALS CELLS --- */}
                                     <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
                                         <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
                                             {stillProdL > 0 ? stillProdL.toFixed(1) : (hasData ? '0.0' : '')}
@@ -490,12 +485,11 @@ export default function WaterProductionPage() {
       </div>
 
       {/* --- MOBILE VIEW: CARD LIST --- */}
-      <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3">
+      <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3 pb-24 custom-scrollbar">
         {records.map((r, i) => {
             const hasData = hasRowData(r);
             const totalBottles = (r.b1000_fnb_still + r.b1000_fnb_spk + r.b500_hsk_still + r.b500_tropic_still + r.b350_spa_still + r.b350_ws_still + r.b350_hsk_spk + r.b250_tma_still);
             
-            // LITER CALCULATIONS FOR MOBILE CARD
             const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
             const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
 
@@ -526,7 +520,7 @@ export default function WaterProductionPage() {
       {/* --- MOBILE EDIT MODAL --- */}
       {mobileEditIndex !== null && (
         <div className="fixed inset-0 z-50 bg-white flex flex-col md:hidden animate-in slide-in-from-bottom-full duration-200">
-            <div className="bg-[#6D2158] text-white p-4 flex justify-between items-center shrink-0">
+            <div className="bg-[#6D2158] text-white p-4 flex justify-between items-center shrink-0 pt-12">
                 <div className="flex items-center gap-2">
                     <Calendar size={18}/>
                     <span className="font-bold text-lg">{selectedDate.toLocaleString('default', { month: 'long' })} {records[mobileEditIndex].day}</span>
@@ -534,7 +528,7 @@ export default function WaterProductionPage() {
                 <button onClick={() => setMobileEditIndex(null)} className="p-2 bg-white/20 rounded-full"><X size={20}/></button>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-20">
+            <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-20 custom-scrollbar">
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                     <h3 className="font-bold text-emerald-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 1000 ML</h3>
                     <div className="grid grid-cols-2 gap-4">
