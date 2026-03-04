@@ -175,7 +175,8 @@ export default function Dashboard() {
                   const d = parseISO(a.date);
                   return d >= accrualStart && d <= endOfPrevYear;
               });
-              const penaltyBefore = recordsBefore.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+              // FIX: Remove SL from penalty list
+              const penaltyBefore = recordsBefore.filter(a => ['NP', 'A'].includes(a.status_code)).length;
               const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
               
               cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
@@ -198,7 +199,8 @@ export default function Dashboard() {
               const d = parseISO(a.date);
               return d >= trackingStartThisYear && d <= targetDate;
           });
-          const penaltyDays = recordsThisYear.filter(a => ['SL', 'NP', 'A'].includes(a.status_code)).length;
+          // FIX: Remove SL from penalty list
+          const penaltyDays = recordsThisYear.filter(a => ['NP', 'A'].includes(a.status_code)).length;
           const eligibleDays = Math.max(0, daysActive - penaltyDays);
           
           earnedOff = eligibleDays / 7;
