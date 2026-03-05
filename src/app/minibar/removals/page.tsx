@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, Loader2, Save, X, Search, CheckCircle2, 
   Trash2, Bell, LayoutGrid, Users, Target, User, Plus, 
-  RefreshCw, Send, MessageCircle, Box, AlertTriangle
+  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -68,12 +68,14 @@ export default function ExpiryRemovalsAdmin() {
   const [removals, setRemovals] = useState<any[]>([]);
   
   const [hosts, setHosts] = useState<any[]>([]);
+  const [masterCatalog, setMasterCatalog] = useState<any[]>([]);
   
   // Search States
   const [hostSearch, setHostSearch] = useState('');
   const [showHostDropdown, setShowHostDropdown] = useState(false);
   const [assignedSearch, setAssignedSearch] = useState(''); 
   const [matrixSearch, setMatrixSearch] = useState(''); 
+  const [catalogSearch, setCatalogSearch] = useState('');
   
   const [allBatches, setAllBatches] = useState<any[]>([]);
   const [doubleVillasStr, setDoubleVillasStr] = useState<string>('');
@@ -128,7 +130,7 @@ export default function ExpiryRemovalsAdmin() {
         supabase.from('hsk_expiry_allocations').select('*').eq('month_period', selectedMonth).order('created_at', { ascending: true }),
         supabase.from('hsk_expiry_removals').select('*').eq('month_period', selectedMonth),
         supabase.from('hsk_expiry_batches').select('*').neq('status', 'Archived'),
-        supabase.from('hsk_master_catalog').select('article_number, article_name'),
+        supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
         supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'),
         supabase.from('hsk_constants').select('*').eq('type', 'double_mb_villas').maybeSingle()
     ]);
@@ -137,6 +139,7 @@ export default function ExpiryRemovalsAdmin() {
     if (remRes.data) setRemovals(remRes.data);
     if (hostRes.data) setHosts(hostRes.data);
     if (constRes.data) setDoubleVillasStr(constRes.data.label);
+    if (masterRes.data) setMasterCatalog(masterRes.data);
 
     if (allocRes.data) {
         const allocMap: Record<string, string> = {};
@@ -154,8 +157,8 @@ export default function ExpiryRemovalsAdmin() {
 
     if (batchRes.data && masterRes.data) {
         const mappedBatches = batchRes.data.map(b => {
-            const master = masterRes.data.find(m => m.article_number === b.article_number);
-            return { ...b, article_name: master?.article_name || b.article_number };
+            const master = masterRes.data.find((m: any) => m.article_number === b.article_number);
+            return { ...b, article_name: master?.generic_name || master?.article_name || b.article_number };
         });
         setAllBatches(mappedBatches);
     }
@@ -186,9 +189,9 @@ export default function ExpiryRemovalsAdmin() {
       setIsSaving(false);
   };
 
-  const handleAddTarget = async (batch: any) => {
+  const handleAddBatchTarget = async (batch: any) => {
       const exists = targets.find(t => t.article_number === batch.article_number && t.expiry_date === batch.expiry_date);
-      if (exists) return toast.error("Already in target list!");
+      if (exists) return toast.error("Batch already in target list!");
 
       const { error } = await supabase.from('hsk_expiry_targets').insert({
           month_period: selectedMonth,
@@ -197,7 +200,21 @@ export default function ExpiryRemovalsAdmin() {
           expiry_date: batch.expiry_date
       });
 
-      if (!error) { toast.success("Added to Targets!"); fetchData(); }
+      if (!error) { toast.success("Added Expiry Batch to Targets!"); fetchData(); }
+  };
+
+  const handleAddCatalogTarget = async (item: any, type: 'MISSING' | 'REFILL') => {
+      const exists = targets.find(t => t.article_number === item.article_number && (t.expiry_date === type || (!t.expiry_date && type === 'MISSING')));
+      if (exists) return toast.error(`Already active as a ${type} task!`);
+
+      const { error } = await supabase.from('hsk_expiry_targets').insert({
+          month_period: selectedMonth,
+          article_number: item.article_number,
+          article_name: item.generic_name || item.article_name,
+          expiry_date: type === 'MISSING' ? null : type
+      });
+
+      if (!error) { toast.success(`Added ${type} Task!`); fetchData(); }
   };
 
   const handleRemoveTarget = async (id: string) => {
@@ -235,7 +252,7 @@ export default function ExpiryRemovalsAdmin() {
           dict[rem.villa_number].status = rem.status;
           if (rem.removal_data && Array.isArray(rem.removal_data)) {
               rem.removal_data.forEach((item: any) => {
-                  const key = `${item.article_number}_${item.expiry_date}`;
+                  const key = item.article_number; // Map precisely by article number now
                   dict[rem.villa_number].items[key] = {
                       removed: item.qty,
                       refilled: item.refilled_qty !== undefined ? item.refilled_qty : item.qty
@@ -257,6 +274,19 @@ export default function ExpiryRemovalsAdmin() {
       return set;
   }, [allocations, dvList, parseVillas]);
 
+  const groupedTargets = useMemo(() => {
+      const map: Record<string, any> = {};
+      targets.forEach(t => {
+          if (!map[t.article_number]) {
+              map[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [] };
+          }
+          if (t.expiry_date) {
+              map[t.article_number].dates.push(t.expiry_date);
+          }
+      });
+      return Object.values(map);
+  }, [targets]);
+
   if (!isMounted) return null;
 
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
@@ -274,6 +304,9 @@ export default function ExpiryRemovalsAdmin() {
       if (!matrixSearch) return true;
       return host.full_name.toLowerCase().includes(matrixSearch.toLowerCase()) || host.host_id.includes(matrixSearch);
   });
+
+  // Filter out batches that have already been added to current targets
+  const availableBatches = allBatches.filter(b => !targets.some(t => t.article_number === b.article_number && t.expiry_date === b.expiry_date));
 
   return (
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-antiqua text-[#6D2158] overflow-hidden">
@@ -338,7 +371,7 @@ export default function ExpiryRemovalsAdmin() {
                         const parsedVillas = parseVillas(villasStr, dvList);
                         if (parsedVillas.length === 0) return null;
 
-                        // Calculate Host Aggregated Totals (Combines multiple batches of same item)
+                        // Calculate Host Aggregated Totals globally by Article Number
                         const itemAggregates: Record<string, { name: string, qty: number }> = {};
 
                         targets.forEach(t => {
@@ -351,10 +384,10 @@ export default function ExpiryRemovalsAdmin() {
                             const villaData = matrixDict[v];
                             if (villaData && villaData.items) {
                                 targets.forEach(t => {
-                                    const key = `${t.article_number}_${t.expiry_date}`;
+                                    const key = t.article_number;
                                     if (villaData.items[key]) {
                                         const removed = villaData.items[key].removed || 0;
-                                        itemAggregates[t.article_number].qty += removed;
+                                        itemAggregates[key].qty += removed;
                                     }
                                 });
                             }
@@ -391,7 +424,7 @@ export default function ExpiryRemovalsAdmin() {
                                     </div>
                                 </div>
 
-                                {/* VILLAS GRID (BOX LAYOUT RESTORED) */}
+                                {/* VILLAS GRID */}
                                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
                                     {parsedVillas.map(v => {
                                         const villaData = matrixDict[v];
@@ -430,8 +463,8 @@ export default function ExpiryRemovalsAdmin() {
                                                             <CheckCircle2 size={24}/>
                                                         </div>
                                                     ) : (
-                                                        targets.map(t => {
-                                                            const key = `${t.article_number}_${t.expiry_date}`;
+                                                        targets.map((t: any, idx: number) => {
+                                                            const key = t.article_number;
                                                             const itemData = villaData?.items?.[key];
                                                             const removedQty = itemData?.removed || 0;
                                                             const refilledQty = itemData?.refilled || 0;
@@ -439,7 +472,7 @@ export default function ExpiryRemovalsAdmin() {
                                                             if (removedQty > 0) {
                                                                 const warning = status === 'Refilled' && refilledQty < removedQty;
                                                                 return (
-                                                                    <div key={key} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
+                                                                    <div key={`${key}_${idx}`} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
                                                                         <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
                                                                         <span className="shrink-0 text-right">
                                                                             -{removedQty}
@@ -466,7 +499,7 @@ export default function ExpiryRemovalsAdmin() {
                         </div>
                     )}
 
-                    {/* UNASSIGNED CATCH-ALL (BOX LAYOUT RESTORED) */}
+                    {/* UNASSIGNED CATCH-ALL */}
                     {Object.keys(matrixDict).filter(v => !assignedVillasSet.has(v) && matrixDict[v].status !== null).length > 0 && (
                         <div className="bg-rose-50 border border-rose-200 rounded-3xl p-5 shadow-sm flex flex-col gap-4 mt-8">
                             <h3 className="font-bold text-rose-800 text-lg uppercase tracking-widest flex items-center gap-2">
@@ -505,8 +538,8 @@ export default function ExpiryRemovalsAdmin() {
                                                 {status === 'All OK' ? (
                                                     <div className="flex items-center justify-center py-2 text-emerald-500 opacity-70"><CheckCircle2 size={24}/></div>
                                                 ) : (
-                                                    targets.map(t => {
-                                                        const key = `${t.article_number}_${t.expiry_date}`;
+                                                    targets.map((t: any, idx: number) => {
+                                                        const key = t.article_number;
                                                         const itemData = vData?.items?.[key];
                                                         const removedQty = itemData?.removed || 0;
                                                         const refilledQty = itemData?.refilled || 0;
@@ -514,7 +547,7 @@ export default function ExpiryRemovalsAdmin() {
                                                         if (removedQty > 0) {
                                                             const warning = status === 'Refilled' && refilledQty < removedQty;
                                                             return (
-                                                                <div key={key} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
+                                                                <div key={`${key}_${idx}`} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
                                                                     <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
                                                                     <span className="shrink-0 text-right">
                                                                         -{removedQty}
@@ -545,7 +578,7 @@ export default function ExpiryRemovalsAdmin() {
                 <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 sticky top-0 z-50 shrink-0">
                     <div>
                         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Assign Audit Villas</h3>
-                        <p className="text-[10px] text-slate-400 font-bold mt-1">Assign villas for the expiry hunt.</p>
+                        <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
                     </div>
                     
                     <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
@@ -561,7 +594,7 @@ export default function ExpiryRemovalsAdmin() {
                                 onBlur={() => setTimeout(() => setShowHostDropdown(false), 200)} 
                             />
                             {showHostDropdown && (
-                                <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-2xl border border-slate-100 max-h-60 overflow-y-auto z-[100]">
+                                <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-slate-100 max-h-60 overflow-y-auto z-[100]">
                                     {availableHostsToAdd.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map(h => (
                                         <button key={h.id} onClick={() => { 
                                             setAllocations(prev => ({...prev, [h.host_id]: ''})); 
@@ -577,6 +610,10 @@ export default function ExpiryRemovalsAdmin() {
                                 </div>
                             )}
                         </div>
+
+                        <button onClick={() => setNotifyModal({ isOpen: true, host_id: '', name: '', msg: "Please check your assigned villas for new tasks." })} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-blue-500 shadow-md transition-all w-full sm:w-auto justify-center">
+                            <Bell size={16}/> Notify Team
+                        </button>
                         <button onClick={handleSaveAllocations} disabled={isSaving} className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-emerald-500 shadow-md transition-all w-full sm:w-auto justify-center">
                             {isSaving ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save Grid
                         </button>
@@ -653,6 +690,7 @@ export default function ExpiryRemovalsAdmin() {
             <div className="flex-1 flex flex-col min-h-0">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in h-full min-h-0">
                     
+                    {/* CURRENT MONTH TARGETS */}
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 flex flex-col h-full min-h-0 overflow-hidden">
                         <div className="p-5 border-b border-slate-100 bg-slate-50 shrink-0">
                             <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Target size={16}/> Target List: {selectedMonth}</h3>
@@ -660,10 +698,16 @@ export default function ExpiryRemovalsAdmin() {
                         </div>
                         <div className="p-4 flex-1 overflow-y-auto custom-scrollbar space-y-3 bg-slate-50/50">
                             {targets.map(t => (
-                                <div key={t.id} className="p-4 bg-white border border-rose-100 rounded-xl flex items-center justify-between shadow-sm">
+                                <div key={t.id} className="p-4 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-sm group">
                                     <div>
-                                        <span className="font-bold text-rose-900 text-sm">{t.article_name}</span>
-                                        <span className="text-[10px] font-black text-rose-600 uppercase tracking-widest mt-1 block">Exp: {format(parseISO(t.expiry_date), 'dd MMM yyyy')}</span>
+                                        <span className="font-bold text-slate-800 text-sm">{t.article_name}</span>
+                                        {t.expiry_date === 'REFILL' ? (
+                                            <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mt-1 block">Refill Task</span>
+                                        ) : (!t.expiry_date || t.expiry_date === 'MISSING') ? (
+                                            <span className="text-[10px] font-black text-blue-500 uppercase tracking-widest mt-1 block">Missing Check</span>
+                                        ) : (
+                                            <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest mt-1 block">Exp: {format(parseISO(t.expiry_date), 'dd MMM yyyy')}</span>
+                                        )}
                                     </div>
                                     <button onClick={() => handleRemoveTarget(t.id)} className="w-8 h-8 rounded-full bg-slate-50 text-slate-400 hover:bg-rose-600 hover:text-white flex items-center justify-center transition-all"><Trash2 size={14}/></button>
                                 </div>
@@ -672,21 +716,65 @@ export default function ExpiryRemovalsAdmin() {
                         </div>
                     </div>
 
+                    {/* ITEM FINDER / BATCH SELECTOR */}
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 flex flex-col h-full min-h-0 overflow-hidden">
                         <div className="p-5 border-b border-slate-100 bg-slate-50 shrink-0">
-                            <h3 className="font-bold text-slate-800 uppercase tracking-widest text-sm flex items-center gap-2"><Search size={16}/> Available Batches</h3>
-                            <p className="text-[10px] text-slate-400 font-bold mt-1">Select batches from the global expiry tracker to add to this month's targets.</p>
+                            <h3 className="font-bold text-slate-800 uppercase tracking-widest text-sm flex items-center gap-2"><Search size={16}/> Available Items & Batches</h3>
+                            <p className="text-[10px] text-slate-400 font-bold mt-1">Select known batches, or search to add a missing/refill check.</p>
+                            
+                            <div className="relative w-full mt-4">
+                                <ScanSearch className="absolute left-3 top-3 text-slate-400" size={16}/>
+                                <input 
+                                    type="text" 
+                                    className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] transition-colors shadow-sm" 
+                                    placeholder="Search catalog to add a task..." 
+                                    value={catalogSearch}
+                                    onChange={(e) => setCatalogSearch(e.target.value)}
+                                />
+                            </div>
                         </div>
+
                         <div className="p-4 flex-1 overflow-y-auto custom-scrollbar space-y-3 bg-slate-50/50">
-                            {allBatches.sort((a,b) => new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime()).map(b => (
-                                <div key={b.id} className="p-4 bg-white border border-slate-200 rounded-xl hover:border-[#6D2158] hover:shadow-md transition-all flex items-center justify-between group">
-                                    <div className="flex flex-col">
-                                        <span className="font-bold text-slate-800 text-sm">{b.article_name}</span>
-                                        <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest mt-1 bg-rose-50 px-2 py-0.5 rounded-md w-fit border border-rose-100">Exp: {format(parseISO(b.expiry_date), 'dd MMM yyyy')}</span>
-                                    </div>
-                                    <button onClick={() => handleAddTarget(b)} className="w-10 h-10 rounded-full bg-slate-100 text-slate-500 group-hover:bg-[#6D2158] group-hover:text-white flex items-center justify-center transition-all shadow-sm active:scale-95"><Plus size={18}/></button>
-                                </div>
-                            ))}
+                            
+                            {/* IF SEARCHING -> SHOW CATALOG */}
+                            {catalogSearch.length > 0 ? (
+                                masterCatalog
+                                    .filter(m => m.article_name.toLowerCase().includes(catalogSearch.toLowerCase()) || m.article_number.includes(catalogSearch))
+                                    .filter(item => {
+                                        const hasMissing = targets.some(t => t.article_number === item.article_number && (!t.expiry_date || t.expiry_date === 'MISSING'));
+                                        const hasRefill = targets.some(t => t.article_number === item.article_number && t.expiry_date === 'REFILL');
+                                        return !(hasMissing && hasRefill);
+                                    })
+                                    .map(item => {
+                                        const hasMissing = targets.some(t => t.article_number === item.article_number && (!t.expiry_date || t.expiry_date === 'MISSING'));
+                                        const hasRefill = targets.some(t => t.article_number === item.article_number && t.expiry_date === 'REFILL');
+                                        
+                                        return (
+                                            <div key={item.article_number} className="p-4 bg-white border border-slate-200 rounded-xl hover:border-[#6D2158] hover:shadow-md transition-all flex flex-col gap-3 group">
+                                                <div className="font-bold text-slate-800 text-sm">{item.generic_name || item.article_name}</div>
+                                                <div className="flex gap-2">
+                                                    {!hasMissing && <button onClick={() => handleAddCatalogTarget(item, 'MISSING')} className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-bold uppercase hover:bg-blue-100 transition-colors">Add Missing</button>}
+                                                    {!hasRefill && <button onClick={() => handleAddCatalogTarget(item, 'REFILL')} className="flex-1 py-2 bg-emerald-50 text-emerald-600 rounded-lg text-[10px] font-bold uppercase hover:bg-emerald-100 transition-colors">Add Refill</button>}
+                                                </div>
+                                            </div>
+                                        );
+                                })
+                            ) : (
+                                /* IF NOT SEARCHING -> SHOW KNOWN EXPIRY BATCHES */
+                                availableBatches.length > 0 ? (
+                                    availableBatches.sort((a,b) => new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime()).map(b => (
+                                        <div key={b.id} className="p-4 bg-white border border-rose-100 rounded-xl hover:border-rose-300 hover:shadow-md transition-all flex items-center justify-between group">
+                                            <div className="flex flex-col">
+                                                <span className="font-bold text-rose-900 text-sm">{b.article_name}</span>
+                                                <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest mt-1">Exp: {format(parseISO(b.expiry_date), 'dd MMM yyyy')}</span>
+                                            </div>
+                                            <button onClick={() => handleAddBatchTarget(b)} className="w-10 h-10 rounded-full bg-rose-50 text-rose-500 group-hover:bg-rose-600 group-hover:text-white flex items-center justify-center transition-all shadow-sm active:scale-95"><Plus size={18}/></button>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <p className="text-center text-slate-400 italic text-sm py-10">No available batches to add.</p>
+                                )
+                            )}
                         </div>
                     </div>
 
@@ -699,12 +787,12 @@ export default function ExpiryRemovalsAdmin() {
       {notifyModal.isOpen && (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in zoom-in-95">
            <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
-               <h3 className="text-lg font-black text-[#6D2158] mb-1">Notify {notifyModal.name}</h3>
-               <p className="text-xs text-slate-400 font-bold uppercase mb-4">Send Push Notification</p>
+               <h3 className="text-lg font-black text-[#6D2158] mb-1">Notify Assigned Team</h3>
+               <p className="text-xs text-slate-400 font-bold uppercase mb-4">Send Push Notification to all active devices</p>
                <textarea className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none h-32 resize-none mb-4 shadow-inner focus:border-[#6D2158] transition-colors" value={notifyModal.msg} onChange={e => setNotifyModal({...notifyModal, msg: e.target.value})} />
                <div className="flex gap-2">
                    <button onClick={() => setNotifyModal({isOpen: false, host_id: '', name: '', msg: ''})} className="flex-1 py-3 text-slate-500 font-bold bg-slate-100 hover:bg-slate-200 rounded-xl text-xs uppercase transition-colors">Cancel</button>
-                   <button onClick={handleSendPush} className="flex-[1.5] py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs uppercase shadow-md flex justify-center items-center gap-2 transition-colors"><Send size={14}/> Send Ping</button>
+                   <button onClick={handleSendPush} className="flex-[1.5] py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs uppercase shadow-md flex justify-center items-center gap-2 transition-colors"><Send size={14}/> Send to All</button>
                </div>
            </div>
         </div>

@@ -1,15 +1,14 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Lock, User, Search, Plus, Minus, Save, CheckCircle2, 
-  Loader2, ChevronLeft, Wine, AlertCircle, Trash2, AlertTriangle, 
-  Clock, ListChecks, Target, RefreshCw
+  Lock, Plus, Minus, Save, CheckCircle2, 
+  Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, Search
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
 import toast from 'react-hot-toast';
 
-// DYNAMIC DAY/MONTH TIMEZONE FIX
 const getLocalToday = () => {
     const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -19,7 +18,6 @@ const getLocalMonth = () => {
     return getLocalToday().substring(0, 7);
 };
 
-// --- CUSTOM SORTING LOGIC ---
 const getCategoryWeight = (cat: string) => {
   const c = (cat || '').toLowerCase();
   if (c.includes('bite') || c.includes('sweet') || c.includes('food') || c.includes('snack')) return 1;
@@ -30,7 +28,6 @@ const getCategoryWeight = (cat: string) => {
   return 6;
 };
 
-// --- TYPES ---
 type Host = { id: string; full_name: string; host_id: string; };
 type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; };
 
@@ -66,7 +63,6 @@ export default function MyTasksResponsive() {
   const [currentHost, setCurrentHost] = useState<Host | null>(null);
   const [dailyTask, setDailyTask] = useState<{shift_type?: string, shift_note?: string} | null>(null);
 
-  // --- MINIBAR STATE ---
   const [invStatus, setInvStatus] = useState<'OPEN' | 'CLOSED'>('CLOSED');
   const [activePeriod, setActivePeriod] = useState<string>('');
   const [assignedVillas, setAssignedVillas] = useState<string[]>([]);
@@ -77,18 +73,14 @@ export default function MyTasksResponsive() {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [activeCategory, setActiveCategory] = useState('All');
 
-  // --- EXPIRY AUDIT STATE ---
   const [isExpiryMode, setIsExpiryMode] = useState(false);
   const [expiryTargets, setExpiryTargets] = useState<any[]>([]);
   const [expiryAssignedVillas, setExpiryAssignedVillas] = useState<string[]>([]);
   const [expiryVillaData, setExpiryVillaData] = useState<Record<string, any>>({}); 
   const [expiryCounts, setExpiryCounts] = useState<Record<string, number>>({});
-  
-  // NEW: State to track how many items are *actually* refilled during phase 2
   const [refillCounts, setRefillCounts] = useState<Record<string, number>>({});
 
   const [showSuccess, setShowSuccess] = useState(false);
-  const [toastMsg, setToastMsg] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
   useEffect(() => {
@@ -111,12 +103,38 @@ export default function MyTasksResponsive() {
     fetchCatalog();
   }, []);
 
-  // Initialize Refill Counts when entering Amber "Awaiting Refill" screen
+  // --- SMART GROUPING ENGINE ---
+  const groupedTargets = useMemo(() => {
+      const expMap: Record<string, any> = {};
+      const refMap: Record<string, any> = {};
+
+      expiryTargets.forEach(t => {
+          if (t.expiry_date === 'REFILL') {
+              if (!refMap[t.article_number]) refMap[t.article_number] = { ...t, type: 'REFILL' };
+          } else {
+              if (!expMap[t.article_number]) {
+                  expMap[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [], isMissing: false, type: 'EXPIRY' };
+              }
+              if (!t.expiry_date || t.expiry_date === 'MISSING') {
+                  expMap[t.article_number].isMissing = true;
+              } else {
+                  expMap[t.article_number].dates.push(t.expiry_date);
+              }
+          }
+      });
+
+      return {
+          expiry: Object.values(expMap),
+          refill: Object.values(refMap).filter(r => !expMap[r.article_number]) // Avoid duplicating if it's already in Expiry section
+      };
+  }, [expiryTargets]);
+
   useEffect(() => {
       if (step === 3 && isExpiryMode && selectedVilla && expiryVillaData[selectedVilla]?.status === 'Removed') {
           const initialRefills: Record<string, number> = {};
-          expiryVillaData[selectedVilla].removal_data.forEach((item: any) => {
-              initialRefills[item.article_number] = item.qty; // Default to full replacement
+          const currentRemovalData = expiryVillaData[selectedVilla]?.removal_data || [];
+          currentRemovalData.forEach((item: any) => {
+              initialRefills[item.article_number] = item.qty; 
           });
           setRefillCounts(initialRefills);
       }
@@ -124,15 +142,12 @@ export default function MyTasksResponsive() {
 
   const loadInitialData = async (hostId: string, isManualRefresh: boolean) => {
       setIsLoading(true);
-
       const todayStr = getLocalToday();
       const currentMonth = getLocalMonth();
 
-      // 1. Fetch Today's Duty
       const { data: att } = await supabase.from('hsk_attendance').select('shift_type, shift_note').eq('host_id', hostId).eq('date', todayStr).maybeSingle();
       if (att) setDailyTask(att);
 
-      // 2. Minibar Settings & Allocations
       const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
       const status = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
       const period = constData?.find(c => c.type === 'mb_active_period')?.label;
@@ -171,24 +186,20 @@ export default function MyTasksResponsive() {
           }
       }
 
-      // 3. Expiry Audit Data
       const [expiryTargetRes, expiryAllocRes, expiryRemRes] = await Promise.all([
           supabase.from('hsk_expiry_targets').select('*').eq('month_period', currentMonth),
           supabase.from('hsk_expiry_allocations').select('villas').eq('month_period', currentMonth).eq('host_id', hostId).maybeSingle(),
           supabase.from('hsk_expiry_removals').select('*').eq('month_period', currentMonth).eq('host_id', hostId)
       ]);
 
-      if (expiryAllocRes.error && expiryAllocRes.error.code !== 'PGRST116') toast.error("DB Error on Expiry Allocations.");
-
       if (expiryTargetRes.data) setExpiryTargets(expiryTargetRes.data);
       
       if (expiryAllocRes.data && expiryAllocRes.data.villas) {
           const parsedExpiryVillas = parseVillas(expiryAllocRes.data.villas, dvList);
           setExpiryAssignedVillas(parsedExpiryVillas);
-          if (isManualRefresh) toast.success(`Found ${parsedExpiryVillas.length} Expiry Villas!`);
+          if (isManualRefresh) toast.success(`Found ${parsedExpiryVillas.length} Audit Villas!`);
       } else {
           setExpiryAssignedVillas([]);
-          if (isManualRefresh) toast.error(`0 Expiry Villas assigned.`);
       }
 
       if (expiryRemRes.data) {
@@ -208,11 +219,6 @@ export default function MyTasksResponsive() {
         const filteredAndSorted = catRes.filter(i => !hiddenList.includes(i.article_number)).sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
         setCatalog(filteredAndSorted);
     }
-  };
-
-  const showNotification = (type: 'success' | 'error', text: string) => {
-      setToastMsg({ type, text });
-      setTimeout(() => setToastMsg(null), 4000);
   };
 
   // --- MINIBAR FUNCTIONS ---
@@ -291,7 +297,7 @@ export default function MyTasksResponsive() {
     const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
     setIsLoading(false);
 
-    if (error) { showNotification('error', `DB Error: Please contact Admin.`); } 
+    if (error) { toast.error(`DB Error: Please contact Admin.`); } 
     else {
         setCompletedVillas(prev => Array.from(new Set([...prev, selectedVilla])));
         setPreviousSubmissions(prev => ({ ...prev, [selectedVilla]: finalCounts }));
@@ -304,15 +310,16 @@ export default function MyTasksResponsive() {
       setSelectedVilla(villa);
       setIsExpiryMode(true);
       const initialCounts: Record<string, number> = {};
-      expiryTargets.forEach(t => { initialCounts[`${t.article_number}_${t.expiry_date}`] = 0; });
+      groupedTargets.expiry.forEach((t: any) => { initialCounts[t.article_number] = 0; });
+      groupedTargets.refill.forEach((t: any) => { initialCounts[t.article_number] = 0; });
       setExpiryCounts(initialCounts);
       setStep(3);
   };
 
-  const updateExpiryCount = (key: string, delta: number) => {
+  const updateExpiryCount = (artNo: string, delta: number) => {
       setExpiryCounts(prev => {
-          const next = (prev[key] || 0) + delta;
-          return { ...prev, [key]: next < 0 ? 0 : next };
+          const next = (prev[artNo] || 0) + delta;
+          return { ...prev, [artNo]: next < 0 ? 0 : next };
       });
   };
 
@@ -323,13 +330,27 @@ export default function MyTasksResponsive() {
       });
   };
 
+  const handleEditRemovals = () => {
+      const restoredCounts: Record<string, number> = {};
+      const currentRemovals = expiryVillaData[selectedVilla]?.removal_data || [];
+      
+      currentRemovals.forEach((item: any) => {
+          restoredCounts[item.article_number] = item.qty;
+      });
+      setExpiryCounts(restoredCounts);
+      
+      setExpiryVillaData(prev => ({
+          ...prev,
+          [selectedVilla]: { ...(prev[selectedVilla] || {}), status: 'Pending' } 
+      }));
+  };
+
   const submitExpiryRemovals = async (statusOverride: 'All OK' | 'Removed') => {
       setIsLoading(true);
       
-      const removalData = Object.entries(expiryCounts).filter(([_, qty]) => qty > 0).map(([key, qty]) => {
-              const [article_number, expiry_date] = key.split('_');
-              const target = expiryTargets.find(t => t.article_number === article_number && t.expiry_date === expiry_date);
-              return { article_number, expiry_date, name: target?.article_name, qty, refilled_qty: 0 };
+      const removalData = Object.entries(expiryCounts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => {
+              const target = groupedTargets.expiry.find((t: any) => t.article_number === artNo) || groupedTargets.refill.find((t: any) => t.article_number === artNo);
+              return { article_number: artNo, name: target?.article_name, qty, refilled_qty: 0 };
           });
 
       const payload = {
@@ -342,24 +363,35 @@ export default function MyTasksResponsive() {
           logged_at: new Date().toISOString()
       };
 
-      const { error } = await supabase.from('hsk_expiry_removals').insert(payload);
+      const { data: existing } = await supabase.from('hsk_expiry_removals')
+          .select('id').match({ villa_number: selectedVilla, month_period: getLocalMonth() }).maybeSingle();
+
+      let error;
+      if (existing && existing.id) {
+          const res = await supabase.from('hsk_expiry_removals').update(payload).eq('id', existing.id);
+          error = res.error;
+      } else {
+          const res = await supabase.from('hsk_expiry_removals').insert(payload);
+          error = res.error;
+      }
+
       setIsLoading(false);
 
       if (error) { 
-          toast.error("Failed to save expiry audit."); 
+          toast.error("Failed to save audit."); 
       } else {
           setExpiryVillaData(prev => ({ ...prev, [selectedVilla]: payload }));
           if (statusOverride === 'All OK') toast.success("Cleared! No items found.");
           else toast.success("Removals Recorded! Now fetch replacements.");
-          setShowSuccess(true);
+          
+          if (statusOverride === 'All OK') setShowSuccess(true);
       }
   };
 
   const confirmExpiryRefill = async () => {
       setIsLoading(true);
       
-      // Merge the actual refilled quantities back into the JSON data
-      const currentData = expiryVillaData[selectedVilla].removal_data;
+      const currentData = expiryVillaData[selectedVilla]?.removal_data || [];
       const updatedRemovalData = currentData.map((item: any) => ({
           ...item,
           refilled_qty: refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty
@@ -378,7 +410,7 @@ export default function MyTasksResponsive() {
       if (error) {
           toast.error("Failed to confirm refill.");
       } else {
-          const currentRecord = expiryVillaData[selectedVilla];
+          const currentRecord = expiryVillaData[selectedVilla] || {};
           setExpiryVillaData(prev => ({ ...prev, [selectedVilla]: { ...currentRecord, status: 'Refilled', removal_data: updatedRemovalData }}));
           toast.success("Replacements Confirmed!");
           setShowSuccess(true);
@@ -426,12 +458,12 @@ export default function MyTasksResponsive() {
                 ) : (
                     <div className="space-y-6">
                         
-                        {/* EXPIRY AUDIT CARD */}
+                        {/* EXPIRY & REFILL AUDIT CARD */}
                         {expiryAssignedVillas.length > 0 && (
                             <div className="bg-rose-50 p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-rose-100 animate-in slide-in-from-bottom-3">
                                 <div className="mb-6">
-                                    <h3 className="text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={20}/> Expiry Audit</h3>
-                                    <p className="text-xs text-rose-600/70 font-medium">Check these villas for expiring items.</p>
+                                    <h3 className="text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={20}/> Expiry & Refills</h3>
+                                    <p className="text-xs text-rose-600/70 font-medium">Check these villas for targeted missing or expiring items.</p>
                                 </div>
                                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4">
                                     {expiryAssignedVillas.map(villa => {
@@ -509,31 +541,6 @@ export default function MyTasksResponsive() {
                             </div>
                         )}
 
-                        {/* TODAY'S ALLOCATION CARD */}
-                        <div className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-2">
-                            <h3 className="text-xl font-bold text-slate-800 mb-1">Today's Allocation</h3>
-                            <p className="text-xs text-slate-400 mb-6 font-medium">Your assigned duty for today.</p>
-                            
-                            <div className="flex flex-col gap-4">
-                                <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                                    <div className="p-3 bg-white rounded-xl shadow-sm"><Clock size={20} className="text-[#6D2158]" /></div>
-                                    <div>
-                                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest">Duty Time</span>
-                                        <span className="font-bold text-lg text-slate-700">{dailyTask?.shift_type || 'No duty assigned'}</span>
-                                    </div>
-                                </div>
-                                {dailyTask?.shift_note && (
-                                    <div className="flex items-start gap-4 bg-blue-50 p-4 rounded-2xl border border-blue-100">
-                                        <div className="p-3 bg-white rounded-xl shadow-sm"><ListChecks size={20} className="text-blue-600" /></div>
-                                        <div>
-                                            <span className="block text-[10px] font-bold text-blue-400 uppercase tracking-widest">Task / Area</span>
-                                            <span className="font-bold text-lg text-blue-900 leading-snug">{dailyTask.shift_note}</span>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
                     </div>
                 )}
             </>
@@ -549,7 +556,7 @@ export default function MyTasksResponsive() {
                         <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={20}/></button>
                         <div>
                             <h2 className={`text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>Villa {selectedVilla}</h2>
-                            <p className={`text-xs font-bold uppercase tracking-widest mt-1 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Expiry Removal Task' : 'Audit Mode'}</p>
+                            <p className={`text-xs font-bold uppercase tracking-widest mt-1 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Targeted Tasks' : 'Audit Mode'}</p>
                         </div>
                     </div>
                     
@@ -571,7 +578,10 @@ export default function MyTasksResponsive() {
                         
                         // --- AWAITING REFILL SCREEN ---
                         <div className="space-y-4 pb-48 animate-in fade-in">
-                            <div className="bg-amber-50 border border-amber-200 p-6 md:p-8 rounded-[2rem] text-center shadow-sm mb-6">
+                            <div className="bg-amber-50 border border-amber-200 p-6 md:p-8 rounded-[2rem] text-center shadow-sm mb-6 relative">
+                                <button onClick={handleEditRemovals} className="absolute top-6 right-6 p-2 bg-white rounded-full text-amber-600 shadow-sm hover:bg-amber-100 transition-colors" title="Edit Removals">
+                                    <Edit3 size={16} />
+                                </button>
                                 <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-600">
                                     <AlertTriangle size={32}/>
                                 </div>
@@ -582,7 +592,7 @@ export default function MyTasksResponsive() {
                             </div>
                                 
                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                                {expiryVillaData[selectedVilla].removal_data.map((item: any) => {
+                                {(expiryVillaData[selectedVilla]?.removal_data || []).map((item: any) => {
                                     const masterItem = catalog.find(c => c.article_number === item.article_number);
                                     const currentRefill = refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty;
                                     const isNotRefilled = currentRefill === 0;
@@ -591,13 +601,11 @@ export default function MyTasksResponsive() {
                                     return (
                                         <div key={item.article_number} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${isNotRefilled ? 'border-rose-300 bg-rose-50/30' : isPartial ? 'border-amber-300' : 'border-slate-200'}`}>
                                             
-                                            {/* Image container */}
                                             <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
                                                 {masterItem?.image_url ? <img src={masterItem.image_url} className={`w-full h-full object-contain drop-shadow-sm transition-all ${isNotRefilled ? 'grayscale opacity-50' : ''}`} /> : <Wine size={32} className="text-slate-300"/>}
                                             </div>
                                             
-                                            {/* Text */}
-                                            <div className="flex flex-col flex-1 px-1">
+                                            <div className="flex flex-col flex-1 px-1 text-center">
                                                 <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{item.name}</h4>
                                                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Target: {item.qty} items</p>
                                                 
@@ -605,7 +613,6 @@ export default function MyTasksResponsive() {
                                                 {isPartial && <span className="text-[10px] font-black text-amber-500 uppercase mt-2">Partial Refill</span>}
                                             </div>
 
-                                            {/* Refill Stepper */}
                                             <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
                                                 <button onClick={() => updateRefillCount(item.article_number, -1, item.qty)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
                                                 <span className={`font-black text-lg ${isNotRefilled ? 'text-rose-600' : 'text-emerald-600'}`}>{currentRefill}</span>
@@ -631,38 +638,100 @@ export default function MyTasksResponsive() {
 
                     ) : (
 
-                        // --- RECORD REMOVAL SCREEN (Vertical Cards) ---
-                        <div className="space-y-4 pb-48 animate-in fade-in">
-                            {expiryTargets.length === 0 ? (
+                        // --- RECORD REMOVAL SCREEN (Split Sections) ---
+                        <div className="space-y-8 pb-48 animate-in fade-in">
+                            {groupedTargets.expiry.length === 0 && groupedTargets.refill.length === 0 ? (
                                 <p className="text-center font-bold text-slate-400 italic mt-10">No targets set by admin.</p>
                             ) : (
-                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                                    {expiryTargets.map(t => {
-                                        const key = `${t.article_number}_${t.expiry_date}`;
-                                        const masterItem = catalog.find(c => c.article_number === t.article_number);
-                                        const qty = expiryCounts[key] || 0;
+                                <>
+                                    {/* EXPIRY & MISSING CHECKS */}
+                                    {groupedTargets.expiry.length > 0 && (
+                                        <div>
+                                            <h3 className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                                <AlertTriangle size={14}/> Expiry & Missing Checks
+                                            </h3>
+                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                                {groupedTargets.expiry.map((t: any) => {
+                                                    const key = t.article_number;
+                                                    const masterItem = catalog.find(c => c.article_number === t.article_number);
+                                                    const qty = expiryCounts[key] || 0;
 
-                                        return (
-                                            <div key={key} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 ? 'border-rose-400 ring-4 ring-rose-50' : 'border-slate-200'}`}>
-                                                
-                                                <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
-                                                    {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={32} className="text-slate-300"/>}
-                                                </div>
-                                                
-                                                <div className="flex flex-col flex-1 px-1 text-center">
-                                                    <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
-                                                    <p className="text-[9px] font-black text-rose-500 uppercase tracking-widest mt-1 bg-rose-50 px-2 py-1 rounded-lg w-fit mx-auto">Exp: {format(parseISO(t.expiry_date), 'MMM yyyy')}</p>
-                                                </div>
+                                                    return (
+                                                        <div key={key} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 ? 'border-rose-400 ring-4 ring-rose-50' : 'border-slate-200'}`}>
+                                                            
+                                                            <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
+                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={32} className="text-slate-300"/>}
+                                                            </div>
+                                                            
+                                                            <div className="flex flex-col flex-1 px-1 text-center">
+                                                                <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
+                                                                
+                                                                {t.dates && t.dates.length > 0 ? (
+                                                                    <div className="flex flex-wrap justify-center gap-1 mt-1.5">
+                                                                        {t.dates.map((d: string) => (
+                                                                            <span key={d} className="text-[8px] font-black text-rose-500 uppercase tracking-widest bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100">
+                                                                                {format(parseISO(d), 'dd MMM yyyy')}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="mt-1.5">
+                                                                        <span className="text-[8px] font-black text-blue-500 uppercase tracking-widest bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
+                                                                            Missing Check
+                                                                        </span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
 
-                                                <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
-                                                    <button onClick={() => updateExpiryCount(key, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
-                                                    <span className={`font-black text-lg ${qty > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{qty}</span>
-                                                    <button onClick={() => updateExpiryCount(key, 1)} className="w-10 h-10 flex items-center justify-center bg-rose-600 rounded-lg shadow-sm text-white active:scale-95 transition-all"><Plus size={18}/></button>
-                                                </div>
+                                                            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
+                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
+                                                                <span className={`font-black text-lg ${qty > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{qty}</span>
+                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-10 h-10 flex items-center justify-center bg-rose-600 rounded-lg shadow-sm text-white active:scale-95 transition-all"><Plus size={18}/></button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
                                             </div>
-                                        );
-                                    })}
-                                </div>
+                                        </div>
+                                    )}
+
+                                    {/* SEPARATE REFILL TASKS */}
+                                    {groupedTargets.refill.length > 0 && (
+                                        <div className="pt-4 border-t border-slate-200">
+                                            <h3 className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                                <RefreshCw size={14}/> Pure Refill Tasks
+                                            </h3>
+                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                                {groupedTargets.refill.map((t: any) => {
+                                                    const key = t.article_number;
+                                                    const masterItem = catalog.find(c => c.article_number === t.article_number);
+                                                    const qty = expiryCounts[key] || 0;
+
+                                                    return (
+                                                        <div key={key} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 ? 'border-emerald-400 ring-4 ring-emerald-50' : 'border-slate-200'}`}>
+                                                            <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
+                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={32} className="text-slate-300"/>}
+                                                            </div>
+                                                            <div className="flex flex-col flex-1 px-1 text-center">
+                                                                <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
+                                                                <div className="mt-1.5">
+                                                                    <span className="text-[8px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">
+                                                                        Refill Needed
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
+                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
+                                                                <span className={`font-black text-lg ${qty > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{qty}</span>
+                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-10 h-10 flex items-center justify-center bg-emerald-600 rounded-lg shadow-sm text-white active:scale-95 transition-all"><Plus size={18}/></button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
                             )}
                             
                             <div className="fixed bottom-24 md:bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
@@ -676,10 +745,10 @@ export default function MyTasksResponsive() {
                                     </button>
                                     <button 
                                         onClick={() => submitExpiryRemovals('Removed')} 
-                                        disabled={isLoading || expiryTargets.length === 0 || Object.values(expiryCounts).every(v => v === 0)} 
+                                        disabled={isLoading || (groupedTargets.expiry.length === 0 && groupedTargets.refill.length === 0) || Object.values(expiryCounts).every(v => v === 0)} 
                                         className="flex-[1.5] py-5 text-white bg-rose-600 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-rose-600/20 active:scale-95 transition-all flex flex-col items-center justify-center gap-1 leading-none disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><span>Record Removals</span><span className="text-[9px] opacity-70">(Needs Refill)</span></>}
+                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><span>Record Actions</span><span className="text-[9px] opacity-70">(Needs Refill)</span></>}
                                     </button>
                                 </div>
                             </div>
@@ -745,14 +814,6 @@ export default function MyTasksResponsive() {
                         </div>
                     </>
                 )}
-            </div>
-        )}
-
-        {/* --- CUSTOM TOAST NOTIFICATION --- */}
-        {toastMsg && (
-            <div className={`fixed top-6 right-6 z-[100] px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 ${toastMsg.type === 'error' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
-                {toastMsg.type === 'error' ? <AlertTriangle size={20}/> : <CheckCircle2 size={20}/>}
-                <p className="text-sm font-bold leading-tight">{toastMsg.text}</p>
             </div>
         )}
 
