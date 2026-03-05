@@ -13,6 +13,7 @@ import {
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
 ];
@@ -20,14 +21,13 @@ const ADMIN_CORE_TABS = [
 const MENU_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocation", icon: ListChecks, path: "/allocation" },
-  { name: "Water Production", icon: Droplets, path: "/water" }, // RESTORED FOR ADMIN
+  { name: "Water Production", icon: Droplets, path: "/water" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Print Hub", icon: Printer, path: "/print" },
   { name: "Settings", icon: Settings, path: "/settings" },
 ];
 
 const TEAM_ITEMS = [
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
@@ -44,6 +44,7 @@ const MINIBAR_ITEMS = [
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "Guest List", icon: Users, path: "/guests" },
@@ -52,12 +53,12 @@ const STAFF_CORE_BASE = [
 ];
 
 const STAFF_MENU_ITEMS = [
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocation", icon: ListChecks, path: "/allocation" },
   { name: "My Profile", icon: Contact, path: "/profile" },
 ];
-
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -65,7 +66,7 @@ export default function Sidebar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const isMinibarRoute = pathname?.includes('/minibar');
-  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart');
+  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime');
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
 
@@ -80,7 +81,6 @@ export default function Sidebar() {
               const parsed = JSON.parse(sessionData);
               setUserRole(parsed.system_role || 'staff');
               
-              // Check if the user's role contains "pool" (e.g. Pool Attendant, Senior Pool Attendant)
               const roleLower = String(parsed.role || '').toLowerCase();
               if (roleLower.includes('pool')) {
                   setIsPoolAttendant(true);
@@ -104,19 +104,19 @@ export default function Sidebar() {
       window.location.href = '/'; 
   };
 
-  // Dynamically build the Staff Tabs based on if they are a Pool Attendant
   const activeStaffTabs = useMemo(() => {
       if (!isPoolAttendant) return STAFF_CORE_BASE;
       return [
-          STAFF_CORE_BASE[0],
+          STAFF_CORE_BASE[0], // Dashboard
+          STAFF_CORE_BASE[1], // Org Chart
           { name: "Water Prod.", icon: Droplets, path: "/water" },
-          ...STAFF_CORE_BASE.slice(1)
+          ...STAFF_CORE_BASE.slice(2)
       ];
   }, [isPoolAttendant]);
 
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "Requests", icon: ClipboardList, path: "/requests" },
+      { name: "Org Chart", icon: Share2, path: "/org-chart" },
       { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
   ];
 
@@ -126,8 +126,8 @@ export default function Sidebar() {
       { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" }
   ] : [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
-      { name: "My Schedule", icon: Calendar, path: "/schedule" }
+      { name: "Org Chart", icon: Share2, path: "/org-chart" },
+      { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" }
   ];
 
   if (!isLoaded) return null; 
