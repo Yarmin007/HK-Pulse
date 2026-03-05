@@ -570,7 +570,7 @@ export default function MyTasksResponsive() {
                     expiryVillaData[selectedVilla]?.status === 'Removed' ? (
                         
                         // --- AWAITING REFILL SCREEN ---
-                        <div className="space-y-4 pb-32 animate-in fade-in">
+                        <div className="space-y-4 pb-48 animate-in fade-in">
                             <div className="bg-amber-50 border border-amber-200 p-6 md:p-8 rounded-[2rem] text-center shadow-sm mb-6">
                                 <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-600">
                                     <AlertTriangle size={32}/>
@@ -616,7 +616,7 @@ export default function MyTasksResponsive() {
                                 })}
                             </div>
                             
-                            <div className="fixed bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                            <div className="fixed bottom-24 md:bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
                                 <div className="max-w-5xl mx-auto">
                                     <button 
                                         onClick={confirmExpiryRefill} 
@@ -632,7 +632,7 @@ export default function MyTasksResponsive() {
                     ) : (
 
                         // --- RECORD REMOVAL SCREEN (Vertical Cards) ---
-                        <div className="space-y-4 pb-32 animate-in fade-in">
+                        <div className="space-y-4 pb-48 animate-in fade-in">
                             {expiryTargets.length === 0 ? (
                                 <p className="text-center font-bold text-slate-400 italic mt-10">No targets set by admin.</p>
                             ) : (
@@ -665,7 +665,7 @@ export default function MyTasksResponsive() {
                                 </div>
                             )}
                             
-                            <div className="fixed bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                            <div className="fixed bottom-24 md:bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
                                 <div className="max-w-5xl mx-auto flex gap-3">
                                     <button 
                                         onClick={() => submitExpiryRemovals('All OK')} 
@@ -700,7 +700,7 @@ export default function MyTasksResponsive() {
                             ))}
                         </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 pb-32">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 pb-48">
                             {catalog.filter(i => activeCategory === 'All' || i.category === activeCategory).map(item => {
                                 const qty = counts[item.article_number] || 0;
                                 
@@ -732,7 +732,7 @@ export default function MyTasksResponsive() {
                         </div>
 
                         {/* Fixed Bottom Submit Bar */}
-                        <div className="fixed bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                        <div className="fixed bottom-24 md:bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
                             <div className="max-w-5xl mx-auto">
                                 <button 
                                     onClick={requestSaveInventory} 
