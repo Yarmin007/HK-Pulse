@@ -13,6 +13,7 @@ import {
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
 ];
@@ -27,7 +28,6 @@ const MENU_ITEMS = [
 ];
 
 const TEAM_ITEMS = [
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
@@ -44,7 +44,12 @@ const MINIBAR_ITEMS = [
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
+  { name: "My Schedule", icon: Calendar, path: "/schedule" },
+  { name: "Guest List", icon: Users, path: "/guests" },
+  { name: "Allocation", icon: ListChecks, path: "/allocation" },
+  { name: "My Profile", icon: Contact, path: "/profile" },
 ];
 
 const STAFF_PROFILE_ITEMS = [
@@ -115,10 +120,11 @@ export default function Sidebar() {
       ];
   }, [isPoolAttendant]);
 
+  // --- ADMIN MOBILE TABS UPDATED ---
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: ClipboardList, path: "/requests" },
-      { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
+      { name: "Guest List", icon: Users, path: "/guests" },
   ];
 
   const STAFF_BOTTOM_TABS = isPoolAttendant ? [
@@ -442,7 +448,7 @@ export default function Sidebar() {
                             </div>
 
                             <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">More Options</h4>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-2 mb-3 px-2">More Options</h4>
                                 <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
                                   {STAFF_MENU_ITEMS.map((item, idx) => (
                                      <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== STAFF_MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>

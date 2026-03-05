@@ -2,12 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Edit3, X, ChevronLeft, ChevronRight,
-  FileSpreadsheet, Printer, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock
+  FileSpreadsheet, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
@@ -133,7 +131,7 @@ export default function HousekeepingSummaryPage() {
   };
 
   useEffect(() => {
-    // Check Auth for Read Only State
+    // Check Auth
     const sessionData = localStorage.getItem('hk_pulse_session');
     if (sessionData) {
         const parsed = JSON.parse(sessionData);
@@ -548,7 +546,7 @@ export default function HousekeepingSummaryPage() {
 
           if (rowStr.includes('ARRIVALS') && !rowStr.includes('VS')) { isArrSection = true; isDepSection = false; continue; }
           if (rowStr.includes('DEPARTURES')) { isArrSection = false; isDepSection = true; continue; }
-          if (rowStr.includes('ROOM MOVES')) break; // We use manual UI moves now
+          if (rowStr.includes('ROOM MOVES')) break; 
 
           if (isArrSection) {
               let v = normalizeVilla(row[1]) || normalizeVilla(row[0]); 
@@ -749,8 +747,64 @@ export default function HousekeepingSummaryPage() {
         </div>
       </div>
 
-      {/* TABLE */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* MOBILE LIST VIEW */}
+      <div className="md:hidden grid grid-cols-1 gap-4">
+        {masterList.map((row) => (
+          <div key={row.villa_number} onClick={() => { if(isAdmin){ setEditingRecord(row); setIsEditOpen(true); } }} className={`bg-white rounded-2xl p-4 shadow-sm border flex flex-col gap-3 relative ${row.status === 'VAC' ? 'border-slate-100 bg-slate-50/50' : 'border-slate-200 active:scale-[0.98] transition-transform cursor-pointer'}`}>
+              
+              <div className="flex justify-between items-start">
+                  <div className="flex items-center gap-2">
+                     <span className="font-black text-2xl text-slate-800 tracking-tighter">V{row.villa_number}</span>
+                     <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-wider shadow-sm ${getStatusColor(row.status)}`}>{row.status}</span>
+                  </div>
+                  
+                  {isAdmin && (
+                      <button onClick={(e) => { e.stopPropagation(); setMoveData({from: row.villa_number, to: '', type: 'VM/OCC'}); setIsMoveModalOpen(true); }} className="p-2 bg-slate-50 text-slate-400 rounded-lg shadow-sm active:bg-slate-100">
+                         <ArrowRightLeft size={14}/>
+                      </button>
+                  )}
+              </div>
+
+              {row.status !== 'VAC' && (
+                  <div className="flex flex-col gap-1.5 mt-1 border-t border-slate-100 pt-3">
+                      
+                      {row.guest_name ? row.guest_name.split(' & ').map((name, idx) => {
+                          const isChild = name.includes('Mstr') || name.includes('Miss') || name.includes(' yrs)');
+                          return (
+                              <div key={idx} className="flex items-start gap-2">
+                                  {isChild ? <Baby size={14} className="text-amber-500 mt-0.5 shrink-0"/> : <User size={14} className="text-slate-400 mt-0.5 shrink-0"/>}
+                                  <span className="text-xs font-bold text-slate-700 leading-tight">{name.trim()}</span>
+                              </div>
+                          );
+                      }) : <span className="text-xs font-bold text-slate-300 italic">- No Profile -</span>}
+
+                      <div className="flex flex-wrap items-center gap-2 mt-2">
+                          {(row.pax_adults > 0 || row.pax_kids > 0) && (
+                              <div className="bg-slate-100 px-2 py-1 rounded-md flex items-center gap-1 text-[10px] font-bold text-slate-600">
+                                  Pax: {row.pax_adults + row.pax_kids} {row.pax_kids > 0 && <span className="text-amber-500">({row.pax_kids} K)</span>}
+                              </div>
+                          )}
+                          {row.meal_plan && <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-md text-[10px] font-black uppercase">{row.meal_plan}</span>}
+                          {row.gem_name && <span className="bg-purple-50 text-purple-700 px-2 py-1 rounded-md text-[10px] font-black uppercase">GEM: {row.gem_name}</span>}
+                          {row.stay_dates && <span className="text-[10px] font-mono font-bold text-slate-400 border border-slate-200 px-2 py-1 rounded-md">{row.stay_dates}</span>}
+                      </div>
+
+                      {(row.arrival_time || row.departure_time) && (
+                          <div className="flex gap-3 mt-2 text-[10px] font-bold font-mono">
+                              {row.arrival_time && <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">Arr: {row.arrival_time}</span>}
+                              {row.departure_time && <span className="text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">Dep: {row.departure_time}</span>}
+                          </div>
+                      )}
+
+                      {row.preferences && (<div className="flex items-center gap-1 mt-2 text-[10px] text-rose-500 font-bold bg-rose-50 p-2 rounded-lg border border-rose-100"><Heart size={12} fill="currentColor"/> Preferences Logged</div>)}
+                  </div>
+              )}
+          </div>
+        ))}
+      </div>
+
+      {/* DESKTOP TABLE VIEW */}
+      <div className="hidden md:block bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto w-full">
           <table className="w-full text-left border-collapse min-w-[1000px]">
             <thead>
@@ -770,7 +824,6 @@ export default function HousekeepingSummaryPage() {
               {masterList.map((row) => (
                 <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''}`}>
                   
-                  {/* STICKY VILLA COLUMN WITH INLINE MOVE BUTTON */}
                   <td className="py-2 px-4 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-50">
                       <div className="flex items-center gap-2">
                           <button onClick={() => { if(isAdmin){ setMoveData({from: row.villa_number, to: '', type: 'VM/OCC'}); setIsMoveModalOpen(true); } }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
