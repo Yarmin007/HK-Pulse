@@ -1,8 +1,8 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Plus, X, CreditCard, Briefcase, 
-  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag
+  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag, Camera, Loader2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -34,6 +34,10 @@ export default function HostsProfilePage() {
   const [isEditing, setIsEditing] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   
+  // Image Upload State
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+
   const [newHost, setNewHost] = useState<Partial<Host>>({
     role: '',
     host_level: 'ATM',
@@ -86,6 +90,41 @@ export default function HostsProfilePage() {
 
   useEffect(() => { fetchHosts(); }, []);
 
+  // --- IMAGE UPLOAD LOGIC ---
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      setIsUploadingImage(true);
+      try {
+          const fileExt = file.name.split('.').pop();
+          const targetHostId = selectedHost ? selectedHost.host_id : (newHost.host_id || 'new');
+          const fileName = `${targetHostId}-${Date.now()}.${fileExt}`;
+
+          const { error: uploadError } = await supabase.storage
+              .from('avatars')
+              .upload(fileName, file, { upsert: true });
+
+          if (uploadError) throw uploadError;
+
+          const { data: publicUrlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
+          const publicUrl = publicUrlData.publicUrl;
+
+          if (selectedHost) {
+              setSelectedHost({ ...selectedHost, image_url: publicUrl });
+          } else {
+              setNewHost({ ...newHost, image_url: publicUrl });
+          }
+          toast.success("Image uploaded successfully!");
+      } catch (error: any) {
+          console.error("Upload error:", error);
+          toast.error("Failed to upload image.");
+      } finally {
+          setIsUploadingImage(false);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+  };
+
   // --- CREATE HOST ---
   const handleCreateHost = async () => {
     if (!newHost.full_name) return toast.error("Full Name is required");
@@ -124,7 +163,8 @@ export default function HostsProfilePage() {
         company_mobile: selectedHost.company_mobile,
         mvpn: selectedHost.mvpn,
         nicknames: selectedHost.nicknames,
-        joining_date: selectedHost.joining_date
+        joining_date: selectedHost.joining_date,
+        image_url: selectedHost.image_url
       })
       .eq('id', selectedHost.id);
 
@@ -181,6 +221,9 @@ export default function HostsProfilePage() {
   return (
     <div className="min-h-screen p-4 md:p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
       
+      {/* HIDDEN INPUT FOR IMAGE UPLOADS */}
+      <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
+
       {/* --- HEADER --- */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-6 gap-6">
         <div>
@@ -233,7 +276,7 @@ export default function HostsProfilePage() {
         {filteredHosts.map((host) => (
           <div key={host.id} onClick={() => { setSelectedHost(host); setIsEditing(false); }}
                className={`group relative rounded-2xl p-0 shadow-sm hover:shadow-xl transition-all duration-300 cursor-pointer overflow-hidden flex flex-col border-2 ${host.status === 'Resigned' ? 'border-rose-100 bg-rose-50/30 grayscale-[50%]' : 'bg-white border-slate-100 hover:border-[#6D2158]/30'}`}>
-              
+             
              {/* Header */}
              <div className={`h-20 relative ${host.status === 'Resigned' ? 'bg-slate-400' : 'bg-gradient-to-r from-[#6D2158] to-[#902468]'}`}>
                 <div className="absolute -bottom-8 left-5">
@@ -273,9 +316,25 @@ export default function HostsProfilePage() {
             <div className="h-32 bg-[#6D2158] relative shrink-0">
                <button onClick={() => setSelectedHost(null)} className="absolute top-6 right-6 p-2 bg-black/20 text-white rounded-full hover:bg-black/40 transition-colors"><X size={20}/></button>
                <div className="absolute -bottom-10 left-8 flex items-end gap-6">
-                  <div className="w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden">
-                     <img src={selectedHost.image_url || `https://ui-avatars.com/api/?name=${selectedHost.full_name}`} className="w-full h-full object-cover"/>
+                  
+                  {/* EDIT AVATAR WITH UPLOAD */}
+                  <div 
+                      onClick={() => isEditing && !isUploadingImage && fileInputRef.current?.click()}
+                      className={`w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden relative group ${isEditing ? 'cursor-pointer' : ''}`}
+                  >
+                     {isUploadingImage ? (
+                         <div className="w-full h-full flex items-center justify-center bg-slate-100"><Loader2 className="animate-spin text-[#6D2158]" size={24}/></div>
+                     ) : (
+                         <img src={selectedHost.image_url || `https://ui-avatars.com/api/?name=${selectedHost.full_name}`} className="w-full h-full object-cover"/>
+                     )}
+                     {isEditing && !isUploadingImage && (
+                         <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
+                             <Camera size={20}/>
+                             <span className="text-[8px] font-black uppercase mt-1">Upload</span>
+                         </div>
+                     )}
                   </div>
+
                   <div className="mb-3 text-white">
                       <h2 className="text-3xl font-bold italic tracking-tight drop-shadow-md">{selectedHost.full_name}</h2>
                       <div className="flex gap-2 mt-1 items-center">
@@ -393,76 +452,92 @@ export default function HostsProfilePage() {
              <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
                <h3 className="font-bold uppercase tracking-widest text-sm text-[#6D2158] flex items-center gap-2"><Plus size={18}/> New Host Profile</h3>
                <button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-white rounded-full shadow-sm text-slate-400 hover:text-rose-500 transition-colors"><X size={18}/></button>
-            </div>
+             </div>
             
-            <div className="p-8 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
-               
-               {/* Core Info */}
-               <div className="space-y-4">
-                   <div>
-                       <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Full Name</label>
-                       <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="e.g. Abdulla Yamin" value={newHost.full_name || ''} onChange={e => setNewHost({...newHost, full_name: e.target.value})} />
-                   </div>
-                   
-                   <div className="grid grid-cols-2 gap-4">
-                       <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Host No (SSL)</label>
-                           <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold font-mono outline-none focus:border-[#6D2158]" placeholder="12345" value={newHost.host_id || ''} onChange={e => setNewHost({...newHost, host_id: e.target.value})} />
-                       </div>
-                       <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Host Level</label>
-                           <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.host_level} onChange={e => setNewHost({...newHost, host_level: e.target.value as any})}>
-                                <option value="ATM">ATM (Atmosphere)</option>
-                                <option value="DB">DB (Dinomosphere B)</option>
-                                <option value="DA">DA (Dinomosphere A)</option>
-                           </select>
-                       </div>
-                   </div>
+             <div className="p-8 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
+                
+                {/* CREATE AVATAR UPLOAD */}
+                <div className="flex justify-center mb-6">
+                    <div 
+                        onClick={() => !isUploadingImage && fileInputRef.current?.click()}
+                        className="w-24 h-24 rounded-full border-4 border-slate-200 bg-slate-100 flex flex-col items-center justify-center overflow-hidden cursor-pointer relative group transition-all hover:border-[#6D2158]"
+                    >
+                        {isUploadingImage ? (
+                            <Loader2 className="animate-spin text-[#6D2158]" size={24}/>
+                        ) : newHost.image_url ? (
+                            <img src={newHost.image_url} className="w-full h-full object-cover"/>
+                        ) : (
+                            <Camera size={24} className="text-slate-400 group-hover:text-[#6D2158]"/>
+                        )}
+                    </div>
+                </div>
 
-                   <div className="grid grid-cols-2 gap-4">
-                       <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Designation</label>
-                           <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.role || ''} onChange={e => setNewHost({...newHost, role: e.target.value})}>
-                               <option value="" disabled>Select Role</option>
-                               {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
-                           </select>
-                       </div>
-                       <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Joining Date</label>
-                           <input type="date" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.joining_date || ''} onChange={e => setNewHost({...newHost, joining_date: e.target.value})} />
-                       </div>
-                   </div>
+                {/* Core Info */}
+                <div className="space-y-4">
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Full Name</label>
+                        <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="e.g. Abdulla Yamin" value={newHost.full_name || ''} onChange={e => setNewHost({...newHost, full_name: e.target.value})} />
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Host No (SSL)</label>
+                            <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold font-mono outline-none focus:border-[#6D2158]" placeholder="12345" value={newHost.host_id || ''} onChange={e => setNewHost({...newHost, host_id: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Host Level</label>
+                            <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.host_level} onChange={e => setNewHost({...newHost, host_level: e.target.value as any})}>
+                                 <option value="ATM">ATM (Atmosphere)</option>
+                                 <option value="DB">DB (Dinomosphere B)</option>
+                                 <option value="DA">DA (Dinomosphere A)</option>
+                            </select>
+                        </div>
+                    </div>
 
-                   <div>
-                       <label className="text-[10px] font-bold text-emerald-600 uppercase ml-1">Nicknames (Comma Separated)</label>
-                       <input type="text" className="w-full p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={newHost.nicknames || ''} onChange={e => setNewHost({...newHost, nicknames: e.target.value})} />
-                   </div>
-               </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Designation</label>
+                            <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.role || ''} onChange={e => setNewHost({...newHost, role: e.target.value})}>
+                                <option value="" disabled>Select Role</option>
+                                {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Joining Date</label>
+                            <input type="date" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.joining_date || ''} onChange={e => setNewHost({...newHost, joining_date: e.target.value})} />
+                        </div>
+                    </div>
 
-               <div className="border-t border-slate-100 my-4"></div>
+                    <div>
+                        <label className="text-[10px] font-bold text-emerald-600 uppercase ml-1">Nicknames (Comma Separated)</label>
+                        <input type="text" className="w-full p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={newHost.nicknames || ''} onChange={e => setNewHost({...newHost, nicknames: e.target.value})} />
+                    </div>
+                </div>
 
-               {/* Contact Info */}
-               <div className="space-y-4">
-                   <div className="grid grid-cols-2 gap-4">
-                       <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Personal Mobile</label>
-                           <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={newHost.personal_mobile || ''} onChange={e => setNewHost({...newHost, personal_mobile: e.target.value})} />
-                       </div>
-                       <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Company Mobile</label>
-                           <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={newHost.company_mobile || ''} onChange={e => setNewHost({...newHost, company_mobile: e.target.value})} />
-                       </div>
-                   </div>
-                   <div>
-                       <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">MVPN</label>
-                       <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158] font-mono" placeholder="e.g. 2843" value={newHost.mvpn || ''} onChange={e => setNewHost({...newHost, mvpn: e.target.value})} />
-                   </div>
-               </div>
+                <div className="border-t border-slate-100 my-4"></div>
 
-               <button onClick={handleCreateHost} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase tracking-widest mt-6 shadow-xl shadow-purple-900/20 hover:bg-[#5a1b49] transition-colors">
-                   Create Profile
-               </button>
-            </div>
+                {/* Contact Info */}
+                <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Personal Mobile</label>
+                            <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={newHost.personal_mobile || ''} onChange={e => setNewHost({...newHost, personal_mobile: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Company Mobile</label>
+                            <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={newHost.company_mobile || ''} onChange={e => setNewHost({...newHost, company_mobile: e.target.value})} />
+                        </div>
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">MVPN</label>
+                        <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158] font-mono" placeholder="e.g. 2843" value={newHost.mvpn || ''} onChange={e => setNewHost({...newHost, mvpn: e.target.value})} />
+                    </div>
+                </div>
+
+                <button onClick={handleCreateHost} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase tracking-widest mt-6 shadow-xl shadow-purple-900/20 hover:bg-[#5a1b49] transition-colors">
+                    Create Profile
+                </button>
+             </div>
           </div>
         </div>
       )}
