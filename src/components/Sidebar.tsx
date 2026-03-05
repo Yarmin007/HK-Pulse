@@ -13,7 +13,6 @@ import {
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
   { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
 ];
@@ -28,6 +27,7 @@ const MENU_ITEMS = [
 ];
 
 const TEAM_ITEMS = [
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
@@ -44,20 +44,18 @@ const MINIBAR_ITEMS = [
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
-  { name: "My Schedule", icon: Calendar, path: "/schedule" },
-  { name: "Guest List", icon: Users, path: "/guests" },
-  { name: "Allocation", icon: ListChecks, path: "/allocation" },
+];
+
+const STAFF_PROFILE_ITEMS = [
   { name: "My Profile", icon: Contact, path: "/profile" },
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
 const STAFF_MENU_ITEMS = [
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocation", icon: ListChecks, path: "/allocation" },
-  { name: "My Profile", icon: Contact, path: "/profile" },
 ];
 
 export default function Sidebar() {
@@ -66,9 +64,12 @@ export default function Sidebar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const isMinibarRoute = pathname?.includes('/minibar');
-  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime');
+  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart');
+  const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart');
+  
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
+  const [isProfileOpen, setIsProfileOpen] = useState(isProfileRoute);
 
   const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [isPoolAttendant, setIsPoolAttendant] = useState(false);
@@ -96,7 +97,8 @@ export default function Sidebar() {
       setIsLoaded(true);
       if (isMinibarRoute) setIsMinibarOpen(true);
       if (isTeamRoute) setIsTeamOpen(true);
-  }, [pathname, isMinibarRoute, isTeamRoute]);
+      if (isProfileRoute) setIsProfileOpen(true);
+  }, [pathname, isMinibarRoute, isTeamRoute, isProfileRoute]);
 
   const handleLogout = () => {
       localStorage.removeItem('hk_pulse_session');
@@ -108,15 +110,14 @@ export default function Sidebar() {
       if (!isPoolAttendant) return STAFF_CORE_BASE;
       return [
           STAFF_CORE_BASE[0], // Dashboard
-          STAFF_CORE_BASE[1], // Org Chart
           { name: "Water Prod.", icon: Droplets, path: "/water" },
-          ...STAFF_CORE_BASE.slice(2)
+          STAFF_CORE_BASE[1]  // My Tasks
       ];
   }, [isPoolAttendant]);
 
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "Org Chart", icon: Share2, path: "/org-chart" },
+      { name: "Requests", icon: ClipboardList, path: "/requests" },
       { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
   ];
 
@@ -126,8 +127,8 @@ export default function Sidebar() {
       { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" }
   ] : [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "Org Chart", icon: Share2, path: "/org-chart" },
-      { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" }
+      { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
+      { name: "Profile", icon: Contact, path: "/profile" }
   ];
 
   if (!isLoaded) return null; 
@@ -144,6 +145,7 @@ export default function Sidebar() {
 
   return (
     <>
+      {/* DESKTOP SIDEBAR */}
       <aside className="hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50 shadow-[4px_0_24px_rgba(0,0,0,0.01)] transition-transform duration-300 ease-in-out">
         <div className="h-24 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158]">
           <Logo className="h-10 w-auto drop-shadow-sm" />
@@ -276,7 +278,48 @@ export default function Sidebar() {
 
           {!isAdmin && (
               <>
-                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">More Options</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Personal</div>
+                  
+                  {/* PROFILE HUB (STAFF) */}
+                  <div className="pt-1 pb-4">
+                    <button 
+                      onClick={() => setIsProfileOpen(!isProfileOpen)}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isProfileRoute && !isProfileOpen
+                          ? "bg-amber-50 text-amber-700 border border-amber-100" 
+                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Contact size={18} className={isProfileRoute ? "text-amber-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                        <span className="text-xs font-bold tracking-wide">Profile & Org</span>
+                      </div>
+                      {isProfileOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+
+                    {isProfileOpen && (
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                        {STAFF_PROFILE_ITEMS.map((item) => {
+                          const isActive = pathname === item.path;
+                          return (
+                            <Link 
+                              key={item.path} href={item.path}
+                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                                isActive 
+                                  ? "bg-amber-50 text-amber-700 font-black shadow-sm" 
+                                  : "text-slate-500 hover:text-amber-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              <item.icon size={14} className={isActive ? "text-amber-700" : "group-hover:text-amber-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                              <span className="text-[11px] tracking-wide">{item.name}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-2 mb-3 px-2">More Options</div>
                   {STAFF_MENU_ITEMS.map((item) => {
                     const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
                     return (
@@ -306,8 +349,8 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* MOBILE BOTTOM NAVIGATION */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[60] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] overflow-x-auto no-scrollbar">
+      {/* MOBILE BOTTOM NAVIGATION - Force z-[999] so it's never hidden by full screen pages! */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[999] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] overflow-x-auto no-scrollbar">
          {BOTTOM_TABS.map((tab) => {
             const isActive = pathname === tab.path || (tab.path !== '/' && pathname?.startsWith(`${tab.path}/`));
             return (
@@ -330,7 +373,7 @@ export default function Sidebar() {
 
       {/* UNIVERSAL MOBILE HAMBURGER MENU */}
       {isMobileMenuOpen && (
-          <div className="md:hidden fixed inset-0 z-[70] flex flex-col justify-end">
+          <div className="md:hidden fixed inset-0 z-[1000] flex flex-col justify-end">
               <div className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-in fade-in" onClick={() => setIsMobileMenuOpen(false)}></div>
               
               <div className="relative bg-[#FDFBFD] w-full rounded-t-[2.5rem] p-6 pb-24 shadow-2xl animate-in-up flex flex-col max-h-[85vh]">
@@ -384,18 +427,33 @@ export default function Sidebar() {
                             </div>
                         </>
                     ) : (
-                        <div>
-                            <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">More Options</h4>
-                            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                              {STAFF_MENU_ITEMS.map((item, idx) => (
-                                 <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== STAFF_MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                     <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
-                                     <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                     <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                 </Link>
-                              ))}
+                        <>
+                            <div>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Profile & Org</h4>
+                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                                  {STAFF_PROFILE_ITEMS.map((item, idx) => (
+                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-amber-50 transition-colors ${idx !== STAFF_PROFILE_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
+                                         <div className="w-8 h-8 rounded-full bg-amber-50 text-amber-700 flex items-center justify-center"><item.icon size={16}/></div>
+                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
+                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
+                                     </Link>
+                                  ))}
+                                </div>
                             </div>
-                        </div>
+
+                            <div>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">More Options</h4>
+                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                                  {STAFF_MENU_ITEMS.map((item, idx) => (
+                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== STAFF_MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
+                                         <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
+                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
+                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
+                                     </Link>
+                                  ))}
+                                </div>
+                            </div>
+                        </>
                     )}
 
                     <button onClick={handleLogout} className="w-full py-4 bg-rose-50 text-rose-600 font-bold uppercase rounded-2xl tracking-widest text-xs mt-4">
