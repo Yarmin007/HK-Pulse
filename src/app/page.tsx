@@ -4,7 +4,7 @@ import {
   Users, ShoppingCart, Clock, AlertTriangle, 
   ArrowRight, CheckCircle2,
   Zap, Bell, ClipboardList, Calendar, User,
-  Coffee, Sun, Moon, Plane, X
+  Coffee, Sun, Moon, Plane, X, Timer
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -20,6 +20,9 @@ const getPayrollPeriod = (date = new Date()) => {
       return { start: new Date(year, month - 1, 21), end: new Date(year, month, 20) };
   }
 };
+
+// Leave codes that signify the person is not at work
+const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
 
 export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
@@ -93,7 +96,7 @@ export default function Dashboard() {
         const { data: hostData } = await supabase.from('hsk_hosts').select('*').eq('host_id', loggedHostId).single();
         if (hostData) setCurrentUser(hostData);
         
-        // Fetch ALL attendance for leave balances
+        // Fetch ALL attendance for leave balances and upcoming leaves
         const { data: attData } = await supabase.from('hsk_attendance').select('*').eq('host_id', loggedHostId);
         if (attData) setUserAttendance(attData);
     } else {
@@ -142,6 +145,63 @@ export default function Dashboard() {
 
     if (showLoading) setIsLoading(false);
   };
+
+  // --- UPCOMING LEAVE ENGINE ---
+  const upcomingLeaveInfo = useMemo(() => {
+      if (!userAttendance || userAttendance.length === 0) return null;
+
+      const today = new Date();
+      today.setHours(0,0,0,0); // Normalize to start of day
+
+      // Find all future records that are marked as leave
+      const futureLeaves = userAttendance
+          .filter(a => parseISO(a.date) >= today && LEAVE_CODES.includes(a.status_code))
+          .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
+
+      if (futureLeaves.length === 0) return null;
+
+      // Group continuous blocks of leave
+      let blocks = [];
+      let currentBlock = [futureLeaves[0]];
+
+      for (let i = 1; i < futureLeaves.length; i++) {
+          const prevDate = parseISO(currentBlock[currentBlock.length - 1].date);
+          const currDate = parseISO(futureLeaves[i].date);
+          
+          if (differenceInDays(currDate, prevDate) === 1) {
+              currentBlock.push(futureLeaves[i]);
+          } else {
+              blocks.push([...currentBlock]);
+              currentBlock = [futureLeaves[i]];
+          }
+      }
+      blocks.push([...currentBlock]);
+
+      // Grab the very next block of leave
+      const nextLeaveBlock = blocks[0];
+      const startDate = parseISO(nextLeaveBlock[0].date);
+      const endDate = parseISO(nextLeaveBlock[nextLeaveBlock.length - 1].date);
+      
+      // Calculate return to work date (the day immediately after the leave block ends)
+      const returnDate = addDays(endDate, 1);
+      
+      const daysUntilLeave = differenceInDays(startDate, today);
+      const totalLeaveDays = nextLeaveBlock.length;
+
+      // Extract what types of leave make up this block
+      const uniqueLeaveTypes = Array.from(new Set(nextLeaveBlock.map(l => l.status_code)));
+
+      return {
+          startDate,
+          endDate,
+          returnDate,
+          daysUntilLeave,
+          totalLeaveDays,
+          uniqueLeaveTypes,
+          isOnLeaveNow: daysUntilLeave === 0 || (today >= startDate && today <= endDate)
+      };
+
+  }, [userAttendance]);
 
   // --- LEAVE BALANCE MATH ENGINE FOR SINGLE USER ---
   const userBalances = useMemo(() => {
@@ -406,6 +466,43 @@ export default function Dashboard() {
 
       <div className="p-4 md:p-8 space-y-8 pb-32">
           
+          {/* UPCOMING LEAVE WIDGET */}
+          {upcomingLeaveInfo && (
+              <div className={`p-5 rounded-3xl shadow-sm border flex flex-col md:flex-row items-center justify-between gap-6 animate-in slide-in-from-top-4 ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-cyan-50 border-cyan-200 shadow-cyan-100' : 'bg-white border-slate-200'}`}>
+                  <div className="flex items-center gap-4">
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-inner border ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-white border-cyan-100 text-cyan-600' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                          {upcomingLeaveInfo.isOnLeaveNow ? <Plane size={24}/> : <Timer size={24}/>}
+                      </div>
+                      <div>
+                          <h3 className="font-black text-lg text-slate-800 tracking-tight">
+                              {upcomingLeaveInfo.isOnLeaveNow ? "You are currently on leave." : "Upcoming Leave Scheduled"}
+                          </h3>
+                          <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">
+                              <span className="text-[#6D2158]">{format(upcomingLeaveInfo.startDate, 'MMM d, yyyy')}</span>
+                              <span className="mx-2 text-slate-300">to</span>
+                              <span className="text-[#6D2158]">{format(upcomingLeaveInfo.endDate, 'MMM d, yyyy')}</span>
+                          </p>
+                      </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto text-center md:text-right">
+                      {upcomingLeaveInfo.isOnLeaveNow ? (
+                          <div className="px-6 py-3 bg-cyan-600 text-white rounded-xl shadow-lg font-black uppercase tracking-widest text-xs flex flex-col items-center">
+                              <span>Return to Duty</span>
+                              <span className="text-sm mt-0.5">{format(upcomingLeaveInfo.returnDate, 'EEEE, MMM d')}</span>
+                          </div>
+                      ) : (
+                          <div className="px-6 py-3 bg-slate-800 text-white rounded-xl shadow-lg font-black uppercase tracking-widest text-xs flex items-center gap-2">
+                              {upcomingLeaveInfo.daysUntilLeave === 1 ? 'Starts Tomorrow' : `Starts in ${upcomingLeaveInfo.daysUntilLeave} Days`}
+                          </div>
+                      )}
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                          {upcomingLeaveInfo.totalLeaveDays} Days Total
+                      </div>
+                  </div>
+              </div>
+          )}
+
           {/* USER BALANCES STRIP */}
           {userBalances && (
               <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">

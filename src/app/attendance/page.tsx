@@ -330,8 +330,6 @@ export default function AttendancePage() {
 
   const hostBalances = useMemo(() => {
     const targetDate = parseISO(cutoffDate);
-    const targetYear = targetDate.getFullYear();
-    const endOfTargetYear = new Date(targetYear, 11, 31);
     const SYSTEM_START_DATE = new Date(2026, 0, 1); 
     
     return hosts.map(host => {
@@ -345,15 +343,14 @@ export default function AttendancePage() {
 
       const hostRecords = attendance.filter(a => a.host_id === host.host_id);
       
+      // ONLY pull records that happen ON OR BEFORE the target (cutoff) date
       const recordsUpToTarget = hostRecords.filter(a => {
           const d = parseISO(a.date);
           return d >= SYSTEM_START_DATE && d <= targetDate;
       });
 
-      const recordsForDeduction = hostRecords.filter(a => {
-          const d = parseISO(a.date);
-          return d >= SYSTEM_START_DATE && d <= endOfTargetYear;
-      });
+      // Deductions only happen if the date has arrived
+      const recordsForDeduction = recordsUpToTarget;
 
       const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
       
@@ -363,7 +360,6 @@ export default function AttendancePage() {
 
       if (targetDate >= accrualStart) {
           const daysActive = differenceInDays(targetDate, accrualStart) + 1;
-          // MODIFIED: 'SL' and 'EL' are no longer penalized, they are eligible days.
           const penaltyDays = recordsUpToTarget.filter(a => ['NP', 'A'].includes(a.status_code)).length;
           const eligibleDays = Math.max(0, daysActive - penaltyDays);
           
@@ -390,7 +386,7 @@ export default function AttendancePage() {
       
       const recordsSinceAnniversary = hostRecords.filter(a => {
           const d = parseISO(a.date);
-          return d >= lastAnniversary && d <= endOfTargetYear;
+          return d >= lastAnniversary && d <= targetDate;
       });
       
       const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
@@ -469,6 +465,9 @@ export default function AttendancePage() {
       const { r1, c1, r2, c2 } = selectionRef.current;
       if (r1 === -1) return;
 
+      // Keep the focus stable after the bulk update completes
+      lastFocusedCell.current = `cell-${r2}-${c2}`;
+
       const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
       const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
 
@@ -502,38 +501,20 @@ export default function AttendancePage() {
           return newAtt;
       });
 
-      // Background DB Sync
+      // Background DB Sync - safely reuses the robust single cell save logic!
       const dbTask = async () => {
           for (let r = minR; r <= maxR; r++) {
               for (let c = minC; c <= maxC; c++) {
                   const hostId = filteredHosts[r].host_id;
                   const dateStr = daysInYear[c];
-                  
-                  const { data: existingArr, error: fetchErr } = await supabase.from('hsk_attendance').select('id').match({ host_id: hostId, date: dateStr }).limit(1);
-                  if (fetchErr) throw fetchErr;
-                  const existing = existingArr && existingArr.length > 0 ? existingArr[0] : null;
-
-                  if (status === '') {
-                      if (existing) {
-                          const { error } = await supabase.from('hsk_attendance').delete().eq('id', existing.id);
-                          if (error) throw error;
-                      }
-                  } else {
-                      const payload = { host_id: hostId, date: dateStr, status_code: status };
-                      if (existing) {
-                          const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing.id);
-                          if (error) throw error;
-                      } else {
-                          const { error } = await supabase.from('hsk_attendance').insert(payload);
-                          if (error) throw error;
-                      }
-                  }
+                  await saveToDatabase(hostId, dateStr, status);
               }
           }
       };
 
+      const cellCount = (maxR - minR + 1) * (maxC - minC + 1);
       toast.promise(dbTask(), {
-          loading: 'Saving...',
+          loading: `Saving ${cellCount} cells...`,
           success: status === '' ? 'Cleared' : 'Saved',
           error: 'Save failed'
       });
@@ -1014,7 +995,17 @@ export default function AttendancePage() {
                                                       updateSelectionVisuals();
                                                       setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr: dateStr, status: val, note: note || '', shiftType: shift || '' })
                                                   }}
-                                                  onQuickSave={(newStatus, r, c) => quickSaveCell(host.host_id, dateStr, newStatus, r, c)}
+                                                  onQuickSave={(newStatus, r, c) => {
+                                                      const { r1, c1, r2, c2 } = selectionRef.current;
+                                                      // Detect if the user has dragged and selected multiple cells
+                                                      const isMultiSelect = r1 !== -1 && (r1 !== r2 || c1 !== c2);
+                                                      
+                                                      if (isMultiSelect) {
+                                                          applyBulkStatus(newStatus);
+                                                      } else {
+                                                          quickSaveCell(host.host_id, dateStr, newStatus, r, c);
+                                                      }
+                                                  }}
                                               />
                                           );
                                       })}
