@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Lock, Plus, Minus, Save, CheckCircle2, 
   Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
-  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, Search
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, Search, CheckCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -103,7 +103,6 @@ export default function MyTasksResponsive() {
     fetchCatalog();
   }, []);
 
-  // --- SMART GROUPING ENGINE ---
   const groupedTargets = useMemo(() => {
       const expMap: Record<string, any> = {};
       const refMap: Record<string, any> = {};
@@ -125,16 +124,16 @@ export default function MyTasksResponsive() {
 
       return {
           expiry: Object.values(expMap),
-          refill: Object.values(refMap).filter(r => !expMap[r.article_number]) // Avoid duplicating if it's already in Expiry section
+          refill: Object.values(refMap).filter(r => !expMap[r.article_number]) 
       };
   }, [expiryTargets]);
 
   useEffect(() => {
-      if (step === 3 && isExpiryMode && selectedVilla && expiryVillaData[selectedVilla]?.status === 'Removed') {
+      if (step === 3 && isExpiryMode && selectedVilla && ['Removed', 'Sent', 'Refilled'].includes(expiryVillaData[selectedVilla]?.status)) {
           const initialRefills: Record<string, number> = {};
           const currentRemovalData = expiryVillaData[selectedVilla]?.removal_data || [];
           currentRemovalData.forEach((item: any) => {
-              initialRefills[item.article_number] = item.qty; 
+              initialRefills[item.article_number] = item.refilled_qty !== undefined ? item.refilled_qty : item.qty; 
           });
           setRefillCounts(initialRefills);
       }
@@ -312,6 +311,14 @@ export default function MyTasksResponsive() {
       const initialCounts: Record<string, number> = {};
       groupedTargets.expiry.forEach((t: any) => { initialCounts[t.article_number] = 0; });
       groupedTargets.refill.forEach((t: any) => { initialCounts[t.article_number] = 0; });
+
+      // If they are reopening an "All OK" log, restore the previously logged quantities so they can edit
+      const existingData = expiryVillaData[villa];
+      if (existingData && existingData.removal_data) {
+          existingData.removal_data.forEach((item: any) => {
+              initialCounts[item.article_number] = item.qty || 0;
+          });
+      }
       setExpiryCounts(initialCounts);
       setStep(3);
   };
@@ -461,9 +468,11 @@ export default function MyTasksResponsive() {
                         {/* EXPIRY & REFILL AUDIT CARD */}
                         {expiryAssignedVillas.length > 0 && (
                             <div className="bg-rose-50 p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-rose-100 animate-in slide-in-from-bottom-3">
-                                <div className="mb-6">
-                                    <h3 className="text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={20}/> Expiry & Refills</h3>
-                                    <p className="text-xs text-rose-600/70 font-medium">Check these villas for targeted missing or expiring items.</p>
+                                <div className="mb-6 flex justify-between items-center">
+                                    <div>
+                                        <h3 className="text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={20}/> Expiry & Refills</h3>
+                                        <p className="text-xs text-rose-600/70 font-medium">Check these villas for targeted missing or expiring items.</p>
+                                    </div>
                                 </div>
                                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4">
                                     {expiryAssignedVillas.map(villa => {
@@ -471,14 +480,16 @@ export default function MyTasksResponsive() {
                                         const status = vData?.status;
                                         
                                         const isNeedsRefill = status === 'Removed';
+                                        const isSent = status === 'Sent';
                                         const isDone = status === 'All OK' || status === 'Refilled';
 
                                         return (
                                             <button 
                                                 key={villa}
-                                                onClick={() => !isDone && startExpiryAudit(villa)}
+                                                onClick={() => startExpiryAudit(villa)}
                                                 className={`aspect-square rounded-3xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${
-                                                    isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700 cursor-default' : 
+                                                    isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700 hover:bg-emerald-100' : 
+                                                    isSent ? 'bg-indigo-100 border-indigo-400 text-indigo-700 animate-pulse' : 
                                                     isNeedsRefill ? 'bg-amber-100 border-amber-400 text-amber-700 animate-pulse' : 
                                                     'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:shadow-md'
                                                 }`}
@@ -486,7 +497,7 @@ export default function MyTasksResponsive() {
                                                 {isDone && <CheckCircle2 size={16} className="absolute top-3 right-3 text-emerald-500"/>}
                                                 <span className={`font-black ${villa.includes('-') ? 'text-2xl md:text-3xl' : 'text-3xl md:text-4xl'}`}>{villa}</span>
                                                 <span className="text-[10px] md:text-xs font-bold uppercase mt-1 opacity-60">
-                                                    {isDone ? 'Done' : isNeedsRefill ? 'Refill' : 'Pending'}
+                                                    {isDone ? 'Done' : isSent ? 'Sent' : isNeedsRefill ? 'Refill' : 'Pending'}
                                                 </span>
                                             </button>
                                         );
@@ -574,20 +585,22 @@ export default function MyTasksResponsive() {
 
                 {/* UI Content based on Mode */}
                 {isExpiryMode ? (
-                    expiryVillaData[selectedVilla]?.status === 'Removed' ? (
+                    ['Removed', 'Sent', 'Refilled'].includes(expiryVillaData[selectedVilla]?.status) ? (
                         
-                        // --- AWAITING REFILL SCREEN ---
+                        // --- AWAITING REFILL / REFILLED SCREEN ---
                         <div className="space-y-4 pb-48 animate-in fade-in">
-                            <div className="bg-amber-50 border border-amber-200 p-6 md:p-8 rounded-[2rem] text-center shadow-sm mb-6 relative">
-                                <button onClick={handleEditRemovals} className="absolute top-6 right-6 p-2 bg-white rounded-full text-amber-600 shadow-sm hover:bg-amber-100 transition-colors" title="Edit Removals">
+                            <div className={`${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-50 border-indigo-200' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'} border p-6 md:p-8 rounded-[2rem] text-center shadow-sm mb-6 relative`}>
+                                <button onClick={handleEditRemovals} className={`absolute top-6 right-6 p-2 bg-white rounded-full shadow-sm transition-colors ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600 hover:bg-indigo-100' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600 hover:bg-blue-100' : 'text-amber-600 hover:bg-amber-100'}`} title="Edit Removals">
                                     <Edit3 size={16} />
                                 </button>
-                                <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-600">
-                                    <AlertTriangle size={32}/>
+                                <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-100 text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
+                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? <CheckCircle size={32}/> : expiryVillaData[selectedVilla]?.status === 'Refilled' ? <CheckCircle2 size={32}/> : <AlertTriangle size={32}/>}
                                 </div>
-                                <h3 className="text-2xl font-black text-amber-700 tracking-tight">Awaiting Refill</h3>
-                                <p className="text-sm font-medium text-amber-600 mt-2 leading-relaxed">
-                                    Please adjust the counters below if you could not replace all items.
+                                <h3 className={`text-2xl font-black tracking-tight ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-700' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-700' : 'text-amber-700'}`}>
+                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'Items Dispatched!' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Refill Confirmed' : 'Awaiting Refill'}
+                                </h3>
+                                <p className={`text-sm font-medium mt-2 leading-relaxed ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600' : 'text-amber-600'}`}>
+                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'The items have been sent to you. Please confirm when placed.' : 'Please adjust the counters below if you could not replace all items.'}
                                 </p>
                             </div>
                                 
@@ -628,9 +641,9 @@ export default function MyTasksResponsive() {
                                     <button 
                                         onClick={confirmExpiryRefill} 
                                         disabled={isLoading} 
-                                        className="w-full py-5 text-white bg-emerald-500 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-emerald-500/20 active:scale-95 transition-all flex items-center justify-center gap-2"
+                                        className={`w-full py-5 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 ${expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-600 shadow-blue-600/20' : 'bg-emerald-500 shadow-emerald-500/20'}`}
                                     >
-                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><CheckCircle2 size={20}/> Confirm Replacements</>}
+                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><CheckCircle2 size={20}/> {expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Update Confirmation' : 'Confirm Replacements'}</>}
                                     </button>
                                 </div>
                             </div>
@@ -741,7 +754,7 @@ export default function MyTasksResponsive() {
                                         disabled={isLoading} 
                                         className="flex-1 py-5 text-emerald-700 bg-emerald-50 rounded-2xl font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex flex-col items-center justify-center gap-1 leading-none"
                                     >
-                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><span>None Found</span><span className="text-[9px] opacity-70">(All OK)</span></>}
+                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><span>{expiryVillaData[selectedVilla]?.status === 'All OK' ? 'Confirm OK' : 'None Found'}</span><span className="text-[9px] opacity-70">(All OK)</span></>}
                                     </button>
                                     <button 
                                         onClick={() => submitExpiryRemovals('Removed')} 

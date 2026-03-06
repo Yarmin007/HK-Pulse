@@ -644,4 +644,4 @@ const MobileInput = ({ label, val, onChange, dim, isRed }: MobileInputProps) => 
             className={`w-full p-3 rounded-lg border outline-none font-bold text-lg text-center transition-all focus:border-[#6D2158] focus:bg-[#6D2158]/5 ${isRed ? 'bg-red-50 border-red-100 text-red-600' : 'bg-white border-slate-200 text-slate-800'}`}
         />
     </div>
-);
+);  

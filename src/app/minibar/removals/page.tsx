@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, Loader2, Save, X, Search, CheckCircle2, 
   Trash2, Bell, LayoutGrid, Users, Target, User, Plus, 
-  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch
+  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, CheckCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -214,7 +214,7 @@ export default function ExpiryRemovalsAdmin() {
           expiry_date: type === 'MISSING' ? null : type
       });
 
-      if (!error) { toast.success(`Added ${type} Task!`); fetchData(); }
+      if (!error) { toast.success(`Added ${type} Task!`); fetchData(); setCatalogSearch(''); }
   };
 
   const handleRemoveTarget = async (id: string) => {
@@ -222,12 +222,41 @@ export default function ExpiryRemovalsAdmin() {
       fetchData();
   };
 
+  // --- ADMIN QUICK ACTIONS ---
+  const handleUpdateStatus = async (villa: string, newStatus: 'Sent' | 'Refilled') => {
+      const { error } = await supabase.from('hsk_expiry_removals')
+          .update({ status: newStatus })
+          .match({ villa_number: villa, month_period: selectedMonth });
+
+      if (error) {
+          toast.error("Failed to update status");
+      } else {
+          toast.success(`Villa ${villa} marked as ${newStatus}!`);
+          fetchData(); 
+      }
+  };
+
+  const handleDeleteLog = async (villa: string) => {
+      if(!confirm(`Delete the log for Villa ${villa}? This will reset it to Pending.`)) return;
+      
+      const { error } = await supabase.from('hsk_expiry_removals')
+          .delete()
+          .match({ villa_number: villa, month_period: selectedMonth });
+
+      if (error) {
+          toast.error("Failed to delete log");
+      } else {
+          toast.success(`Log for Villa ${villa} deleted!`);
+          fetchData(); 
+      }
+  };
+
   const handleSendPush = async () => {
       await fetch('/api/notify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-              title: `Expiry Check Assigned!`,
+              title: `Minibar Update!`,
               body: notifyModal.msg
           })
       });
@@ -238,42 +267,11 @@ export default function ExpiryRemovalsAdmin() {
   const sendWhatsAppLink = (hostName: string, villas: string) => {
       const appLink = `${window.location.origin}/minibar/inventory/mobile`;
       const firstName = hostName.split(' ')[0];
-      const text = `*Expiry Audit Assigned* 🚨\n\nHi ${firstName},\nPlease check the following villas for expiring items this month:\n*Villas:* ${villas}\n\nTap here to open your task board and record the removals:\n${appLink}`;
+      const text = `*Expiry Audit Assigned* 🚨\n\nHi ${firstName},\nPlease check the following villas for targeted items this month:\n*Villas:* ${villas}\n\nTap here to open your task board:\n${appLink}`;
       window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
 
-  const matrixDict = useMemo(() => {
-      const dict: Record<string, any> = {};
-      activeVillaList.forEach(v => dict[v] = { status: null, items: {} });
-      
-      removals.forEach(rem => {
-          if (!dict[rem.villa_number]) dict[rem.villa_number] = { status: null, items: {} };
-          
-          dict[rem.villa_number].status = rem.status;
-          if (rem.removal_data && Array.isArray(rem.removal_data)) {
-              rem.removal_data.forEach((item: any) => {
-                  const key = item.article_number; // Map precisely by article number now
-                  dict[rem.villa_number].items[key] = {
-                      removed: item.qty,
-                      refilled: item.refilled_qty !== undefined ? item.refilled_qty : item.qty
-                  };
-              });
-          }
-      });
-      return dict;
-  }, [removals, activeVillaList]);
-
-  // Safely collect all assigned villas to isolate unassigned records later
-  const assignedVillasSet = useMemo(() => {
-      const set = new Set<string>();
-      Object.values(allocations).forEach(villasStr => {
-          if (villasStr) {
-              parseVillas(villasStr, dvList).forEach(v => set.add(v));
-          }
-      });
-      return set;
-  }, [allocations, dvList, parseVillas]);
-
+  // Grouped Targets prevents duplicate Article Numbers when mapping/aggregating globally
   const groupedTargets = useMemo(() => {
       const map: Record<string, any> = {};
       targets.forEach(t => {
@@ -286,6 +284,38 @@ export default function ExpiryRemovalsAdmin() {
       });
       return Object.values(map);
   }, [targets]);
+
+  const matrixDict = useMemo(() => {
+      const dict: Record<string, any> = {};
+      activeVillaList.forEach(v => dict[v] = { status: null, items: {} });
+      
+      removals.forEach(rem => {
+          if (!dict[rem.villa_number]) dict[rem.villa_number] = { status: null, items: {} };
+          
+          dict[rem.villa_number].status = rem.status;
+          
+          if (rem.removal_data && Array.isArray(rem.removal_data)) {
+              rem.removal_data.forEach((item: any) => {
+                  const key = item.article_number; 
+                  dict[rem.villa_number].items[key] = {
+                      removed: item.qty || 0,
+                      refilled: item.refilled_qty !== undefined ? item.refilled_qty : (item.qty || 0)
+                  };
+              });
+          }
+      });
+      return dict;
+  }, [removals, activeVillaList]);
+
+  const assignedVillasSet = useMemo(() => {
+      const set = new Set<string>();
+      Object.values(allocations).forEach(villasStr => {
+          if (villasStr) {
+              parseVillas(villasStr, dvList).forEach(v => set.add(v));
+          }
+      });
+      return set;
+  }, [allocations, dvList, parseVillas]);
 
   if (!isMounted) return null;
 
@@ -305,7 +335,6 @@ export default function ExpiryRemovalsAdmin() {
       return host.full_name.toLowerCase().includes(matrixSearch.toLowerCase()) || host.host_id.includes(matrixSearch);
   });
 
-  // Filter out batches that have already been added to current targets
   const availableBatches = allBatches.filter(b => !targets.some(t => t.article_number === b.article_number && t.expiry_date === b.expiry_date));
 
   return (
@@ -314,7 +343,7 @@ export default function ExpiryRemovalsAdmin() {
       {/* HEADER */}
       <div className="flex-none flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 p-4 md:p-6 pb-4 gap-4 bg-[#FDFBFD] z-10">
         <div>
-           <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-2"><RefreshCw size={24}/> Expiry Removals</h1>
+           <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-2"><RefreshCw size={24}/> Expiry & Refills</h1>
            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Audit & Tracking Matrix</p>
         </div>
         <div className="flex items-center bg-slate-50 p-2 rounded-xl border border-slate-200 gap-2">
@@ -350,12 +379,13 @@ export default function ExpiryRemovalsAdmin() {
                             onChange={(e) => setMatrixSearch(e.target.value)}
                         />
                     </div>
-                    <div className="flex flex-wrap gap-4 items-center">
+                    <div className="flex flex-wrap gap-3 md:gap-4 items-center">
                         <span className="text-[10px] font-bold uppercase text-slate-400"><span className="text-slate-300 text-sm">●</span> Pending</span>
                         <span className="text-[10px] font-bold uppercase text-slate-400"><span className="text-amber-500 text-sm">●</span> Needs Refill</span>
+                        <span className="text-[10px] font-bold uppercase text-slate-400"><span className="text-indigo-500 text-sm">●</span> Dispatched</span>
                         <span className="text-[10px] font-bold uppercase text-slate-400"><span className="text-blue-500 text-sm">●</span> Refilled</span>
                         <span className="text-[10px] font-bold uppercase text-slate-400"><span className="text-emerald-500 text-sm">●</span> All OK</span>
-                        <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full shadow-sm border border-emerald-200">{removals.length} Villas Audited</span>
+                        <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full shadow-sm border border-emerald-200 ml-auto md:ml-0">{removals.length} Villas Audited</span>
                     </div>
                 </div>
                 
@@ -371,19 +401,13 @@ export default function ExpiryRemovalsAdmin() {
                         const parsedVillas = parseVillas(villasStr, dvList);
                         if (parsedVillas.length === 0) return null;
 
-                        // Calculate Host Aggregated Totals globally by Article Number
                         const itemAggregates: Record<string, { name: string, qty: number }> = {};
-
-                        targets.forEach(t => {
-                            if (!itemAggregates[t.article_number]) {
-                                itemAggregates[t.article_number] = { name: t.article_name, qty: 0 };
-                            }
-                        });
+                        groupedTargets.forEach(t => { itemAggregates[t.article_number] = { name: t.article_name, qty: 0 }; });
 
                         parsedVillas.forEach(v => {
                             const villaData = matrixDict[v];
                             if (villaData && villaData.items) {
-                                targets.forEach(t => {
+                                groupedTargets.forEach(t => {
                                     const key = t.article_number;
                                     if (villaData.items[key]) {
                                         const removed = villaData.items[key].removed || 0;
@@ -394,7 +418,7 @@ export default function ExpiryRemovalsAdmin() {
                         });
 
                         return (
-                            <div key={hostId} className="bg-white border border-slate-200 rounded-3xl p-5 shadow-sm flex flex-col gap-4">
+                            <div key={hostId} className="bg-white border border-slate-200 rounded-3xl p-4 md:p-5 shadow-sm flex flex-col gap-4">
                                 {/* HOST HEADER */}
                                 <div className="flex flex-col xl:flex-row justify-between xl:items-center gap-4 border-b border-slate-100 pb-4">
                                     <div className="flex items-center gap-3">
@@ -408,19 +432,21 @@ export default function ExpiryRemovalsAdmin() {
                                     </div>
                                     
                                     {/* PANTRY PULL LIST (Aggregated Totals) */}
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mr-2 flex items-center gap-1">
-                                            <Box size={14}/> Total Items to Refill:
+                                    <div className="flex flex-col w-full xl:w-auto">
+                                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2 flex items-center gap-1">
+                                            <Box size={14}/> Total Items to Refill
                                         </span>
-                                        {Object.values(itemAggregates).every(v => v.qty === 0) ? (
-                                            <span className="text-xs font-bold text-slate-300 italic">No items removed yet.</span>
-                                        ) : (
-                                            Object.values(itemAggregates).filter(item => item.qty > 0).map(item => (
-                                                <div key={item.name} className="bg-rose-50 border border-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">
-                                                    {item.qty}x {item.name}
-                                                </div>
-                                            ))
-                                        )}
+                                        <div className="flex flex-wrap gap-2">
+                                            {Object.values(itemAggregates).every(v => v.qty === 0) ? (
+                                                <span className="text-xs font-bold text-slate-300 italic">No items removed yet.</span>
+                                            ) : (
+                                                Object.values(itemAggregates).filter(item => item.qty > 0).map(item => (
+                                                    <div key={item.name} className="bg-rose-50 border border-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">
+                                                        {item.qty}x {item.name}
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
 
@@ -442,6 +468,10 @@ export default function ExpiryRemovalsAdmin() {
                                             bgClass = 'bg-amber-50 border-amber-300 ring-2 ring-amber-100 shadow-md'; 
                                             textClass = 'text-amber-700'; 
                                             statusText = 'Needs Refill';
+                                        } else if (status === 'Sent') { 
+                                            bgClass = 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-100 shadow-md'; 
+                                            textClass = 'text-indigo-700'; 
+                                            statusText = 'Dispatched';
                                         } else if (status === 'Refilled') { 
                                             bgClass = 'bg-blue-50 border-blue-200 shadow-sm'; 
                                             textClass = 'text-blue-700'; 
@@ -449,7 +479,18 @@ export default function ExpiryRemovalsAdmin() {
                                         }
 
                                         return (
-                                            <div key={v} className={`p-3 rounded-xl border flex flex-col transition-colors ${bgClass}`}>
+                                            <div key={v} className={`p-3 rounded-xl border flex flex-col transition-colors group relative ${bgClass}`}>
+                                                
+                                                {/* ADMIN HOVER CONTROLS */}
+                                                {status && (
+                                                    <div className="absolute -top-2 -right-2 hidden group-hover:flex gap-1 z-20">
+                                                        {status !== 'All OK' && status !== 'Refilled' && (
+                                                            <button onClick={() => handleUpdateStatus(v, 'Refilled')} className="p-1.5 bg-blue-500 text-white rounded-full shadow-md hover:bg-blue-600 transition-colors" title="Force Refilled"><CheckCircle2 size={12}/></button>
+                                                        )}
+                                                        <button onClick={() => handleDeleteLog(v)} className="p-1.5 bg-rose-500 text-white rounded-full shadow-md hover:bg-rose-600 transition-colors" title="Delete Log"><Trash2 size={12}/></button>
+                                                    </div>
+                                                )}
+
                                                 <div className="flex justify-between items-center border-b border-black/5 pb-2 mb-2">
                                                     <span className={`font-black text-lg ${textClass}`}>V{v}</span>
                                                     <span className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-white shadow-sm ${textClass}`}>{statusText}</span>
@@ -463,28 +504,40 @@ export default function ExpiryRemovalsAdmin() {
                                                             <CheckCircle2 size={24}/>
                                                         </div>
                                                     ) : (
-                                                        targets.map((t: any, idx: number) => {
+                                                        groupedTargets.map((t: any) => {
                                                             const key = t.article_number;
                                                             const itemData = villaData?.items?.[key];
-                                                            const removedQty = itemData?.removed || 0;
-                                                            const refilledQty = itemData?.refilled || 0;
                                                             
-                                                            if (removedQty > 0) {
-                                                                const warning = status === 'Refilled' && refilledQty < removedQty;
-                                                                return (
-                                                                    <div key={`${key}_${idx}`} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
-                                                                        <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
-                                                                        <span className="shrink-0 text-right">
-                                                                            -{removedQty}
-                                                                            {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5">Refilled: {refilledQty}</span>}
-                                                                        </span>
-                                                                    </div>
-                                                                );
+                                                            if (itemData) {
+                                                                const removedQty = itemData.removed || 0;
+                                                                const refilledQty = itemData.refilled || 0;
+                                                                
+                                                                if (removedQty > 0) {
+                                                                    const warning = status === 'Refilled' && refilledQty < removedQty;
+                                                                    return (
+                                                                        <div key={key} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
+                                                                            <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
+                                                                            <span className="shrink-0 text-right">
+                                                                                -{removedQty}
+                                                                                {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5">Refilled: {refilledQty}</span>}
+                                                                            </span>
+                                                                        </div>
+                                                                    );
+                                                                }
                                                             }
                                                             return null;
                                                         })
                                                     )}
                                                 </div>
+
+                                                {/* ACTION BUTTON: MARK SENT */}
+                                                {status === 'Removed' && (
+                                                    <div className="pt-2 mt-2 border-t border-amber-200/50">
+                                                        <button onClick={() => handleUpdateStatus(v, 'Sent')} className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[9px] font-black uppercase tracking-widest shadow-sm transition-colors flex items-center justify-center gap-1 active:scale-95">
+                                                            <Send size={10}/> Mark Sent
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </div>
                                         );
                                     })}
@@ -522,6 +575,10 @@ export default function ExpiryRemovalsAdmin() {
                                         bgClass = 'bg-amber-50 border-amber-300 ring-2 ring-amber-100 shadow-md'; 
                                         textClass = 'text-amber-700'; 
                                         statusText = 'Needs Refill'; 
+                                    } else if (status === 'Sent') { 
+                                        bgClass = 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-100 shadow-md'; 
+                                        textClass = 'text-indigo-700'; 
+                                        statusText = 'Dispatched';
                                     } else if (status === 'Refilled') { 
                                         bgClass = 'bg-blue-50 border-blue-200 shadow-sm'; 
                                         textClass = 'text-blue-700'; 
@@ -529,7 +586,14 @@ export default function ExpiryRemovalsAdmin() {
                                     }
 
                                     return (
-                                        <div key={v} className={`p-3 rounded-xl border flex flex-col transition-colors ${bgClass}`}>
+                                        <div key={v} className={`p-3 rounded-xl border flex flex-col transition-colors group relative ${bgClass}`}>
+                                            
+                                            {status && (
+                                                <div className="absolute -top-2 -right-2 hidden group-hover:flex gap-1 z-20">
+                                                    <button onClick={() => handleDeleteLog(v)} className="p-1.5 bg-rose-500 text-white rounded-full shadow-md hover:bg-rose-600 transition-colors" title="Delete Log"><Trash2 size={12}/></button>
+                                                </div>
+                                            )}
+
                                             <div className="flex justify-between items-center border-b border-black/5 pb-2 mb-2">
                                                 <span className={`font-black text-lg ${textClass}`}>V{v}</span>
                                                 <span className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-white shadow-sm ${textClass}`}>{statusText}</span>
@@ -538,23 +602,26 @@ export default function ExpiryRemovalsAdmin() {
                                                 {status === 'All OK' ? (
                                                     <div className="flex items-center justify-center py-2 text-emerald-500 opacity-70"><CheckCircle2 size={24}/></div>
                                                 ) : (
-                                                    targets.map((t: any, idx: number) => {
+                                                    groupedTargets.map((t: any) => {
                                                         const key = t.article_number;
                                                         const itemData = vData?.items?.[key];
-                                                        const removedQty = itemData?.removed || 0;
-                                                        const refilledQty = itemData?.refilled || 0;
                                                         
-                                                        if (removedQty > 0) {
-                                                            const warning = status === 'Refilled' && refilledQty < removedQty;
-                                                            return (
-                                                                <div key={`${key}_${idx}`} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
-                                                                    <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
-                                                                    <span className="shrink-0 text-right">
-                                                                        -{removedQty}
-                                                                        {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5">Refilled: {refilledQty}</span>}
-                                                                    </span>
-                                                                </div>
-                                                            );
+                                                        if (itemData) {
+                                                            const removedQty = itemData.removed || 0;
+                                                            const refilledQty = itemData.refilled || 0;
+                                                            
+                                                            if (removedQty > 0) {
+                                                                const warning = status === 'Refilled' && refilledQty < removedQty;
+                                                                return (
+                                                                    <div key={key} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
+                                                                        <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
+                                                                        <span className="shrink-0 text-right">
+                                                                            -{removedQty}
+                                                                            {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5">Refilled: {refilledQty}</span>}
+                                                                        </span>
+                                                                    </div>
+                                                                );
+                                                            }
                                                         }
                                                         return null;
                                                     })
