@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, Loader2, Save, X, Search, CheckCircle2, 
   Trash2, Bell, LayoutGrid, Users, Target, User, Plus, Minus,
-  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3
+  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3, Archive
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -238,12 +238,33 @@ export default function ExpiryRemovalsAdmin() {
       fetchData(false);
   };
 
+  // --- NEW: ARCHIVE BATCH GLOBALLY (Does not delete current target!) ---
+  const handleArchiveBatchTarget = (target: any) => {
+      setConfirmModal({
+          isOpen: true,
+          title: "Archive Batch?",
+          message: `Are you sure you want to permanently archive ${target.article_name} (${format(parseISO(target.expiry_date), 'MMM yyyy')})? This will remove it from the global Expiry Tracking board, but keep it active for your staff until you delete it.`,
+          confirmText: "Archive Batch",
+          isDestructive: true,
+          onConfirm: async () => {
+              setConfirmModal(prev => ({...prev, isOpen: false}));
+              
+              // ONLY Mark batch as archived in global tracking. We DO NOT delete the target!
+              await supabase.from('hsk_expiry_batches')
+                  .update({ status: 'Archived' })
+                  .match({ article_number: target.article_number, expiry_date: target.expiry_date });
+              
+              toast.success("Batch successfully archived globally!");
+              fetchData(false); 
+          }
+      });
+  };
+
   const handleUpdateStatus = async (villa: string, newStatus: 'Sent' | 'Refilled') => {
       const log = removals.find((r: any) => r.villa_number === villa);
       if (!log) return;
       
       let updatedData = log.removal_data || [];
-      
       if (newStatus === 'Sent' || newStatus === 'Refilled') {
            updatedData = updatedData.map((item: any) => ({
                ...item,
@@ -259,11 +280,10 @@ export default function ExpiryRemovalsAdmin() {
           toast.error("Failed to update status");
       } else {
           toast.success(`Villa ${villa} marked as ${newStatus}!`);
-          fetchData(false); // Silent fetch, avoids scroll jump
+          fetchData(false); 
       }
   };
 
-  // Uses Global Custom Modal Now!
   const requestDeleteLog = (villa: string) => {
       setConfirmModal({
           isOpen: true, 
@@ -303,7 +323,6 @@ export default function ExpiryRemovalsAdmin() {
   };
 
   const handleAdminSaveLog = async () => {
-      // Intentionally NOT setting main page setIsLoading(true) here to prevent scroll jumps!
       if (editModal.status === 'Pending') {
           await supabase.from('hsk_expiry_removals').delete().match({ villa_number: editModal.villa, month_period: selectedMonth });
       } else {
@@ -312,7 +331,7 @@ export default function ExpiryRemovalsAdmin() {
               .match({ villa_number: editModal.villa, month_period: selectedMonth });
       }
       setEditModal({isOpen: false, villa: '', status: '', data: []});
-      fetchData(false); // Silent fetch
+      fetchData(false); // Silent fetch immediately after update
       toast.success("Log successfully updated!");
   };
 
@@ -336,8 +355,12 @@ export default function ExpiryRemovalsAdmin() {
       window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
 
+  // --- SMART GROUPING ENGINE ---
+  // Combines active targets AND historical removals so data NEVER vanishes!
   const groupedTargets = useMemo(() => {
       const map: Record<string, any> = {};
+      
+      // 1. Load active targets
       targets.forEach((t: any) => {
           if (!map[t.article_number]) {
               map[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [] };
@@ -346,8 +369,24 @@ export default function ExpiryRemovalsAdmin() {
               map[t.article_number].dates.push(t.expiry_date);
           }
       });
+
+      // 2. Load historical items from removals (prevents vanished data)
+      removals.forEach((rem: any) => {
+          if (rem.removal_data && Array.isArray(rem.removal_data)) {
+              rem.removal_data.forEach((item: any) => {
+                  if (!map[item.article_number]) {
+                      map[item.article_number] = { 
+                          article_number: item.article_number, 
+                          article_name: item.name || 'Archived Item', 
+                          dates: [] 
+                      };
+                  }
+              });
+          }
+      });
+
       return Object.values(map);
-  }, [targets]);
+  }, [targets, removals]);
 
   const matrixDict = useMemo(() => {
       const dict: Record<string, any> = {};
@@ -853,7 +892,12 @@ export default function ExpiryRemovalsAdmin() {
                                             <span className="text-[10px] font-black text-rose-500 uppercase tracking-widest mt-1 block">Exp: {format(parseISO(t.expiry_date), 'dd MMM yyyy')}</span>
                                         )}
                                     </div>
-                                    <button onClick={() => handleRemoveTarget(t.id)} className="w-8 h-8 rounded-full bg-slate-50 text-slate-400 hover:bg-rose-600 hover:text-white flex items-center justify-center transition-all"><Trash2 size={14}/></button>
+                                    <div className="flex items-center gap-2">
+                                        {t.expiry_date && t.expiry_date !== 'REFILL' && t.expiry_date !== 'MISSING' && (
+                                            <button onClick={() => handleArchiveBatchTarget(t)} className="px-3 py-1.5 bg-slate-100 text-slate-500 hover:bg-rose-100 hover:text-rose-600 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors flex items-center gap-1"><Archive size={10}/> Archive Batch</button>
+                                        )}
+                                        <button onClick={() => handleRemoveTarget(t.id)} className="w-8 h-8 rounded-full bg-slate-50 text-slate-400 hover:bg-rose-600 hover:text-white flex items-center justify-center transition-all"><Trash2 size={14}/></button>
+                                    </div>
                                 </div>
                             ))}
                             {targets.length === 0 && <p className="text-center text-slate-400 italic text-sm py-10">No targets set for this month.</p>}
