@@ -1,9 +1,9 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Lock, Plus, Minus, Save, CheckCircle2, 
   Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
-  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, Search, CheckCircle
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -83,64 +83,8 @@ export default function MyTasksResponsive() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
-  useEffect(() => {
-    const syncTimezone = async () => {
-        const { data } = await supabase.from('hsk_constants').select('label').eq('type', 'system_timezone').maybeSingle();
-        if (data && data.label) localStorage.setItem('hk_pulse_timezone', data.label);
-    };
-    syncTimezone();
-
-    const sessionData = localStorage.getItem('hk_pulse_session');
-    if (sessionData) {
-        const parsed = JSON.parse(sessionData);
-        setCurrentHost({ id: parsed.id, full_name: parsed.full_name, host_id: parsed.host_id });
-        loadInitialData(parsed.host_id, false);
-    } else {
-        window.location.href = '/';
-    }
-
-    setIsMounted(true);
-    fetchCatalog();
-  }, []);
-
-  const groupedTargets = useMemo(() => {
-      const expMap: Record<string, any> = {};
-      const refMap: Record<string, any> = {};
-
-      expiryTargets.forEach(t => {
-          if (t.expiry_date === 'REFILL') {
-              if (!refMap[t.article_number]) refMap[t.article_number] = { ...t, type: 'REFILL' };
-          } else {
-              if (!expMap[t.article_number]) {
-                  expMap[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [], isMissing: false, type: 'EXPIRY' };
-              }
-              if (!t.expiry_date || t.expiry_date === 'MISSING') {
-                  expMap[t.article_number].isMissing = true;
-              } else {
-                  expMap[t.article_number].dates.push(t.expiry_date);
-              }
-          }
-      });
-
-      return {
-          expiry: Object.values(expMap),
-          refill: Object.values(refMap).filter(r => !expMap[r.article_number]) 
-      };
-  }, [expiryTargets]);
-
-  useEffect(() => {
-      if (step === 3 && isExpiryMode && selectedVilla && ['Removed', 'Sent', 'Refilled'].includes(expiryVillaData[selectedVilla]?.status)) {
-          const initialRefills: Record<string, number> = {};
-          const currentRemovalData = expiryVillaData[selectedVilla]?.removal_data || [];
-          currentRemovalData.forEach((item: any) => {
-              initialRefills[item.article_number] = item.refilled_qty !== undefined ? item.refilled_qty : item.qty; 
-          });
-          setRefillCounts(initialRefills);
-      }
-  }, [step, isExpiryMode, selectedVilla, expiryVillaData]);
-
-  const loadInitialData = async (hostId: string, isManualRefresh: boolean) => {
-      setIsLoading(true);
+  const loadInitialData = useCallback(async (hostId: string, isManualRefresh: boolean, silent = false) => {
+      if (!silent) setIsLoading(true);
       const todayStr = getLocalToday();
       const currentMonth = getLocalMonth();
 
@@ -196,7 +140,7 @@ export default function MyTasksResponsive() {
       if (expiryAllocRes.data && expiryAllocRes.data.villas) {
           const parsedExpiryVillas = parseVillas(expiryAllocRes.data.villas, dvList);
           setExpiryAssignedVillas(parsedExpiryVillas);
-          if (isManualRefresh) toast.success(`Found ${parsedExpiryVillas.length} Audit Villas!`);
+          if (isManualRefresh && !silent) toast.success(`Found ${parsedExpiryVillas.length} Audit Villas!`);
       } else {
           setExpiryAssignedVillas([]);
       }
@@ -207,10 +151,10 @@ export default function MyTasksResponsive() {
           setExpiryVillaData(villaMap);
       }
 
-      setIsLoading(false);
-  };
+      if (!silent) setIsLoading(false);
+  }, []);
 
-  const fetchCatalog = async () => {
+  const fetchCatalog = useCallback(async () => {
     const { data: catRes } = await supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true);
     const { data: constRes } = await supabase.from('hsk_constants').select('*').eq('type', 'hidden_mb_item');
     if (catRes) {
@@ -218,9 +162,75 @@ export default function MyTasksResponsive() {
         const filteredAndSorted = catRes.filter(i => !hiddenList.includes(i.article_number)).sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
         setCatalog(filteredAndSorted);
     }
-  };
+  }, []);
 
-  // --- MINIBAR FUNCTIONS ---
+  useEffect(() => {
+    const syncTimezone = async () => {
+        const { data } = await supabase.from('hsk_constants').select('label').eq('type', 'system_timezone').maybeSingle();
+        if (data && data.label) localStorage.setItem('hk_pulse_timezone', data.label);
+    };
+    syncTimezone();
+
+    const sessionData = localStorage.getItem('hk_pulse_session');
+    if (sessionData) {
+        const parsed = JSON.parse(sessionData);
+        setCurrentHost({ id: parsed.id, full_name: parsed.full_name, host_id: parsed.host_id });
+        loadInitialData(parsed.host_id, false);
+    } else {
+        window.location.href = '/';
+    }
+
+    setIsMounted(true);
+    fetchCatalog();
+  }, [loadInitialData, fetchCatalog]);
+
+  // --- MOBILE REAL-TIME SUBSCRIPTION ---
+  useEffect(() => {
+      if (!currentHost) return;
+      const channel = supabase.channel('mobile_realtime_removals')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_expiry_removals' }, (payload) => {
+              loadInitialData(currentHost.host_id, false, true); 
+          })
+          .subscribe();
+      return () => { supabase.removeChannel(channel); };
+  }, [currentHost, loadInitialData]);
+
+  const groupedTargets = useMemo(() => {
+      const expMap: Record<string, any> = {};
+      const refMap: Record<string, any> = {};
+
+      expiryTargets.forEach(t => {
+          if (t.expiry_date === 'REFILL') {
+              if (!refMap[t.article_number]) refMap[t.article_number] = { ...t, type: 'REFILL' };
+          } else {
+              if (!expMap[t.article_number]) {
+                  expMap[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [], isMissing: false, type: 'EXPIRY' };
+              }
+              if (!t.expiry_date || t.expiry_date === 'MISSING') {
+                  expMap[t.article_number].isMissing = true;
+              } else {
+                  expMap[t.article_number].dates.push(t.expiry_date);
+              }
+          }
+      });
+
+      return {
+          expiry: Object.values(expMap),
+          refill: Object.values(refMap).filter(r => !expMap[r.article_number]) 
+      };
+  }, [expiryTargets]);
+
+  useEffect(() => {
+      if (step === 3 && isExpiryMode && selectedVilla && ['Removed', 'Sent', 'Refilled'].includes(expiryVillaData[selectedVilla]?.status)) {
+          const initialRefills: Record<string, number> = {};
+          const currentRemovalData = expiryVillaData[selectedVilla]?.removal_data || [];
+          currentRemovalData.forEach((item: any) => {
+              initialRefills[item.article_number] = item.refilled_qty !== undefined ? item.refilled_qty : item.qty; 
+          });
+          setRefillCounts(initialRefills);
+      }
+  }, [step, isExpiryMode, selectedVilla, expiryVillaData]);
+
   const startAudit = (villa: string) => {
     setSelectedVilla(villa);
     setIsExpiryMode(false);
@@ -312,7 +322,6 @@ export default function MyTasksResponsive() {
       groupedTargets.expiry.forEach((t: any) => { initialCounts[t.article_number] = 0; });
       groupedTargets.refill.forEach((t: any) => { initialCounts[t.article_number] = 0; });
 
-      // If they are reopening an "All OK" log, restore the previously logged quantities so they can edit
       const existingData = expiryVillaData[villa];
       if (existingData && existingData.removal_data) {
           existingData.removal_data.forEach((item: any) => {
@@ -330,10 +339,10 @@ export default function MyTasksResponsive() {
       });
   };
 
-  const updateRefillCount = (artNo: string, delta: number, maxAllowed: number) => {
+  const updateRefillCount = (artNo: string, delta: number) => {
       setRefillCounts(prev => {
           const next = (prev[artNo] || 0) + delta;
-          return { ...prev, [artNo]: Math.max(0, Math.min(next, maxAllowed)) };
+          return { ...prev, [artNo]: Math.max(0, next) }; 
       });
   };
 
@@ -620,16 +629,16 @@ export default function MyTasksResponsive() {
                                             
                                             <div className="flex flex-col flex-1 px-1 text-center">
                                                 <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{item.name}</h4>
-                                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Target: {item.qty} items</p>
+                                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Requested: {item.qty}</p>
                                                 
                                                 {isNotRefilled && <span className="text-[10px] font-black text-rose-500 uppercase mt-2">Not Refilled</span>}
                                                 {isPartial && <span className="text-[10px] font-black text-amber-500 uppercase mt-2">Partial Refill</span>}
                                             </div>
 
                                             <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
-                                                <button onClick={() => updateRefillCount(item.article_number, -1, item.qty)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
+                                                <button onClick={() => updateRefillCount(item.article_number, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
                                                 <span className={`font-black text-lg ${isNotRefilled ? 'text-rose-600' : 'text-emerald-600'}`}>{currentRefill}</span>
-                                                <button onClick={() => updateRefillCount(item.article_number, 1, item.qty)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-600 hover:text-emerald-600 active:scale-95 transition-all"><Plus size={18}/></button>
+                                                <button onClick={() => updateRefillCount(item.article_number, 1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-600 hover:text-emerald-600 active:scale-95 transition-all"><Plus size={18}/></button>
                                             </div>
                                         </div>
                                     );
@@ -640,10 +649,15 @@ export default function MyTasksResponsive() {
                                 <div className="max-w-5xl mx-auto">
                                     <button 
                                         onClick={confirmExpiryRefill} 
-                                        disabled={isLoading} 
-                                        className={`w-full py-5 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 ${expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-600 shadow-blue-600/20' : 'bg-emerald-500 shadow-emerald-500/20'}`}
+                                        disabled={isLoading || expiryVillaData[selectedVilla]?.status === 'Removed'} 
+                                        className={`w-full py-5 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 ${
+                                            expiryVillaData[selectedVilla]?.status === 'Removed' ? 'bg-slate-400 shadow-none cursor-not-allowed' :
+                                            expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-600 shadow-blue-600/20' : 
+                                            'bg-emerald-500 shadow-emerald-500/20'}`}
                                     >
-                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : <><CheckCircle2 size={20}/> {expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Update Confirmation' : 'Confirm Replacements'}</>}
+                                        {isLoading ? <Loader2 className="animate-spin" size={24}/> : 
+                                         expiryVillaData[selectedVilla]?.status === 'Removed' ? <><Clock size={20}/> Waiting for Dispatch</> :
+                                        <><CheckCircle2 size={20}/> {expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Update Confirmation' : 'Confirm Replacements'}</>}
                                     </button>
                                 </div>
                             </div>

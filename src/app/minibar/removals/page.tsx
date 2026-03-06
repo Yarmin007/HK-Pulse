@@ -2,8 +2,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, Loader2, Save, X, Search, CheckCircle2, 
-  Trash2, Bell, LayoutGrid, Users, Target, User, Plus, 
-  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, CheckCircle
+  Trash2, Bell, LayoutGrid, Users, Target, User, Plus, Minus,
+  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -36,7 +36,7 @@ const VillaTagInput = ({ value, onChange }: { value: string, onChange: (val: str
 
     return (
         <div className="flex flex-wrap gap-2 items-center bg-slate-50 border border-slate-200 p-2.5 rounded-xl focus-within:border-[#6D2158] focus-within:bg-white transition-all cursor-text min-h-[56px] shadow-inner">
-            {tags.map(t => (
+            {tags.map((t: string) => (
                 <span key={t} className="flex items-center gap-1 bg-white border-2 border-slate-200 px-3 py-1.5 rounded-lg text-sm font-black text-[#6D2158] shadow-sm transition-all hover:border-rose-200 group">
                     {t} <X size={14} className="cursor-pointer text-slate-300 group-hover:text-rose-500 ml-1 transition-colors" onClick={() => removeTag(t)} />
                 </span>
@@ -82,7 +82,13 @@ export default function ExpiryRemovalsAdmin() {
 
   const [notifyModal, setNotifyModal] = useState<{isOpen: boolean, host_id: string, name: string, msg: string}>({ isOpen: false, host_id: '', name: '', msg: '' });
 
-  const dvList = useMemo(() => doubleVillasStr.split(',').map(s => s.trim()).filter(Boolean), [doubleVillasStr]);
+  // Advanced Admin Edit Modal State
+  const [editModal, setEditModal] = useState<{isOpen: boolean, villa: string, status: string, data: any[]}>({isOpen: false, villa: '', status: '', data: []});
+  
+  // Custom Action Confirmation Modal State
+  const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
+
+  const dvList = useMemo(() => doubleVillasStr.split(',').map((s: string) => s.trim()).filter(Boolean), [doubleVillasStr]);
 
   const activeVillaList = useMemo(() => {
       const list: string[] = [];
@@ -99,7 +105,7 @@ export default function ExpiryRemovalsAdmin() {
 
   const parseVillas = useCallback((input: string, doubleVillas: string[]) => {
       const result = new Set<string>();
-      const parts = input.split(',').map(s => s.trim());
+      const parts = input.split(',').map((s: string) => s.trim());
       for (const p of parts) {
           if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
               const [start, end] = p.split('-').map(Number);
@@ -119,11 +125,11 @@ export default function ExpiryRemovalsAdmin() {
               }
           }
       }
-      return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
+      return Array.from(result).sort((a: string, b: string) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
   }, []);
 
-  const fetchData = useCallback(async () => {
-    setIsLoading(true);
+  const fetchData = useCallback(async (showLoading = true) => {
+    if (showLoading) setIsLoading(true);
 
     const [targetRes, allocRes, remRes, batchRes, masterRes, hostRes, constRes] = await Promise.all([
         supabase.from('hsk_expiry_targets').select('*').eq('month_period', selectedMonth),
@@ -144,7 +150,7 @@ export default function ExpiryRemovalsAdmin() {
     if (allocRes.data) {
         const allocMap: Record<string, string> = {};
         const order: string[] = [];
-        allocRes.data.forEach(a => { 
+        allocRes.data.forEach((a: any) => { 
             allocMap[a.host_id] = a.villas; 
             order.push(a.host_id);
         });
@@ -156,26 +162,36 @@ export default function ExpiryRemovalsAdmin() {
     }
 
     if (batchRes.data && masterRes.data) {
-        const mappedBatches = batchRes.data.map(b => {
+        const mappedBatches = batchRes.data.map((b: any) => {
             const master = masterRes.data.find((m: any) => m.article_number === b.article_number);
             return { ...b, article_name: master?.generic_name || master?.article_name || b.article_number };
         });
         setAllBatches(mappedBatches);
     }
 
-    setIsLoading(false);
+    if (showLoading) setIsLoading(false);
   }, [selectedMonth]);
 
   useEffect(() => { setIsMounted(true); }, []);
-  useEffect(() => { if (isMounted) fetchData(); }, [selectedMonth, isMounted, fetchData]);
+  useEffect(() => { if (isMounted) fetchData(true); }, [selectedMonth, isMounted, fetchData]);
+
+  useEffect(() => {
+      if (!isMounted) return;
+      const channel = supabase.channel('admin_realtime_removals')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_expiry_removals' }, (payload: any) => {
+              fetchData(false); // Silent background sync
+          })
+          .subscribe();
+      return () => { supabase.removeChannel(channel); };
+  }, [fetchData, isMounted]);
 
   const handleSaveAllocations = async () => {
       setIsSaving(true);
       const now = Date.now();
       
       const toInsert = allocationOrder
-          .filter(id => allocations[id] && allocations[id].trim() !== '')
-          .map((host_id, idx) => ({ 
+          .filter((id: string) => allocations[id] && allocations[id].trim() !== '')
+          .map((host_id: string, idx: number) => ({ 
               month_period: selectedMonth, 
               host_id, 
               villas: allocations[host_id],
@@ -190,7 +206,7 @@ export default function ExpiryRemovalsAdmin() {
   };
 
   const handleAddBatchTarget = async (batch: any) => {
-      const exists = targets.find(t => t.article_number === batch.article_number && t.expiry_date === batch.expiry_date);
+      const exists = targets.find((t: any) => t.article_number === batch.article_number && t.expiry_date === batch.expiry_date);
       if (exists) return toast.error("Batch already in target list!");
 
       const { error } = await supabase.from('hsk_expiry_targets').insert({
@@ -200,11 +216,11 @@ export default function ExpiryRemovalsAdmin() {
           expiry_date: batch.expiry_date
       });
 
-      if (!error) { toast.success("Added Expiry Batch to Targets!"); fetchData(); }
+      if (!error) { toast.success("Added Expiry Batch to Targets!"); fetchData(false); }
   };
 
   const handleAddCatalogTarget = async (item: any, type: 'MISSING' | 'REFILL') => {
-      const exists = targets.find(t => t.article_number === item.article_number && (t.expiry_date === type || (!t.expiry_date && type === 'MISSING')));
+      const exists = targets.find((t: any) => t.article_number === item.article_number && (t.expiry_date === type || (!t.expiry_date && type === 'MISSING')));
       if (exists) return toast.error(`Already active as a ${type} task!`);
 
       const { error } = await supabase.from('hsk_expiry_targets').insert({
@@ -214,41 +230,90 @@ export default function ExpiryRemovalsAdmin() {
           expiry_date: type === 'MISSING' ? null : type
       });
 
-      if (!error) { toast.success(`Added ${type} Task!`); fetchData(); setCatalogSearch(''); }
+      if (!error) { toast.success(`Added ${type} Task!`); fetchData(false); setCatalogSearch(''); }
   };
 
   const handleRemoveTarget = async (id: string) => {
       await supabase.from('hsk_expiry_targets').delete().eq('id', id);
-      fetchData();
+      fetchData(false);
   };
 
-  // --- ADMIN QUICK ACTIONS ---
   const handleUpdateStatus = async (villa: string, newStatus: 'Sent' | 'Refilled') => {
+      const log = removals.find((r: any) => r.villa_number === villa);
+      if (!log) return;
+      
+      let updatedData = log.removal_data || [];
+      
+      if (newStatus === 'Sent' || newStatus === 'Refilled') {
+           updatedData = updatedData.map((item: any) => ({
+               ...item,
+               refilled_qty: item.refilled_qty !== undefined && item.refilled_qty > 0 ? item.refilled_qty : item.qty
+           }));
+      }
+
       const { error } = await supabase.from('hsk_expiry_removals')
-          .update({ status: newStatus })
+          .update({ status: newStatus, removal_data: updatedData })
           .match({ villa_number: villa, month_period: selectedMonth });
 
       if (error) {
           toast.error("Failed to update status");
       } else {
           toast.success(`Villa ${villa} marked as ${newStatus}!`);
-          fetchData(); 
+          fetchData(false); // Silent fetch, avoids scroll jump
       }
   };
 
-  const handleDeleteLog = async (villa: string) => {
-      if(!confirm(`Delete the log for Villa ${villa}? This will reset it to Pending.`)) return;
-      
-      const { error } = await supabase.from('hsk_expiry_removals')
-          .delete()
-          .match({ villa_number: villa, month_period: selectedMonth });
+  // Uses Global Custom Modal Now!
+  const requestDeleteLog = (villa: string) => {
+      setConfirmModal({
+          isOpen: true, 
+          title: "Delete Log?", 
+          message: `Are you sure you want to completely delete the audit log for Villa ${villa}? This will reset it to Pending status for the staff.`, 
+          confirmText: "Delete Log", 
+          isDestructive: true,
+          onConfirm: async () => {
+              setConfirmModal(prev => ({...prev, isOpen: false}));
+              const { error } = await supabase.from('hsk_expiry_removals').delete().match({ villa_number: villa, month_period: selectedMonth });
+              if (error) {
+                  toast.error("Failed to delete log");
+              } else {
+                  toast.success(`Log for Villa ${villa} deleted!`);
+                  fetchData(false); 
+              }
+          }
+      });
+  };
 
-      if (error) {
-          toast.error("Failed to delete log");
+  const openEditModal = (v: string) => {
+      const log = removals.find((r: any) => r.villa_number === v);
+      if (!log) return;
+      setEditModal({
+          isOpen: true,
+          villa: v,
+          status: log.status,
+          data: JSON.parse(JSON.stringify(log.removal_data || []))
+      });
+  };
+
+  const updateEditModalQty = (idx: number, delta: number) => {
+      const newData = [...editModal.data];
+      const current = newData[idx].refilled_qty !== undefined ? newData[idx].refilled_qty : newData[idx].qty;
+      newData[idx].refilled_qty = Math.max(0, current + delta);
+      setEditModal({...editModal, data: newData});
+  };
+
+  const handleAdminSaveLog = async () => {
+      // Intentionally NOT setting main page setIsLoading(true) here to prevent scroll jumps!
+      if (editModal.status === 'Pending') {
+          await supabase.from('hsk_expiry_removals').delete().match({ villa_number: editModal.villa, month_period: selectedMonth });
       } else {
-          toast.success(`Log for Villa ${villa} deleted!`);
-          fetchData(); 
+          await supabase.from('hsk_expiry_removals')
+              .update({ status: editModal.status, removal_data: editModal.data })
+              .match({ villa_number: editModal.villa, month_period: selectedMonth });
       }
+      setEditModal({isOpen: false, villa: '', status: '', data: []});
+      fetchData(false); // Silent fetch
+      toast.success("Log successfully updated!");
   };
 
   const handleSendPush = async () => {
@@ -271,10 +336,9 @@ export default function ExpiryRemovalsAdmin() {
       window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
   };
 
-  // Grouped Targets prevents duplicate Article Numbers when mapping/aggregating globally
   const groupedTargets = useMemo(() => {
       const map: Record<string, any> = {};
-      targets.forEach(t => {
+      targets.forEach((t: any) => {
           if (!map[t.article_number]) {
               map[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [] };
           }
@@ -287,9 +351,9 @@ export default function ExpiryRemovalsAdmin() {
 
   const matrixDict = useMemo(() => {
       const dict: Record<string, any> = {};
-      activeVillaList.forEach(v => dict[v] = { status: null, items: {} });
+      activeVillaList.forEach((v: string) => dict[v] = { status: null, items: {} });
       
-      removals.forEach(rem => {
+      removals.forEach((rem: any) => {
           if (!dict[rem.villa_number]) dict[rem.villa_number] = { status: null, items: {} };
           
           dict[rem.villa_number].status = rem.status;
@@ -309,9 +373,9 @@ export default function ExpiryRemovalsAdmin() {
 
   const assignedVillasSet = useMemo(() => {
       const set = new Set<string>();
-      Object.values(allocations).forEach(villasStr => {
+      Object.values(allocations).forEach((villasStr: string) => {
           if (villasStr) {
-              parseVillas(villasStr, dvList).forEach(v => set.add(v));
+              parseVillas(villasStr, dvList).forEach((v: string) => set.add(v));
           }
       });
       return set;
@@ -319,23 +383,23 @@ export default function ExpiryRemovalsAdmin() {
 
   if (!isMounted) return null;
 
-  const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
+  const availableHostsToAdd = hosts.filter((h: any) => allocations[h.host_id] === undefined);
   
-  const filteredAllocationOrder = allocationOrder.filter(hostId => {
-      const host = hosts.find(h => h.id === hostId || h.host_id === hostId);
+  const filteredAllocationOrder = allocationOrder.filter((hostId: string) => {
+      const host = hosts.find((h: any) => h.id === hostId || h.host_id === hostId);
       if (!host) return false;
       if (!assignedSearch) return true;
       return host.full_name.toLowerCase().includes(assignedSearch.toLowerCase()) || host.host_id.includes(assignedSearch);
   });
 
-  const filteredMatrixOrder = allocationOrder.filter(hostId => {
-      const host = hosts.find(h => h.id === hostId || h.host_id === hostId);
+  const filteredMatrixOrder = allocationOrder.filter((hostId: string) => {
+      const host = hosts.find((h: any) => h.id === hostId || h.host_id === hostId);
       if (!host) return false;
       if (!matrixSearch) return true;
       return host.full_name.toLowerCase().includes(matrixSearch.toLowerCase()) || host.host_id.includes(matrixSearch);
   });
 
-  const availableBatches = allBatches.filter(b => !targets.some(t => t.article_number === b.article_number && t.expiry_date === b.expiry_date));
+  const availableBatches = allBatches.filter((b: any) => !targets.some((t: any) => t.article_number === b.article_number && t.expiry_date === b.expiry_date));
 
   return (
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-antiqua text-[#6D2158] overflow-hidden">
@@ -391,8 +455,8 @@ export default function ExpiryRemovalsAdmin() {
                 
                 <div className="overflow-y-auto flex-1 custom-scrollbar p-4 md:p-6 space-y-6 bg-slate-50/50">
                     
-                    {filteredMatrixOrder.map(hostId => {
-                        const host = hosts.find(h => h.id === hostId || h.host_id === hostId);
+                    {filteredMatrixOrder.map((hostId: string) => {
+                        const host = hosts.find((h: any) => h.id === hostId || h.host_id === hostId);
                         if (!host) return null;
                         
                         const villasStr = allocations[hostId];
@@ -402,12 +466,12 @@ export default function ExpiryRemovalsAdmin() {
                         if (parsedVillas.length === 0) return null;
 
                         const itemAggregates: Record<string, { name: string, qty: number }> = {};
-                        groupedTargets.forEach(t => { itemAggregates[t.article_number] = { name: t.article_name, qty: 0 }; });
+                        groupedTargets.forEach((t: any) => { itemAggregates[t.article_number] = { name: t.article_name, qty: 0 }; });
 
-                        parsedVillas.forEach(v => {
+                        parsedVillas.forEach((v: string) => {
                             const villaData = matrixDict[v];
                             if (villaData && villaData.items) {
-                                groupedTargets.forEach(t => {
+                                groupedTargets.forEach((t: any) => {
                                     const key = t.article_number;
                                     if (villaData.items[key]) {
                                         const removed = villaData.items[key].removed || 0;
@@ -431,7 +495,7 @@ export default function ExpiryRemovalsAdmin() {
                                         </div>
                                     </div>
                                     
-                                    {/* PANTRY PULL LIST (Aggregated Totals) */}
+                                    {/* PANTRY PULL LIST */}
                                     <div className="flex flex-col w-full xl:w-auto">
                                         <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2 flex items-center gap-1">
                                             <Box size={14}/> Total Items to Refill
@@ -452,7 +516,7 @@ export default function ExpiryRemovalsAdmin() {
 
                                 {/* VILLAS GRID */}
                                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-                                    {parsedVillas.map(v => {
+                                    {parsedVillas.map((v: string) => {
                                         const villaData = matrixDict[v];
                                         const status = villaData?.status;
                                         
@@ -487,7 +551,8 @@ export default function ExpiryRemovalsAdmin() {
                                                         {status !== 'All OK' && status !== 'Refilled' && (
                                                             <button onClick={() => handleUpdateStatus(v, 'Refilled')} className="p-1.5 bg-blue-500 text-white rounded-full shadow-md hover:bg-blue-600 transition-colors" title="Force Refilled"><CheckCircle2 size={12}/></button>
                                                         )}
-                                                        <button onClick={() => handleDeleteLog(v)} className="p-1.5 bg-rose-500 text-white rounded-full shadow-md hover:bg-rose-600 transition-colors" title="Delete Log"><Trash2 size={12}/></button>
+                                                        <button onClick={() => openEditModal(v)} className="p-1.5 bg-slate-800 text-white rounded-full shadow-md hover:bg-slate-700 transition-colors" title="Edit Log"><Edit3 size={12}/></button>
+                                                        <button onClick={() => requestDeleteLog(v)} className="p-1.5 bg-rose-500 text-white rounded-full shadow-md hover:bg-rose-600 transition-colors" title="Delete Log"><Trash2 size={12}/></button>
                                                     </div>
                                                 )}
 
@@ -553,13 +618,13 @@ export default function ExpiryRemovalsAdmin() {
                     )}
 
                     {/* UNASSIGNED CATCH-ALL */}
-                    {Object.keys(matrixDict).filter(v => !assignedVillasSet.has(v) && matrixDict[v].status !== null).length > 0 && (
+                    {Object.keys(matrixDict).filter((v: string) => !assignedVillasSet.has(v) && matrixDict[v].status !== null).length > 0 && (
                         <div className="bg-rose-50 border border-rose-200 rounded-3xl p-5 shadow-sm flex flex-col gap-4 mt-8">
                             <h3 className="font-bold text-rose-800 text-lg uppercase tracking-widest flex items-center gap-2">
                                 <AlertTriangle size={20}/> Unassigned / Other Logs
                             </h3>
                             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-                                {Object.keys(matrixDict).filter(v => !assignedVillasSet.has(v) && matrixDict[v].status !== null).map(v => {
+                                {Object.keys(matrixDict).filter((v: string) => !assignedVillasSet.has(v) && matrixDict[v].status !== null).map((v: string) => {
                                     const vData = matrixDict[v];
                                     const status = vData?.status;
                                     
@@ -590,7 +655,11 @@ export default function ExpiryRemovalsAdmin() {
                                             
                                             {status && (
                                                 <div className="absolute -top-2 -right-2 hidden group-hover:flex gap-1 z-20">
-                                                    <button onClick={() => handleDeleteLog(v)} className="p-1.5 bg-rose-500 text-white rounded-full shadow-md hover:bg-rose-600 transition-colors" title="Delete Log"><Trash2 size={12}/></button>
+                                                    {status !== 'All OK' && status !== 'Refilled' && (
+                                                        <button onClick={() => handleUpdateStatus(v, 'Refilled')} className="p-1.5 bg-blue-500 text-white rounded-full shadow-md hover:bg-blue-600 transition-colors" title="Force Refilled"><CheckCircle2 size={12}/></button>
+                                                    )}
+                                                    <button onClick={() => openEditModal(v)} className="p-1.5 bg-slate-800 text-white rounded-full shadow-md hover:bg-slate-700 transition-colors" title="Edit Log"><Edit3 size={12}/></button>
+                                                    <button onClick={() => requestDeleteLog(v)} className="p-1.5 bg-rose-500 text-white rounded-full shadow-md hover:bg-rose-600 transition-colors" title="Delete Log"><Trash2 size={12}/></button>
                                                 </div>
                                             )}
 
@@ -627,6 +696,14 @@ export default function ExpiryRemovalsAdmin() {
                                                     })
                                                 )}
                                             </div>
+                                            {/* ACTION BUTTON: MARK SENT */}
+                                            {status === 'Removed' && (
+                                                <div className="pt-2 mt-2 border-t border-amber-200/50">
+                                                    <button onClick={() => handleUpdateStatus(v, 'Sent')} className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[9px] font-black uppercase tracking-widest shadow-sm transition-colors flex items-center justify-center gap-1 active:scale-95">
+                                                        <Send size={10}/> Mark Sent
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
                                     );
                                 })}
@@ -662,7 +739,7 @@ export default function ExpiryRemovalsAdmin() {
                             />
                             {showHostDropdown && (
                                 <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-slate-100 max-h-60 overflow-y-auto z-[100]">
-                                    {availableHostsToAdd.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map(h => (
+                                    {availableHostsToAdd.filter((h: any) => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map((h: any) => (
                                         <button key={h.id} onClick={() => { 
                                             setAllocations(prev => ({...prev, [h.host_id]: ''})); 
                                             setAllocationOrder(prev => [...prev, h.host_id]); 
@@ -704,8 +781,8 @@ export default function ExpiryRemovalsAdmin() {
                 {/* Card Grid */}
                 <div className="p-4 overflow-y-auto flex-1 min-h-0 custom-scrollbar bg-slate-50/50">
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                        {filteredAllocationOrder.map(hostId => {
-                            const host = hosts.find(h => h.id === hostId || h.host_id === hostId);
+                        {filteredAllocationOrder.map((hostId: string) => {
+                            const host = hosts.find((h: any) => h.id === hostId || h.host_id === hostId);
                             if (!host) return null;
 
                             return (
@@ -764,7 +841,7 @@ export default function ExpiryRemovalsAdmin() {
                             <p className="text-[10px] text-slate-400 font-bold mt-1">These items appear on the staff mobile screens for auditing.</p>
                         </div>
                         <div className="p-4 flex-1 overflow-y-auto custom-scrollbar space-y-3 bg-slate-50/50">
-                            {targets.map(t => (
+                            {targets.map((t: any) => (
                                 <div key={t.id} className="p-4 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-sm group">
                                     <div>
                                         <span className="font-bold text-slate-800 text-sm">{t.article_name}</span>
@@ -806,15 +883,15 @@ export default function ExpiryRemovalsAdmin() {
                             {/* IF SEARCHING -> SHOW CATALOG */}
                             {catalogSearch.length > 0 ? (
                                 masterCatalog
-                                    .filter(m => m.article_name.toLowerCase().includes(catalogSearch.toLowerCase()) || m.article_number.includes(catalogSearch))
-                                    .filter(item => {
-                                        const hasMissing = targets.some(t => t.article_number === item.article_number && (!t.expiry_date || t.expiry_date === 'MISSING'));
-                                        const hasRefill = targets.some(t => t.article_number === item.article_number && t.expiry_date === 'REFILL');
+                                    .filter((m: any) => m.article_name.toLowerCase().includes(catalogSearch.toLowerCase()) || m.article_number.includes(catalogSearch))
+                                    .filter((item: any) => {
+                                        const hasMissing = targets.some((t: any) => t.article_number === item.article_number && (!t.expiry_date || t.expiry_date === 'MISSING'));
+                                        const hasRefill = targets.some((t: any) => t.article_number === item.article_number && t.expiry_date === 'REFILL');
                                         return !(hasMissing && hasRefill);
                                     })
-                                    .map(item => {
-                                        const hasMissing = targets.some(t => t.article_number === item.article_number && (!t.expiry_date || t.expiry_date === 'MISSING'));
-                                        const hasRefill = targets.some(t => t.article_number === item.article_number && t.expiry_date === 'REFILL');
+                                    .map((item: any) => {
+                                        const hasMissing = targets.some((t: any) => t.article_number === item.article_number && (!t.expiry_date || t.expiry_date === 'MISSING'));
+                                        const hasRefill = targets.some((t: any) => t.article_number === item.article_number && t.expiry_date === 'REFILL');
                                         
                                         return (
                                             <div key={item.article_number} className="p-4 bg-white border border-slate-200 rounded-xl hover:border-[#6D2158] hover:shadow-md transition-all flex flex-col gap-3 group">
@@ -829,7 +906,7 @@ export default function ExpiryRemovalsAdmin() {
                             ) : (
                                 /* IF NOT SEARCHING -> SHOW KNOWN EXPIRY BATCHES */
                                 availableBatches.length > 0 ? (
-                                    availableBatches.sort((a,b) => new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime()).map(b => (
+                                    availableBatches.sort((a: any, b: any) => new Date(a.expiry_date).getTime() - new Date(b.expiry_date).getTime()).map((b: any) => (
                                         <div key={b.id} className="p-4 bg-white border border-rose-100 rounded-xl hover:border-rose-300 hover:shadow-md transition-all flex items-center justify-between group">
                                             <div className="flex flex-col">
                                                 <span className="font-bold text-rose-900 text-sm">{b.article_name}</span>
@@ -849,6 +926,91 @@ export default function ExpiryRemovalsAdmin() {
             </div>
         )}
       </div>
+
+      {/* ADMIN EDIT / DISPATCH MODAL */}
+      {editModal.isOpen && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in zoom-in-95">
+              <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl flex flex-col max-h-[85vh]">
+                  
+                  <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center rounded-t-3xl">
+                      <div>
+                          <h3 className="font-black text-slate-800 text-lg">Villa {editModal.villa}</h3>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Edit & Dispatch</p>
+                      </div>
+                      <button onClick={() => setEditModal({isOpen: false, villa: '', status: '', data: []})} className="p-2 bg-white rounded-full shadow-sm text-slate-400 hover:text-rose-500"><X size={16}/></button>
+                  </div>
+
+                  <div className="p-5 overflow-y-auto flex-1 custom-scrollbar space-y-5">
+                      
+                      {/* STATUS OVERRIDE */}
+                      <div>
+                          <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Override Status</label>
+                          <select className="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={editModal.status} onChange={(e) => setEditModal({...editModal, status: e.target.value})}>
+                              <option value="All OK">All OK (No Items Needed)</option>
+                              <option value="Removed">Needs Refill (Pending Dispatch)</option>
+                              <option value="Sent">Dispatched (Sent to Villa)</option>
+                              <option value="Refilled">Refilled (Confirmed by Staff)</option>
+                              <option value="Pending">Delete Log (Reset to Pending)</option>
+                          </select>
+                          {editModal.status === 'Pending' && <p className="text-[10px] text-rose-500 font-bold mt-2">Warning: This will delete the record completely.</p>}
+                      </div>
+
+                      {/* ITEM DISPATCH EDITING */}
+                      {editModal.status !== 'Pending' && editModal.status !== 'All OK' && editModal.data.length > 0 && (
+                          <div>
+                              <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Adjust Dispatch Quantities</label>
+                              <div className="space-y-2">
+                                  {editModal.data.map((item: any, idx: number) => (
+                                      <div key={idx} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-200">
+                                          <div className="flex-1 pr-2">
+                                              <div className="font-bold text-xs text-slate-800 leading-tight">{item.name}</div>
+                                              <div className="text-[9px] font-bold text-slate-400 uppercase mt-1">Requested: {item.qty}</div>
+                                          </div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                              <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
+                                                  <button onClick={() => updateEditModalQty(idx, -1)} className="px-3 py-1.5 hover:bg-slate-100 text-rose-600 font-black"><Minus size={12}/></button>
+                                                  <span className="font-black w-6 text-center text-sm text-indigo-700">{item.refilled_qty !== undefined ? item.refilled_qty : item.qty}</span>
+                                                  <button onClick={() => updateEditModalQty(idx, 1)} className="px-3 py-1.5 hover:bg-slate-100 text-emerald-600 font-black"><Plus size={12}/></button>
+                                              </div>
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                          </div>
+                      )}
+                  </div>
+
+                  <div className="p-5 border-t border-slate-100 bg-white rounded-b-3xl">
+                      <button onClick={handleAdminSaveLog} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest shadow-lg hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2">
+                          <Save size={16}/> Save Changes
+                      </button>
+                  </div>
+
+              </div>
+          </div>
+      )}
+
+      {/* CUSTOM CONFIRMATION MODAL */}
+      {confirmModal.isOpen && (
+          <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 text-center">
+                  <h3 className={`text-2xl font-black mb-2 tracking-tight ${confirmModal.isDestructive ? 'text-rose-600' : 'text-[#6D2158]'}`}>
+                      {confirmModal.title}
+                  </h3>
+                  <p className="text-sm text-slate-500 font-medium mb-8 leading-relaxed">
+                      {confirmModal.message}
+                  </p>
+                  <div className="flex flex-col gap-3">
+                      <button onClick={confirmModal.onConfirm} className={`w-full py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2 ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}>
+                          <Save size={16}/> {confirmModal.confirmText}
+                      </button>
+                      <button onClick={() => setConfirmModal(prev => ({...prev, isOpen: false}))} className="w-full py-4 bg-slate-50 text-slate-500 rounded-2xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all hover:bg-slate-100">
+                          Cancel
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
 
       {/* PUSH NOTIFICATION MODAL */}
       {notifyModal.isOpen && (
