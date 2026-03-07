@@ -59,6 +59,91 @@ type Host = {
   requires_pin_change?: boolean;
 };
 
+// --- HELPER COMPONENTS (Moved outside to prevent focus loss) ---
+
+const ListManager = ({ type, title, icon: Icon, placeholder, constants, newConstantValue, activeConstantType, setActiveConstantType, setNewConstantValue, handleAddConstant, handleDeleteConstant }: any) => {
+  const list = constants.filter((c: any) => c.type === type);
+  return (
+    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
+      <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
+      <div className="flex gap-2 mb-4">
+        <input 
+          type="text" 
+          placeholder={placeholder} 
+          className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" 
+          value={activeConstantType === type ? newConstantValue : ''} 
+          onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}
+        />
+        <button onClick={() => handleAddConstant(type)} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs">Add</button>
+      </div>
+      <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
+         {list.map((item: any) => (
+           <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
+              <span className="font-bold text-slate-600 text-sm">{item.label}</span>
+              <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
+           </div>
+         ))}
+      </div>
+    </div>
+  );
+};
+
+const RankManager = ({ type, title, icon: Icon, constants, hosts, fetchConstants, handleDeleteConstant }: any) => {
+  const list = constants.filter((c: any) => c.type === type).sort((a: Constant, b: Constant) => {
+      const rankA = parseInt(a.label.split('::')[1] || '999');
+      const rankB = parseInt(b.label.split('::')[1] || '999');
+      return rankA - rankB;
+  });
+  
+  const [roleName, setRoleName] = useState('');
+  const [roleRank, setRoleRank] = useState('');
+
+  const uniqueRoles = Array.from(new Set(hosts.map((h: any) => h.role).filter(Boolean))).sort((a: any, b: any) => a.localeCompare(b));
+
+  const handleAdd = async () => {
+      if (!roleName.trim() || !roleRank.trim()) return;
+      const label = `${roleName.trim()}::${roleRank.trim()}`;
+      const { error } = await supabase.from('hsk_constants').insert({ type, label });
+      if (!error) { setRoleName(''); setRoleRank(''); fetchConstants(); toast.success("Role rank added!"); }
+  };
+
+  return (
+    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
+      <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
+      <p className="text-[10px] text-slate-400 mb-3 font-bold">Assign a rank (1 = Top) to sort roles across all lists.</p>
+      <div className="flex gap-2 mb-4">
+        <select 
+          className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" 
+          value={roleName} 
+          onChange={(e) => setRoleName(e.target.value)}
+        >
+            <option value="" disabled>Select Role...</option>
+            {uniqueRoles.map((role: any) => (
+                <option key={role} value={role}>{role}</option>
+            ))}
+        </select>
+        <input type="number" placeholder="Rank" className="w-20 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleRank} onChange={(e) => setRoleRank(e.target.value)}/>
+        <button onClick={handleAdd} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:bg-[#5a1b49] transition-colors">Add</button>
+      </div>
+      <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+         {list.map((item: any) => {
+           const [name, rank] = item.label.split('::');
+           return (
+           <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
+              <div>
+                <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs mr-3">Rank {rank}</span>
+                <span className="font-bold text-slate-600 text-sm">{name}</span>
+              </div>
+              <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
+           </div>
+         )})}
+      </div>
+    </div>
+  );
+};
+
+// --- MAIN PAGE ---
+
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('Master List');
   const [searchQuery, setSearchQuery] = useState('');
@@ -122,7 +207,6 @@ export default function SettingsPage() {
         const tz = data.find((c: Constant) => c.type === 'system_timezone')?.label || 'Indian/Maldives';
         setSystemTimezone(tz);
 
-        // Load the View Access Configuration
         const tConf = data.find((c: Constant) => c.type === 'team_viewer_config');
         if (tConf) {
             setConfigId(tConf.id);
@@ -152,9 +236,7 @@ export default function SettingsPage() {
         const sortedHosts = [...hostRes.data].sort((a: any, b: any) => {
             const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
             const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
-            
             if (rankA !== rankB) return rankA - rankB;
-
             const numA = parseInt((a.host_id || '').replace(/\D/g, ''), 10) || 999999;
             const numB = parseInt((b.host_id || '').replace(/\D/g, ''), 10) || 999999;
             return numA - numB;
@@ -194,13 +276,11 @@ export default function SettingsPage() {
 
   const handleSaveItem = async () => {
     if (!currentItem.article_number || !currentItem.article_name) return alert("Article Number and Name are required.");
-    
     const finalData = {
       ...currentItem,
       generic_name: currentItem.generic_name || currentItem.article_name,
       micros_name: currentItem.is_minibar_item && !currentItem.micros_name ? currentItem.article_name : currentItem.micros_name,
     };
-
     const { error } = await supabase.from('hsk_master_catalog').upsert(finalData, { onConflict: 'article_number' });
     if (error) { alert("Error saving: " + error.message); } 
     else { setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); fetchMasterList(); }
@@ -242,16 +322,11 @@ export default function SettingsPage() {
     setIsUploading(true);
     await supabase.from('hsk_constants').delete().eq('type', type);
     await supabase.from('hsk_constants').insert({ type, label: val });
-    
-    if(type === 'system_timezone') {
-        localStorage.setItem('hk_pulse_timezone', val);
-    }
-    
+    if(type === 'system_timezone') localStorage.setItem('hk_pulse_timezone', val);
     setIsUploading(false);
     toast.success('System config updated successfully!');
   };
 
-  // --- ACCESS CONTROL HANDLERS ---
   const updateHostRole = async (id: string, newRole: string) => {
       await supabase.from('hsk_hosts').update({ system_role: newRole }).eq('id', id);
       setHosts(hosts.map(h => h.id === id ? { ...h, system_role: newRole } : h));
@@ -278,20 +353,15 @@ export default function SettingsPage() {
       setIsLoadingLogs(false);
   };
 
-  // --- TEAM LEAVES CONFIG SAVE ---
   const saveTeamConfig = async () => {
       setIsUploading(true);
       let currentConfig: any = {};
       if (configId) {
           const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
-          if (data) {
-              try { currentConfig = JSON.parse(data.label); } catch(e){}
-          }
+          if (data) { try { currentConfig = JSON.parse(data.label); } catch(e){} }
       }
-      
       currentConfig.supervisorAccess = supervisorAccess;
       const payload = JSON.stringify(currentConfig);
-      
       if (configId) {
           await supabase.from('hsk_constants').update({ label: payload }).eq('id', configId);
       } else {
@@ -302,59 +372,28 @@ export default function SettingsPage() {
       toast.success("View Access Settings Saved!");
   };
 
-  // --- EXPIRY BATCH MANAGER FUNCTIONS ---
   const handleOpenExpiryBatches = async (item: MasterItem) => {
       setSelectedExpiryItem(item);
       setIsLoadingBatches(true);
-      const { data } = await supabase.from('hsk_expiry_batches')
-          .select('*')
-          .eq('article_number', item.article_number)
-          .neq('status', 'Archived')
-          .order('expiry_date', { ascending: true });
+      const { data } = await supabase.from('hsk_expiry_batches').select('*').eq('article_number', item.article_number).neq('status', 'Archived').order('expiry_date', { ascending: true });
       setItemBatches(data || []);
       setIsLoadingBatches(false);
   };
 
   const handleAddBatchDate = async () => {
       if (!newBatchDate || !selectedExpiryItem) return;
-      
-      const exists = itemBatches.find(b => b.expiry_date === newBatchDate);
-      if (exists) {
-          toast.error('Batch date already exists!');
-          return;
-      }
-
-      const payload = {
-          article_number: selectedExpiryItem.article_number,
-          expiry_date: newBatchDate,
-          status: 'Active'
-      };
-
-      const { error } = await supabase.from('hsk_expiry_batches').insert(payload);
-      if (!error) {
-          setNewBatchDate('');
-          toast.success('Batch added!');
-          handleOpenExpiryBatches(selectedExpiryItem); // refresh
-      } else {
-          toast.error('Failed to add batch');
-      }
+      if (itemBatches.find(b => b.expiry_date === newBatchDate)) return toast.error('Batch date already exists!');
+      const { error } = await supabase.from('hsk_expiry_batches').insert({ article_number: selectedExpiryItem.article_number, expiry_date: newBatchDate, status: 'Active' });
+      if (!error) { setNewBatchDate(''); toast.success('Batch added!'); handleOpenExpiryBatches(selectedExpiryItem); }
+      else toast.error('Failed to add batch');
   };
 
   const handleArchiveBatch = async (batchId: string) => {
-      if (!confirm('Are you sure you want to permanently remove this batch from tracking?')) return;
-      
-      const { error } = await supabase.from('hsk_expiry_batches')
-          .update({ status: 'Archived' })
-          .eq('id', batchId);
-          
-      if (!error) {
-          toast.success('Batch successfully removed from tracking!');
-          if (selectedExpiryItem) handleOpenExpiryBatches(selectedExpiryItem);
-      } else {
-          toast.error('Failed to remove batch');
-      }
+      if (!confirm('Are you sure?')) return;
+      const { error } = await supabase.from('hsk_expiry_batches').update({ status: 'Archived' }).eq('id', batchId);
+      if (!error) { toast.success('Removed!'); if (selectedExpiryItem) handleOpenExpiryBatches(selectedExpiryItem); }
+      else toast.error('Failed to remove batch');
   };
-
 
   const filteredList = masterList.filter(item => 
     item.article_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -365,81 +404,6 @@ export default function SettingsPage() {
     if (activeTab === 'Expiry Setup') return item.has_expiry;
     return true;
   });
-
-  const ListManager = ({ type, title, icon: Icon, placeholder }: any) => {
-    const list = constants.filter(c => c.type === type);
-    return (
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
-        <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
-        <div className="flex gap-2 mb-4">
-          <input type="text" placeholder={placeholder} className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={activeConstantType === type ? newConstantValue : ''} onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}/>
-          <button onClick={() => handleAddConstant(type)} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs">Add</button>
-        </div>
-        <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
-           {list.map(item => (
-             <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
-                <span className="font-bold text-slate-600 text-sm">{item.label}</span>
-                <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
-             </div>
-           ))}
-        </div>
-      </div>
-    );
-  };
-
-  const RankManager = ({ type, title, icon: Icon }: any) => {
-    const list = constants.filter(c => c.type === type).sort((a: Constant, b: Constant) => {
-        const rankA = parseInt(a.label.split('::')[1] || '999');
-        const rankB = parseInt(b.label.split('::')[1] || '999');
-        return rankA - rankB;
-    });
-    
-    const [roleName, setRoleName] = useState('');
-    const [roleRank, setRoleRank] = useState('');
-
-    const uniqueRoles = Array.from(new Set(hosts.map(h => h.role).filter(Boolean))).sort((a,b) => a.localeCompare(b));
-
-    const handleAdd = async () => {
-        if (!roleName.trim() || !roleRank.trim()) return;
-        const label = `${roleName.trim()}::${roleRank.trim()}`;
-        const { error } = await supabase.from('hsk_constants').insert({ type, label });
-        if (!error) { setRoleName(''); setRoleRank(''); fetchConstants(); toast.success("Role rank added!"); }
-    };
-
-    return (
-      <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
-        <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
-        <p className="text-[10px] text-slate-400 mb-3 font-bold">Assign a rank (1 = Top) to sort roles across all lists.</p>
-        <div className="flex gap-2 mb-4">
-          <select 
-            className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" 
-            value={roleName} 
-            onChange={(e) => setRoleName(e.target.value)}
-          >
-              <option value="" disabled>Select Role...</option>
-              {uniqueRoles.map((role) => (
-                  <option key={role} value={role}>{role}</option>
-              ))}
-          </select>
-          <input type="number" placeholder="Rank" className="w-20 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleRank} onChange={(e) => setRoleRank(e.target.value)}/>
-          <button onClick={handleAdd} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:bg-[#5a1b49] transition-colors">Add</button>
-        </div>
-        <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
-           {list.map(item => {
-             const [name, rank] = item.label.split('::');
-             return (
-             <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
-                <div>
-                  <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs mr-3">Rank {rank}</span>
-                  <span className="font-bold text-slate-600 text-sm">{name}</span>
-                </div>
-                <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
-             </div>
-           )})}
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
@@ -493,8 +457,6 @@ export default function SettingsPage() {
                                       <div className="font-bold text-slate-800 text-sm">{host.full_name}</div>
                                       <div className="text-[10px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
                                   </td>
-
-                                  {/* TEAM VIEW ACCESS BUTTON */}
                                   <td className="p-4">
                                       {host.system_role === 'admin' ? (
                                           <span className="px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 w-max">
@@ -514,31 +476,18 @@ export default function SettingsPage() {
                                           </button>
                                       )}
                                   </td>
-
                                   <td className="p-4">
-                                      <select 
-                                          className="p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer"
-                                          value={host.system_role || 'staff'}
-                                          onChange={(e) => updateHostRole(host.id, e.target.value)}
-                                      >
+                                      <select className="p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer" value={host.system_role || 'staff'} onChange={(e) => updateHostRole(host.id, e.target.value)}>
                                           <option value="staff">Staff</option>
                                           <option value="admin">Admin</option>
                                       </select>
                                   </td>
                                   <td className="p-4">
-                                      {host.requires_pin_change ? (
-                                          <span className="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-amber-200">Needs Reset</span>
-                                      ) : (
-                                          <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-emerald-200">Active</span>
-                                      )}
+                                      {host.requires_pin_change ? <span className="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-amber-200">Needs Reset</span> : <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-emerald-200">Active</span>}
                                   </td>
                                   <td className="p-4 text-right flex justify-end gap-2">
-                                      <button onClick={() => resetHostPin(host.id, host.full_name)} className={`p-2 bg-white border rounded-lg shadow-sm transition-colors ${host.requires_pin_change ? 'border-amber-300 text-amber-500' : 'border-slate-200 text-slate-400 hover:border-amber-200 hover:text-amber-600'}`} title="Reset PIN to 0000">
-                                          <KeyRound size={16}/>
-                                      </button>
-                                      <button onClick={() => viewHostLogs(host)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-200 transition-colors" title="View Logs">
-                                          <History size={16}/>
-                                      </button>
+                                      <button onClick={() => resetHostPin(host.id, host.full_name)} className={`p-2 bg-white border rounded-lg shadow-sm transition-colors ${host.requires_pin_change ? 'border-amber-300 text-amber-500' : 'border-slate-200 text-slate-400 hover:border-amber-200 hover:text-amber-600'}`} title="Reset PIN to 0000"><KeyRound size={16}/></button>
+                                      <button onClick={() => viewHostLogs(host)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-200 transition-colors" title="View Logs"><History size={16}/></button>
                                   </td>
                               </tr>
                           ))}
@@ -548,12 +497,9 @@ export default function SettingsPage() {
           </div>
       ) : activeTab === 'System Config' ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
-            
-           {/* CORE SYSTEM */}
            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
               <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
-                 
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Clock size={14}/> Global Website Timezone</label>
                       <div className="flex gap-2">
@@ -561,48 +507,88 @@ export default function SettingsPage() {
                               <option value="Indian/Maldives">Maldives Time (GMT+5)</option>
                               <option value="Asia/Dhaka">Bangladesh Time (GMT+6)</option>
                               <option value="Asia/Colombo">Sri Lanka Time (GMT+5:30)</option>
-                              <option value="Asia/Dubai">Gulf Standard Time (GMT+4)</option>
                               <option value="UTC">Universal Time (UTC)</option>
                           </select>
                           <button onClick={() => handleSaveSystemConfig('system_timezone', systemTimezone)} className="px-6 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
                       </div>
-                      <p className="text-[10px] text-slate-400 mt-2 font-bold">Adjusts all logs, inventory, and timestamps across the platform.</p>
                   </div>
-
               </div>
            </div>
 
-           {/* HOLIDAYS MANAGER */}
            <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
               <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Plane size={20}/> Declared Public Holidays</h3>
               <div className="flex flex-col sm:flex-row gap-3 mb-4">
                  <input type="date" className="p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayDate} onChange={e=>setHolidayDate(e.target.value)} />
-                 <input type="text" placeholder="Holiday Name (e.g. Eid al-Fitr)" className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayName} onChange={e=>setHolidayName(e.target.value)} />
-                 <button onClick={handleAddHoliday} className="px-6 py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-[#5a1b49]">Add Holiday</button>
+                 <input type="text" placeholder="Holiday Name" className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayName} onChange={e=>setHolidayName(e.target.value)} />
+                 <button onClick={handleAddHoliday} className="px-6 py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-[#5a1b49]">Add</button>
               </div>
               <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
-                 {constants.filter(c => c.type === 'public_holiday').sort((a,b) => a.label.localeCompare(b.label)).map(item => {
+                 {constants.filter(c => c.type === 'public_holiday').map(item => {
                     const [d, n] = item.label.split('::');
                     return (
-                     <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-200 transition-all">
+                     <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white border border-transparent hover:border-slate-200 transition-all">
                         <div className="flex items-center gap-4">
                             <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs">{d}</span>
                             <span className="font-bold text-slate-700 text-sm">{n}</span>
                         </div>
-                        <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2"><Trash2 size={16}/></button>
+                        <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 p-2"><Trash2 size={16}/></button>
                      </div>
                     )
                  })}
-                 {constants.filter(c => c.type === 'public_holiday').length === 0 && (
-                     <p className="text-center text-slate-400 italic text-sm py-4">No public holidays configured.</p>
-                 )}
               </div>
            </div>
 
-           <ListManager type="sub_department" title="Sub Departments" icon={Building} placeholder="Add sub department..." />
-           <RankManager type="role_rank" title="Role Sorting Ranks" icon={Briefcase} />
-           <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." />
-           <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." />
+           <ListManager 
+              type="sub_department" 
+              title="Sub Departments" 
+              icon={Building} 
+              placeholder="Add sub department..." 
+              constants={constants}
+              newConstantValue={newConstantValue}
+              activeConstantType={activeConstantType}
+              setActiveConstantType={setActiveConstantType}
+              setNewConstantValue={setNewConstantValue}
+              handleAddConstant={handleAddConstant}
+              handleDeleteConstant={handleDeleteConstant}
+           />
+           
+           <RankManager 
+              type="role_rank" 
+              title="Role Sorting Ranks" 
+              icon={Briefcase} 
+              constants={constants}
+              hosts={hosts}
+              fetchConstants={fetchConstants}
+              handleDeleteConstant={handleDeleteConstant}
+           />
+           
+           <ListManager 
+              type="requester" 
+              title="Staff List" 
+              icon={Users} 
+              placeholder="Add staff name..." 
+              constants={constants}
+              newConstantValue={newConstantValue}
+              activeConstantType={activeConstantType}
+              setActiveConstantType={setActiveConstantType}
+              setNewConstantValue={setNewConstantValue}
+              handleAddConstant={handleAddConstant}
+              handleDeleteConstant={handleDeleteConstant}
+           />
+           
+           <ListManager 
+              type="category" 
+              title="Categories" 
+              icon={Layers} 
+              placeholder="Add category..." 
+              constants={constants}
+              newConstantValue={newConstantValue}
+              activeConstantType={activeConstantType}
+              setActiveConstantType={setActiveConstantType}
+              setNewConstantValue={setNewConstantValue}
+              handleAddConstant={handleAddConstant}
+              handleDeleteConstant={handleDeleteConstant}
+           />
         </div>
       ) : activeTab === 'GEM Directory' ? (
         <div className="animate-in slide-in-from-right-4 duration-300">
@@ -616,43 +602,21 @@ export default function SettingsPage() {
                     <p className="text-[10px] font-bold text-slate-400 uppercase">Manage Guest Experience Makers</p>
                  </div>
               </div>
-
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
-                <input 
-                   type="text" 
-                   placeholder="GEM Name (e.g. John)" 
-                   className="flex-1 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 focus:bg-white transition-colors" 
-                   value={gemName} 
-                   onChange={(e) => setGemName(e.target.value)}
-                />
-                <input 
-                   type="number" 
-                   placeholder="MVPN (e.g. 1234)" 
-                   className="w-full sm:w-48 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 focus:bg-white transition-colors" 
-                   value={gemMvpn} 
-                   onChange={(e) => setGemMvpn(e.target.value)}
-                   onKeyDown={(e) => { if (e.key === 'Enter') handleAddGem(); }}
-                />
-                <button onClick={handleAddGem} className="px-6 py-4 bg-amber-500 text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600 transition-colors whitespace-nowrap">
-                   Add GEM
-                </button>
+                <input type="text" placeholder="GEM Name" className="flex-1 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 transition-colors" value={gemName} onChange={(e) => setGemName(e.target.value)}/>
+                <input type="number" placeholder="MVPN" className="w-full sm:w-48 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 transition-colors" value={gemMvpn} onChange={(e) => setGemMvpn(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddGem(); }}/>
+                <button onClick={handleAddGem} className="px-6 py-4 bg-amber-500 text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600 whitespace-nowrap">Add</button>
               </div>
-
               <div className="space-y-2">
                  {constants.filter(c => c.type === 'gem').map(item => (
-                   <div key={item.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-200 transition-all">
+                   <div key={item.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl group hover:bg-white border border-transparent hover:border-slate-200 transition-all">
                       <div className="flex items-center gap-3">
                          <User size={16} className="text-slate-400" />
                          <span className="font-bold text-slate-700">{item.label}</span>
                       </div>
-                      <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2">
-                         <Trash2 size={18}/>
-                      </button>
+                      <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2"><Trash2 size={18}/></button>
                    </div>
                  ))}
-                 {constants.filter(c => c.type === 'gem').length === 0 && (
-                     <div className="text-center py-10 text-slate-400 text-sm font-bold italic">No GEMs added yet.</div>
-                 )}
               </div>
            </div>
         </div>
@@ -671,11 +635,7 @@ export default function SettingsPage() {
 
            {isFormOpen && (
               <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 mb-8 animate-in slide-in-from-top-4">
-                 <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700">
-                    {isEditing ? <Edit3 size={20}/> : <Plus size={20}/>}
-                    {isEditing ? `Edit: ${currentItem.article_name}` : `New Entry`}
-                 </h3>
-                 
+                 <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700">{isEditing ? <Edit3 size={20}/> : <Plus size={20}/>}{isEditing ? `Edit: ${currentItem.article_name}` : `New Entry`}</h3>
                  <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
                     <div className="md:col-span-3 space-y-4">
                         <div onClick={() => fileInputRef.current?.click()} className={`w-full h-40 bg-slate-50 border-2 border-dashed ${isUploading ? 'border-[#6D2158]' : 'border-slate-200'} rounded-xl flex flex-col items-center justify-center text-slate-400 overflow-hidden relative cursor-pointer hover:border-[#6D2158] transition-all`}>
@@ -683,88 +643,49 @@ export default function SettingsPage() {
                         </div>
                         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload}/>
                     </div>
-
                     <div className="md:col-span-9 grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Number (ID)</label>
-                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400' : 'bg-slate-50 border-slate-200'}`} placeholder="151001" value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Number</label>
+                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100' : 'bg-slate-50'}`} value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
                         </div>
                         <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Name (Official)</label>
-                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" placeholder="e.g. Coca Cola Zero 330ml" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} />
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Name</label>
+                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} />
                         </div>
                         <div className="md:col-span-2">
-                           <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name (Button Display Name)</label>
-                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" placeholder="e.g. Coke Zero" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
+                           <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name</label>
+                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Category</label>
-                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>
-                              {MASTER_CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                           </select>
+                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>{MASTER_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Unit</label>
-                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit || 'Each'} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}>
-                              <option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option>
-                           </select>
+                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit || 'Each'} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}><option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option></select>
                         </div>
-                        
                         <div className="md:col-span-2 flex gap-6 pt-4 border-t border-slate-100 mt-2">
-                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.is_minibar_item ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, is_minibar_item: !currentItem.is_minibar_item})}>
-                               <div className={`w-5 h-5 rounded border flex items-center justify-center ${currentItem.is_minibar_item ? 'bg-rose-500 border-rose-500' : 'border-slate-300'}`}>{currentItem.is_minibar_item && <CheckCircle size={14} className="text-white"/>}</div>
-                               <span className="text-sm font-bold uppercase">Minibar Item</span>
-                           </div>
-                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.has_expiry ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, has_expiry: !currentItem.has_expiry})}>
-                               <div className={`w-5 h-5 rounded border flex items-center justify-center ${currentItem.has_expiry ? 'bg-amber-500 border-amber-500' : 'border-slate-300'}`}>{currentItem.has_expiry && <CheckCircle size={14} className="text-white"/>}</div>
-                               <span className="text-sm font-bold uppercase">Expiry Tracking</span>
-                           </div>
+                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.is_minibar_item ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, is_minibar_item: !currentItem.is_minibar_item})}><div className={`w-5 h-5 rounded border flex items-center justify-center ${currentItem.is_minibar_item ? 'bg-rose-500 border-rose-500' : 'border-slate-300'}`}>{currentItem.is_minibar_item && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Minibar Item</span></div>
+                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.has_expiry ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, has_expiry: !currentItem.has_expiry})}><div className={`w-5 h-5 rounded border flex items-center justify-center ${currentItem.has_expiry ? 'bg-amber-500 border-amber-500' : 'border-slate-300'}`}>{currentItem.has_expiry && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Expiry Tracking</span></div>
                         </div>
-
                         {currentItem.is_minibar_item && (
                             <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
-                               <div>
-                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Micros Name</label>
-                                  <input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.micros_name || ''} onChange={e => setCurrentItem({...currentItem, micros_name: e.target.value})} />
-                               </div>
-                               <div>
-                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Sort Order</label>
-                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sort_order ?? 0} onChange={e => setCurrentItem({...currentItem, sort_order: parseInt(e.target.value) || 0})} />
-                               </div>
-                               <div>
-                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Avg Cost ($)</label>
-                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.avg_cost ?? 0} onChange={e => setCurrentItem({...currentItem, avg_cost: parseFloat(e.target.value) || 0})} />
-                               </div>
-                               <div>
-                                  <label className="text-[10px] font-bold text-rose-400 uppercase">Sales Price ($)</label>
-                                  <input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sales_price ?? 0} onChange={e => setCurrentItem({...currentItem, sales_price: parseFloat(e.target.value) || 0})} />
-                               </div>
+                               <div><label className="text-[10px] font-bold text-rose-400 uppercase">Micros Name</label><input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.micros_name || ''} onChange={e => setCurrentItem({...currentItem, micros_name: e.target.value})} /></div>
+                               <div><label className="text-[10px] font-bold text-rose-400 uppercase">Sort Order</label><input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sort_order ?? 0} onChange={e => setCurrentItem({...currentItem, sort_order: parseInt(e.target.value) || 0})} /></div>
+                               <div><label className="text-[10px] font-bold text-rose-400 uppercase">Avg Cost</label><input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.avg_cost ?? 0} onChange={e => setCurrentItem({...currentItem, avg_cost: parseFloat(e.target.value) || 0})} /></div>
+                               <div><label className="text-[10px] font-bold text-rose-400 uppercase">Sales Price</label><input type="number" className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.sales_price ?? 0} onChange={e => setCurrentItem({...currentItem, sales_price: parseFloat(e.target.value) || 0})} /></div>
                             </div>
                         )}
-
-                        {/* PROCUREMENT DETAILS FOR MAIN STORE */}
                         {!currentItem.is_minibar_item && (
                             <div className="md:col-span-2 p-4 bg-blue-50 rounded-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-4 animate-in fade-in">
-                                <div>
-                                    <label className="text-[10px] font-bold text-blue-500 uppercase flex items-center gap-1"><AlertTriangle size={10}/> Par Level (Min)</label>
-                                    <input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="e.g. 50" value={currentItem.par_level ?? 0} onChange={e => setCurrentItem({...currentItem, par_level: parseFloat(e.target.value) || 0})} />
-                                </div>
-                                <div>
-                                    <label className="text-[10px] font-bold text-blue-500 uppercase flex items-center gap-1"><Box size={10}/> Reorder Qty (Box)</label>
-                                    <input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="e.g. 24" value={currentItem.reorder_qty ?? 0} onChange={e => setCurrentItem({...currentItem, reorder_qty: parseFloat(e.target.value) || 0})} />
-                                </div>
-                                <div>
-                                    <label className="text-[10px] font-bold text-blue-500 uppercase flex items-center gap-1"><ShoppingCart size={10}/> Primary Supplier</label>
-                                    <input type="text" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" placeholder="e.g. SIMDI" value={currentItem.primary_supplier || ''} onChange={e => setCurrentItem({...currentItem, primary_supplier: e.target.value})} />
-                                </div>
+                                <div><label className="text-[10px] font-bold text-blue-500 uppercase">Par Level</label><input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.par_level ?? 0} onChange={e => setCurrentItem({...currentItem, par_level: parseFloat(e.target.value) || 0})} /></div>
+                                <div><label className="text-[10px] font-bold text-blue-500 uppercase">Reorder Qty</label><input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.reorder_qty ?? 0} onChange={e => setCurrentItem({...currentItem, reorder_qty: parseFloat(e.target.value) || 0})} /></div>
+                                <div><label className="text-[10px] font-bold text-blue-500 uppercase">Supplier</label><input type="text" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.primary_supplier || ''} onChange={e => setCurrentItem({...currentItem, primary_supplier: e.target.value})} /></div>
                             </div>
                         )}
                     </div>
                  </div>
-
-                 <button onClick={handleSaveItem} disabled={isUploading} className="w-full mt-6 py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] transition-all flex items-center justify-center gap-2">
-                    <Save size={18}/> {isEditing ? 'Update Catalog' : 'Save to Catalog'}
-                 </button>
+                 <button onClick={handleSaveItem} disabled={isUploading} className="w-full mt-6 py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] transition-all flex items-center justify-center gap-2"><Save size={18}/> {isEditing ? 'Update Catalog' : 'Save to Catalog'}</button>
               </div>
            )}
 
@@ -786,9 +707,7 @@ export default function SettingsPage() {
                             <td className="p-4 text-xs font-bold text-slate-400 font-mono">{item.article_number}</td>
                             <td className="p-4">
                                <div className="flex items-center gap-3">
-                                   <div className="w-10 h-10 rounded-lg bg-slate-100 flex-shrink-0 overflow-hidden flex items-center justify-center border border-slate-100">
-                                       {item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Icon size={18} className="text-slate-400"/>}
-                                   </div>
+                                   <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-100">{item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Icon size={18} className="text-slate-400"/>}</div>
                                    <div>
                                        <div className="font-bold text-slate-700 text-sm">{item.generic_name || item.article_name}</div>
                                        <div className="text-[10px] text-slate-400 uppercase">{item.article_name} • {item.unit}</div>
@@ -797,16 +716,8 @@ export default function SettingsPage() {
                             </td>
                             <td className="p-4 text-xs font-bold text-slate-500">{item.category}</td>
                             <td className="p-4 text-right flex justify-end gap-2 items-center">
-                               {/* NEW MANAGE BATCHES BUTTON */}
-                               {activeTab === 'Expiry Setup' && (
-                                   <button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase tracking-widest flex items-center gap-1 shadow-sm">
-                                       <Calendar size={14}/> Batches
-                                   </button>
-                               )}
-                               <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                   <button onClick={() => handleEditItem(item)} className="p-2 text-blue-400 hover:text-blue-600 rounded-lg transition-colors"><Edit3 size={16}/></button>
-                                   <button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-300 hover:text-rose-500 rounded-lg transition-colors"><Trash2 size={16}/></button>
-                               </div>
+                               {activeTab === 'Expiry Setup' && (<button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase flex items-center gap-1 shadow-sm"><Calendar size={14}/> Batches</button>)}
+                               <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => handleEditItem(item)} className="p-2 text-blue-400 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button><button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-300 hover:text-rose-500 rounded-lg"><Trash2 size={16}/></button></div>
                             </td>
                          </tr>
                        );
@@ -817,47 +728,20 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* --- LOGS MODAL --- */}
+      {/* --- MODALS --- */}
+
       {selectedLogHost && (
           <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
-                  <div className="p-6 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
-                     <div>
-                         <h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><History size={20}/> {selectedLogHost.full_name}'s Activity</h3>
-                         <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">Latest 50 System Actions</p>
-                     </div>
+                  <div className="p-6 bg-[#6D2158] text-white flex justify-between items-center">
+                     <div><h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><History size={20}/> {selectedLogHost.full_name}'s Activity</h3><p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">Latest 50 System Actions</p></div>
                      <button onClick={() => setSelectedLogHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
                   </div>
-                  
                   <div className="p-0 overflow-y-auto flex-1 bg-slate-50 custom-scrollbar">
-                     {isLoadingLogs ? (
-                         <div className="flex justify-center items-center py-20 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>
-                     ) : hostLogs.length === 0 ? (
-                         <div className="flex justify-center items-center py-20 text-slate-400 font-bold italic text-sm">No recent activity found.</div>
-                     ) : (
+                     {isLoadingLogs ? (<div className="flex justify-center items-center py-20 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>) : hostLogs.length === 0 ? (<div className="flex justify-center items-center py-20 text-slate-400 font-bold italic text-sm">No recent activity.</div>) : (
                          <table className="w-full text-left text-xs">
-                             <thead className="bg-white sticky top-0 border-b border-slate-200 shadow-sm z-10">
-                                <tr>
-                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Time</th>
-                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Type</th>
-                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Villa</th>
-                                    <th className="p-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">Details</th>
-                                </tr>
-                             </thead>
-                             <tbody className="divide-y divide-slate-100">
-                                {hostLogs.map(log => (
-                                    <tr key={log.id} className="hover:bg-white transition-colors">
-                                        <td className="p-4 font-medium text-slate-500 whitespace-nowrap">{new Date(log.request_time).toLocaleString('en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'})}</td>
-                                        <td className="p-4">
-                                            <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-wider ${log.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
-                                                {log.request_type}
-                                            </span>
-                                        </td>
-                                        <td className="p-4 font-black text-[#6D2158] text-sm">{log.villa_number}</td>
-                                        <td className="p-4 text-slate-600 truncate max-w-xs" title={log.item_details}>{log.item_details.replace(/\n/g, ', ')}</td>
-                                    </tr>
-                                ))}
-                             </tbody>
+                             <thead className="bg-white sticky top-0 border-b border-slate-200 shadow-sm z-10"><tr><th className="p-4 text-slate-400 font-bold uppercase text-[10px]">Time</th><th className="p-4 text-slate-400 font-bold uppercase text-[10px]">Type</th><th className="p-4 text-slate-400 font-bold uppercase text-[10px]">Villa</th><th className="p-4 text-slate-400 font-bold uppercase text-[10px]">Details</th></tr></thead>
+                             <tbody className="divide-y divide-slate-100">{hostLogs.map(log => (<tr key={log.id} className="hover:bg-white transition-colors"><td className="p-4 font-medium text-slate-500 whitespace-nowrap">{new Date(log.request_time).toLocaleString('en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'})}</td><td className="p-4"><span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-wider ${log.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>{log.request_type}</span></td><td className="p-4 font-black text-[#6D2158] text-sm">{log.villa_number}</td><td className="p-4 text-slate-600 truncate max-w-xs">{log.item_details.replace(/\n/g, ', ')}</td></tr>))}</tbody>
                          </table>
                      )}
                   </div>
@@ -865,56 +749,23 @@ export default function SettingsPage() {
           </div>
       )}
 
-      {/* --- EXPIRY BATCHES MODAL --- */}
       {selectedExpiryItem && (
-          <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
-                  <div className="p-6 bg-emerald-600 text-white flex justify-between items-center shrink-0">
-                     <div>
-                         <h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><Calendar size={20}/> Batch Tracking</h3>
-                         <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">{selectedExpiryItem.article_name}</p>
-                     </div>
+                  <div className="p-6 bg-emerald-600 text-white flex justify-between items-center">
+                     <div><h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><Calendar size={20}/> Batch Tracking</h3><p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">{selectedExpiryItem.article_name}</p></div>
                      <button onClick={() => setSelectedExpiryItem(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
                   </div>
-                  
-                  <div className="p-6 border-b border-slate-100 bg-slate-50 shrink-0 flex gap-2">
-                      <input 
-                          type="month" 
-                          className="flex-1 p-3 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-emerald-500"
-                          value={newBatchDate}
-                          onChange={(e) => setNewBatchDate(e.target.value)}
-                      />
-                      <button 
-                          onClick={handleAddBatchDate}
-                          className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold uppercase text-xs shadow-md transition-colors flex items-center gap-2"
-                      >
-                          <Plus size={16}/> Add
-                      </button>
+                  <div className="p-6 border-b border-slate-100 bg-slate-50 flex gap-2">
+                      <input type="month" className="flex-1 p-3 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-emerald-500" value={newBatchDate} onChange={(e) => setNewBatchDate(e.target.value)}/>
+                      <button onClick={handleAddBatchDate} className="px-5 py-3 bg-emerald-600 text-white rounded-xl font-bold uppercase text-xs shadow-md transition-colors flex items-center gap-2"><Plus size={16}/> Add</button>
                   </div>
-
                   <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-3">
-                     {isLoadingBatches ? (
-                         <div className="flex justify-center items-center py-10 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>
-                     ) : itemBatches.length === 0 ? (
-                         <div className="flex justify-center items-center py-10 text-slate-400 font-bold italic text-sm">No active batches being tracked.</div>
-                     ) : (
+                     {isLoadingBatches ? (<div className="flex justify-center items-center py-10 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>) : itemBatches.length === 0 ? (<div className="flex justify-center items-center py-10 text-slate-400 font-bold italic text-sm">No active batches.</div>) : (
                          itemBatches.map(batch => {
                              let displayDate = batch.expiry_date;
-                             try {
-                                 displayDate = format(parseISO(batch.expiry_date + "-01"), 'MMM yyyy');
-                             } catch (e) {}
-
-                             return (
-                                 <div key={batch.id} className="flex justify-between items-center p-4 bg-white border border-slate-200 rounded-2xl shadow-sm group hover:border-rose-200 transition-all">
-                                     <div className="font-black text-slate-700">{displayDate}</div>
-                                     <button 
-                                          onClick={() => handleArchiveBatch(batch.id)} 
-                                          className="text-slate-300 hover:text-rose-600 bg-slate-50 hover:bg-rose-50 p-2 rounded-lg transition-colors flex items-center gap-1 text-[10px] font-bold uppercase"
-                                     >
-                                         <Trash2 size={14}/> Remove
-                                     </button>
-                                 </div>
-                             );
+                             try { displayDate = format(parseISO(batch.expiry_date + "-01"), 'MMM yyyy'); } catch (e) {}
+                             return (<div key={batch.id} className="flex justify-between items-center p-4 bg-white border border-slate-200 rounded-2xl shadow-sm group hover:border-rose-200"><div className="font-black text-slate-700">{displayDate}</div><button onClick={() => handleArchiveBatch(batch.id)} className="text-slate-300 hover:text-rose-600 bg-slate-50 hover:bg-rose-50 p-2 rounded-lg text-[10px] font-bold uppercase flex items-center gap-1"><Trash2 size={14}/> Remove</button></div>);
                          })
                      )}
                   </div>
@@ -922,79 +773,43 @@ export default function SettingsPage() {
           </div>
       )}
 
-      {/* --- VIEW ACCESS MODAL --- */}
       {accessModalHost && (
-          <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
               <div className="bg-[#FDFBFD] w-full max-w-2xl rounded-[2.5rem] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden animate-in zoom-in-95">
-                  
                   <div className="p-6 md:p-8 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
-                      <div>
-                          <h3 className="font-black text-xl tracking-tight flex items-center gap-2"><Eye size={20}/> Manage View Access</h3>
-                          <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">For: {accessModalHost.full_name}</p>
-                      </div>
+                      <div><h3 className="font-black text-xl tracking-tight flex items-center gap-2"><Eye size={20}/> Manage View Access</h3><p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">For: {accessModalHost.full_name}</p></div>
                       <button onClick={() => setAccessModalHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
                   </div>
-                  
                   <div className="p-6 border-b border-slate-200 bg-white shrink-0 flex gap-4 items-center">
                        <div className="relative flex-1">
                            <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
-                           <input 
-                               type="text" 
-                               placeholder="Search by name to grant access..." 
-                               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158] transition-colors"
-                               value={accessSearchQuery}
-                               onChange={e => setAccessSearchQuery(e.target.value)}
-                           />
+                           <input type="text" placeholder="Search by name..." className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158]" value={accessSearchQuery} onChange={e => setAccessSearchQuery(e.target.value)}/>
                        </div>
                   </div>
-
                   <div className="p-6 overflow-y-auto flex-1 custom-scrollbar bg-slate-50">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           {hosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || h.host_id.includes(accessSearchQuery))).map(targetHost => {
                               const isSelected = (supervisorAccess[accessModalHost.host_id] || []).includes(targetHost.host_id);
-                              
                               return (
                                   <label key={targetHost.id} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${isSelected ? 'bg-purple-50 border-purple-200 shadow-sm' : 'bg-white border-slate-200 hover:border-[#6D2158]'}`}>
-                                      <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${isSelected ? 'bg-[#6D2158] border-[#6D2158]' : 'bg-slate-50 border-slate-300'}`}>
-                                          {isSelected && <CheckCircle2 size={14} className="text-white"/>}
-                                      </div>
-                                      <div className="flex-1 min-w-0">
-                                          <div className="font-bold text-sm text-slate-800 truncate">{targetHost.full_name}</div>
-                                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{targetHost.role}</div>
-                                      </div>
-                                      <input 
-                                          type="checkbox" 
-                                          className="hidden"
-                                          checked={isSelected}
-                                          onChange={() => {
-                                              setSupervisorAccess(prev => {
-                                                  const current = prev[accessModalHost.host_id] || [];
-                                                  if (current.includes(targetHost.host_id)) {
-                                                      return { ...prev, [accessModalHost.host_id]: current.filter(id => id !== targetHost.host_id) };
-                                                  } else {
-                                                      return { ...prev, [accessModalHost.host_id]: [...current, targetHost.host_id] };
-                                                  }
-                                              });
-                                          }}
-                                      />
+                                      <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${isSelected ? 'bg-[#6D2158] border-[#6D2158]' : 'bg-slate-50 border-slate-300'}`}>{isSelected && <CheckCircle2 size={14} className="text-white"/>}</div>
+                                      <div className="flex-1 min-w-0"><div className="font-bold text-sm text-slate-800 truncate">{targetHost.full_name}</div><div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{targetHost.role}</div></div>
+                                      <input type="checkbox" className="hidden" checked={isSelected} onChange={() => {
+                                          setSupervisorAccess((prev: any) => {
+                                              const current = prev[accessModalHost.host_id] || [];
+                                              if (current.includes(targetHost.host_id)) return { ...prev, [accessModalHost.host_id]: current.filter((id: any) => id !== targetHost.host_id) };
+                                              return { ...prev, [accessModalHost.host_id]: [...current, targetHost.host_id] };
+                                          });
+                                      }}/>
                                   </label>
                               );
                           })}
-                          {hosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || h.host_id.includes(accessSearchQuery))).length === 0 && (
-                              <div className="col-span-full text-center py-10 text-slate-400 font-bold italic text-sm">No staff found matching "{accessSearchQuery}"</div>
-                          )}
                       </div>
                   </div>
-                  
-                  <div className="p-6 bg-white border-t border-slate-200 shrink-0">
-                      <button onClick={() => setAccessModalHost(null)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all hover:bg-purple-900">
-                          Done
-                      </button>
-                  </div>
+                  <div className="p-6 bg-white border-t border-slate-200 shrink-0"><button onClick={() => setAccessModalHost(null)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">Done</button></div>
               </div>
           </div>
       )}
-
     </div>
   );
 }
