@@ -1,10 +1,9 @@
 "use client";
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { 
   Users, ShoppingCart, Clock, AlertTriangle, 
-  ArrowRight, CheckCircle2,
-  Zap, Bell, ClipboardList, Calendar, User,
-  Coffee, Sun, Moon, Plane, X, Timer
+  CheckCircle2, BarChart2, Edit3, Loader2, Search,
+  Bell, ClipboardList, Calendar, User, Plane, X, Timer
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -21,37 +20,153 @@ const getPayrollPeriod = (date = new Date()) => {
   }
 };
 
-// Leave codes that signify the person is not at work
 const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
+
+type TeamConfig = {
+    hostDepartments: Record<string, string>;
+    supervisorAccess: Record<string, string[]>;
+    nicknames: Record<string, string>;
+};
+
+// --- UNIVERSAL MATH ENGINE ---
+const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, publicHolidays: any[]) => {
+    if (!host) return null;
+    const targetDate = parseISO(cutoffDate);
+    const targetYear = targetDate.getFullYear();
+    const SYSTEM_START_DATE = new Date(2026, 0, 1); 
+    
+    const baseCfOff = host.cf_off || 0;
+    const baseCfAL = host.cf_al || 0;
+    const baseCfPH = host.cf_ph || 0;
+
+    const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
+    const isExec = ['DA', 'DB'].includes(host.host_level);
+    const isIntern = (host.role || '').toLowerCase().includes('intern');
+
+    const recordsUpToTarget = attendance.filter(a => {
+        const d = parseISO(a.date);
+        return d >= SYSTEM_START_DATE && d <= targetDate;
+    });
+
+    let cfOff = baseCfOff; let cfAL = baseCfAL; let cfPH = baseCfPH;
+    if (targetYear > 2026) {
+        const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
+        const endOfPrevYear = new Date(targetYear - 1, 11, 31);
+        if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
+            const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1;
+            const recordsBefore = attendance.filter(a => {
+                const d = parseISO(a.date);
+                return d >= accrualStart && d <= endOfPrevYear;
+            });
+            const penaltyBefore = recordsBefore.filter(a => ['NP', 'A'].includes(a.status_code)).length;
+            const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
+            
+            cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
+            cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => a.status_code === 'AL').length;
+            cfPH -= recordsBefore.filter(a => a.status_code === 'PH').length;
+        }
+    } else if (targetYear < 2026) {
+        cfOff = 0; cfAL = 0; cfPH = 0;
+    }
+
+    const startOfTargetYear = new Date(targetYear, 0, 1);
+    const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
+    
+    let earnedOff = 0; let earnedAL = 0; let earnedPH = 0;
+    
+    if (targetDate >= trackingStartThisYear) {
+        const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
+        const recordsThisYear = recordsUpToTarget.filter(a => {
+            const d = parseISO(a.date);
+            return d >= trackingStartThisYear && d <= targetDate;
+        });
+        const penaltyDays = recordsThisYear.filter(a => ['NP', 'A'].includes(a.status_code)).length;
+        const eligibleDays = Math.max(0, daysActive - penaltyDays);
+        
+        earnedOff = eligibleDays / 7;
+        earnedAL = eligibleDays / 12;
+    }
+
+    publicHolidays.forEach(ph => {
+        const phDate = parseISO(ph.date);
+        if (phDate >= trackingStartThisYear && phDate <= targetDate) {
+            earnedPH += 1;
+        }
+    });
+
+    const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
+    const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
+    const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
+
+    let lastAnniversary = new Date(joinDate);
+    lastAnniversary.setFullYear(targetYear);
+    if (isAfter(lastAnniversary, targetDate)) {
+        lastAnniversary.setFullYear(targetYear - 1);
+    }
+    
+    const recordsSinceAnniversary = attendance.filter(a => {
+        const d = parseISO(a.date);
+        return d >= lastAnniversary && d <= targetDate;
+    });
+    
+    const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
+    const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
+    const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
+
+    const balOffVal = cfOff + earnedOff - takenOff;
+    const balALVal = isIntern ? 0 : (cfAL + earnedAL - takenAL);
+    const balPHVal = baseCfPH + earnedPH - takenPH;
+    const balRRVal = isExec ? 7 - takenRR : 0;
+    const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
+
+    return {
+        balOff: balOffVal.toFixed(1),
+        balAL: isIntern ? '0.0' : balALVal.toFixed(1),
+        balPH: balPHVal.toFixed(1),
+        balRR: isExec ? balRRVal.toString() : '-',
+        balTotal: totalBal.toFixed(1),
+        balSL: 30 - takenSL,
+        balEL: 10 - takenEL
+    };
+};
 
 export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSupervisor, setIsSupervisor] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // --- ADMIN STATE ---
   const [stats, setStats] = useState({ totalHosts: 0, pendingOrders: 0, pendingReqs: 0, expiringBatches: 0 });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
   const [criticalItems, setCriticalItems] = useState<any[]>([]);
 
-  // --- USER PROFILE & LEAVE BALANCES STATE ---
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [userAttendance, setUserAttendance] = useState<any[]>([]);
   
-  // Payroll Attendance State
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [tempName, setTempName] = useState('');
+  const [displayName, setDisplayName] = useState('');
+
+  const [teamConfig, setTeamConfig] = useState<TeamConfig>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {} });
+  const [allHosts, setAllHosts] = useState<any[]>([]);
+  const [allAttendance, setAllAttendance] = useState<any[]>([]);
+  const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
+  const [isLoadingTeam, setIsLoadingTeam] = useState(false);
+  const [teamBalances, setTeamBalances] = useState<any[]>([]);
+  const [activeDeptTab, setActiveDeptTab] = useState<string>('All');
+  const [teamSearch, setTeamSearch] = useState('');
+  const [teamDate, setTeamDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+
   const [myAttendance, setMyAttendance] = useState<any[]>([]);
   const [payrollStart, setPayrollStart] = useState<Date>(new Date());
   const [payrollEnd, setPayrollEnd] = useState<Date>(new Date());
 
   const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isHolidayModalOpen, setIsHolidayModalOpen] = useState(false);
-  
-  // Dynamic Public Holidays
   const [publicHolidays, setPublicHolidays] = useState<{id: string, date: string, name: string}[]>([]);
 
   useEffect(() => { 
       fetchDashboardData(); 
 
-      // --- REALTIME COLLABORATION LISTENERS ---
       const reqChannel = supabase.channel('dashboard_reqs')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
             fetchDashboardData(false); 
@@ -72,39 +187,101 @@ export default function Dashboard() {
     if (showLoading) setIsLoading(true);
     const todayStr = format(new Date(), 'yyyy-MM-dd');
 
-    // Fetch dynamic public holidays
-    const { data: constData } = await supabase.from('hsk_constants').select('*').eq('type', 'public_holiday');
-    if (constData) {
-        const parsedHolidays = constData.map((c: any) => {
+    const [constRes, configRes] = await Promise.all([
+        supabase.from('hsk_constants').select('*').eq('type', 'public_holiday'),
+        supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').maybeSingle()
+    ]);
+
+    if (constRes.data) {
+        const parsedHolidays = constRes.data.map((c: any) => {
             const [d, n] = c.label.split('::');
             return { id: c.id, date: d, name: n };
         }).sort((a: any, b: any) => a.date.localeCompare(b.date));
         setPublicHolidays(parsedHolidays);
     }
 
-    // 1. Fetch Logged-in User Profile & Determine Role
+    let config: TeamConfig = { hostDepartments: {}, supervisorAccess: {}, nicknames: {} };
+    if (configRes.data && configRes.data.label) {
+        try { 
+            const parsed = JSON.parse(configRes.data.label); 
+            // Fallback support for older config versions
+            const sAccess = parsed.supervisorAccess || (parsed['101'] ? parsed : {});
+            config = {
+                hostDepartments: parsed.hostDepartments || {},
+                supervisorAccess: sAccess,
+                nicknames: parsed.nicknames || {}
+            };
+        } catch (e) {}
+    }
+    setTeamConfig(config);
+
     const sessionData = localStorage.getItem('hk_pulse_session');
     let adminFlag = false;
+    let superFlag = false;
     let loggedHostId = '';
 
     if (sessionData) {
         const parsed = JSON.parse(sessionData);
         adminFlag = parsed.system_role === 'admin' || localStorage.getItem('hk_pulse_admin_auth') === 'true';
+        loggedHostId = String(parsed.host_id || '').trim();
+        
+        // Ensure perfect string comparison to find access rights
+        let allowedHosts: string[] = [];
+        for (const key in config.supervisorAccess) {
+            if (String(key).trim() === loggedHostId) {
+                const val = config.supervisorAccess[key];
+                allowedHosts = Array.isArray(val) ? val.map(v => String(v).trim()) : [];
+                break;
+            }
+        }
+        
+        superFlag = adminFlag || allowedHosts.length > 0;
+        
         setIsAdmin(adminFlag);
-        loggedHostId = parsed.host_id;
+        setIsSupervisor(superFlag);
         
         const { data: hostData } = await supabase.from('hsk_hosts').select('*').eq('host_id', loggedHostId).single();
-        if (hostData) setCurrentUser(hostData);
+        if (hostData) {
+            setCurrentUser(hostData);
+            const localNick = localStorage.getItem(`nickname_${hostData.host_id}`);
+            setDisplayName(config.nicknames[hostData.host_id] || localNick || hostData.full_name.split(' ')[0]);
+        }
         
-        // Fetch ALL attendance for leave balances and upcoming leaves
+        if (superFlag) {
+            const [hostsRes, attRes] = await Promise.all([
+                supabase.from('hsk_hosts').select('*').order('full_name'),
+                supabase.from('hsk_attendance').select('*')
+            ]);
+
+            if (hostsRes.data) {
+                let finalHosts = hostsRes.data;
+                if (!adminFlag) {
+                    finalHosts = finalHosts.filter((h: any) => allowedHosts.includes(String(h.host_id).trim()));
+                }
+                setAllHosts(finalHosts);
+            }
+            if (attRes.data) setAllAttendance(attRes.data);
+        }
+
         const { data: attData } = await supabase.from('hsk_attendance').select('*').eq('host_id', loggedHostId);
         if (attData) setUserAttendance(attData);
+
     } else {
         adminFlag = localStorage.getItem('hk_pulse_admin_auth') === 'true';
         setIsAdmin(adminFlag);
+        setIsSupervisor(adminFlag);
+        
+        // If bypassing login entirely as admin, fetch all hosts
+        if (adminFlag) {
+             const [hostsRes, attRes] = await Promise.all([
+                supabase.from('hsk_hosts').select('*').order('full_name'),
+                supabase.from('hsk_attendance').select('*')
+            ]);
+            if (hostsRes.data) setAllHosts(hostsRes.data);
+            if (attRes.data) setAllAttendance(attRes.data);
+        }
     }
 
-    // 2. Fetch Data based on Role
     if (adminFlag) {
         const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true });
         const { count: orderCount } = await supabase.from('hsk_procurement_orders').select('*', { count: 'exact', head: true }).neq('status', 'Completed');
@@ -128,8 +305,9 @@ export default function Dashboard() {
         setStats({ totalHosts: hostCount || 0, pendingOrders: orderCount || 0, pendingReqs: pendingReqsCount, expiringBatches: expiringList.length });
         setCriticalItems(expiringList);
         setRecentActivity((reqs || []).slice(0, 6));
-    } else if (loggedHostId) {
-        // Staff Dashboard: Fetch Payroll Attendance
+    } 
+    
+    if (loggedHostId) {
         const { start, end } = getPayrollPeriod(new Date());
         setPayrollStart(start);
         setPayrollEnd(end);
@@ -146,21 +324,60 @@ export default function Dashboard() {
     if (showLoading) setIsLoading(false);
   };
 
-  // --- UPCOMING LEAVE ENGINE ---
+  const saveNickname = async () => {
+      if (!tempName.trim() || !currentUser) { setIsEditingName(false); return; }
+      
+      setDisplayName(tempName.trim());
+      setIsEditingName(false);
+
+      try {
+          localStorage.setItem(`nickname_${currentUser.host_id}`, tempName.trim());
+          const { data: constData } = await supabase.from('hsk_constants').select('*').eq('type', 'team_viewer_config').maybeSingle();
+          if (constData) {
+              const parsed = JSON.parse(constData.label);
+              parsed.nicknames = parsed.nicknames || {};
+              parsed.nicknames[currentUser.host_id] = tempName.trim();
+              await supabase.from('hsk_constants').update({ label: JSON.stringify(parsed) }).eq('id', constData.id);
+          }
+      } catch (e) {
+          console.error("Failed to save nickname globally", e);
+      }
+  };
+
+  const loadTeamLeaves = useCallback(() => {
+      setIsTeamModalOpen(true);
+      if (allHosts.length === 0) return;
+      setIsLoadingTeam(true);
+
+      const computed = allHosts.map((h: any) => {
+          const hostAtt = allAttendance.filter((a: any) => a.host_id === h.host_id);
+          const bal = computeLeaveBalances(h, hostAtt, teamDate, publicHolidays);
+          const dept = teamConfig.hostDepartments?.[h.host_id] || 'Unassigned';
+          return { host: h, department: dept, balances: bal };
+      }).filter((c: any) => c.balances !== null);
+
+      computed.sort((a: any, b: any) => parseFloat(b.balances.balTotal) - parseFloat(a.balances.balTotal));
+      setTeamBalances(computed);
+      
+      setIsLoadingTeam(false);
+  }, [allHosts, allAttendance, teamDate, publicHolidays, teamConfig]);
+
+  useEffect(() => {
+      if (isTeamModalOpen) loadTeamLeaves();
+  }, [teamDate, isTeamModalOpen, loadTeamLeaves]);
+
   const upcomingLeaveInfo = useMemo(() => {
       if (!userAttendance || userAttendance.length === 0) return null;
 
       const today = new Date();
-      today.setHours(0,0,0,0); // Normalize to start of day
+      today.setHours(0,0,0,0); 
 
-      // Find all future records that are marked as leave
       const futureLeaves = userAttendance
           .filter(a => parseISO(a.date) >= today && LEAVE_CODES.includes(a.status_code))
           .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
 
       if (futureLeaves.length === 0) return null;
 
-      // Group continuous blocks of leave
       let blocks = [];
       let currentBlock = [futureLeaves[0]];
 
@@ -177,19 +394,14 @@ export default function Dashboard() {
       }
       blocks.push([...currentBlock]);
 
-      // Grab the very next block of leave
       const nextLeaveBlock = blocks[0];
       const startDate = parseISO(nextLeaveBlock[0].date);
       const endDate = parseISO(nextLeaveBlock[nextLeaveBlock.length - 1].date);
       
-      // Calculate return to work date (the day immediately after the leave block ends)
       const returnDate = addDays(endDate, 1);
       
       const daysUntilLeave = differenceInDays(startDate, today);
       const totalLeaveDays = nextLeaveBlock.length;
-
-      // Extract what types of leave make up this block
-      const uniqueLeaveTypes = Array.from(new Set(nextLeaveBlock.map(l => l.status_code)));
 
       return {
           startDate,
@@ -197,124 +409,16 @@ export default function Dashboard() {
           returnDate,
           daysUntilLeave,
           totalLeaveDays,
-          uniqueLeaveTypes,
           isOnLeaveNow: daysUntilLeave === 0 || (today >= startDate && today <= endDate)
       };
 
   }, [userAttendance]);
 
-  // --- LEAVE BALANCE MATH ENGINE FOR SINGLE USER ---
   const userBalances = useMemo(() => {
-      if (!currentUser) return null;
-
-      const targetDate = parseISO(cutoffDate);
-      const targetYear = targetDate.getFullYear();
-      const SYSTEM_START_DATE = new Date(2026, 0, 1); 
-      
-      const baseCfOff = currentUser.cf_off || 0;
-      const baseCfAL = currentUser.cf_al || 0;
-      const baseCfPH = currentUser.cf_ph || 0;
-
-      const joinDate = currentUser.joining_date ? parseISO(currentUser.joining_date) : SYSTEM_START_DATE;
-      const isExec = ['DA', 'DB'].includes(currentUser.host_level);
-      const isIntern = (currentUser.role || '').toLowerCase().includes('intern');
-
-      const recordsUpToTarget = userAttendance.filter(a => {
-          const d = parseISO(a.date);
-          return d >= SYSTEM_START_DATE && d <= targetDate;
-      });
-
-      // 1. Carried Forward (Calculated up to End of Previous Year)
-      let cfOff = baseCfOff; let cfAL = baseCfAL; let cfPH = baseCfPH;
-      if (targetYear > 2026) {
-          const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
-          const endOfPrevYear = new Date(targetYear - 1, 11, 31);
-          if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
-              const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1;
-              const recordsBefore = userAttendance.filter(a => {
-                  const d = parseISO(a.date);
-                  return d >= accrualStart && d <= endOfPrevYear;
-              });
-              // FIX: Remove SL from penalty list
-              const penaltyBefore = recordsBefore.filter(a => ['NP', 'A'].includes(a.status_code)).length;
-              const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
-              
-              cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
-              cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => a.status_code === 'AL').length;
-              cfPH -= recordsBefore.filter(a => a.status_code === 'PH').length;
-          }
-      } else if (targetYear < 2026) {
-          cfOff = 0; cfAL = 0; cfPH = 0;
-      }
-
-      // 2. Accrual This Selected Year
-      const startOfTargetYear = new Date(targetYear, 0, 1);
-      const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
-      
-      let earnedOff = 0; let earnedAL = 0; let earnedPH = 0;
-      
-      if (targetDate >= trackingStartThisYear) {
-          const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
-          const recordsThisYear = recordsUpToTarget.filter(a => {
-              const d = parseISO(a.date);
-              return d >= trackingStartThisYear && d <= targetDate;
-          });
-          // FIX: Remove SL from penalty list
-          const penaltyDays = recordsThisYear.filter(a => ['NP', 'A'].includes(a.status_code)).length;
-          const eligibleDays = Math.max(0, daysActive - penaltyDays);
-          
-          earnedOff = eligibleDays / 7;
-          earnedAL = eligibleDays / 12;
-      }
-
-      // Calculate PH based on passed declared holidays in this specific year
-      publicHolidays.forEach(ph => {
-          const phDate = parseISO(ph.date);
-          if (phDate >= trackingStartThisYear && phDate <= targetDate) {
-              earnedPH += 1;
-          }
-      });
-
-      // 3. Taken Leaves (Overall up to cutoff)
-      const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
-      const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
-      const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
-
-      // 4. Fixed Quotas (Reset on Anniversary)
-      let lastAnniversary = new Date(joinDate);
-      lastAnniversary.setFullYear(targetYear);
-      if (isAfter(lastAnniversary, targetDate)) {
-          lastAnniversary.setFullYear(targetYear - 1);
-      }
-      
-      const recordsSinceAnniversary = userAttendance.filter(a => {
-          const d = parseISO(a.date);
-          return d >= lastAnniversary && d <= targetDate;
-      });
-      
-      const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
-      const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
-      const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
-
-      const balOffVal = cfOff + earnedOff - takenOff;
-      const balALVal = isIntern ? 0 : (cfAL + earnedAL - takenAL);
-      const balPHVal = baseCfPH + earnedPH - takenPH;
-      const balRRVal = isExec ? 7 - takenRR : 0;
-      const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
-
-      return {
-          balOff: balOffVal.toFixed(1),
-          balAL: isIntern ? '0.0' : balALVal.toFixed(1),
-          balPH: balPHVal.toFixed(1),
-          balRR: isExec ? balRRVal.toString() : '-',
-          balTotal: totalBal.toFixed(1),
-          balSL: 30 - takenSL,
-          balEL: 10 - takenEL
-      };
+      return computeLeaveBalances(currentUser, userAttendance, cutoffDate, publicHolidays);
   }, [currentUser, userAttendance, cutoffDate, publicHolidays]);
 
   const renderPayrollGrid = () => {
-      // Create a grid that encapsulates the entire payroll period, padded to full weeks
       const startDate = startOfWeek(payrollStart);
       const endDate = endOfWeek(payrollEnd);
 
@@ -332,7 +436,6 @@ export default function Dashboard() {
               const status = record?.status_code || '';
               const duty = record?.shift_type || '';
 
-              // Color Logic
               let bgClass = 'bg-white border-slate-200';
               let textClass = 'text-slate-700';
               let badgeClass = 'bg-slate-100 text-slate-500 border-slate-200';
@@ -422,17 +525,37 @@ export default function Dashboard() {
       {/* NATIVE STICKY HEADER WITH PROFILE */}
       <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 py-5 md:px-8 md:py-6 shadow-sm flex flex-col xl:flex-row justify-between xl:items-end gap-6">
         <div className="flex items-center gap-5">
-           <div className="w-16 h-16 md:w-20 md:h-20 rounded-[1.25rem] overflow-hidden bg-slate-100 border-2 border-slate-200 shrink-0 shadow-sm">
+           <div className="w-16 h-16 md:w-20 md:h-20 rounded-[1.25rem] overflow-hidden bg-slate-100 border-2 border-slate-200 shrink-0 shadow-sm flex items-center justify-center text-[#6D2158]">
                {currentUser?.image_url ? (
                    <img src={currentUser.image_url} className="w-full h-full object-cover" alt="Profile" />
                ) : (
-                   <User className="w-full h-full p-4 text-slate-300"/>
+                   <span className="text-3xl font-black">{displayName.charAt(0) || <User/>}</span>
                )}
            </div>
            <div>
-              <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">
-                  {greeting}, {currentUser?.full_name?.split(' ')[0] || 'User'}
-              </h1>
+              <div className="flex items-center gap-3">
+                  {isEditingName ? (
+                      <div className="flex items-center gap-2">
+                          <span className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">{greeting},</span>
+                          <input 
+                              type="text" 
+                              autoFocus
+                              className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158] bg-white border border-[#6D2158] rounded-lg px-2 outline-none w-40 shadow-sm" 
+                              value={tempName} 
+                              onChange={(e) => setTempName(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && saveNickname()}
+                          />
+                          <button onClick={saveNickname} className="p-2 bg-emerald-100 text-emerald-600 rounded-lg hover:bg-emerald-200 shadow-sm"><CheckCircle2 size={16}/></button>
+                      </div>
+                  ) : (
+                      <div className="flex items-center gap-2 group cursor-pointer" onClick={() => { setTempName(displayName); setIsEditingName(true); }}>
+                          <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">
+                              {greeting}, {displayName}
+                          </h1>
+                          <Edit3 size={16} className="text-slate-300 group-hover:text-[#6D2158] transition-colors opacity-0 group-hover:opacity-100"/>
+                      </div>
+                  )}
+              </div>
               <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest flex items-center gap-2">
                  {currentUser?.role || 'Staff'} • {currentUser?.host_id || 'Unknown ID'}
                  <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active</span>
@@ -443,6 +566,14 @@ export default function Dashboard() {
         <div className="flex flex-col items-start xl:items-end gap-2">
             <div className="flex items-center gap-3">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">My Leave Balances As Of</span>
+                
+                {/* NEW TEAM LEAVES BUTTON */}
+                {isSupervisor && (
+                    <button onClick={loadTeamLeaves} className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2.5 py-1 rounded-full hover:bg-purple-100 transition-colors uppercase tracking-wider border border-purple-200 relative z-30 flex items-center gap-1 shadow-sm">
+                        <BarChart2 size={12}/> Team Leaves
+                    </button>
+                )}
+
                 <button onClick={() => setIsHolidayModalOpen(true)} className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full hover:bg-blue-100 transition-colors uppercase tracking-wider border border-blue-200 relative z-30">
                     View Holidays
                 </button>
@@ -646,21 +777,23 @@ export default function Dashboard() {
                      <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-3">
                         <Calendar size={18}/> My Attendance ({format(payrollStart, 'MMM d')} - {format(payrollEnd, 'MMM d')})
                      </h3>
-                     <Link href="/schedule" className="text-[10px] bg-white px-4 py-2 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] hover:shadow-md uppercase tracking-wider active:scale-95 transition-all">Full History</Link>
+                     <Link href="/schedule" className="text-[10px] bg-white px-4 py-2.5 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] hover:shadow-md uppercase tracking-wider active:scale-95 transition-all">Full History</Link>
                   </div>
                   
-                  <div className="p-4 md:p-8">
-                      {/* DAY NAMES */}
-                      <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2">
-                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-                              <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
-                                  {d}
-                              </div>
-                          ))}
-                      </div>
+                  <div className="p-4 md:p-8 overflow-x-auto">
+                      <div className="min-w-[600px]">
+                          {/* DAY NAMES */}
+                          <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2">
+                              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+                                  <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
+                                      {d}
+                                  </div>
+                              ))}
+                          </div>
 
-                      {/* GRID */}
-                      {renderPayrollGrid()}
+                          {/* GRID */}
+                          {renderPayrollGrid()}
+                      </div>
                   </div>
               </div>
           )}
@@ -695,6 +828,157 @@ export default function Dashboard() {
               </div>
           </div>
       )}
+
+      {/* --- GRAPHICAL TEAM LEAVE INSIGHTS MODAL --- */}
+      {isTeamModalOpen && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-[#FDFBFD] w-full max-w-6xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
+                  <div className="p-6 md:p-8 bg-[#6D2158] text-white flex flex-col md:flex-row md:justify-between md:items-center shrink-0 gap-4">
+                      <div>
+                          <h3 className="font-black text-2xl md:text-3xl flex items-center gap-3 tracking-tight"><BarChart2 size={28}/> Team Leave Insights</h3>
+                          <p className="text-[10px] md:text-xs uppercase tracking-widest text-white/70 mt-1 font-bold">Leave Liability Overview</p>
+                      </div>
+                      <div className="flex items-center gap-3 w-full md:w-auto">
+                          <div className="flex items-center bg-white/10 px-4 py-2.5 rounded-xl border border-white/20 gap-2">
+                              <Calendar size={16} className="text-white shrink-0"/>
+                              <input 
+                                  type="date" 
+                                  className="bg-transparent text-white font-bold text-sm outline-none w-full [&::-webkit-calendar-picker-indicator]:invert"
+                                  value={teamDate}
+                                  onChange={e => setTeamDate(e.target.value)}
+                              />
+                          </div>
+                          <button onClick={() => setIsTeamModalOpen(false)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95"><X size={20}/></button>
+                      </div>
+                  </div>
+
+                  <div className="flex flex-col h-full overflow-hidden">
+                      {isLoadingTeam ? (
+                          <div className="flex flex-col items-center justify-center py-32 text-[#6D2158]">
+                               <Loader2 size={48} className="animate-spin mb-4"/>
+                               <p className="font-bold uppercase tracking-widest text-sm">Analyzing Team Data...</p>
+                          </div>
+                      ) : teamBalances.length === 0 ? (
+                          <div className="text-center py-32 text-slate-400">
+                              <Users size={64} className="mx-auto mb-4 opacity-20"/>
+                              <p className="font-bold text-lg">No team members found in your scope.</p>
+                          </div>
+                      ) : (
+                          <>
+                              {/* Tabs & Search */}
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 border-b border-slate-200 bg-white shrink-0">
+                                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                                      <button onClick={() => setActiveDeptTab('All')} className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
+                                      {Array.from(new Set(teamBalances.map(c => c.department))).filter(d => d !== 'Unassigned').sort().map((dept: any) => (
+                                          <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>{dept}</button>
+                                      ))}
+                                  </div>
+                                  <div className="relative w-full sm:w-64 shrink-0">
+                                      <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
+                                      <input type="text" placeholder="Search staff..." className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] transition-colors" value={teamSearch} onChange={e => setTeamSearch(e.target.value)} />
+                                  </div>
+                              </div>
+
+                              {/* Content */}
+                              <div className="p-6 md:p-8 overflow-y-auto flex-1 custom-scrollbar">
+                                  {(() => {
+                                      let deptData = teamBalances;
+                                      if (activeDeptTab !== 'All') {
+                                          deptData = deptData.filter((c: any) => c.department === activeDeptTab);
+                                      }
+                                      if (teamSearch) {
+                                          deptData = deptData.filter((c: any) => c.host.full_name.toLowerCase().includes(teamSearch.toLowerCase()) || c.host.host_id.includes(teamSearch));
+                                      }
+
+                                      const totalOff = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balOff), 0);
+                                      const totalAL = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balAL), 0);
+                                      const totalPH = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balPH), 0);
+                                      const overall = totalOff + totalAL + totalPH;
+                                      
+                                      const offPct = overall ? (totalOff / overall) * 100 : 0;
+                                      const alPct = overall ? (totalAL / overall) * 100 : 0;
+
+                                      return (
+                                          <div className="space-y-8 animate-in fade-in duration-300">
+                                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+                                                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
+                                                      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Liability</div>
+                                                      <div className="text-4xl font-black text-rose-600">{overall.toFixed(1)} <span className="text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
+                                                      <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-rose-50 rounded-full blur-2xl"></div>
+                                                  </div>
+                                                  
+                                                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex items-center gap-6">
+                                                      <div style={{ background: `conic-gradient(#10b981 ${offPct}%, #06b6d4 0 ${offPct + alPct}%, #3b82f6 0)` }} className="w-24 h-24 rounded-full relative shadow-inner shrink-0">
+                                                          <div className="absolute inset-3 bg-white rounded-full flex items-center justify-center font-black text-slate-800 text-lg shadow-sm">{deptData.length}</div>
+                                                      </div>
+                                                      <div className="flex-1 space-y-2">
+                                                          <div className="flex justify-between items-center text-xs font-bold"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500"></span> Off Days</span> <span>{totalOff.toFixed(1)}</span></div>
+                                                          <div className="flex justify-between items-center text-xs font-bold"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-cyan-500"></span> Annual</span> <span>{totalAL.toFixed(1)}</span></div>
+                                                          <div className="flex justify-between items-center text-xs font-bold"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Pub Hol</span> <span>{totalPH.toFixed(1)}</span></div>
+                                                      </div>
+                                                  </div>
+
+                                                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
+                                                      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Highest Balance</div>
+                                                      <div className="text-4xl font-black text-amber-600">{deptData[0]?.balances.balTotal || 0} <span className="text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
+                                                      <div className="text-xs font-bold text-slate-600 bg-amber-50 px-3 py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100">{deptData[0]?.host.full_name || 'N/A'}</div>
+                                                      <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-amber-50 rounded-full blur-2xl"></div>
+                                                  </div>
+                                              </div>
+
+                                              <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200">
+                                                  <div className="space-y-5">
+                                                      {deptData.length === 0 ? (
+                                                          <div className="text-center py-10 text-slate-400 font-bold italic text-sm">No matches found.</div>
+                                                      ) : (
+                                                          deptData.map(({host, balances}: any, idx: number) => {
+                                                              const total = parseFloat(balances.balTotal);
+                                                              const max = Math.max(...deptData.map((t: any) => parseFloat(t.balances.balTotal)), 1);
+                                                              const overallWidth = Math.max((total / max) * 100, 0);
+                                                              
+                                                              const oPct = total ? (parseFloat(balances.balOff) / total) * 100 : 0;
+                                                              const aPct = total ? (parseFloat(balances.balAL) / total) * 100 : 0;
+                                                              const pPct = total ? (parseFloat(balances.balPH) / total) * 100 : 0;
+
+                                                              return (
+                                                                  <div key={host.host_id} className="flex flex-col gap-2 group p-4 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
+                                                                      <div className="flex justify-between items-end">
+                                                                          <span className="font-bold text-sm text-slate-800 flex items-center gap-2">
+                                                                              <span className="text-[10px] text-slate-400 font-mono w-4">{idx + 1}.</span> {host.full_name} 
+                                                                              <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-1 rounded-md ml-2">{host.role}</span>
+                                                                          </span>
+                                                                          <span className={`font-black text-lg ${total > 15 ? 'text-rose-600' : 'text-[#6D2158]'}`}>{total.toFixed(1)}</span>
+                                                                      </div>
+                                                                      
+                                                                      <div className="h-4 md:h-5 w-full bg-slate-100 rounded-full flex shadow-inner p-0.5">
+                                                                          <div className="h-full flex gap-0.5" style={{width: `${overallWidth}%`}}>
+                                                                              {oPct > 0 && <div className="h-full bg-emerald-500 rounded-l-full" style={{width: `${oPct}%`}}></div>}
+                                                                              {aPct > 0 && <div className="h-full bg-cyan-500" style={{width: `${aPct}%`}}></div>}
+                                                                              {pPct > 0 && <div className="h-full bg-blue-500 rounded-r-full" style={{width: `${pPct}%`}}></div>}
+                                                                          </div>
+                                                                      </div>
+
+                                                                      <div className="flex gap-4 text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                                                                          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> {balances.balOff}</span>
+                                                                          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-cyan-500"></span> {balances.balAL}</span>
+                                                                          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span> {balances.balPH}</span>
+                                                                      </div>
+                                                                  </div>
+                                                              )
+                                                          })
+                                                      )}
+                                                  </div>
+                                              </div>
+                                          </div>
+                                      );
+                                  })()}
+                              </div>
+                         </>
+                    )}
+                </div>
+            </div>
+        </div>
+    )}
 
     </div>
   );

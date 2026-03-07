@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Plus, X, CreditCard, Briefcase, 
-  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag, Camera, Loader2
+  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag, Camera, Loader2, Building
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -26,9 +26,14 @@ type Host = {
 export default function HostsProfilePage() {
   const [hostList, setHostList] = useState<Host[]>([]);
   const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const [availableSubDepts, setAvailableSubDepts] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   
+  // DYNAMIC CONFIG STATE (For Dashboard Display Name and Sub-Departments)
+  const [configId, setConfigId] = useState<string | null>(null);
+  const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {} });
+
   // Modal State
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -38,6 +43,7 @@ export default function HostsProfilePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
+  // New Host & Config State for Modals
   const [newHost, setNewHost] = useState<Partial<Host>>({
     role: '',
     host_level: 'ATM',
@@ -48,28 +54,41 @@ export default function HostsProfilePage() {
     nicknames: '',
     joining_date: new Date().toISOString().split('T')[0] 
   });
+  const [tempSubDept, setTempSubDept] = useState('');
+  const [tempDisplayName, setTempDisplayName] = useState('');
 
   // --- FETCH DATA ---
   const fetchHosts = async () => {
     setIsLoading(true);
     const [hostRes, constRes] = await Promise.all([
         supabase.from('hsk_hosts').select('*'),
-        supabase.from('hsk_constants').select('*').eq('type', 'role_rank')
+        supabase.from('hsk_constants').select('*')
     ]);
     
     if (hostRes.data) {
         let roleRanks: Record<string, number> = {};
         let roles: string[] = [];
+        let subDepts: string[] = [];
         
         if (constRes.data) {
-            constRes.data.forEach(c => {
-                const [role, rank] = c.label.split('::');
-                if (role && rank) {
-                    roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
-                    roles.push(role.trim());
+            constRes.data.forEach((c: any) => {
+                if (c.type === 'role_rank') {
+                    const [role, rank] = c.label.split('::');
+                    if (role && rank) {
+                        roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
+                        roles.push(role.trim());
+                    }
+                }
+                if (c.type === 'sub_department') {
+                    subDepts.push(c.label.trim());
+                }
+                if (c.type === 'team_viewer_config') {
+                    setConfigId(c.id);
+                    try { setTeamConfig(JSON.parse(c.label)); } catch(e) {}
                 }
             });
             setAvailableRoles(roles.sort((a,b) => a.localeCompare(b)));
+            setAvailableSubDepts(subDepts.sort((a,b) => a.localeCompare(b)));
         }
 
         const sortedHosts = hostRes.data.sort((a, b) => {
@@ -89,6 +108,14 @@ export default function HostsProfilePage() {
   };
 
   useEffect(() => { fetchHosts(); }, []);
+
+  // When a host is selected for editing, prepopulate the temporary config values
+  useEffect(() => {
+      if (selectedHost) {
+          setTempDisplayName(teamConfig.nicknames?.[selectedHost.host_id] || '');
+          setTempSubDept(teamConfig.hostDepartments?.[selectedHost.host_id] || '');
+      }
+  }, [selectedHost, teamConfig]);
 
   // --- IMAGE UPLOAD LOGIC ---
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,6 +152,36 @@ export default function HostsProfilePage() {
       }
   };
 
+  // --- SAVE DYNAMIC CONFIG (Sub-Dept & Display Name) ---
+  const saveHostConfig = async (hostId: string, displayName: string, subDept: string) => {
+      const updatedConfig = { ...teamConfig };
+      
+      updatedConfig.nicknames = updatedConfig.nicknames || {};
+      updatedConfig.hostDepartments = updatedConfig.hostDepartments || {};
+      
+      if (displayName) {
+          updatedConfig.nicknames[hostId] = displayName;
+      } else {
+          delete updatedConfig.nicknames[hostId];
+      }
+
+      if (subDept) {
+          updatedConfig.hostDepartments[hostId] = subDept;
+      } else {
+          delete updatedConfig.hostDepartments[hostId];
+      }
+
+      const payload = JSON.stringify(updatedConfig);
+      
+      if (configId) {
+          await supabase.from('hsk_constants').update({ label: payload }).eq('id', configId);
+      } else {
+          const { data } = await supabase.from('hsk_constants').insert({ type: 'team_viewer_config', label: payload }).select().single();
+          if (data) setConfigId(data.id);
+      }
+      setTeamConfig(updatedConfig);
+  };
+
   // --- CREATE HOST ---
   const handleCreateHost = async () => {
     if (!newHost.full_name) return toast.error("Full Name is required");
@@ -140,8 +197,15 @@ export default function HostsProfilePage() {
     if (error) {
         toast.error(error.message);
     } else {
+      // Save Config Settings
+      if (tempDisplayName || tempSubDept) {
+          await saveHostConfig(newHost.host_id as string, tempDisplayName, tempSubDept);
+      }
+
       setIsCreateModalOpen(false);
       setNewHost({ role: '', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: new Date().toISOString().split('T')[0] });
+      setTempDisplayName('');
+      setTempSubDept('');
       fetchHosts();
       toast.success("Host Profile Created");
     }
@@ -171,6 +235,9 @@ export default function HostsProfilePage() {
     if (error) {
         toast.error(error.message);
     } else {
+      // Save Config Settings
+      await saveHostConfig(selectedHost.host_id, tempDisplayName, tempSubDept);
+
       setIsEditing(false);
       fetchHosts();
       toast.success("Profile Updated");
@@ -194,10 +261,15 @@ export default function HostsProfilePage() {
   // --- FILTERING ---
   const filteredHosts = hostList.filter(host => {
     const query = searchQuery.toLowerCase();
+    const activeNick = teamConfig.nicknames?.[host.host_id] || '';
+    const activeDept = teamConfig.hostDepartments?.[host.host_id] || '';
+
     return (
       host.full_name.toLowerCase().includes(query) || 
       (host.host_id && host.host_id.toLowerCase().includes(query)) ||
       host.role.toLowerCase().includes(query) ||
+      activeNick.toLowerCase().includes(query) ||
+      activeDept.toLowerCase().includes(query) ||
       (host.nicknames && host.nicknames.toLowerCase().includes(query))
     );
   });
@@ -263,7 +335,11 @@ export default function HostsProfilePage() {
             className="w-full pl-10 pr-4 py-2 text-xs font-bold border border-slate-200 rounded-xl focus:outline-none focus:border-[#6D2158] text-[#6D2158] placeholder-slate-300 transition-all shadow-inner"
           />
         </div>
-        <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 px-6 py-2 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40 transition-all w-full sm:w-auto justify-center">
+        <button onClick={() => { 
+            setTempDisplayName(''); 
+            setTempSubDept(''); 
+            setIsCreateModalOpen(true); 
+        }} className="flex items-center gap-2 px-6 py-2 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40 transition-all w-full sm:w-auto justify-center">
              <Plus size={16} /> New Profile
         </button>
       </div>
@@ -273,7 +349,11 @@ export default function HostsProfilePage() {
          <div className="text-center py-20 opacity-50 italic">Loading Profiles...</div>
       ) : (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-8">
-        {filteredHosts.map((host) => (
+        {filteredHosts.map((host) => {
+          const configNick = teamConfig.nicknames?.[host.host_id];
+          const configDept = teamConfig.hostDepartments?.[host.host_id];
+
+          return (
           <div key={host.id} onClick={() => { setSelectedHost(host); setIsEditing(false); }}
                className={`group relative rounded-2xl p-0 shadow-sm hover:shadow-xl transition-all duration-300 cursor-pointer overflow-hidden flex flex-col border-2 ${host.status === 'Resigned' ? 'border-rose-100 bg-rose-50/30 grayscale-[50%]' : 'bg-white border-slate-100 hover:border-[#6D2158]/30'}`}>
              
@@ -293,10 +373,18 @@ export default function HostsProfilePage() {
              {/* Content */}
              <div className="pt-10 px-5 pb-5 flex-1 flex flex-col">
                 <div className="flex justify-between items-start mb-1">
-                    <h3 className="text-lg font-bold text-slate-800 leading-tight group-hover:text-[#6D2158] transition-colors line-clamp-1">{host.full_name}</h3>
+                    <h3 className="text-lg font-bold text-slate-800 leading-tight group-hover:text-[#6D2158] transition-colors line-clamp-1">
+                        {configNick || host.full_name.split(' ')[0]}
+                    </h3>
                 </div>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 line-clamp-1">{host.role}</p>
-                {host.nicknames && <p className="text-[10px] font-bold text-emerald-600 mb-2 italic">"{host.nicknames}"</p>}
+                <p className="text-[10px] font-medium text-slate-500 mb-1 line-clamp-1">{host.full_name}</p>
+                <div className="flex flex-wrap gap-1 mb-2">
+                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-2 py-0.5 rounded border border-slate-100">{host.role}</span>
+                    {configDept && <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">{configDept}</span>}
+                </div>
+                
+                {/* AI Known As Badge */}
+                {host.nicknames && <p className="text-[10px] font-bold text-emerald-600 mb-2 italic">AI Knows as: "{host.nicknames}"</p>}
                 
                 {host.status === 'Resigned' && <span className="text-[10px] font-black uppercase text-rose-500 tracking-widest mb-2">Resigned</span>}
                 <div className="mt-auto pt-3 flex items-center justify-between">
@@ -305,7 +393,7 @@ export default function HostsProfilePage() {
                 </div>
              </div>
           </div>
-        ))}
+        )})}
       </div>
       )}
 
@@ -316,12 +404,12 @@ export default function HostsProfilePage() {
             <div className="h-32 bg-[#6D2158] relative shrink-0">
                <button onClick={() => setSelectedHost(null)} className="absolute top-6 right-6 p-2 bg-black/20 text-white rounded-full hover:bg-black/40 transition-colors"><X size={20}/></button>
                <div className="absolute -bottom-10 left-8 flex items-end gap-6">
-                  
-                  {/* EDIT AVATAR WITH UPLOAD */}
-                  <div 
-                      onClick={() => isEditing && !isUploadingImage && fileInputRef.current?.click()}
-                      className={`w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden relative group ${isEditing ? 'cursor-pointer' : ''}`}
-                  >
+                 
+                 {/* EDIT AVATAR WITH UPLOAD */}
+                 <div 
+                     onClick={() => isEditing && !isUploadingImage && fileInputRef.current?.click()}
+                     className={`w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden relative group ${isEditing ? 'cursor-pointer' : ''}`}
+                 >
                      {isUploadingImage ? (
                          <div className="w-full h-full flex items-center justify-center bg-slate-100"><Loader2 className="animate-spin text-[#6D2158]" size={24}/></div>
                      ) : (
@@ -333,15 +421,15 @@ export default function HostsProfilePage() {
                              <span className="text-[8px] font-black uppercase mt-1">Upload</span>
                          </div>
                      )}
-                  </div>
+                 </div>
 
-                  <div className="mb-3 text-white">
-                      <h2 className="text-3xl font-bold italic tracking-tight drop-shadow-md">{selectedHost.full_name}</h2>
-                      <div className="flex gap-2 mt-1 items-center">
-                          <LevelBadge level={selectedHost.host_level || 'ATM'} />
-                          <span className="text-xs font-bold opacity-80 uppercase tracking-widest drop-shadow-md">{selectedHost.role}</span>
-                      </div>
-                  </div>
+                 <div className="mb-3 text-white">
+                     <h2 className="text-3xl font-bold italic tracking-tight drop-shadow-md">{selectedHost.full_name}</h2>
+                     <div className="flex gap-2 mt-1 items-center">
+                         <LevelBadge level={selectedHost.host_level || 'ATM'} />
+                         <span className="text-xs font-bold opacity-80 uppercase tracking-widest drop-shadow-md">{selectedHost.role}</span>
+                     </div>
+                 </div>
                </div>
             </div>
             
@@ -361,17 +449,17 @@ export default function HostsProfilePage() {
                </div>
                
                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  
-                  {/* WORK INFO */}
-                  <div className="space-y-4">
-                      <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Work Information</h4>
-                      
-                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                 
+                 {/* WORK INFO */}
+                 <div className="space-y-4">
+                     <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Work Information</h4>
+                     
+                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                          <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><CreditCard size={16} /><span className="text-[10px] font-bold uppercase">Host No (SSL)</span></div>
                          {isEditing ? <input className="w-full p-2 border rounded-xl font-mono font-bold outline-none focus:border-[#6D2158]" value={selectedHost.host_id} onChange={(e) => setSelectedHost({...selectedHost, host_id: e.target.value})} /> : <p className="text-lg font-bold font-mono text-slate-700">{selectedHost.host_id}</p>}
-                      </div>
+                     </div>
 
-                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                          <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Briefcase size={16} /><span className="text-[10px] font-bold uppercase">Designation</span></div>
                          {isEditing ? (
                              <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.role} onChange={(e) => setSelectedHost({...selectedHost, role: e.target.value})}>
@@ -379,15 +467,44 @@ export default function HostsProfilePage() {
                                  {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
                              </select>
                          ) : <p className="text-sm font-bold text-slate-700">{selectedHost.role}</p>}
-                      </div>
+                     </div>
 
-                      <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
-                         <div className="flex items-center gap-2 mb-2 text-emerald-700"><Tag size={16} /><span className="text-[10px] font-bold uppercase">Nicknames / AI Known As</span></div>
-                         {isEditing ? <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={selectedHost.nicknames || ''} onChange={(e) => setSelectedHost({...selectedHost, nicknames: e.target.value})} /> : <p className="text-sm font-bold text-emerald-800">{selectedHost.nicknames || 'None set'}</p>}
-                      </div>
+                     {/* IDENTIFIERS (AI + UI) */}
+                     <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100 space-y-4">
+                         <div>
+                             <div className="flex items-center gap-2 mb-2 text-emerald-700"><Tag size={16} /><span className="text-[10px] font-bold uppercase">AI Known As (For Attendance Bot)</span></div>
+                             {isEditing ? (
+                                 <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={selectedHost.nicknames || ''} onChange={(e) => setSelectedHost({...selectedHost, nicknames: e.target.value})} />
+                             ) : (
+                                 <p className="text-sm font-bold text-emerald-800">{selectedHost.nicknames || 'None set'}</p>
+                             )}
+                         </div>
 
-                      <div className="grid grid-cols-2 gap-4">
-                          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                         <div className="grid grid-cols-2 gap-4 border-t border-emerald-200 pt-4">
+                             <div>
+                                 <div className="flex items-center gap-2 mb-2 text-emerald-700"><User size={14} /><span className="text-[10px] font-bold uppercase">Dashboard Name</span></div>
+                                 {isEditing ? (
+                                     <input className="w-full p-2 border rounded-xl text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Ali" value={tempDisplayName} onChange={(e) => setTempDisplayName(e.target.value)} />
+                                 ) : (
+                                     <p className="text-sm font-bold text-emerald-800">{tempDisplayName || selectedHost.full_name.split(' ')[0]}</p>
+                                 )}
+                             </div>
+                             <div>
+                                 <div className="flex items-center gap-2 mb-2 text-emerald-700"><Building size={14} /><span className="text-[10px] font-bold uppercase">Sub-Dept</span></div>
+                                 {isEditing ? (
+                                     <select className="w-full p-2 border rounded-xl text-sm font-bold outline-none focus:border-emerald-500 cursor-pointer" value={tempSubDept} onChange={(e) => setTempSubDept(e.target.value)}>
+                                         <option value="">Unassigned</option>
+                                         {availableSubDepts.map(d => <option key={d} value={d}>{d}</option>)}
+                                     </select>
+                                 ) : (
+                                     <p className="text-sm font-bold text-emerald-800">{tempSubDept || 'Unassigned'}</p>
+                                 )}
+                             </div>
+                         </div>
+                     </div>
+
+                     <div className="grid grid-cols-2 gap-4">
+                         <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                              <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Crown size={16} /><span className="text-[10px] font-bold uppercase">Level</span></div>
                              {isEditing ? (
                                  <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.host_level || 'ATM'} onChange={(e) => setSelectedHost({...selectedHost, host_level: e.target.value as any})}>
@@ -398,9 +515,9 @@ export default function HostsProfilePage() {
                              ) : (
                                 <p className="text-sm font-bold text-slate-700">{selectedHost.host_level || 'ATM'}</p>
                              )}
-                          </div>
-                          
-                          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                         </div>
+                         
+                         <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                              <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><User size={16} /><span className="text-[10px] font-bold uppercase">Status</span></div>
                              {isEditing ? (
                                  <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.status || 'Active'} onChange={(e) => setSelectedHost({...selectedHost, status: e.target.value as any})}>
@@ -410,17 +527,17 @@ export default function HostsProfilePage() {
                              ) : (
                                 <p className={`text-sm font-bold ${selectedHost.status === 'Resigned' ? 'text-rose-600' : 'text-emerald-600'}`}>{selectedHost.status || 'Active'}</p>
                              )}
-                          </div>
-                      </div>
+                         </div>
+                     </div>
 
-                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                          <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Calendar size={16} /><span className="text-[10px] font-bold uppercase">Joining Date</span></div>
                          {isEditing ? <input type="date" className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.joining_date || ''} onChange={(e) => setSelectedHost({...selectedHost, joining_date: e.target.value})} /> : <p className="text-sm font-bold text-slate-700">{selectedHost.joining_date ? new Date(selectedHost.joining_date).toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}) : '-'}</p>}
-                      </div>
-                  </div>
+                     </div>
+                 </div>
 
-                  {/* CONTACT INFO */}
-                  <div className="space-y-4">
+                 {/* CONTACT INFO */}
+                 <div className="space-y-4">
                      <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Contact Information</h4>
                      
                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
@@ -437,7 +554,7 @@ export default function HostsProfilePage() {
                          <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Hash size={16} /><span className="text-[10px] font-bold uppercase">MVPN (Short Code)</span></div>
                          {isEditing ? <input className="w-full p-2 border rounded-xl font-mono font-bold outline-none focus:border-[#6D2158]" placeholder="e.g. 2843" value={selectedHost.mvpn || ''} onChange={(e) => setSelectedHost({...selectedHost, mvpn: e.target.value})} /> : <p className="text-lg font-bold font-mono text-slate-700">{selectedHost.mvpn || '-'}</p>}
                      </div>
-                  </div>
+                 </div>
 
                </div>
             </div>
@@ -455,7 +572,7 @@ export default function HostsProfilePage() {
              </div>
             
              <div className="p-8 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                
+               
                 {/* CREATE AVATAR UPLOAD */}
                 <div className="flex justify-center mb-6">
                     <div 
@@ -508,9 +625,25 @@ export default function HostsProfilePage() {
                         </div>
                     </div>
 
-                    <div>
-                        <label className="text-[10px] font-bold text-emerald-600 uppercase ml-1">Nicknames (Comma Separated)</label>
-                        <input type="text" className="w-full p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={newHost.nicknames || ''} onChange={e => setNewHost({...newHost, nicknames: e.target.value})} />
+                    {/* DYNAMIC CONFIG & IDENTIFIERS FOR NEW HOST */}
+                    <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 space-y-4">
+                        <div>
+                            <label className="text-[10px] font-bold text-emerald-700 uppercase ml-1">AI Known As (For Attendance Bot)</label>
+                            <input type="text" className="w-full p-3 bg-white rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={newHost.nicknames || ''} onChange={e => setNewHost({...newHost, nicknames: e.target.value})} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4 border-t border-emerald-200 pt-4">
+                            <div>
+                                <label className="text-[10px] font-bold text-emerald-700 uppercase ml-1">Dashboard Display Name</label>
+                                <input type="text" className="w-full p-3 bg-white rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Ali" value={tempDisplayName} onChange={e => setTempDisplayName(e.target.value)} />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold text-emerald-700 uppercase ml-1">Sub-Department</label>
+                                <select className="w-full p-3 bg-white rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500 cursor-pointer" value={tempSubDept} onChange={e => setTempSubDept(e.target.value)}>
+                                    <option value="">Unassigned</option>
+                                    {availableSubDepts.map(d => <option key={d} value={d}>{d}</option>)}
+                                </select>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

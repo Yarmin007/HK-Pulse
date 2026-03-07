@@ -2,13 +2,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Settings, Save, Plus, Trash2, X, Search, Edit3, Image as ImageIcon,
-  Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar,
-  Coffee, Droplet, Beer, Wine, Cookie, Zap, User,
+  Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar, Building,
+  Coffee, Droplet, Beer, Wine, Cookie, Zap, User, Eye, CheckCircle2,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
   Shield, KeyRound, History, Plane
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import { format, parseISO } from 'date-fns';
 
 const CATEGORY_ICONS: any = {
   'Soft Drinks': Coffee, 'Juices': Coffee, 'Water': Droplet,
@@ -91,9 +92,21 @@ export default function SettingsPage() {
   const [hostLogs, setHostLogs] = useState<any[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
+  // --- DASHBOARD VIEW ACCESS STATE ---
+  const [configId, setConfigId] = useState<string | null>(null);
+  const [supervisorAccess, setSupervisorAccess] = useState<Record<string, string[]>>({});
+  const [accessModalHost, setAccessModalHost] = useState<Host | null>(null);
+  const [accessSearchQuery, setAccessSearchQuery] = useState('');
+
   // --- PUBLIC HOLIDAY STATE ---
   const [holidayName, setHolidayName] = useState('');
   const [holidayDate, setHolidayDate] = useState('');
+
+  // --- EXPIRY BATCH MANAGER STATE ---
+  const [selectedExpiryItem, setSelectedExpiryItem] = useState<MasterItem | null>(null);
+  const [itemBatches, setItemBatches] = useState<any[]>([]);
+  const [newBatchDate, setNewBatchDate] = useState('');
+  const [isLoadingBatches, setIsLoadingBatches] = useState(false);
 
   useEffect(() => { fetchMasterList(); fetchConstants(); fetchHosts(); }, []);
 
@@ -106,8 +119,18 @@ export default function SettingsPage() {
     const { data } = await supabase.from('hsk_constants').select('*').order('label');
     if (data) {
         setConstants(data);
-        const tz = data.find(c => c.type === 'system_timezone')?.label || 'Indian/Maldives';
+        const tz = data.find((c: Constant) => c.type === 'system_timezone')?.label || 'Indian/Maldives';
         setSystemTimezone(tz);
+
+        // Load the View Access Configuration
+        const tConf = data.find((c: Constant) => c.type === 'team_viewer_config');
+        if (tConf) {
+            setConfigId(tConf.id);
+            try { 
+                const parsed = JSON.parse(tConf.label);
+                setSupervisorAccess(parsed.supervisorAccess || {}); 
+            } catch(e){}
+        }
     }
   };
 
@@ -120,13 +143,13 @@ export default function SettingsPage() {
     if (hostRes.data) {
         let roleRanks: Record<string, number> = {};
         if (constRes.data) {
-            constRes.data.forEach(c => {
+            constRes.data.forEach((c: Constant) => {
                 const [role, rank] = c.label.split('::');
                 if (role && rank) roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
             });
         }
 
-        const sortedHosts = hostRes.data.sort((a, b) => {
+        const sortedHosts = [...hostRes.data].sort((a: any, b: any) => {
             const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
             const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
             
@@ -246,7 +269,6 @@ export default function SettingsPage() {
       setSelectedLogHost(host);
       setHostLogs([]);
       setIsLoadingLogs(true);
-      // Fetch latest 50 requests handled by this user
       const { data } = await supabase.from('hsk_daily_requests')
           .select('*')
           .ilike('attendant_name', `%${host.full_name.split(' ')[0]}%`)
@@ -255,6 +277,84 @@ export default function SettingsPage() {
       setHostLogs(data || []);
       setIsLoadingLogs(false);
   };
+
+  // --- TEAM LEAVES CONFIG SAVE ---
+  const saveTeamConfig = async () => {
+      setIsUploading(true);
+      let currentConfig: any = {};
+      if (configId) {
+          const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
+          if (data) {
+              try { currentConfig = JSON.parse(data.label); } catch(e){}
+          }
+      }
+      
+      currentConfig.supervisorAccess = supervisorAccess;
+      const payload = JSON.stringify(currentConfig);
+      
+      if (configId) {
+          await supabase.from('hsk_constants').update({ label: payload }).eq('id', configId);
+      } else {
+          const { data } = await supabase.from('hsk_constants').insert({ type: 'team_viewer_config', label: payload }).select().single();
+          if (data) setConfigId(data.id);
+      }
+      setIsUploading(false);
+      toast.success("View Access Settings Saved!");
+  };
+
+  // --- EXPIRY BATCH MANAGER FUNCTIONS ---
+  const handleOpenExpiryBatches = async (item: MasterItem) => {
+      setSelectedExpiryItem(item);
+      setIsLoadingBatches(true);
+      const { data } = await supabase.from('hsk_expiry_batches')
+          .select('*')
+          .eq('article_number', item.article_number)
+          .neq('status', 'Archived')
+          .order('expiry_date', { ascending: true });
+      setItemBatches(data || []);
+      setIsLoadingBatches(false);
+  };
+
+  const handleAddBatchDate = async () => {
+      if (!newBatchDate || !selectedExpiryItem) return;
+      
+      const exists = itemBatches.find(b => b.expiry_date === newBatchDate);
+      if (exists) {
+          toast.error('Batch date already exists!');
+          return;
+      }
+
+      const payload = {
+          article_number: selectedExpiryItem.article_number,
+          expiry_date: newBatchDate,
+          status: 'Active'
+      };
+
+      const { error } = await supabase.from('hsk_expiry_batches').insert(payload);
+      if (!error) {
+          setNewBatchDate('');
+          toast.success('Batch added!');
+          handleOpenExpiryBatches(selectedExpiryItem); // refresh
+      } else {
+          toast.error('Failed to add batch');
+      }
+  };
+
+  const handleArchiveBatch = async (batchId: string) => {
+      if (!confirm('Are you sure you want to permanently remove this batch from tracking?')) return;
+      
+      const { error } = await supabase.from('hsk_expiry_batches')
+          .update({ status: 'Archived' })
+          .eq('id', batchId);
+          
+      if (!error) {
+          toast.success('Batch successfully removed from tracking!');
+          if (selectedExpiryItem) handleOpenExpiryBatches(selectedExpiryItem);
+      } else {
+          toast.error('Failed to remove batch');
+      }
+  };
+
 
   const filteredList = masterList.filter(item => 
     item.article_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -288,7 +388,7 @@ export default function SettingsPage() {
   };
 
   const RankManager = ({ type, title, icon: Icon }: any) => {
-    const list = constants.filter(c => c.type === type).sort((a,b) => {
+    const list = constants.filter(c => c.type === type).sort((a: Constant, b: Constant) => {
         const rankA = parseInt(a.label.split('::')[1] || '999');
         const rankB = parseInt(b.label.split('::')[1] || '999');
         return rankA - rankB;
@@ -297,7 +397,6 @@ export default function SettingsPage() {
     const [roleName, setRoleName] = useState('');
     const [roleRank, setRoleRank] = useState('');
 
-    // Extract unique roles from the Hosts database
     const uniqueRoles = Array.from(new Set(hosts.map(h => h.role).filter(Boolean))).sort((a,b) => a.localeCompare(b));
 
     const handleAdd = async () => {
@@ -344,9 +443,16 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
-      <div className="border-b border-slate-200 pb-6 mb-6">
-        <h1 className="text-3xl font-bold tracking-tight text-slate-800">System Settings</h1>
-        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configuration & Master Data</p>
+      <div className="border-b border-slate-200 pb-6 mb-6 flex justify-between items-end">
+        <div>
+            <h1 className="text-3xl font-bold tracking-tight text-slate-800">System Settings</h1>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configuration & Master Data</p>
+        </div>
+        {activeTab === 'Access Control' && (
+            <button onClick={saveTeamConfig} disabled={isUploading} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-widest shadow-md flex items-center gap-2 hover:bg-emerald-500 transition-colors">
+                {isUploading ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save View Access
+            </button>
+        )}
       </div>
 
       <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
@@ -360,18 +466,21 @@ export default function SettingsPage() {
               <div className="p-5 border-b border-slate-100 flex flex-col md:flex-row justify-between md:items-center gap-4 bg-slate-50">
                   <div>
                       <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Shield size={16}/> Access & Roles</h3>
-                      <p className="text-[10px] font-bold text-slate-400 mt-1">Manage admin privileges, reset PINs, and view user activity logs.</p>
+                      <p className="text-[10px] font-bold text-slate-400 mt-1">Manage admin privileges, Dashboard Team View Access, and logs.</p>
                   </div>
-                  <div className="relative w-full md:w-64">
-                      <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
-                      <input type="text" placeholder="Search staff..." className="w-full pl-10 pr-4 py-2 border border-slate-200 bg-white rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" value={hostSearch} onChange={e => setHostSearch(e.target.value)} />
+                  <div className="flex items-center gap-4 w-full md:w-auto">
+                      <div className="relative w-full md:w-64">
+                          <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
+                          <input type="text" placeholder="Search staff..." className="w-full pl-10 pr-4 py-2 border border-slate-200 bg-white rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" value={hostSearch} onChange={e => setHostSearch(e.target.value)} />
+                      </div>
                   </div>
               </div>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto pb-32">
                   <table className="w-full text-left">
                       <thead className="bg-slate-50 border-b border-slate-100">
                           <tr>
                               <th className="p-4 text-xs font-bold text-slate-400 uppercase">Staff Member</th>
+                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">Dashboard View Access</th>
                               <th className="p-4 text-xs font-bold text-slate-400 uppercase">System Role</th>
                               <th className="p-4 text-xs font-bold text-slate-400 uppercase">PIN Status</th>
                               <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Actions</th>
@@ -384,14 +493,36 @@ export default function SettingsPage() {
                                       <div className="font-bold text-slate-800 text-sm">{host.full_name}</div>
                                       <div className="text-[10px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
                                   </td>
+
+                                  {/* TEAM VIEW ACCESS BUTTON */}
+                                  <td className="p-4">
+                                      {host.system_role === 'admin' ? (
+                                          <span className="px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 w-max">
+                                              <CheckCircle2 size={14}/> Full Access
+                                          </span>
+                                      ) : (
+                                          <button 
+                                              onClick={() => { setAccessSearchQuery(''); setAccessModalHost(host); }}
+                                              className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 transition-colors border ${
+                                                  (supervisorAccess[host.host_id] || []).length > 0 
+                                                  ? 'bg-purple-50 text-[#6D2158] border-purple-200 hover:bg-purple-100' 
+                                                  : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
+                                              }`}
+                                          >
+                                              <Eye size={14}/> 
+                                              {(supervisorAccess[host.host_id] || []).length} Visible
+                                          </button>
+                                      )}
+                                  </td>
+
                                   <td className="p-4">
                                       <select 
-                                          className="p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer"
+                                          className="p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer"
                                           value={host.system_role || 'staff'}
                                           onChange={(e) => updateHostRole(host.id, e.target.value)}
                                       >
-                                          <option value="staff">Standard Staff</option>
-                                          <option value="admin">System Admin</option>
+                                          <option value="staff">Staff</option>
+                                          <option value="admin">Admin</option>
                                       </select>
                                   </td>
                                   <td className="p-4">
@@ -402,11 +533,11 @@ export default function SettingsPage() {
                                       )}
                                   </td>
                                   <td className="p-4 text-right flex justify-end gap-2">
-                                      <button onClick={() => resetHostPin(host.id, host.full_name)} className="p-2 text-slate-400 hover:text-amber-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-amber-200 transition-colors" title="Reset PIN to 0000">
+                                      <button onClick={() => resetHostPin(host.id, host.full_name)} className={`p-2 bg-white border rounded-lg shadow-sm transition-colors ${host.requires_pin_change ? 'border-amber-300 text-amber-500' : 'border-slate-200 text-slate-400 hover:border-amber-200 hover:text-amber-600'}`} title="Reset PIN to 0000">
                                           <KeyRound size={16}/>
                                       </button>
-                                      <button onClick={() => viewHostLogs(host)} className="px-3 py-2 text-white bg-[#6D2158] hover:bg-[#5a1b49] rounded-lg shadow-md flex items-center gap-1.5 text-xs font-bold transition-colors">
-                                          <History size={14}/> Logs
+                                      <button onClick={() => viewHostLogs(host)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-200 transition-colors" title="View Logs">
+                                          <History size={16}/>
                                       </button>
                                   </td>
                               </tr>
@@ -468,6 +599,7 @@ export default function SettingsPage() {
               </div>
            </div>
 
+           <ListManager type="sub_department" title="Sub Departments" icon={Building} placeholder="Add sub department..." />
            <RankManager type="role_rank" title="Role Sorting Ranks" icon={Briefcase} />
            <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." />
            <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." />
@@ -664,7 +796,13 @@ export default function SettingsPage() {
                                </div>
                             </td>
                             <td className="p-4 text-xs font-bold text-slate-500">{item.category}</td>
-                            <td className="p-4 text-right">
+                            <td className="p-4 text-right flex justify-end gap-2 items-center">
+                               {/* NEW MANAGE BATCHES BUTTON */}
+                               {activeTab === 'Expiry Setup' && (
+                                   <button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase tracking-widest flex items-center gap-1 shadow-sm">
+                                       <Calendar size={14}/> Batches
+                                   </button>
+                               )}
                                <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                    <button onClick={() => handleEditItem(item)} className="p-2 text-blue-400 hover:text-blue-600 rounded-lg transition-colors"><Edit3 size={16}/></button>
                                    <button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-300 hover:text-rose-500 rounded-lg transition-colors"><Trash2 size={16}/></button>
@@ -722,6 +860,136 @@ export default function SettingsPage() {
                              </tbody>
                          </table>
                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- EXPIRY BATCHES MODAL --- */}
+      {selectedExpiryItem && (
+          <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+                  <div className="p-6 bg-emerald-600 text-white flex justify-between items-center shrink-0">
+                     <div>
+                         <h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><Calendar size={20}/> Batch Tracking</h3>
+                         <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">{selectedExpiryItem.article_name}</p>
+                     </div>
+                     <button onClick={() => setSelectedExpiryItem(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="p-6 border-b border-slate-100 bg-slate-50 shrink-0 flex gap-2">
+                      <input 
+                          type="month" 
+                          className="flex-1 p-3 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-emerald-500"
+                          value={newBatchDate}
+                          onChange={(e) => setNewBatchDate(e.target.value)}
+                      />
+                      <button 
+                          onClick={handleAddBatchDate}
+                          className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold uppercase text-xs shadow-md transition-colors flex items-center gap-2"
+                      >
+                          <Plus size={16}/> Add
+                      </button>
+                  </div>
+
+                  <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-3">
+                     {isLoadingBatches ? (
+                         <div className="flex justify-center items-center py-10 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>
+                     ) : itemBatches.length === 0 ? (
+                         <div className="flex justify-center items-center py-10 text-slate-400 font-bold italic text-sm">No active batches being tracked.</div>
+                     ) : (
+                         itemBatches.map(batch => {
+                             let displayDate = batch.expiry_date;
+                             try {
+                                 displayDate = format(parseISO(batch.expiry_date + "-01"), 'MMM yyyy');
+                             } catch (e) {}
+
+                             return (
+                                 <div key={batch.id} className="flex justify-between items-center p-4 bg-white border border-slate-200 rounded-2xl shadow-sm group hover:border-rose-200 transition-all">
+                                     <div className="font-black text-slate-700">{displayDate}</div>
+                                     <button 
+                                          onClick={() => handleArchiveBatch(batch.id)} 
+                                          className="text-slate-300 hover:text-rose-600 bg-slate-50 hover:bg-rose-50 p-2 rounded-lg transition-colors flex items-center gap-1 text-[10px] font-bold uppercase"
+                                     >
+                                         <Trash2 size={14}/> Remove
+                                     </button>
+                                 </div>
+                             );
+                         })
+                     )}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- VIEW ACCESS MODAL --- */}
+      {accessModalHost && (
+          <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-[#FDFBFD] w-full max-w-2xl rounded-[2.5rem] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden animate-in zoom-in-95">
+                  
+                  <div className="p-6 md:p-8 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
+                      <div>
+                          <h3 className="font-black text-xl tracking-tight flex items-center gap-2"><Eye size={20}/> Manage View Access</h3>
+                          <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">For: {accessModalHost.full_name}</p>
+                      </div>
+                      <button onClick={() => setAccessModalHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="p-6 border-b border-slate-200 bg-white shrink-0 flex gap-4 items-center">
+                       <div className="relative flex-1">
+                           <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
+                           <input 
+                               type="text" 
+                               placeholder="Search by name to grant access..." 
+                               className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158] transition-colors"
+                               value={accessSearchQuery}
+                               onChange={e => setAccessSearchQuery(e.target.value)}
+                           />
+                       </div>
+                  </div>
+
+                  <div className="p-6 overflow-y-auto flex-1 custom-scrollbar bg-slate-50">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {hosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || h.host_id.includes(accessSearchQuery))).map(targetHost => {
+                              const isSelected = (supervisorAccess[accessModalHost.host_id] || []).includes(targetHost.host_id);
+                              
+                              return (
+                                  <label key={targetHost.id} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${isSelected ? 'bg-purple-50 border-purple-200 shadow-sm' : 'bg-white border-slate-200 hover:border-[#6D2158]'}`}>
+                                      <div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${isSelected ? 'bg-[#6D2158] border-[#6D2158]' : 'bg-slate-50 border-slate-300'}`}>
+                                          {isSelected && <CheckCircle2 size={14} className="text-white"/>}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                          <div className="font-bold text-sm text-slate-800 truncate">{targetHost.full_name}</div>
+                                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{targetHost.role}</div>
+                                      </div>
+                                      <input 
+                                          type="checkbox" 
+                                          className="hidden"
+                                          checked={isSelected}
+                                          onChange={() => {
+                                              setSupervisorAccess(prev => {
+                                                  const current = prev[accessModalHost.host_id] || [];
+                                                  if (current.includes(targetHost.host_id)) {
+                                                      return { ...prev, [accessModalHost.host_id]: current.filter(id => id !== targetHost.host_id) };
+                                                  } else {
+                                                      return { ...prev, [accessModalHost.host_id]: [...current, targetHost.host_id] };
+                                                  }
+                                              });
+                                          }}
+                                      />
+                                  </label>
+                              );
+                          })}
+                          {hosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || h.host_id.includes(accessSearchQuery))).length === 0 && (
+                              <div className="col-span-full text-center py-10 text-slate-400 font-bold italic text-sm">No staff found matching "{accessSearchQuery}"</div>
+                          )}
+                      </div>
+                  </div>
+                  
+                  <div className="p-6 bg-white border-t border-slate-200 shrink-0">
+                      <button onClick={() => setAccessModalHost(null)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all hover:bg-purple-900">
+                          Done
+                      </button>
                   </div>
               </div>
           </div>
