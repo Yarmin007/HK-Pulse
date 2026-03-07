@@ -3,7 +3,7 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { 
   Users, ShoppingCart, Clock, AlertTriangle, 
   CheckCircle2, BarChart2, Edit3, Loader2, Search,
-  Bell, ClipboardList, Calendar, User, Plane, X, Timer
+  Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -28,6 +28,48 @@ type TeamConfig = {
     nicknames: Record<string, string>;
 };
 
+// --- REUSABLE UPCOMING LEAVE ENGINE ---
+const getUpcomingLeave = (attendance: any[]) => {
+    if (!attendance || attendance.length === 0) return null;
+
+    const today = new Date();
+    today.setHours(0,0,0,0); 
+
+    const futureLeaves = attendance
+        .filter(a => parseISO(a.date) >= today && LEAVE_CODES.includes(String(a.status_code).toUpperCase().trim()))
+        .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
+
+    if (futureLeaves.length === 0) return null;
+
+    let blocks = [];
+    let currentBlock = [futureLeaves[0]];
+
+    for (let i = 1; i < futureLeaves.length; i++) {
+        const prevDate = parseISO(currentBlock[currentBlock.length - 1].date);
+        const currDate = parseISO(futureLeaves[i].date);
+        
+        if (differenceInDays(currDate, prevDate) === 1) {
+            currentBlock.push(futureLeaves[i]);
+        } else {
+            blocks.push([...currentBlock]);
+            currentBlock = [futureLeaves[i]];
+        }
+    }
+    blocks.push([...currentBlock]);
+
+    const nextLeaveBlock = blocks[0];
+    const startDate = parseISO(nextLeaveBlock[0].date);
+    const endDate = parseISO(nextLeaveBlock[nextLeaveBlock.length - 1].date);
+    const returnDate = addDays(endDate, 1);
+    const daysUntilLeave = differenceInDays(startDate, today);
+
+    return {
+        startDate, endDate, returnDate, daysUntilLeave,
+        totalLeaveDays: nextLeaveBlock.length,
+        isOnLeaveNow: daysUntilLeave === 0 || (today >= startDate && today <= endDate)
+    };
+};
+
 // --- UNIVERSAL MATH ENGINE ---
 const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, publicHolidays: any[]) => {
     if (!host) return null;
@@ -43,6 +85,7 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
     const isExec = ['DA', 'DB'].includes(host.host_level);
     const isIntern = (host.role || '').toLowerCase().includes('intern');
 
+    // ONLY LOOK AT ATTENDANCE UP TO THE SELECTED TARGET DATE
     const recordsUpToTarget = attendance.filter(a => {
         const d = parseISO(a.date);
         return d >= SYSTEM_START_DATE && d <= targetDate;
@@ -58,12 +101,13 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
                 const d = parseISO(a.date);
                 return d >= accrualStart && d <= endOfPrevYear;
             });
-            const penaltyBefore = recordsBefore.filter(a => ['NP', 'A'].includes(a.status_code)).length;
+            const penaltyBefore = recordsBefore.filter(a => ['NP', 'A'].includes(String(a.status_code).toUpperCase().trim())).length;
             const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
             
-            cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => a.status_code === 'O').length;
-            cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => a.status_code === 'AL').length;
-            cfPH -= recordsBefore.filter(a => a.status_code === 'PH').length;
+            // STRICT STRING MATCHING FOR ALL CODE VARIATIONS
+            cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => ['O', 'OFF'].includes(String(a.status_code).toUpperCase().trim())).length;
+            cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => ['AL', 'VAC'].includes(String(a.status_code).toUpperCase().trim())).length;
+            cfPH -= recordsBefore.filter(a => String(a.status_code).toUpperCase().trim() === 'PH').length;
         }
     } else if (targetYear < 2026) {
         cfOff = 0; cfAL = 0; cfPH = 0;
@@ -80,7 +124,7 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
             const d = parseISO(a.date);
             return d >= trackingStartThisYear && d <= targetDate;
         });
-        const penaltyDays = recordsThisYear.filter(a => ['NP', 'A'].includes(a.status_code)).length;
+        const penaltyDays = recordsThisYear.filter(a => ['NP', 'A'].includes(String(a.status_code).toUpperCase().trim())).length;
         const eligibleDays = Math.max(0, daysActive - penaltyDays);
         
         earnedOff = eligibleDays / 7;
@@ -94,9 +138,9 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
         }
     });
 
-    const takenOff = recordsUpToTarget.filter(a => a.status_code === 'O').length;
-    const takenAL = recordsUpToTarget.filter(a => a.status_code === 'AL').length;
-    const takenPH = recordsUpToTarget.filter(a => a.status_code === 'PH').length;
+    const takenOff = recordsUpToTarget.filter(a => ['O', 'OFF'].includes(String(a.status_code).toUpperCase().trim())).length;
+    const takenAL = recordsUpToTarget.filter(a => ['AL', 'VAC'].includes(String(a.status_code).toUpperCase().trim())).length;
+    const takenPH = recordsUpToTarget.filter(a => String(a.status_code).toUpperCase().trim() === 'PH').length;
 
     let lastAnniversary = new Date(joinDate);
     lastAnniversary.setFullYear(targetYear);
@@ -109,9 +153,9 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
         return d >= lastAnniversary && d <= targetDate;
     });
     
-    const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
-    const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
-    const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
+    const takenSL = recordsSinceAnniversary.filter(a => String(a.status_code).toUpperCase().trim() === 'SL').length;
+    const takenEL = recordsSinceAnniversary.filter(a => String(a.status_code).toUpperCase().trim() === 'EL').length;
+    const takenRR = recordsSinceAnniversary.filter(a => String(a.status_code).toUpperCase().trim() === 'RR').length;
 
     const balOffVal = cfOff + earnedOff - takenOff;
     const balALVal = isIntern ? 0 : (cfAL + earnedAL - takenAL);
@@ -149,12 +193,17 @@ export default function Dashboard() {
   const [teamConfig, setTeamConfig] = useState<TeamConfig>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {} });
   const [allHosts, setAllHosts] = useState<any[]>([]);
   const [allAttendance, setAllAttendance] = useState<any[]>([]);
+  const [allSubDepts, setAllSubDepts] = useState<string[]>([]);
+  
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
   const [isLoadingTeam, setIsLoadingTeam] = useState(false);
   const [teamBalances, setTeamBalances] = useState<any[]>([]);
   const [activeDeptTab, setActiveDeptTab] = useState<string>('All');
   const [teamSearch, setTeamSearch] = useState('');
   const [teamDate, setTeamDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [teamSortBy, setTeamSortBy] = useState<'balTotal' | 'balOff' | 'balAL'>('balTotal');
+  
+  const [selectedTeamHost, setSelectedTeamHost] = useState<any | null>(null);
 
   const [myAttendance, setMyAttendance] = useState<any[]>([]);
   const [payrollStart, setPayrollStart] = useState<Date>(new Date());
@@ -183,28 +232,66 @@ export default function Dashboard() {
       };
   }, []);
 
+  // --- INFINITY AUTO-PAGINATOR FOR ATTENDANCE ---
+  // Supabase limits responses to 1000 rows. This loops infinitely until all data is secured.
+  const fetchInfinityAttendance = async (specificHostId?: string) => {
+      let allRecords: any[] = [];
+      let page = 0;
+      const pageSize = 1000;
+      
+      while (true) {
+          let query = supabase.from('hsk_attendance')
+                              .select('*')
+                              .range(page * pageSize, (page + 1) * pageSize - 1);
+                              
+          if (specificHostId) {
+              query = query.eq('host_id', specificHostId);
+          }
+
+          const { data, error } = await query;
+          
+          if (error) {
+              console.error("Error fetching attendance records:", error);
+              break;
+          }
+          
+          if (data && data.length > 0) {
+              allRecords = [...allRecords, ...data];
+              if (data.length < pageSize) {
+                  break; // Reached the last partial page
+              }
+              page++;
+          } else {
+              break; // Empty page, stop looping
+          }
+      }
+      return allRecords;
+  };
+
   const fetchDashboardData = async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
     const todayStr = format(new Date(), 'yyyy-MM-dd');
 
     const [constRes, configRes] = await Promise.all([
-        supabase.from('hsk_constants').select('*').eq('type', 'public_holiday'),
+        supabase.from('hsk_constants').select('*'),
         supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').maybeSingle()
     ]);
 
     if (constRes.data) {
-        const parsedHolidays = constRes.data.map((c: any) => {
+        const parsedHolidays = constRes.data.filter((c: any) => c.type === 'public_holiday').map((c: any) => {
             const [d, n] = c.label.split('::');
             return { id: c.id, date: d, name: n };
         }).sort((a: any, b: any) => a.date.localeCompare(b.date));
         setPublicHolidays(parsedHolidays);
+
+        const depts = constRes.data.filter((c: any) => c.type === 'sub_department').map((c: any) => c.label).sort();
+        setAllSubDepts(depts);
     }
 
     let config: TeamConfig = { hostDepartments: {}, supervisorAccess: {}, nicknames: {} };
     if (configRes.data && configRes.data.label) {
         try { 
             const parsed = JSON.parse(configRes.data.label); 
-            // Fallback support for older config versions
             const sAccess = parsed.supervisorAccess || (parsed['101'] ? parsed : {});
             config = {
                 hostDepartments: parsed.hostDepartments || {},
@@ -225,7 +312,6 @@ export default function Dashboard() {
         adminFlag = parsed.system_role === 'admin' || localStorage.getItem('hk_pulse_admin_auth') === 'true';
         loggedHostId = String(parsed.host_id || '').trim();
         
-        // Ensure perfect string comparison to find access rights
         let allowedHosts: string[] = [];
         for (const key in config.supervisorAccess) {
             if (String(key).trim() === loggedHostId) {
@@ -248,40 +334,48 @@ export default function Dashboard() {
         }
         
         if (superFlag) {
-            const [hostsRes, attRes] = await Promise.all([
+            // Using Infinity Fetcher for Supervisors/Admins
+            const [hostsRes, fullAttData] = await Promise.all([
                 supabase.from('hsk_hosts').select('*').order('full_name'),
-                supabase.from('hsk_attendance').select('*')
+                fetchInfinityAttendance()
             ]);
 
             if (hostsRes.data) {
                 let finalHosts = hostsRes.data;
                 if (!adminFlag) {
-                    finalHosts = finalHosts.filter((h: any) => allowedHosts.includes(String(h.host_id).trim()));
+                    finalHosts = finalHosts.filter((h: any) => 
+                        allowedHosts.includes(String(h.host_id).trim()) || 
+                        String(h.host_id).trim() === loggedHostId
+                    );
                 }
                 setAllHosts(finalHosts);
             }
-            if (attRes.data) setAllAttendance(attRes.data);
-        }
+            
+            setAllAttendance(fullAttData);
+            setUserAttendance(fullAttData.filter(a => String(a.host_id).trim() === loggedHostId));
 
-        const { data: attData } = await supabase.from('hsk_attendance').select('*').eq('host_id', loggedHostId);
-        if (attData) setUserAttendance(attData);
+        } else {
+            // Using Infinity Fetcher for Single User
+            const fullAttData = await fetchInfinityAttendance(loggedHostId);
+            setUserAttendance(fullAttData);
+        }
 
     } else {
         adminFlag = localStorage.getItem('hk_pulse_admin_auth') === 'true';
         setIsAdmin(adminFlag);
         setIsSupervisor(adminFlag);
         
-        // If bypassing login entirely as admin, fetch all hosts
         if (adminFlag) {
-             const [hostsRes, attRes] = await Promise.all([
+             const [hostsRes, fullAttData] = await Promise.all([
                 supabase.from('hsk_hosts').select('*').order('full_name'),
-                supabase.from('hsk_attendance').select('*')
+                fetchInfinityAttendance()
             ]);
             if (hostsRes.data) setAllHosts(hostsRes.data);
-            if (attRes.data) setAllAttendance(attRes.data);
+            setAllAttendance(fullAttData);
         }
     }
 
+    // Load Admin KPI Data
     if (adminFlag) {
         const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true });
         const { count: orderCount } = await supabase.from('hsk_procurement_orders').select('*', { count: 'exact', head: true }).neq('status', 'Completed');
@@ -307,6 +401,7 @@ export default function Dashboard() {
         setRecentActivity((reqs || []).slice(0, 6));
     } 
     
+    // Fetch this month's payroll display grid
     if (loggedHostId) {
         const { start, end } = getPayrollPeriod(new Date());
         setPayrollStart(start);
@@ -350,10 +445,12 @@ export default function Dashboard() {
       setIsLoadingTeam(true);
 
       const computed = allHosts.map((h: any) => {
-          const hostAtt = allAttendance.filter((a: any) => a.host_id === h.host_id);
+          const hostAtt = allAttendance.filter((a: any) => String(a.host_id).trim() === String(h.host_id).trim());
           const bal = computeLeaveBalances(h, hostAtt, teamDate, publicHolidays);
+          const upcoming = getUpcomingLeave(hostAtt);
           const dept = teamConfig.hostDepartments?.[h.host_id] || 'Unassigned';
-          return { host: h, department: dept, balances: bal };
+          
+          return { host: h, department: dept, balances: bal, upcoming, attendanceRecords: hostAtt };
       }).filter((c: any) => c.balances !== null);
 
       computed.sort((a: any, b: any) => parseFloat(b.balances.balTotal) - parseFloat(a.balances.balTotal));
@@ -367,60 +464,19 @@ export default function Dashboard() {
   }, [teamDate, isTeamModalOpen, loadTeamLeaves]);
 
   const upcomingLeaveInfo = useMemo(() => {
-      if (!userAttendance || userAttendance.length === 0) return null;
-
-      const today = new Date();
-      today.setHours(0,0,0,0); 
-
-      const futureLeaves = userAttendance
-          .filter(a => parseISO(a.date) >= today && LEAVE_CODES.includes(a.status_code))
-          .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
-
-      if (futureLeaves.length === 0) return null;
-
-      let blocks = [];
-      let currentBlock = [futureLeaves[0]];
-
-      for (let i = 1; i < futureLeaves.length; i++) {
-          const prevDate = parseISO(currentBlock[currentBlock.length - 1].date);
-          const currDate = parseISO(futureLeaves[i].date);
-          
-          if (differenceInDays(currDate, prevDate) === 1) {
-              currentBlock.push(futureLeaves[i]);
-          } else {
-              blocks.push([...currentBlock]);
-              currentBlock = [futureLeaves[i]];
-          }
-      }
-      blocks.push([...currentBlock]);
-
-      const nextLeaveBlock = blocks[0];
-      const startDate = parseISO(nextLeaveBlock[0].date);
-      const endDate = parseISO(nextLeaveBlock[nextLeaveBlock.length - 1].date);
-      
-      const returnDate = addDays(endDate, 1);
-      
-      const daysUntilLeave = differenceInDays(startDate, today);
-      const totalLeaveDays = nextLeaveBlock.length;
-
-      return {
-          startDate,
-          endDate,
-          returnDate,
-          daysUntilLeave,
-          totalLeaveDays,
-          isOnLeaveNow: daysUntilLeave === 0 || (today >= startDate && today <= endDate)
-      };
-
+      return getUpcomingLeave(userAttendance);
   }, [userAttendance]);
 
   const userBalances = useMemo(() => {
       return computeLeaveBalances(currentUser, userAttendance, cutoffDate, publicHolidays);
   }, [currentUser, userAttendance, cutoffDate, publicHolidays]);
 
-  const renderPayrollGrid = () => {
-      const startDate = startOfWeek(payrollStart);
-      const endDate = endOfWeek(payrollEnd);
+  // --- REUSABLE PAYROLL GRID RENDERER ---
+  const renderPayrollGrid = (attendanceArray: any[], startDateObj: Date, endDateObj: Date) => {
+      if (!attendanceArray) return null;
+      
+      const startDate = startOfWeek(startDateObj);
+      const endDate = endOfWeek(endDateObj);
 
       const rows = [];
       let days = [];
@@ -429,11 +485,11 @@ export default function Dashboard() {
       while (day <= endDate) {
           for (let i = 0; i < 7; i++) {
               const dateStr = format(day, 'yyyy-MM-dd');
-              const record = myAttendance.find(a => a.date === dateStr);
-              const isCurrentPeriod = day >= payrollStart && day <= payrollEnd;
+              const record = attendanceArray.find(a => a.date === dateStr);
+              const isCurrentPeriod = day >= startDateObj && day <= endDateObj;
               const isToday = isSameDay(day, new Date());
 
-              const status = record?.status_code || '';
+              const status = String(record?.status_code || '').toUpperCase().trim();
               const duty = record?.shift_type || '';
 
               let bgClass = 'bg-white border-slate-200';
@@ -467,20 +523,15 @@ export default function Dashboard() {
               }
 
               days.push(
-                  <div 
-                      key={dateStr} 
-                      className={`min-h-[75px] xl:min-h-[95px] p-2 flex flex-col rounded-2xl border-2 transition-all ${bgClass} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-2 shadow-md transform scale-105 z-10 bg-white' : ''}`}
-                  >
+                  <div key={dateStr} className={`min-h-[75px] xl:min-h-[95px] p-2 flex flex-col rounded-2xl border-2 transition-all ${bgClass} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-2 shadow-md transform scale-105 z-10 bg-white' : ''}`}>
                       <span className={`text-xs xl:text-sm font-black mb-1 ${isToday ? 'text-[#6D2158]' : textClass}`}>
                           {format(day, 'd')} <span className="text-[9px] font-normal opacity-60 ml-0.5">{format(day, 'MMM')}</span>
                       </span>
-                     
                       {isCurrentPeriod && status && (
                           <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest w-fit mb-1 border shadow-sm ${badgeClass}`}>
                               {status}
                           </span>
                       )}
-
                       {isCurrentPeriod && duty && (
                           <div className={`mt-auto flex items-center gap-1 text-[9px] font-bold uppercase ${textClass} opacity-80`}>
                               <Clock size={10} className="shrink-0"/> <span className="truncate">{duty}</span>
@@ -490,10 +541,10 @@ export default function Dashboard() {
               );
               day = addDays(day, 1);
           }
-          rows.push(<div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 xl:mb-3" key={day.toString()}>{days}</div>);
+          rows.push(<div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 xl:mb-3 min-w-[600px]" key={day.toString()}>{days}</div>);
           days = [];
       }
-      return <div className="mt-2">{rows}</div>;
+      return <div className="mt-2 overflow-x-auto custom-scrollbar pb-4">{rows}</div>;
   };
 
   const hour = new Date().getHours();
@@ -746,7 +797,7 @@ export default function Dashboard() {
                                 </p>
                                 
                                 <ul className="space-y-3">
-                                    {criticalItems.slice(0, 4).map(item => (
+                                    {criticalItems.slice(0, 4).map((item: any) => (
                                         <li key={item.id} className="flex justify-between items-center bg-black/10 p-3 rounded-xl backdrop-blur-sm">
                                             <div className="flex-1 pr-4">
                                                 <span className="text-sm font-bold block truncate">{item.item_name}</span>
@@ -782,7 +833,6 @@ export default function Dashboard() {
                   
                   <div className="p-4 md:p-8 overflow-x-auto">
                       <div className="min-w-[600px]">
-                          {/* DAY NAMES */}
                           <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2">
                               {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
                                   <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
@@ -790,9 +840,7 @@ export default function Dashboard() {
                                   </div>
                               ))}
                           </div>
-
-                          {/* GRID */}
-                          {renderPayrollGrid()}
+                          {renderPayrollGrid(myAttendance, payrollStart, payrollEnd)}
                       </div>
                   </div>
               </div>
@@ -831,30 +879,33 @@ export default function Dashboard() {
 
       {/* --- GRAPHICAL TEAM LEAVE INSIGHTS MODAL --- */}
       {isTeamModalOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-              <div className="bg-[#FDFBFD] w-full max-w-6xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
-                  <div className="p-6 md:p-8 bg-[#6D2158] text-white flex flex-col md:flex-row md:justify-between md:items-center shrink-0 gap-4">
-                      <div>
-                          <h3 className="font-black text-2xl md:text-3xl flex items-center gap-3 tracking-tight"><BarChart2 size={28}/> Team Leave Insights</h3>
-                          <p className="text-[10px] md:text-xs uppercase tracking-widest text-white/70 mt-1 font-bold">Leave Liability Overview</p>
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-2 md:p-4 animate-in fade-in duration-200">
+              <div className="bg-[#FDFBFD] w-full max-w-6xl rounded-3xl md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col h-[95vh] md:max-h-[90vh] animate-in zoom-in-95">
+                  <div className="p-4 md:p-6 bg-[#6D2158] text-white flex flex-col md:flex-row justify-between items-start md:items-center shrink-0 gap-4">
+                      <div className="flex justify-between w-full md:w-auto items-start">
+                          <div>
+                              <h3 className="font-black text-xl md:text-3xl flex items-center gap-2 md:gap-3 tracking-tight"><BarChart2 className="w-6 h-6 md:w-8 md:h-8"/> Team Leaves</h3>
+                              <p className="text-[9px] md:text-xs uppercase tracking-widest text-white/70 mt-1 font-bold">Leave Liability Overview</p>
+                          </div>
+                          <button onClick={() => {setIsTeamModalOpen(false); setSelectedTeamHost(null);}} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95 md:hidden"><X size={18}/></button>
                       </div>
-                      <div className="flex items-center gap-3 w-full md:w-auto">
-                          <div className="flex items-center bg-white/10 px-4 py-2.5 rounded-xl border border-white/20 gap-2">
-                              <Calendar size={16} className="text-white shrink-0"/>
+                      <div className="flex items-center gap-3 w-full md:w-auto justify-between">
+                          <div className="flex items-center bg-white/10 px-3 md:px-4 py-2 md:py-2.5 rounded-xl border border-white/20 gap-2 w-full md:w-auto">
+                              <Calendar size={14} className="text-white shrink-0"/>
                               <input 
                                   type="date" 
-                                  className="bg-transparent text-white font-bold text-sm outline-none w-full [&::-webkit-calendar-picker-indicator]:invert"
+                                  className="bg-transparent text-white font-bold text-xs md:text-sm outline-none w-full [&::-webkit-calendar-picker-indicator]:invert"
                                   value={teamDate}
                                   onChange={e => setTeamDate(e.target.value)}
                               />
                           </div>
-                          <button onClick={() => setIsTeamModalOpen(false)} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95"><X size={20}/></button>
+                          <button onClick={() => {setIsTeamModalOpen(false); setSelectedTeamHost(null);}} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95 hidden md:block"><X size={20}/></button>
                       </div>
                   </div>
 
                   <div className="flex flex-col h-full overflow-hidden">
                       {isLoadingTeam ? (
-                          <div className="flex flex-col items-center justify-center py-32 text-[#6D2158]">
+                          <div className="flex flex-col items-center justify-center h-full text-[#6D2158]">
                                <Loader2 size={48} className="animate-spin mb-4"/>
                                <p className="font-bold uppercase tracking-widest text-sm">Analyzing Team Data...</p>
                           </div>
@@ -863,32 +914,82 @@ export default function Dashboard() {
                               <Users size={64} className="mx-auto mb-4 opacity-20"/>
                               <p className="font-bold text-lg">No team members found in your scope.</p>
                           </div>
+                      ) : selectedTeamHost ? (
+                          // CALENDAR VIEW FOR SPECIFIC HOST
+                          <div className="flex flex-col h-full bg-slate-50 animate-in slide-in-from-right-8">
+                              <div className="p-4 md:p-6 border-b border-slate-200 bg-white shrink-0 flex items-center justify-between">
+                                  <div>
+                                      <button onClick={() => setSelectedTeamHost(null)} className="text-[10px] font-bold uppercase tracking-widest text-[#6D2158] flex items-center gap-1 mb-2 hover:opacity-70 transition-opacity">
+                                          <ChevronLeft size={14}/> Back to Team List
+                                      </button>
+                                      <h3 className="font-black text-xl text-slate-800">{teamConfig.nicknames?.[selectedTeamHost.host.host_id] || selectedTeamHost.host.full_name}</h3>
+                                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{selectedTeamHost.host.role}</p>
+                                  </div>
+                                  <div className="text-right">
+                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Leaves Owed</p>
+                                      <p className="text-3xl font-black text-[#6D2158]">{selectedTeamHost.balances.balTotal}</p>
+                                  </div>
+                              </div>
+                              <div className="p-4 md:p-8 overflow-y-auto flex-1">
+                                  <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
+                                      <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 min-w-[600px]">
+                                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+                                              <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
+                                                  {d}
+                                              </div>
+                                          ))}
+                                      </div>
+                                      {(() => {
+                                          const teamPeriod = getPayrollPeriod(parseISO(teamDate));
+                                          return renderPayrollGrid(selectedTeamHost.attendanceRecords, teamPeriod.start, teamPeriod.end);
+                                      })()}
+                                  </div>
+                              </div>
+                          </div>
                       ) : (
                           <>
-                              {/* Tabs & Search */}
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 border-b border-slate-200 bg-white shrink-0">
+                              {/* Tabs & Controls */}
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-6 border-b border-slate-200 bg-white shrink-0">
                                   <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-                                      <button onClick={() => setActiveDeptTab('All')} className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
-                                      {Array.from(new Set(teamBalances.map(c => c.department))).filter(d => d !== 'Unassigned').sort().map((dept: any) => (
-                                          <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>{dept}</button>
+                                      <button onClick={() => setActiveDeptTab('All')} className={`px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
+                                      
+                                      {/* Admin sees all subdepts from settings, Supervisors see only depts they have staff in */}
+                                      {(isAdmin ? allSubDepts : Array.from(new Set(teamBalances.map(c => c.department))).filter(d => d !== 'Unassigned').sort()).map((dept: any) => (
+                                          <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>{dept}</button>
                                       ))}
                                   </div>
-                                  <div className="relative w-full sm:w-64 shrink-0">
-                                      <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
-                                      <input type="text" placeholder="Search staff..." className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] transition-colors" value={teamSearch} onChange={e => setTeamSearch(e.target.value)} />
+                                  
+                                  {/* Sort and Search Block */}
+                                  <div className="flex gap-2 w-full sm:w-auto shrink-0">
+                                      <select 
+                                          className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[10px] md:text-xs outline-none focus:border-[#6D2158] transition-colors text-slate-600 uppercase tracking-widest cursor-pointer"
+                                          value={teamSortBy}
+                                          onChange={(e) => setTeamSortBy(e.target.value as any)}
+                                      >
+                                          <option value="balTotal">Sort: Total</option>
+                                          <option value="balOff">Sort: Off Days</option>
+                                          <option value="balAL">Sort: Annual</option>
+                                      </select>
+                                      <div className="relative w-full sm:w-48">
+                                          <Search className="absolute left-3 top-2.5 md:top-3 text-slate-400" size={16}/>
+                                          <input type="text" placeholder="Search..." className="w-full pl-10 pr-4 py-2 md:py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs md:text-sm outline-none focus:border-[#6D2158] transition-colors" value={teamSearch} onChange={e => setTeamSearch(e.target.value)} />
+                                      </div>
                                   </div>
                               </div>
 
                               {/* Content */}
-                              <div className="p-6 md:p-8 overflow-y-auto flex-1 custom-scrollbar">
+                              <div className="p-4 md:p-8 overflow-y-auto flex-1 custom-scrollbar bg-slate-50 md:bg-white">
                                   {(() => {
-                                      let deptData = teamBalances;
+                                      let deptData = [...teamBalances];
                                       if (activeDeptTab !== 'All') {
                                           deptData = deptData.filter((c: any) => c.department === activeDeptTab);
                                       }
                                       if (teamSearch) {
-                                          deptData = deptData.filter((c: any) => c.host.full_name.toLowerCase().includes(teamSearch.toLowerCase()) || c.host.host_id.includes(teamSearch));
+                                          deptData = deptData.filter((c: any) => c.host.full_name.toLowerCase().includes(teamSearch.toLowerCase()) || String(c.host.host_id).includes(teamSearch));
                                       }
+
+                                      // DYNAMIC SORTING BASED ON USER SELECTION
+                                      deptData.sort((a: any, b: any) => parseFloat(b.balances[teamSortBy]) - parseFloat(a.balances[teamSortBy]));
 
                                       const totalOff = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balOff), 0);
                                       const totalAL = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balAL), 0);
@@ -899,39 +1000,40 @@ export default function Dashboard() {
                                       const alPct = overall ? (totalAL / overall) * 100 : 0;
 
                                       return (
-                                          <div className="space-y-8 animate-in fade-in duration-300">
-                                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-                                                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
-                                                      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Liability</div>
-                                                      <div className="text-4xl font-black text-rose-600">{overall.toFixed(1)} <span className="text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
-                                                      <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-rose-50 rounded-full blur-2xl"></div>
+                                          <div className="space-y-6 md:space-y-8 animate-in fade-in duration-300">
+                                              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
+                                                  <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
+                                                      <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Liability</div>
+                                                      <div className="text-2xl md:text-4xl font-black text-rose-600">{overall.toFixed(1)} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
+                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 h-24 bg-rose-50 rounded-full blur-2xl"></div>
                                                   </div>
                                                   
-                                                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex items-center gap-6">
-                                                      <div style={{ background: `conic-gradient(#10b981 ${offPct}%, #06b6d4 0 ${offPct + alPct}%, #3b82f6 0)` }} className="w-24 h-24 rounded-full relative shadow-inner shrink-0">
-                                                          <div className="absolute inset-3 bg-white rounded-full flex items-center justify-center font-black text-slate-800 text-lg shadow-sm">{deptData.length}</div>
-                                                      </div>
-                                                      <div className="flex-1 space-y-2">
-                                                          <div className="flex justify-between items-center text-xs font-bold"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500"></span> Off Days</span> <span>{totalOff.toFixed(1)}</span></div>
-                                                          <div className="flex justify-between items-center text-xs font-bold"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-cyan-500"></span> Annual</span> <span>{totalAL.toFixed(1)}</span></div>
-                                                          <div className="flex justify-between items-center text-xs font-bold"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Pub Hol</span> <span>{totalPH.toFixed(1)}</span></div>
-                                                      </div>
+                                                  <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
+                                                      <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Highest Balance</div>
+                                                      <div className="text-2xl md:text-4xl font-black text-amber-600">{deptData[0]?.balances.balTotal || 0} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
+                                                      <div className="text-[9px] md:text-xs font-bold text-slate-600 bg-amber-50 px-2 py-1 md:px-3 md:py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100 truncate max-w-[100px] md:max-w-full">{teamConfig.nicknames?.[deptData[0]?.host.host_id] || deptData[0]?.host.full_name || 'N/A'}</div>
+                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 h-24 bg-amber-50 rounded-full blur-2xl"></div>
                                                   </div>
 
-                                                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
-                                                      <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Highest Balance</div>
-                                                      <div className="text-4xl font-black text-amber-600">{deptData[0]?.balances.balTotal || 0} <span className="text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
-                                                      <div className="text-xs font-bold text-slate-600 bg-amber-50 px-3 py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100">{deptData[0]?.host.full_name || 'N/A'}</div>
-                                                      <div className="absolute -bottom-4 -right-4 w-24 h-24 bg-amber-50 rounded-full blur-2xl"></div>
+                                                  <div className="col-span-2 md:col-span-1 bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex items-center justify-around md:justify-start gap-4 md:gap-6">
+                                                      <div style={{ background: `conic-gradient(#10b981 ${offPct}%, #06b6d4 0 ${offPct + alPct}%, #3b82f6 0)` }} className="w-16 h-16 md:w-24 md:h-24 rounded-full relative shadow-inner shrink-0">
+                                                          <div className="absolute inset-2 md:inset-3 bg-white rounded-full flex items-center justify-center font-black text-slate-800 text-sm md:text-lg shadow-sm">{deptData.length}</div>
+                                                      </div>
+                                                      <div className="flex-1 space-y-1.5 md:space-y-2">
+                                                          <div className="flex justify-between items-center text-[10px] md:text-xs font-bold"><span className="flex items-center gap-2"><span className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-emerald-500"></span> Off Days</span> <span>{totalOff.toFixed(1)}</span></div>
+                                                          <div className="flex justify-between items-center text-[10px] md:text-xs font-bold"><span className="flex items-center gap-2"><span className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-cyan-500"></span> Annual</span> <span>{totalAL.toFixed(1)}</span></div>
+                                                          <div className="flex justify-between items-center text-[10px] md:text-xs font-bold"><span className="flex items-center gap-2"><span className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-blue-500"></span> Pub Hol</span> <span>{totalPH.toFixed(1)}</span></div>
+                                                      </div>
                                                   </div>
                                               </div>
 
-                                              <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200">
-                                                  <div className="space-y-5">
+                                              <div className="bg-white p-4 md:p-8 rounded-2xl md:rounded-[2rem] shadow-sm border border-slate-200">
+                                                  <div className="space-y-3 md:space-y-5">
                                                       {deptData.length === 0 ? (
                                                           <div className="text-center py-10 text-slate-400 font-bold italic text-sm">No matches found.</div>
                                                       ) : (
-                                                          deptData.map(({host, balances}: any, idx: number) => {
+                                                          deptData.map((itemData: any, idx: number) => {
+                                                              const { host, balances, upcoming } = itemData;
                                                               const total = parseFloat(balances.balTotal);
                                                               const max = Math.max(...deptData.map((t: any) => parseFloat(t.balances.balTotal)), 1);
                                                               const overallWidth = Math.max((total / max) * 100, 0);
@@ -941,16 +1043,45 @@ export default function Dashboard() {
                                                               const pPct = total ? (parseFloat(balances.balPH) / total) * 100 : 0;
 
                                                               return (
-                                                                  <div key={host.host_id} className="flex flex-col gap-2 group p-4 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
-                                                                      <div className="flex justify-between items-end">
-                                                                          <span className="font-bold text-sm text-slate-800 flex items-center gap-2">
-                                                                              <span className="text-[10px] text-slate-400 font-mono w-4">{idx + 1}.</span> {host.full_name} 
-                                                                              <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-1 rounded-md ml-2">{host.role}</span>
-                                                                          </span>
-                                                                          <span className={`font-black text-lg ${total > 15 ? 'text-rose-600' : 'text-[#6D2158]'}`}>{total.toFixed(1)}</span>
+                                                                  <div 
+                                                                      key={host.host_id} 
+                                                                      onClick={() => setSelectedTeamHost(itemData)}
+                                                                      className="flex flex-col gap-2 md:gap-3 group p-3 md:p-4 rounded-xl md:rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100 cursor-pointer"
+                                                                  >
+                                                                      
+                                                                      <div className="flex justify-between items-start md:items-end gap-2">
+                                                                          <div className="min-w-0 flex-1">
+                                                                              <div className="font-bold text-sm text-slate-800 flex items-center gap-1.5 md:gap-2 truncate group-hover:text-[#6D2158] transition-colors">
+                                                                                  <span className="text-[10px] text-slate-400 font-mono w-4 shrink-0">{idx + 1}.</span> 
+                                                                                  <span className="truncate">{teamConfig.nicknames?.[host.host_id] || host.full_name}</span>
+                                                                                  <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-0.5 rounded-md shrink-0">{host.role}</span>
+                                                                              </div>
+                                                                              
+                                                                              {/* UPCOMING LEAVE BADGE */}
+                                                                              <div className="pl-5 mt-1.5 flex flex-wrap gap-2">
+                                                                                  {upcoming?.isOnLeaveNow && (
+                                                                                      <span className="text-[9px] bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1 w-max border border-cyan-200">
+                                                                                          <Plane size={10}/> On Leave • Returns {format(upcoming.returnDate, 'MMM d')}
+                                                                                      </span>
+                                                                                  )}
+                                                                                  {!upcoming?.isOnLeaveNow && upcoming && upcoming.daysUntilLeave <= 30 && (
+                                                                                      <span className="text-[9px] bg-amber-50 text-amber-600 px-2 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1 w-max border border-amber-200">
+                                                                                          <Calendar size={10}/> Leave in {upcoming.daysUntilLeave}d
+                                                                                      </span>
+                                                                                  )}
+                                                                              </div>
+                                                                          </div>
+                                                                          <div className="text-right">
+                                                                              <span className={`font-black text-sm md:text-lg shrink-0 ${parseFloat(balances[teamSortBy]) > (teamSortBy === 'balTotal' ? 15 : 7) ? 'text-rose-600' : 'text-[#6D2158]'}`}>
+                                                                                  {balances[teamSortBy]}
+                                                                              </span>
+                                                                              {teamSortBy !== 'balTotal' && (
+                                                                                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{teamSortBy === 'balOff' ? 'Off Days' : 'Annual'}</div>
+                                                                              )}
+                                                                          </div>
                                                                       </div>
                                                                       
-                                                                      <div className="h-4 md:h-5 w-full bg-slate-100 rounded-full flex shadow-inner p-0.5">
+                                                                      <div className="h-3 md:h-4 w-full bg-slate-100 rounded-full flex shadow-inner p-0.5 mt-1">
                                                                           <div className="h-full flex gap-0.5" style={{width: `${overallWidth}%`}}>
                                                                               {oPct > 0 && <div className="h-full bg-emerald-500 rounded-l-full" style={{width: `${oPct}%`}}></div>}
                                                                               {aPct > 0 && <div className="h-full bg-cyan-500" style={{width: `${aPct}%`}}></div>}
@@ -958,7 +1089,7 @@ export default function Dashboard() {
                                                                           </div>
                                                                       </div>
 
-                                                                      <div className="flex gap-4 text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                                                                      <div className="flex gap-4 text-[8px] md:text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
                                                                           <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> {balances.balOff}</span>
                                                                           <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-cyan-500"></span> {balances.balAL}</span>
                                                                           <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span> {balances.balPH}</span>
