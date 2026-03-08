@@ -9,6 +9,12 @@ import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
 import { differenceInDays, parseISO, isAfter, isBefore, format, isSameDay, startOfWeek, endOfWeek, addDays } from 'date-fns';
 
+// =========================================================================
+// 🧠 FAST MATH ENGINE (Built directly into the file - No imports needed!)
+// =========================================================================
+
+const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
+
 const getPayrollPeriod = (date = new Date()) => {
   const d = new Date(date);
   let year = d.getFullYear();
@@ -20,39 +26,26 @@ const getPayrollPeriod = (date = new Date()) => {
   }
 };
 
-const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
-
-type TeamConfig = {
-    hostDepartments: Record<string, string>;
-    supervisorAccess: Record<string, string[]>;
-    nicknames: Record<string, string>;
-};
-
-// --- REUSABLE UPCOMING LEAVE ENGINE ---
-const getUpcomingLeave = (attendance: any[]) => {
-    if (!attendance || attendance.length === 0) return null;
-
+const getUpcomingLeave = (futureLeaves: any[]) => {
+    if (!futureLeaves || futureLeaves.length === 0) return null;
     const today = new Date();
     today.setHours(0,0,0,0); 
 
-    const futureLeaves = attendance
-        .filter(a => parseISO(a.date) >= today && LEAVE_CODES.includes(String(a.status_code).toUpperCase().trim()))
-        .sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
-
-    if (futureLeaves.length === 0) return null;
+    const sorted = [...futureLeaves].sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
+    if (sorted.length === 0) return null;
 
     let blocks = [];
-    let currentBlock = [futureLeaves[0]];
+    let currentBlock = [sorted[0]];
 
-    for (let i = 1; i < futureLeaves.length; i++) {
+    for (let i = 1; i < sorted.length; i++) {
         const prevDate = parseISO(currentBlock[currentBlock.length - 1].date);
-        const currDate = parseISO(futureLeaves[i].date);
+        const currDate = parseISO(sorted[i].date);
         
         if (differenceInDays(currDate, prevDate) === 1) {
-            currentBlock.push(futureLeaves[i]);
+            currentBlock.push(sorted[i]);
         } else {
             blocks.push([...currentBlock]);
-            currentBlock = [futureLeaves[i]];
+            currentBlock = [sorted[i]];
         }
     }
     blocks.push([...currentBlock]);
@@ -70,10 +63,9 @@ const getUpcomingLeave = (attendance: any[]) => {
     };
 };
 
-// --- UNIVERSAL MATH ENGINE ---
-const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, publicHolidays: any[]) => {
-    if (!host) return null;
-    const targetDate = parseISO(cutoffDate);
+const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr: string, publicHolidays: any[], anniversaryLeaves: any[]) => {
+    if (!host || !rpcData) return null;
+    const targetDate = parseISO(targetDateStr);
     const targetYear = targetDate.getFullYear();
     const SYSTEM_START_DATE = new Date(2026, 0, 1); 
     
@@ -85,29 +77,25 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
     const isExec = ['DA', 'DB'].includes(host.host_level);
     const isIntern = (host.role || '').toLowerCase().includes('intern');
 
-    // ONLY LOOK AT ATTENDANCE UP TO THE SELECTED TARGET DATE
-    const recordsUpToTarget = attendance.filter(a => {
-        const d = parseISO(a.date);
-        return d >= SYSTEM_START_DATE && d <= targetDate;
-    });
+    const hostStats = rpcData.filter(r => String(r.host_id).trim() === String(host.host_id).trim());
+
+    const getStat = (year: number, codes: string[]) => {
+        return hostStats.filter(r => r.att_year === year && codes.includes(r.status_code)).reduce((sum, r) => sum + Number(r.total), 0);
+    };
 
     let cfOff = baseCfOff; let cfAL = baseCfAL; let cfPH = baseCfPH;
+    
     if (targetYear > 2026) {
         const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
         const endOfPrevYear = new Date(targetYear - 1, 11, 31);
         if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
             const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1;
-            const recordsBefore = attendance.filter(a => {
-                const d = parseISO(a.date);
-                return d >= accrualStart && d <= endOfPrevYear;
-            });
-            const penaltyBefore = recordsBefore.filter(a => ['NP', 'A'].includes(String(a.status_code).toUpperCase().trim())).length;
+            const penaltyBefore = getStat(targetYear - 1, ['NP', 'A']);
             const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
             
-            // STRICT STRING MATCHING FOR ALL CODE VARIATIONS
-            cfOff += (eligibleBefore / 7) - recordsBefore.filter(a => ['O', 'OFF'].includes(String(a.status_code).toUpperCase().trim())).length;
-            cfAL += (eligibleBefore / 12) - recordsBefore.filter(a => ['AL', 'VAC'].includes(String(a.status_code).toUpperCase().trim())).length;
-            cfPH -= recordsBefore.filter(a => String(a.status_code).toUpperCase().trim() === 'PH').length;
+            cfOff += (eligibleBefore / 7) - getStat(targetYear - 1, ['O', 'OFF']);
+            cfAL += (eligibleBefore / 12) - getStat(targetYear - 1, ['AL', 'VAC']);
+            cfPH -= getStat(targetYear - 1, ['PH']);
         }
     } else if (targetYear < 2026) {
         cfOff = 0; cfAL = 0; cfPH = 0;
@@ -120,11 +108,7 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
     
     if (targetDate >= trackingStartThisYear) {
         const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
-        const recordsThisYear = recordsUpToTarget.filter(a => {
-            const d = parseISO(a.date);
-            return d >= trackingStartThisYear && d <= targetDate;
-        });
-        const penaltyDays = recordsThisYear.filter(a => ['NP', 'A'].includes(String(a.status_code).toUpperCase().trim())).length;
+        const penaltyDays = getStat(targetYear, ['NP', 'A']);
         const eligibleDays = Math.max(0, daysActive - penaltyDays);
         
         earnedOff = eligibleDays / 7;
@@ -138,9 +122,9 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
         }
     });
 
-    const takenOff = recordsUpToTarget.filter(a => ['O', 'OFF'].includes(String(a.status_code).toUpperCase().trim())).length;
-    const takenAL = recordsUpToTarget.filter(a => ['AL', 'VAC'].includes(String(a.status_code).toUpperCase().trim())).length;
-    const takenPH = recordsUpToTarget.filter(a => String(a.status_code).toUpperCase().trim() === 'PH').length;
+    const takenOff = getStat(targetYear, ['O', 'OFF']);
+    const takenAL = getStat(targetYear, ['AL', 'VAC']);
+    const takenPH = getStat(targetYear, ['PH']);
 
     let lastAnniversary = new Date(joinDate);
     lastAnniversary.setFullYear(targetYear);
@@ -148,14 +132,10 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
         lastAnniversary.setFullYear(targetYear - 1);
     }
     
-    const recordsSinceAnniversary = attendance.filter(a => {
-        const d = parseISO(a.date);
-        return d >= lastAnniversary && d <= targetDate;
-    });
-    
-    const takenSL = recordsSinceAnniversary.filter(a => String(a.status_code).toUpperCase().trim() === 'SL').length;
-    const takenEL = recordsSinceAnniversary.filter(a => String(a.status_code).toUpperCase().trim() === 'EL').length;
-    const takenRR = recordsSinceAnniversary.filter(a => String(a.status_code).toUpperCase().trim() === 'RR').length;
+    const myAnniversaryLeaves = anniversaryLeaves.filter(a => String(a.host_id).trim() === String(host.host_id).trim() && parseISO(a.date) >= lastAnniversary && parseISO(a.date) <= targetDate);
+    const takenSL = myAnniversaryLeaves.filter(a => String(a.status_code).toUpperCase().trim() === 'SL').length;
+    const takenEL = myAnniversaryLeaves.filter(a => String(a.status_code).toUpperCase().trim() === 'EL').length;
+    const takenRR = myAnniversaryLeaves.filter(a => String(a.status_code).toUpperCase().trim() === 'RR').length;
 
     const balOffVal = cfOff + earnedOff - takenOff;
     const balALVal = isIntern ? 0 : (cfAL + earnedAL - takenAL);
@@ -174,6 +154,17 @@ const computeLeaveBalances = (host: any, attendance: any[], cutoffDate: string, 
     };
 };
 
+
+// =========================================================================
+// 🖥️ MAIN DASHBOARD COMPONENT
+// =========================================================================
+
+type TeamConfig = {
+    hostDepartments: Record<string, string>;
+    supervisorAccess: Record<string, string[]>;
+    nicknames: Record<string, string>;
+};
+
 export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isSupervisor, setIsSupervisor] = useState(false);
@@ -184,7 +175,11 @@ export default function Dashboard() {
   const [criticalItems, setCriticalItems] = useState<any[]>([]);
 
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [userAttendance, setUserAttendance] = useState<any[]>([]);
+  
+  // Fast Fetch States
+  const [rpcStats, setRpcStats] = useState<any[]>([]);
+  const [futureLeaves, setFutureLeaves] = useState<any[]>([]);
+  const [anniversaryLeaves, setAnniversaryLeaves] = useState<any[]>([]);
   
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState('');
@@ -192,7 +187,6 @@ export default function Dashboard() {
 
   const [teamConfig, setTeamConfig] = useState<TeamConfig>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {} });
   const [allHosts, setAllHosts] = useState<any[]>([]);
-  const [allAttendance, setAllAttendance] = useState<any[]>([]);
   const [allSubDepts, setAllSubDepts] = useState<string[]>([]);
   
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
@@ -204,6 +198,7 @@ export default function Dashboard() {
   const [teamSortBy, setTeamSortBy] = useState<'balTotal' | 'balOff' | 'balAL'>('balTotal');
   
   const [selectedTeamHost, setSelectedTeamHost] = useState<any | null>(null);
+  const [selectedTeamHostAtt, setSelectedTeamHostAtt] = useState<any[]>([]);
 
   const [myAttendance, setMyAttendance] = useState<any[]>([]);
   const [payrollStart, setPayrollStart] = useState<Date>(new Date());
@@ -215,58 +210,40 @@ export default function Dashboard() {
 
   useEffect(() => { 
       fetchDashboardData(); 
-
       const reqChannel = supabase.channel('dashboard_reqs')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
-            fetchDashboardData(false); 
-        }).subscribe();
-
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => { fetchDashboardData(false); }).subscribe();
       const orderChannel = supabase.channel('dashboard_orders')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_procurement_orders' }, () => {
-            fetchDashboardData(false);
-        }).subscribe();
-
-      return () => {
-          supabase.removeChannel(reqChannel);
-          supabase.removeChannel(orderChannel);
-      };
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_procurement_orders' }, () => { fetchDashboardData(false); }).subscribe();
+      return () => { supabase.removeChannel(reqChannel); supabase.removeChannel(orderChannel); };
   }, []);
 
-  // --- INFINITY AUTO-PAGINATOR FOR ATTENDANCE ---
-  // Supabase limits responses to 1000 rows. This loops infinitely until all data is secured.
-  const fetchInfinityAttendance = async (specificHostId?: string) => {
-      let allRecords: any[] = [];
-      let page = 0;
-      const pageSize = 1000;
-      
-      while (true) {
-          let query = supabase.from('hsk_attendance')
-                              .select('*')
-                              .range(page * pageSize, (page + 1) * pageSize - 1);
-                              
-          if (specificHostId) {
-              query = query.eq('host_id', specificHostId);
-          }
-
-          const { data, error } = await query;
-          
-          if (error) {
-              console.error("Error fetching attendance records:", error);
-              break;
-          }
-          
-          if (data && data.length > 0) {
-              allRecords = [...allRecords, ...data];
-              if (data.length < pageSize) {
-                  break; // Reached the last partial page
-              }
-              page++;
-          } else {
-              break; // Empty page, stop looping
-          }
+  // Update RPC stats dynamically when date picker changes
+  useEffect(() => {
+      if (!isLoading) {
+          const fetchRPC = async () => {
+              const { data } = await supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate });
+              setRpcStats(data || []);
+          };
+          fetchRPC();
       }
-      return allRecords;
+  }, [cutoffDate]);
+
+  // Handle Team Modal Host Click (Fetches just 1 month of attendance instantly)
+  const handleHostClick = async (itemData: any) => {
+      setSelectedTeamHost(itemData);
+      setSelectedTeamHostAtt([]);
+      const period = getPayrollPeriod(parseISO(teamDate));
+      const { data } = await supabase.from('hsk_attendance')
+          .select('*')
+          .eq('host_id', itemData.host.host_id)
+          .gte('date', format(period.start, 'yyyy-MM-dd'))
+          .lte('date', format(period.end, 'yyyy-MM-dd'));
+      setSelectedTeamHostAtt(data || []);
   };
+
+  useEffect(() => {
+      if (selectedTeamHost) handleHostClick(selectedTeamHost);
+  }, [teamDate]);
 
   const fetchDashboardData = async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
@@ -293,11 +270,7 @@ export default function Dashboard() {
         try { 
             const parsed = JSON.parse(configRes.data.label); 
             const sAccess = parsed.supervisorAccess || (parsed['101'] ? parsed : {});
-            config = {
-                hostDepartments: parsed.hostDepartments || {},
-                supervisorAccess: sAccess,
-                nicknames: parsed.nicknames || {}
-            };
+            config = { hostDepartments: parsed.hostDepartments || {}, supervisorAccess: sAccess, nicknames: parsed.nicknames || {} };
         } catch (e) {}
     }
     setTeamConfig(config);
@@ -322,7 +295,6 @@ export default function Dashboard() {
         }
         
         superFlag = adminFlag || allowedHosts.length > 0;
-        
         setIsAdmin(adminFlag);
         setIsSupervisor(superFlag);
         
@@ -334,30 +306,34 @@ export default function Dashboard() {
         }
         
         if (superFlag) {
-            // Using Infinity Fetcher for Supervisors/Admins
-            const [hostsRes, fullAttData] = await Promise.all([
+            const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
                 supabase.from('hsk_hosts').select('*').order('full_name'),
-                fetchInfinityAttendance()
+                supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate }),
+                supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
+                supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
 
             if (hostsRes.data) {
                 let finalHosts = hostsRes.data;
                 if (!adminFlag) {
-                    finalHosts = finalHosts.filter((h: any) => 
-                        allowedHosts.includes(String(h.host_id).trim()) || 
-                        String(h.host_id).trim() === loggedHostId
-                    );
+                    finalHosts = finalHosts.filter((h: any) => allowedHosts.includes(String(h.host_id).trim()) || String(h.host_id).trim() === loggedHostId);
                 }
                 setAllHosts(finalHosts);
             }
             
-            setAllAttendance(fullAttData);
-            setUserAttendance(fullAttData.filter(a => String(a.host_id).trim() === loggedHostId));
+            setRpcStats(rpcRes.data || []);
+            setFutureLeaves(futureRes.data || []);
+            setAnniversaryLeaves(anniRes.data || []);
 
         } else {
-            // Using Infinity Fetcher for Single User
-            const fullAttData = await fetchInfinityAttendance(loggedHostId);
-            setUserAttendance(fullAttData);
+            const [rpcRes, futureRes, anniRes] = await Promise.all([
+                supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate }),
+                supabase.from('hsk_attendance').select('host_id, date, status_code').eq('host_id', loggedHostId).gte('date', todayStr).in('status_code', LEAVE_CODES),
+                supabase.from('hsk_attendance').select('host_id, date, status_code').eq('host_id', loggedHostId).in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
+            ]);
+            setRpcStats(rpcRes.data || []);
+            setFutureLeaves(futureRes.data || []);
+            setAnniversaryLeaves(anniRes.data || []);
         }
 
     } else {
@@ -366,16 +342,19 @@ export default function Dashboard() {
         setIsSupervisor(adminFlag);
         
         if (adminFlag) {
-             const [hostsRes, fullAttData] = await Promise.all([
+             const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
                 supabase.from('hsk_hosts').select('*').order('full_name'),
-                fetchInfinityAttendance()
+                supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate }),
+                supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
+                supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
             if (hostsRes.data) setAllHosts(hostsRes.data);
-            setAllAttendance(fullAttData);
+            setRpcStats(rpcRes.data || []);
+            setFutureLeaves(futureRes.data || []);
+            setAnniversaryLeaves(anniRes.data || []);
         }
     }
 
-    // Load Admin KPI Data
     if (adminFlag) {
         const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true });
         const { count: orderCount } = await supabase.from('hsk_procurement_orders').select('*', { count: 'exact', head: true }).neq('status', 'Completed');
@@ -401,7 +380,6 @@ export default function Dashboard() {
         setRecentActivity((reqs || []).slice(0, 6));
     } 
     
-    // Fetch this month's payroll display grid
     if (loggedHostId) {
         const { start, end } = getPayrollPeriod(new Date());
         setPayrollStart(start);
@@ -445,33 +423,34 @@ export default function Dashboard() {
       setIsLoadingTeam(true);
 
       const computed = allHosts.map((h: any) => {
-          const hostAtt = allAttendance.filter((a: any) => String(a.host_id).trim() === String(h.host_id).trim());
-          const bal = computeLeaveBalances(h, hostAtt, teamDate, publicHolidays);
-          const upcoming = getUpcomingLeave(hostAtt);
+          const bal = computeLeaveBalancesRPC(h, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
+          const myFutureLeaves = futureLeaves.filter(l => String(l.host_id).trim() === String(h.host_id).trim());
+          const upcoming = getUpcomingLeave(myFutureLeaves);
           const dept = teamConfig.hostDepartments?.[h.host_id] || 'Unassigned';
           
-          return { host: h, department: dept, balances: bal, upcoming, attendanceRecords: hostAtt };
+          return { host: h, department: dept, balances: bal, upcoming };
       }).filter((c: any) => c.balances !== null);
 
       computed.sort((a: any, b: any) => parseFloat(b.balances.balTotal) - parseFloat(a.balances.balTotal));
       setTeamBalances(computed);
       
       setIsLoadingTeam(false);
-  }, [allHosts, allAttendance, teamDate, publicHolidays, teamConfig]);
+  }, [allHosts, rpcStats, futureLeaves, anniversaryLeaves, cutoffDate, publicHolidays, teamConfig]);
 
   useEffect(() => {
       if (isTeamModalOpen) loadTeamLeaves();
-  }, [teamDate, isTeamModalOpen, loadTeamLeaves]);
+  }, [rpcStats, isTeamModalOpen, loadTeamLeaves]);
 
   const upcomingLeaveInfo = useMemo(() => {
-      return getUpcomingLeave(userAttendance);
-  }, [userAttendance]);
+      if (!currentUser) return null;
+      const myFuture = futureLeaves.filter(l => String(l.host_id).trim() === String(currentUser.host_id).trim());
+      return getUpcomingLeave(myFuture);
+  }, [currentUser, futureLeaves]);
 
   const userBalances = useMemo(() => {
-      return computeLeaveBalances(currentUser, userAttendance, cutoffDate, publicHolidays);
-  }, [currentUser, userAttendance, cutoffDate, publicHolidays]);
+      return computeLeaveBalancesRPC(currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
+  }, [currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves]);
 
-  // --- REUSABLE PAYROLL GRID RENDERER ---
   const renderPayrollGrid = (attendanceArray: any[], startDateObj: Date, endDateObj: Date) => {
       if (!attendanceArray) return null;
       
@@ -941,28 +920,29 @@ export default function Dashboard() {
                                       </div>
                                       {(() => {
                                           const teamPeriod = getPayrollPeriod(parseISO(teamDate));
-                                          return renderPayrollGrid(selectedTeamHost.attendanceRecords, teamPeriod.start, teamPeriod.end);
+                                          return renderPayrollGrid(selectedTeamHostAtt, teamPeriod.start, teamPeriod.end);
                                       })()}
                                   </div>
                               </div>
                           </div>
                       ) : (
                           <>
-                              {/* Tabs & Controls */}
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-6 border-b border-slate-200 bg-white shrink-0">
-                                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
-                                      <button onClick={() => setActiveDeptTab('All')} className={`px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
+                              {/* TABS & CONTROLS */}
+                              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 md:p-6 border-b border-slate-200 bg-white shrink-0">
+                                  
+                                  {/* Horizontal Scroll Container for Tabs */}
+                                  <div className="flex-1 flex gap-2 overflow-x-auto custom-scrollbar pb-2 w-full min-w-0">
+                                      <button onClick={() => setActiveDeptTab('All')} className={`shrink-0 px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
                                       
-                                      {/* Admin sees all subdepts from settings, Supervisors see only depts they have staff in */}
                                       {(isAdmin ? allSubDepts : Array.from(new Set(teamBalances.map(c => c.department))).filter(d => d !== 'Unassigned').sort()).map((dept: any) => (
-                                          <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>{dept}</button>
+                                          <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`shrink-0 px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>{dept}</button>
                                       ))}
                                   </div>
                                   
                                   {/* Sort and Search Block */}
-                                  <div className="flex gap-2 w-full sm:w-auto shrink-0">
+                                  <div className="flex gap-2 w-full lg:w-auto shrink-0">
                                       <select 
-                                          className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[10px] md:text-xs outline-none focus:border-[#6D2158] transition-colors text-slate-600 uppercase tracking-widest cursor-pointer"
+                                          className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[10px] md:text-xs outline-none focus:border-[#6D2158] transition-colors text-slate-600 uppercase tracking-widest cursor-pointer shrink-0"
                                           value={teamSortBy}
                                           onChange={(e) => setTeamSortBy(e.target.value as any)}
                                       >
@@ -1045,7 +1025,7 @@ export default function Dashboard() {
                                                               return (
                                                                   <div 
                                                                       key={host.host_id} 
-                                                                      onClick={() => setSelectedTeamHost(itemData)}
+                                                                      onClick={() => handleHostClick(itemData)}
                                                                       className="flex flex-col gap-2 md:gap-3 group p-3 md:p-4 rounded-xl md:rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100 cursor-pointer"
                                                                   >
                                                                       
@@ -1105,12 +1085,11 @@ export default function Dashboard() {
                                   })()}
                               </div>
                          </>
-                    )}
-                </div>
-            </div>
-        </div>
-    )}
-
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 }

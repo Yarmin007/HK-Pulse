@@ -355,21 +355,36 @@ export default function SettingsPage() {
 
   const saveTeamConfig = async () => {
       setIsUploading(true);
-      let currentConfig: any = {};
-      if (configId) {
-          const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
-          if (data) { try { currentConfig = JSON.parse(data.label); } catch(e){} }
+      try {
+          let currentConfig: any = {};
+          
+          // CRITICAL FIX: Fetch the absolute latest JSON first so we don't overwrite nicknames!
+          if (configId) {
+              const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
+              if (data && data.label) { 
+                  try { currentConfig = JSON.parse(data.label); } catch(e){} 
+              }
+          }
+          
+          // ONLY update the supervisorAccess part of the JSON
+          currentConfig.supervisorAccess = supervisorAccess;
+          
+          const payload = JSON.stringify(currentConfig);
+          
+          if (configId) {
+              const { error } = await supabase.from('hsk_constants').update({ label: payload }).eq('id', configId);
+              if (error) throw error;
+          } else {
+              const { data, error } = await supabase.from('hsk_constants').insert({ type: 'team_viewer_config', label: payload }).select().single();
+              if (error) throw error;
+              if (data) setConfigId(data.id);
+          }
+          toast.success("View Access Settings Saved!");
+      } catch (err: any) {
+          toast.error("Failed to save: " + err.message);
+      } finally {
+          setIsUploading(false);
       }
-      currentConfig.supervisorAccess = supervisorAccess;
-      const payload = JSON.stringify(currentConfig);
-      if (configId) {
-          await supabase.from('hsk_constants').update({ label: payload }).eq('id', configId);
-      } else {
-          const { data } = await supabase.from('hsk_constants').insert({ type: 'team_viewer_config', label: payload }).select().single();
-          if (data) setConfigId(data.id);
-      }
-      setIsUploading(false);
-      toast.success("View Access Settings Saved!");
   };
 
   const handleOpenExpiryBatches = async (item: MasterItem) => {
@@ -407,13 +422,13 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
-      <div className="border-b border-slate-200 pb-6 mb-6 flex justify-between items-end">
+      <div className="border-b border-slate-200 pb-6 mb-6 flex flex-col md:flex-row justify-between md:items-end gap-4">
         <div>
             <h1 className="text-3xl font-bold tracking-tight text-slate-800">System Settings</h1>
             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configuration & Master Data</p>
         </div>
         {activeTab === 'Access Control' && (
-            <button onClick={saveTeamConfig} disabled={isUploading} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-widest shadow-md flex items-center gap-2 hover:bg-emerald-500 transition-colors">
+            <button onClick={saveTeamConfig} disabled={isUploading} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-widest shadow-md flex items-center justify-center gap-2 hover:bg-emerald-500 transition-colors w-full md:w-auto">
                 {isUploading ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save View Access
             </button>
         )}
@@ -440,59 +455,61 @@ export default function SettingsPage() {
                   </div>
               </div>
               <div className="overflow-x-auto pb-32">
-                  <table className="w-full text-left">
-                      <thead className="bg-slate-50 border-b border-slate-100">
-                          <tr>
-                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">Staff Member</th>
-                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">Dashboard View Access</th>
-                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">System Role</th>
-                              <th className="p-4 text-xs font-bold text-slate-400 uppercase">PIN Status</th>
-                              <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Actions</th>
-                          </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                          {hosts.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map(host => (
-                              <tr key={host.id} className="hover:bg-slate-50 transition-colors">
-                                  <td className="p-4">
-                                      <div className="font-bold text-slate-800 text-sm">{host.full_name}</div>
-                                      <div className="text-[10px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
-                                  </td>
-                                  <td className="p-4">
-                                      {host.system_role === 'admin' ? (
-                                          <span className="px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 w-max">
-                                              <CheckCircle2 size={14}/> Full Access
-                                          </span>
-                                      ) : (
-                                          <button 
-                                              onClick={() => { setAccessSearchQuery(''); setAccessModalHost(host); }}
-                                              className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 transition-colors border ${
-                                                  (supervisorAccess[host.host_id] || []).length > 0 
-                                                  ? 'bg-purple-50 text-[#6D2158] border-purple-200 hover:bg-purple-100' 
-                                                  : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
-                                              }`}
-                                          >
-                                              <Eye size={14}/> 
-                                              {(supervisorAccess[host.host_id] || []).length} Visible
-                                          </button>
-                                      )}
-                                  </td>
-                                  <td className="p-4">
-                                      <select className="p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer" value={host.system_role || 'staff'} onChange={(e) => updateHostRole(host.id, e.target.value)}>
-                                          <option value="staff">Staff</option>
-                                          <option value="admin">Admin</option>
-                                      </select>
-                                  </td>
-                                  <td className="p-4">
-                                      {host.requires_pin_change ? <span className="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-amber-200">Needs Reset</span> : <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-emerald-200">Active</span>}
-                                  </td>
-                                  <td className="p-4 text-right flex justify-end gap-2">
-                                      <button onClick={() => resetHostPin(host.id, host.full_name)} className={`p-2 bg-white border rounded-lg shadow-sm transition-colors ${host.requires_pin_change ? 'border-amber-300 text-amber-500' : 'border-slate-200 text-slate-400 hover:border-amber-200 hover:text-amber-600'}`} title="Reset PIN to 0000"><KeyRound size={16}/></button>
-                                      <button onClick={() => viewHostLogs(host)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-200 transition-colors" title="View Logs"><History size={16}/></button>
-                                  </td>
+                  <div className="min-w-[800px]"> {/* Forces table to scroll instead of squash on mobile */}
+                      <table className="w-full text-left">
+                          <thead className="bg-slate-50 border-b border-slate-100">
+                              <tr>
+                                  <th className="p-4 text-xs font-bold text-slate-400 uppercase">Staff Member</th>
+                                  <th className="p-4 text-xs font-bold text-slate-400 uppercase">Dashboard View Access</th>
+                                  <th className="p-4 text-xs font-bold text-slate-400 uppercase">System Role</th>
+                                  <th className="p-4 text-xs font-bold text-slate-400 uppercase">PIN Status</th>
+                                  <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Actions</th>
                               </tr>
-                          ))}
-                      </tbody>
-                  </table>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                              {hosts.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map(host => (
+                                  <tr key={host.id} className="hover:bg-slate-50 transition-colors">
+                                      <td className="p-4">
+                                          <div className="font-bold text-slate-800 text-sm">{host.full_name}</div>
+                                          <div className="text-[10px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
+                                      </td>
+                                      <td className="p-4">
+                                          {host.system_role === 'admin' ? (
+                                              <span className="px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 w-max">
+                                                  <CheckCircle2 size={14}/> Full Access
+                                              </span>
+                                          ) : (
+                                              <button 
+                                                  onClick={() => { setAccessSearchQuery(''); setAccessModalHost(host); }}
+                                                  className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 transition-colors border ${
+                                                      (supervisorAccess[host.host_id] || []).length > 0 
+                                                      ? 'bg-purple-50 text-[#6D2158] border-purple-200 hover:bg-purple-100' 
+                                                      : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
+                                                  }`}
+                                              >
+                                                  <Eye size={14}/> 
+                                                  {(supervisorAccess[host.host_id] || []).length} Visible
+                                              </button>
+                                          )}
+                                      </td>
+                                      <td className="p-4">
+                                          <select className="p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer" value={host.system_role || 'staff'} onChange={(e) => updateHostRole(host.id, e.target.value)}>
+                                              <option value="staff">Staff</option>
+                                              <option value="admin">Admin</option>
+                                          </select>
+                                      </td>
+                                      <td className="p-4">
+                                          {host.requires_pin_change ? <span className="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-amber-200">Needs Reset</span> : <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-emerald-200">Active</span>}
+                                      </td>
+                                      <td className="p-4 text-right flex justify-end gap-2">
+                                          <button onClick={() => resetHostPin(host.id, host.full_name)} className={`p-2 bg-white border rounded-lg shadow-sm transition-colors ${host.requires_pin_change ? 'border-amber-300 text-amber-500' : 'border-slate-200 text-slate-400 hover:border-amber-200 hover:text-amber-600'}`} title="Reset PIN to 0000"><KeyRound size={16}/></button>
+                                          <button onClick={() => viewHostLogs(host)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-200 transition-colors" title="View Logs"><History size={16}/></button>
+                                      </td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
               </div>
           </div>
       ) : activeTab === 'System Config' ? (
@@ -502,14 +519,14 @@ export default function SettingsPage() {
               <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
                   <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                       <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Clock size={14}/> Global Website Timezone</label>
-                      <div className="flex gap-2">
+                      <div className="flex flex-col sm:flex-row gap-2">
                           <select className="flex-1 p-3 rounded-lg border font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={systemTimezone} onChange={e => setSystemTimezone(e.target.value)}>
                               <option value="Indian/Maldives">Maldives Time (GMT+5)</option>
                               <option value="Asia/Dhaka">Bangladesh Time (GMT+6)</option>
                               <option value="Asia/Colombo">Sri Lanka Time (GMT+5:30)</option>
                               <option value="UTC">Universal Time (UTC)</option>
                           </select>
-                          <button onClick={() => handleSaveSystemConfig('system_timezone', systemTimezone)} className="px-6 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
+                          <button onClick={() => handleSaveSystemConfig('system_timezone', systemTimezone)} className="px-6 py-3 sm:py-0 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
                       </div>
                   </div>
               </div>
@@ -622,12 +639,12 @@ export default function SettingsPage() {
         </div>
       ) : (
         <div className="animate-in slide-in-from-right-4 duration-300">
-           <div className="flex justify-between items-center mb-6">
+           <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-6">
               <div className="relative w-full max-w-md">
                  <Search className="absolute left-3 top-3 text-slate-400" size={18}/>
                  <input type="text" placeholder={`Search ${activeTab}...`} className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158]" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
               </div>
-              <button onClick={() => isFormOpen ? setIsFormOpen(false) : handleAddNew()} className="ml-4 bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center gap-2 shadow-lg whitespace-nowrap transition-all hover:bg-[#5a1b49]">
+              <button onClick={() => isFormOpen ? setIsFormOpen(false) : handleAddNew()} className="bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-lg whitespace-nowrap transition-all hover:bg-[#5a1b49]">
                  {isFormOpen ? <X size={18}/> : <Plus size={18}/>}
                  {isFormOpen ? 'Close Form' : 'Add Item'}
               </button>
@@ -664,9 +681,9 @@ export default function SettingsPage() {
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Unit</label>
                            <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit || 'Each'} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}><option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option></select>
                         </div>
-                        <div className="md:col-span-2 flex gap-6 pt-4 border-t border-slate-100 mt-2">
-                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.is_minibar_item ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, is_minibar_item: !currentItem.is_minibar_item})}><div className={`w-5 h-5 rounded border flex items-center justify-center ${currentItem.is_minibar_item ? 'bg-rose-500 border-rose-500' : 'border-slate-300'}`}>{currentItem.is_minibar_item && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Minibar Item</span></div>
-                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.has_expiry ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, has_expiry: !currentItem.has_expiry})}><div className={`w-5 h-5 rounded border flex items-center justify-center ${currentItem.has_expiry ? 'bg-amber-500 border-amber-500' : 'border-slate-300'}`}>{currentItem.has_expiry && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Expiry Tracking</span></div>
+                        <div className="md:col-span-2 flex flex-col sm:flex-row gap-4 sm:gap-6 pt-4 border-t border-slate-100 mt-2">
+                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.is_minibar_item ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, is_minibar_item: !currentItem.is_minibar_item})}><div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${currentItem.is_minibar_item ? 'bg-rose-500 border-rose-500' : 'border-slate-300'}`}>{currentItem.is_minibar_item && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Minibar Item</span></div>
+                           <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.has_expiry ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, has_expiry: !currentItem.has_expiry})}><div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${currentItem.has_expiry ? 'bg-amber-500 border-amber-500' : 'border-slate-300'}`}>{currentItem.has_expiry && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Expiry Tracking</span></div>
                         </div>
                         {currentItem.is_minibar_item && (
                             <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
@@ -677,7 +694,7 @@ export default function SettingsPage() {
                             </div>
                         )}
                         {!currentItem.is_minibar_item && (
-                            <div className="md:col-span-2 p-4 bg-blue-50 rounded-xl border border-blue-100 grid grid-cols-1 md:grid-cols-3 gap-4 animate-in fade-in">
+                            <div className="md:col-span-2 p-4 bg-blue-50 rounded-xl border border-blue-100 grid grid-cols-1 sm:grid-cols-3 gap-4 animate-in fade-in">
                                 <div><label className="text-[10px] font-bold text-blue-500 uppercase">Par Level</label><input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.par_level ?? 0} onChange={e => setCurrentItem({...currentItem, par_level: parseFloat(e.target.value) || 0})} /></div>
                                 <div><label className="text-[10px] font-bold text-blue-500 uppercase">Reorder Qty</label><input type="number" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.reorder_qty ?? 0} onChange={e => setCurrentItem({...currentItem, reorder_qty: parseFloat(e.target.value) || 0})} /></div>
                                 <div><label className="text-[10px] font-bold text-blue-500 uppercase">Supplier</label><input type="text" className="w-full p-3 bg-white border border-blue-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.primary_supplier || ''} onChange={e => setCurrentItem({...currentItem, primary_supplier: e.target.value})} /></div>
@@ -689,41 +706,43 @@ export default function SettingsPage() {
               </div>
            )}
 
-           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-              <table className="w-full text-left">
-                 <thead className="bg-slate-50 border-b border-slate-100">
-                    <tr>
-                       <th className="p-4 text-xs font-bold text-slate-400 uppercase w-20">ID</th>
-                       <th className="p-4 text-xs font-bold text-slate-400 uppercase">Item Details</th>
-                       <th className="p-4 text-xs font-bold text-slate-400 uppercase">Category</th>
-                       <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
-                    </tr>
-                 </thead>
-                 <tbody className="divide-y divide-slate-50">
-                    {filteredList.map(item => {
-                       const Icon = CATEGORY_ICONS[item.category] || Box;
-                       return (
-                         <tr key={item.article_number} className="hover:bg-slate-50 group">
-                            <td className="p-4 text-xs font-bold text-slate-400 font-mono">{item.article_number}</td>
-                            <td className="p-4">
-                               <div className="flex items-center gap-3">
-                                   <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-100">{item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Icon size={18} className="text-slate-400"/>}</div>
-                                   <div>
-                                       <div className="font-bold text-slate-700 text-sm">{item.generic_name || item.article_name}</div>
-                                       <div className="text-[10px] text-slate-400 uppercase">{item.article_name} • {item.unit}</div>
+           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden overflow-x-auto">
+              <div className="min-w-[600px]">
+                  <table className="w-full text-left">
+                     <thead className="bg-slate-50 border-b border-slate-100">
+                        <tr>
+                           <th className="p-4 text-xs font-bold text-slate-400 uppercase w-20">ID</th>
+                           <th className="p-4 text-xs font-bold text-slate-400 uppercase">Item Details</th>
+                           <th className="p-4 text-xs font-bold text-slate-400 uppercase">Category</th>
+                           <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
+                        </tr>
+                     </thead>
+                     <tbody className="divide-y divide-slate-50">
+                        {filteredList.map(item => {
+                           const Icon = CATEGORY_ICONS[item.category] || Box;
+                           return (
+                             <tr key={item.article_number} className="hover:bg-slate-50 group">
+                                <td className="p-4 text-xs font-bold text-slate-400 font-mono">{item.article_number}</td>
+                                <td className="p-4">
+                                   <div className="flex items-center gap-3">
+                                       <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-100 shrink-0">{item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Icon size={18} className="text-slate-400"/>}</div>
+                                       <div>
+                                           <div className="font-bold text-slate-700 text-sm truncate">{item.generic_name || item.article_name}</div>
+                                           <div className="text-[10px] text-slate-400 uppercase truncate">{item.article_name} • {item.unit}</div>
+                                       </div>
                                    </div>
-                               </div>
-                            </td>
-                            <td className="p-4 text-xs font-bold text-slate-500">{item.category}</td>
-                            <td className="p-4 text-right flex justify-end gap-2 items-center">
-                               {activeTab === 'Expiry Setup' && (<button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase flex items-center gap-1 shadow-sm"><Calendar size={14}/> Batches</button>)}
-                               <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => handleEditItem(item)} className="p-2 text-blue-400 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button><button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-300 hover:text-rose-500 rounded-lg"><Trash2 size={16}/></button></div>
-                            </td>
-                         </tr>
-                       );
-                    })}
-                 </tbody>
-              </table>
+                                </td>
+                                <td className="p-4 text-xs font-bold text-slate-500">{item.category}</td>
+                                <td className="p-4 text-right flex justify-end gap-2 items-center">
+                                   {activeTab === 'Expiry Setup' && (<button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase flex items-center gap-1 shadow-sm"><Calendar size={14}/> Batches</button>)}
+                                   <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => handleEditItem(item)} className="p-2 text-blue-400 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button><button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-300 hover:text-rose-500 rounded-lg"><Trash2 size={16}/></button></div>
+                                </td>
+                             </tr>
+                           );
+                        })}
+                     </tbody>
+                  </table>
+              </div>
            </div>
         </div>
       )}

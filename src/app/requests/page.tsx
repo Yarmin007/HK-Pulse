@@ -117,10 +117,10 @@ const extractMainGuest = (fullString: string) => {
 };
 
 export default function CoordinatorLog() {
-  const { confirmAction } = useConfirm(); // GLOBAL CONFIRM HOOK
+  const { confirmAction } = useConfirm();
 
   const [records, setRecords] = useState<RequestRecord[]>([]);
-  const [dailyGuests, setDailyGuests] = useState<Record<string, any>>({}); // MAPS GUEST INFO TO DASHBOARD CARDS
+  const [dailyGuests, setDailyGuests] = useState<Record<string, any>>({}); 
   const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
   const [gems, setGems] = useState<string[]>([]);
   
@@ -183,7 +183,6 @@ export default function CoordinatorLog() {
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
 
   const handleEnableNotifications = async () => {
@@ -208,7 +207,6 @@ export default function CoordinatorLog() {
       } catch (err) { console.error("Test push failed", err); }
   };
 
-  // SMART FILTER UPDATE LOGIC
   const getAvailableStatuses = () => {
       if (typeFilter === 'Minibar') return ['All', 'Unsent', 'Unposted', 'Done'];
       if (typeFilter === 'General' || typeFilter === 'GEM') return ['All', 'Pending', 'Done'];
@@ -218,10 +216,8 @@ export default function CoordinatorLog() {
   useEffect(() => {
       const validStatuses = getAvailableStatuses();
       if (!validStatuses.includes(statusFilter)) setStatusFilter('All');
-      // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typeFilter]);
 
-  // AUTO FETCH GUEST FOR MODAL
   useEffect(() => {
     const fetchGuest = async () => {
       if (!villaNumber || villaNumber.length < 1) { setGuestInfo(null); return; }
@@ -230,12 +226,9 @@ export default function CoordinatorLog() {
           const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr(selectedDate)).eq('villa_number', villaNumber).maybeSingle();
           if (data) {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
-            
-            // Fix: DO NOT auto-fill GEM name if this is a Minibar request. Let the user type the VA Name.
             if(data.gem_name && !requesterSearch && !isMinibarOpen && otherModalType !== 'GEM') {
                 setRequesterSearch(data.gem_name);
             }
-
           } else { setGuestInfo(null); }
       } else {
           setGuestInfo(null);
@@ -243,7 +236,6 @@ export default function CoordinatorLog() {
     };
     const timer = setTimeout(fetchGuest, 400);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [villaNumber, otherModalType, selectedDate, isMinibarOpen]);
 
   const fetchCatalog = async () => {
@@ -258,8 +250,6 @@ export default function CoordinatorLog() {
 
   const fetchRecords = async () => {
     const dateStr = getTodayStr(selectedDate);
-    
-    // Fetch both Requests AND Guest Summary simultaneously
     const [reqRes, guestRes] = await Promise.all([
         supabase.from('hsk_daily_requests').select('*').gte('request_time', `${dateStr}T00:00:00+05:00`).lte('request_time', `${dateStr}T23:59:59+05:00`).order('request_time', { ascending: false }),
         supabase.from('hsk_daily_summary').select('villa_number, meal_plan, stay_dates, status').eq('report_date', dateStr)
@@ -384,7 +374,7 @@ export default function CoordinatorLog() {
     }
 
     const dateStr = getTodayStr(selectedDate);
-    const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`; // Preserves +5 offset format for DB processing
+    const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`; 
     const attendantName = requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest");
 
     const payload = {
@@ -459,9 +449,7 @@ export default function CoordinatorLog() {
     await supabase.from('hsk_daily_requests').update({ [field]: newValue }).eq('id', id);
   };
 
-  // --- WHATSAPP HELPER FUNCTION ---
   const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
-      // Clean up the bullets before sending to whatsapp
       const cleanDetails = (record.item_details || '')
           .split(/\n|,/)
           .map(s => s.trim().replace(/^[•\-\*]\s*/, ''))
@@ -471,10 +459,10 @@ export default function CoordinatorLog() {
       let text = '';
       if (type === 'inform') {
           text = `V${record.villa_number}\n- ${cleanDetails}`;
-          if (!record.is_sent) toggleStatus(record.id, 'is_sent'); // Automatically toggle standard inform state
+          if (!record.is_sent) toggleStatus(record.id, 'is_sent'); 
       } else {
           text = `V${record.villa_number}\n- ${cleanDetails}\nDONE ✅`;
-          if (!record.is_done) toggleStatus(record.id, 'is_done'); // Automatically toggle standard done state
+          if (!record.is_done) toggleStatus(record.id, 'is_done');
       }
 
       window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
@@ -534,9 +522,7 @@ export default function CoordinatorLog() {
 
   const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
   const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))) as string[]];
-  const amenityItems = masterCatalog.filter(i => !i.is_minibar_item);
 
-  // MODAL GUEST CARD
   const GuestCard = () => {
       if (!guestInfo) return null;
       
@@ -626,9 +612,7 @@ export default function CoordinatorLog() {
          {visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
              const isGemReq = r.request_type === 'GEM Request';
-             const isGeneralReq = r.request_type === 'General Request' || r.request_type === 'Cleaning' || r.request_type === 'Maintenance' || r.request_type === 'Amenities' || r.request_type === 'Laundry';
              
-             // --- ATTACH LIVE GUEST INFO TO DASHBOARD CARDS ---
              const gInfo = dailyGuests[r.villa_number] || dailyGuests[r.villa_number.replace('-1', '').replace('-2', '')];
              
              let depDate = '';
@@ -650,7 +634,6 @@ export default function CoordinatorLog() {
                          <button onClick={() => handleEditRecord(r)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0" title="Edit"><Edit3 size={14}/></button>
                        </div>
                        
-                       {/* NATIVE BADGES FOR MEAL PLAN & DEP DATE */}
                        <div className="flex items-center gap-1.5 flex-wrap">
                            {mealPlan && <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[9px] font-black uppercase border border-slate-200">{mealPlan}</span>}
                            {depDate && <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase border ${isCheckout ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>Dep: {depDate}</span>}
@@ -660,10 +643,9 @@ export default function CoordinatorLog() {
                    <div className={`px-2.5 py-1 rounded-xl text-[9px] font-black uppercase tracking-wider shrink-0 shadow-sm ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600 border border-rose-100' : isGemReq ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>{r.request_type}</div>
                 </div>
                 
-                {/* FIX: DOUBLE BULLETS REMOVAL */}
                 <div className="mb-4 text-sm font-bold text-slate-600 leading-snug space-y-1">
                     {(r.item_details || '').split(/\n|,/).map((item: string, idx: number) => {
-                        const cleanItem = item.trim().replace(/^[•\-\*]\s*/, ''); // Strips out any existing bullet/dash/star
+                        const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
                         if (!cleanItem) return null;
                         return (<div key={idx}>• {cleanItem}</div>);
                     })}
@@ -689,20 +671,16 @@ export default function CoordinatorLog() {
                          </>
                      ) : (
                          <>
-                             {/* WhatsApp Inform */}
                              <button onClick={() => handleWhatsApp(r, 'inform')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform" title="WhatsApp Inform">
                                  <MessageCircle size={16} />
                              </button>
-                             {/* Standard Inform Toggle */}
                              <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title={r.is_sent ? 'Informed' : 'Inform'}>
                                  <Send size={16}/>
                              </button>
 
-                             {/* WhatsApp Done */}
                              <button onClick={() => handleWhatsApp(r, 'done')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform flex items-center gap-0.5" title="WhatsApp Done">
                                  <MessageCircle size={16}/><Check size={10} strokeWidth={4}/>
                              </button>
-                             {/* Standard Done Toggle */}
                              <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
                                  <Check size={16}/>
                              </button>
@@ -717,7 +695,7 @@ export default function CoordinatorLog() {
       </div>
 
       {postModal.isOpen && (
-          <div className="modal-overlay">
+          <div className="modal-overlay !z-[9999]">
               <div className="modal-content">
                   <h3 className="text-2xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight">Post Bill</h3>
                   <p className="text-[10px] font-bold text-slate-400 text-center mb-6 uppercase tracking-widest">Confirm CHK Number</p>
@@ -739,8 +717,8 @@ export default function CoordinatorLog() {
       )}
 
       {isMinibarOpen && (
-         <div className="bottom-sheet-overlay">
-            <div className="bottom-sheet-content">
+         <div className="bottom-sheet-overlay !z-[9999]">
+            <div className="bottom-sheet-content flex flex-col h-[90vh]">
                <div className="drag-handle"></div>
                
                <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
@@ -750,7 +728,7 @@ export default function CoordinatorLog() {
                   <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 active:scale-90 transition-transform"><X size={20}/></button>
                </div>
                
-               <div className="flex-1 overflow-y-auto p-6 pb-32 custom-scrollbar">
+               <div className="flex-1 overflow-y-auto p-6 pb-6 custom-scrollbar">
                   <div className="flex gap-3 mb-4">
                      <input type="text" placeholder="Villa" autoFocus className="input-field w-24 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      <div className="flex-1 relative">
@@ -797,8 +775,8 @@ export default function CoordinatorLog() {
                   </div>
                </div>
                
-               <div className="p-4 bg-white/90 backdrop-blur-xl border-t border-slate-100 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] absolute bottom-0 w-full z-10">
-                  <button onClick={() => submitRequest('Minibar')} className="btn-danger w-full py-5 text-sm">
+               <div className="p-4 bg-white/95 backdrop-blur-xl border-t border-slate-100 pb-28 md:pb-6 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] mt-auto w-full z-20 shrink-0">
+                  <button onClick={() => submitRequest('Minibar')} className="btn-danger w-full py-5 text-sm font-black shadow-xl">
                       {isEditing ? 'Confirm Update' : 'Save To Log'}
                   </button>
                </div>
@@ -807,8 +785,8 @@ export default function CoordinatorLog() {
       )}
 
       {isOtherOpen && (
-         <div className="bottom-sheet-overlay">
-            <div className={`bottom-sheet-content ${otherModalType === 'GEM' ? 'border-t-4 border-amber-400' : ''}`}>
+         <div className="bottom-sheet-overlay !z-[9999]">
+            <div className={`bottom-sheet-content flex flex-col h-[90vh] ${otherModalType === 'GEM' ? 'border-t-4 border-amber-400' : ''}`}>
                <div className="drag-handle"></div>
 
                <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
@@ -818,7 +796,7 @@ export default function CoordinatorLog() {
                   <button onClick={() => setIsOtherOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 active:scale-90 transition-transform"><X size={20}/></button>
                </div>
 
-               <div className="flex-1 overflow-y-auto p-6 pb-32 custom-scrollbar">
+               <div className="flex-1 overflow-y-auto p-6 pb-6 custom-scrollbar">
                   <div className="flex gap-3 mb-4">
                      <input type="text" placeholder="Villa" autoFocus className="input-field w-24 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      {otherModalType === 'GEM' ? (
@@ -882,8 +860,8 @@ export default function CoordinatorLog() {
                   )}
                </div>
 
-               <div className="p-4 bg-white/90 backdrop-blur-xl border-t border-slate-100 pb-safe shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] absolute bottom-0 w-full z-10">
-                  <button onClick={() => submitRequest('Other')} className={`btn-primary w-full py-5 text-sm ${otherModalType === 'GEM' ? '!bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600' : ''}`}>
+               <div className="p-4 bg-white/95 backdrop-blur-xl border-t border-slate-100 pb-28 md:pb-6 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] mt-auto w-full z-20 shrink-0">
+                  <button onClick={() => submitRequest('Other')} className={`btn-primary w-full py-5 text-sm font-black shadow-xl ${otherModalType === 'GEM' ? '!bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600' : ''}`}>
                       {isEditing ? 'Confirm Update' : 'Save Request'}
                   </button>
                </div>
@@ -892,8 +870,8 @@ export default function CoordinatorLog() {
       )}
 
       {isPartialOpen && partialTarget && (
-          <div className="bottom-sheet-overlay">
-              <div className="bg-white rounded-t-[2.5rem] sm:rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300">
+          <div className="bottom-sheet-overlay !z-[9999]">
+              <div className="bg-white rounded-t-[2.5rem] sm:rounded-[2.5rem] w-full max-w-sm p-8 pb-28 md:pb-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300 mt-auto sm:mt-0">
                   <div className="drag-handle mb-6"></div>
                   
                   <h3 className="text-2xl font-black text-slate-800 mb-2 flex items-center justify-center gap-2 uppercase tracking-tight"><Split size={24}/> Partial Send</h3>
