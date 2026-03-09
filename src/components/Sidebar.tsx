@@ -7,15 +7,19 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
-  { name: "Inventory", icon: Warehouse, path: "/inventory/store" },
+];
+
+const INVENTORY_ITEMS = [
+  { name: "Live Matrix", icon: FileSpreadsheet, path: "/inventory/matrix" },
+  { name: "Monthly Setup", icon: ClipboardCheck, path: "/inventory/setup" },
+  { name: "Housekeeping Store", icon: Warehouse, path: "/inventory/store" },
 ];
 
 const MENU_ITEMS = [
@@ -28,6 +32,7 @@ const MENU_ITEMS = [
 ];
 
 const TEAM_ITEMS = [
+  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
@@ -44,7 +49,6 @@ const MINIBAR_ITEMS = [
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "Guest List", icon: Users, path: "/guests" },
@@ -71,10 +75,12 @@ export default function Sidebar() {
   const isMinibarRoute = pathname?.includes('/minibar');
   const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart');
   const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart');
+  const isInventoryRoute = pathname?.includes('/inventory');
   
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
   const [isProfileOpen, setIsProfileOpen] = useState(isProfileRoute);
+  const [isInventoryOpen, setIsInventoryOpen] = useState(isInventoryRoute);
 
   const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [isPoolAttendant, setIsPoolAttendant] = useState(false);
@@ -103,7 +109,8 @@ export default function Sidebar() {
       if (isMinibarRoute) setIsMinibarOpen(true);
       if (isTeamRoute) setIsTeamOpen(true);
       if (isProfileRoute) setIsProfileOpen(true);
-  }, [pathname, isMinibarRoute, isTeamRoute, isProfileRoute]);
+      if (isInventoryRoute) setIsInventoryOpen(true);
+  }, [pathname, isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute]);
 
   const handleLogout = () => {
       localStorage.removeItem('hk_pulse_session');
@@ -182,26 +189,47 @@ export default function Sidebar() {
 
           {isAdmin && (
               <>
-                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Operations</div>
-                  {MENU_ITEMS.map((item) => {
-                    const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
-                    return (
-                      <Link 
-                        key={item.path} href={item.path}
-                        className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                          isActive 
-                            ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" 
-                            : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                        }`}
-                      >
-                        <item.icon size={18} className={isActive ? "text-white" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                        <span className="text-xs font-bold tracking-wide">{item.name}</span>
-                      </Link>
-                    );
-                  })}
-
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
                   
+                  {/* INVENTORY HUB */}
+                  <div className="pt-1">
+                    <button 
+                      onClick={() => setIsInventoryOpen(!isInventoryOpen)}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isInventoryRoute && !isInventoryOpen
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Warehouse size={18} className={isInventoryRoute ? "text-emerald-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                        <span className="text-xs font-bold tracking-wide">Inventory Hub</span>
+                      </div>
+                      {isInventoryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+
+                    {isInventoryOpen && (
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                        {INVENTORY_ITEMS.map((item) => {
+                          const isActive = pathname === item.path;
+                          return (
+                            <Link 
+                              key={item.path} href={item.path}
+                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                                isActive 
+                                  ? "bg-emerald-50 text-emerald-700 font-black shadow-sm" 
+                                  : "text-slate-500 hover:text-emerald-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              <item.icon size={14} className={isActive ? "text-emerald-700" : "group-hover:text-emerald-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                              <span className="text-[11px] tracking-wide">{item.name}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
                   {/* TEAM HUB */}
                   <div className="pt-1">
                     <button 
@@ -242,7 +270,7 @@ export default function Sidebar() {
                   </div>
 
                   {/* MINIBAR */}
-                  <div className="pt-1 pb-4">
+                  <div className="pt-1 pb-2">
                     <button 
                       onClick={() => setIsMinibarOpen(!isMinibarOpen)}
                       className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
@@ -279,6 +307,24 @@ export default function Sidebar() {
                       </div>
                     )}
                   </div>
+
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-4 mb-3 px-2">Operations</div>
+                  {MENU_ITEMS.map((item) => {
+                    const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
+                    return (
+                      <Link 
+                        key={item.path} href={item.path}
+                        className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                          isActive 
+                            ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" 
+                            : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                        }`}
+                      >
+                        <item.icon size={18} className={isActive ? "text-white" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                        <span className="text-xs font-bold tracking-wide">{item.name}</span>
+                      </Link>
+                    );
+                  })}
               </>
           )}
 
@@ -355,7 +401,7 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* MOBILE BOTTOM NAVIGATION - Force z-[999] so it's never hidden by full screen pages! */}
+      {/* MOBILE BOTTOM NAVIGATION */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[999] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] overflow-x-auto no-scrollbar">
          {BOTTOM_TABS.map((tab) => {
             const isActive = pathname === tab.path || (tab.path !== '/' && pathname?.startsWith(`${tab.path}/`));
@@ -394,11 +440,24 @@ export default function Sidebar() {
                     {isAdmin ? (
                         <>
                             <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Operations</h4>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Core</h4>
                                 <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {MENU_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
+                                  {ADMIN_CORE_TABS.map((item, idx) => (
+                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== ADMIN_CORE_TABS.length - 1 ? 'border-b border-slate-50' : ''}`}>
                                          <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
+                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
+                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
+                                     </Link>
+                                  ))}
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Inventory Hub</h4>
+                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                                  {INVENTORY_ITEMS.map((item, idx) => (
+                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-emerald-50 transition-colors ${idx !== INVENTORY_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
+                                         <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center"><item.icon size={16}/></div>
                                          <span className="text-sm font-bold text-slate-700">{item.name}</span>
                                          <ChevronRight size={16} className="ml-auto text-slate-300"/>
                                      </Link>
@@ -425,6 +484,19 @@ export default function Sidebar() {
                                   {MINIBAR_ITEMS.map((item, idx) => (
                                      <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-rose-50 transition-colors ${idx !== MINIBAR_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
                                          <div className="w-8 h-8 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center"><item.icon size={16}/></div>
+                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
+                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
+                                     </Link>
+                                  ))}
+                                </div>
+                            </div>
+
+                            <div>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Operations</h4>
+                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                                  {MENU_ITEMS.map((item, idx) => (
+                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
+                                         <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
                                          <span className="text-sm font-bold text-slate-700">{item.name}</span>
                                          <ChevronRight size={16} className="ml-auto text-slate-300"/>
                                      </Link>

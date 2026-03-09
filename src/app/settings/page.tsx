@@ -5,7 +5,7 @@ import {
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar, Building,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User, Eye, CheckCircle2,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
-  Shield, KeyRound, History, Plane
+  Shield, KeyRound, History, Plane, Download, FileSpreadsheet
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -41,6 +41,7 @@ type MasterItem = {
   par_level: number;
   reorder_qty: number;
   primary_supplier: string;
+  inventory_type?: string; 
 };
 
 type Constant = {
@@ -153,11 +154,12 @@ export default function SettingsPage() {
   const [isEditing, setIsEditing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
   
   const defaultItemState: MasterItem = {
     article_number: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
     is_minibar_item: false, micros_name: '', sales_price: 0, avg_cost: 0, sort_order: 0,
-    image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: ''
+    image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: '', inventory_type: ''
   };
   
   const [currentItem, setCurrentItem] = useState<MasterItem>(defaultItemState);
@@ -292,6 +294,85 @@ export default function SettingsPage() {
     fetchMasterList();
   };
 
+  // --- CSV UPLOAD/DOWNLOAD LOGIC ---
+  const downloadCSVFormat = () => {
+      const csvContent = "article_number,article_name,generic_name,category,unit,inventory_type\n" +
+                         "1001,Example Towel,Bath Towel,Linen,Each,Linen Inventory\n" +
+                         "1002,Example Kettle,Water Kettle,Electronics,Each,Asset Inventory";
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = "MasterCatalog_Upload_Format.csv";
+      a.click();
+      toast.success("Format Downloaded!");
+  };
+
+  const handleCSVUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      setIsUploading(true);
+      toast.loading("Processing CSV...", { id: 'csv-upload' });
+
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+          try {
+              const text = e.target?.result as string;
+              // Regex to correctly parse CSV including commas inside quotes
+              const rows = text.split('\n').filter(row => row.trim().length > 0);
+              
+              if(rows.length < 2) throw new Error("CSV is empty or missing data.");
+
+              const headers = rows[0].toLowerCase().split(',').map(h => h.trim());
+              
+              const idIdx = headers.indexOf('article_number');
+              const nameIdx = headers.indexOf('article_name');
+              if (idIdx === -1 || nameIdx === -1) throw new Error("CSV must contain 'article_number' and 'article_name' columns.");
+
+              const genNameIdx = headers.indexOf('generic_name');
+              const catIdx = headers.indexOf('category');
+              const unitIdx = headers.indexOf('unit');
+              const invTypeIdx = headers.indexOf('inventory_type');
+
+              const itemsToInsert = [];
+
+              for (let i = 1; i < rows.length; i++) {
+                  // Standard CSV splitting handling basic quotes
+                  const cols = rows[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)?.map(c => c.replace(/^"|"$/g, '').trim()) || [];
+                  if (cols.length < 2 || !cols[idIdx]) continue; 
+
+                  itemsToInsert.push({
+                      article_number: cols[idIdx],
+                      article_name: cols[nameIdx],
+                      generic_name: genNameIdx !== -1 && cols[genNameIdx] ? cols[genNameIdx] : cols[nameIdx],
+                      category: catIdx !== -1 && cols[catIdx] ? cols[catIdx] : 'General Requests',
+                      unit: unitIdx !== -1 && cols[unitIdx] ? cols[unitIdx] : 'Each',
+                      inventory_type: invTypeIdx !== -1 && cols[invTypeIdx] ? cols[invTypeIdx] : null,
+                      is_minibar_item: false
+                  });
+              }
+
+              if (itemsToInsert.length === 0) throw new Error("No valid rows found to import.");
+
+              const { error } = await supabase.from('hsk_master_catalog').upsert(itemsToInsert, { onConflict: 'article_number' });
+              
+              if (error) throw error;
+
+              toast.success(`Successfully imported ${itemsToInsert.length} items!`, { id: 'csv-upload' });
+              fetchMasterList();
+
+          } catch (error: any) {
+              toast.error(`Import Error: ${error.message}`, { id: 'csv-upload' });
+          } finally {
+              setIsUploading(false);
+              if(csvInputRef.current) csvInputRef.current.value = ''; // Reset input
+          }
+      };
+      reader.readAsText(file);
+  };
+
+
   const handleAddConstant = async (type: string) => {
     if (!newConstantValue.trim()) return;
     const { error } = await supabase.from('hsk_constants').insert({ type, label: newConstantValue });
@@ -358,7 +439,6 @@ export default function SettingsPage() {
       try {
           let currentConfig: any = {};
           
-          // CRITICAL FIX: Fetch the absolute latest JSON first so we don't overwrite nicknames!
           if (configId) {
               const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
               if (data && data.label) { 
@@ -366,9 +446,7 @@ export default function SettingsPage() {
               }
           }
           
-          // ONLY update the supervisorAccess part of the JSON
           currentConfig.supervisorAccess = supervisorAccess;
-          
           const payload = JSON.stringify(currentConfig);
           
           if (configId) {
@@ -415,7 +493,7 @@ export default function SettingsPage() {
     item.article_number.includes(searchQuery)
   ).filter(item => {
     if (activeTab === 'Minibar Menu') return item.is_minibar_item;
-    if (activeTab === 'Master List') return !item.is_minibar_item;
+    if (activeTab === 'Master List') return !item.is_minibar_item; // Hide minibar items from Master List
     if (activeTab === 'Expiry Setup') return item.has_expiry;
     return true;
   });
@@ -455,7 +533,7 @@ export default function SettingsPage() {
                   </div>
               </div>
               <div className="overflow-x-auto pb-32">
-                  <div className="min-w-[800px]"> {/* Forces table to scroll instead of squash on mobile */}
+                  <div className="min-w-[800px]">
                       <table className="w-full text-left">
                           <thead className="bg-slate-50 border-b border-slate-100">
                               <tr>
@@ -555,69 +633,17 @@ export default function SettingsPage() {
               </div>
            </div>
 
-           <ListManager 
-              type="sub_department" 
-              title="Sub Departments" 
-              icon={Building} 
-              placeholder="Add sub department..." 
-              constants={constants}
-              newConstantValue={newConstantValue}
-              activeConstantType={activeConstantType}
-              setActiveConstantType={setActiveConstantType}
-              setNewConstantValue={setNewConstantValue}
-              handleAddConstant={handleAddConstant}
-              handleDeleteConstant={handleDeleteConstant}
-           />
-           
-           <RankManager 
-              type="role_rank" 
-              title="Role Sorting Ranks" 
-              icon={Briefcase} 
-              constants={constants}
-              hosts={hosts}
-              fetchConstants={fetchConstants}
-              handleDeleteConstant={handleDeleteConstant}
-           />
-           
-           <ListManager 
-              type="requester" 
-              title="Staff List" 
-              icon={Users} 
-              placeholder="Add staff name..." 
-              constants={constants}
-              newConstantValue={newConstantValue}
-              activeConstantType={activeConstantType}
-              setActiveConstantType={setActiveConstantType}
-              setNewConstantValue={setNewConstantValue}
-              handleAddConstant={handleAddConstant}
-              handleDeleteConstant={handleDeleteConstant}
-           />
-           
-           <ListManager 
-              type="category" 
-              title="Categories" 
-              icon={Layers} 
-              placeholder="Add category..." 
-              constants={constants}
-              newConstantValue={newConstantValue}
-              activeConstantType={activeConstantType}
-              setActiveConstantType={setActiveConstantType}
-              setNewConstantValue={setNewConstantValue}
-              handleAddConstant={handleAddConstant}
-              handleDeleteConstant={handleDeleteConstant}
-           />
+           <ListManager type="sub_department" title="Sub Departments" icon={Building} placeholder="Add sub department..." constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
+           <RankManager type="role_rank" title="Role Sorting Ranks" icon={Briefcase} constants={constants} hosts={hosts} fetchConstants={fetchConstants} handleDeleteConstant={handleDeleteConstant} />
+           <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
+           <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category..." constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
         </div>
       ) : activeTab === 'GEM Directory' ? (
         <div className="animate-in slide-in-from-right-4 duration-300">
            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 max-w-2xl">
               <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                 <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center">
-                    <Briefcase size={20} />
-                 </div>
-                 <div>
-                    <h3 className="text-lg font-bold text-slate-800">GEM Directory</h3>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Manage Guest Experience Makers</p>
-                 </div>
+                 <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center"><Briefcase size={20} /></div>
+                 <div><h3 className="text-lg font-bold text-slate-800">GEM Directory</h3><p className="text-[10px] font-bold text-slate-400 uppercase">Manage Guest Experience Makers</p></div>
               </div>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input type="text" placeholder="GEM Name" className="flex-1 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 transition-colors" value={gemName} onChange={(e) => setGemName(e.target.value)}/>
@@ -627,10 +653,7 @@ export default function SettingsPage() {
               <div className="space-y-2">
                  {constants.filter(c => c.type === 'gem').map(item => (
                    <div key={item.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl group hover:bg-white border border-transparent hover:border-slate-200 transition-all">
-                      <div className="flex items-center gap-3">
-                         <User size={16} className="text-slate-400" />
-                         <span className="font-bold text-slate-700">{item.label}</span>
-                      </div>
+                      <div className="flex items-center gap-3"><User size={16} className="text-slate-400" /><span className="font-bold text-slate-700">{item.label}</span></div>
                       <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2"><Trash2 size={18}/></button>
                    </div>
                  ))}
@@ -639,15 +662,33 @@ export default function SettingsPage() {
         </div>
       ) : (
         <div className="animate-in slide-in-from-right-4 duration-300">
+           
            <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-6">
               <div className="relative w-full max-w-md">
                  <Search className="absolute left-3 top-3 text-slate-400" size={18}/>
                  <input type="text" placeholder={`Search ${activeTab}...`} className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158]" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
               </div>
-              <button onClick={() => isFormOpen ? setIsFormOpen(false) : handleAddNew()} className="bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-lg whitespace-nowrap transition-all hover:bg-[#5a1b49]">
-                 {isFormOpen ? <X size={18}/> : <Plus size={18}/>}
-                 {isFormOpen ? 'Close Form' : 'Add Item'}
-              </button>
+
+              <div className="flex items-center gap-2">
+                  {/* CSV BULK UPLOAD BUTTONS - ONLY SHOW ON MASTER LIST */}
+                  {activeTab === 'Master List' && !isFormOpen && (
+                      <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mr-2">
+                          <button onClick={downloadCSVFormat} className="px-4 py-3 text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest border-r border-slate-200" title="Download CSV Template">
+                              <Download size={16}/> Format
+                          </button>
+                          <label className="px-4 py-3 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest cursor-pointer" title="Upload Filled CSV">
+                              {isUploading ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>}
+                              Upload
+                              <input type="file" ref={csvInputRef} accept=".csv" className="hidden" onChange={handleCSVUpload}/>
+                          </label>
+                      </div>
+                  )}
+
+                  <button onClick={() => isFormOpen ? setIsFormOpen(false) : handleAddNew()} className="bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-lg whitespace-nowrap transition-all hover:bg-[#5a1b49]">
+                     {isFormOpen ? <X size={18}/> : <Plus size={18}/>}
+                     {isFormOpen ? 'Close Form' : 'Add Item'}
+                  </button>
+              </div>
            </div>
 
            {isFormOpen && (
@@ -673,6 +714,7 @@ export default function SettingsPage() {
                            <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name</label>
                            <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
                         </div>
+                        
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Category</label>
                            <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>{MASTER_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
@@ -681,10 +723,22 @@ export default function SettingsPage() {
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Unit</label>
                            <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit || 'Each'} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}><option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option></select>
                         </div>
+                        
+                        {/* INVENTORY LINKER INSIDE SETTINGS */}
+                        <div className="md:col-span-2">
+                            <label className="text-[10px] font-black text-indigo-500 uppercase ml-1 flex items-center gap-1"><Layers size={12}/> Link to Live Inventory</label>
+                            <select className="w-full p-3 bg-indigo-50 border border-indigo-100 rounded-xl font-bold text-indigo-700 outline-none focus:border-indigo-400 mt-1" value={currentItem.inventory_type || ''} onChange={e => setCurrentItem({...currentItem, inventory_type: e.target.value})}>
+                                <option value="">-- Do Not Link --</option>
+                                {constants.filter(c => c.type === 'inv_type').map(t => <option key={t.id} value={t.label}>{t.label}</option>)}
+                            </select>
+                            <p className="text-[9px] text-slate-400 mt-1 ml-1">If selected, this item will automatically appear in staff counting tasks for this inventory type.</p>
+                        </div>
+
                         <div className="md:col-span-2 flex flex-col sm:flex-row gap-4 sm:gap-6 pt-4 border-t border-slate-100 mt-2">
                            <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.is_minibar_item ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, is_minibar_item: !currentItem.is_minibar_item})}><div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${currentItem.is_minibar_item ? 'bg-rose-500 border-rose-500' : 'border-slate-300'}`}>{currentItem.is_minibar_item && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Minibar Item</span></div>
                            <div className={`flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer ${currentItem.has_expiry ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200'}`} onClick={() => setCurrentItem({...currentItem, has_expiry: !currentItem.has_expiry})}><div className={`w-5 h-5 rounded border flex items-center justify-center shrink-0 ${currentItem.has_expiry ? 'bg-amber-500 border-amber-500' : 'border-slate-300'}`}>{currentItem.has_expiry && <CheckCircle size={14} className="text-white"/>}</div><span className="text-sm font-bold uppercase">Expiry Tracking</span></div>
                         </div>
+                        
                         {currentItem.is_minibar_item && (
                             <div className="md:col-span-2 p-4 bg-rose-50 rounded-xl border border-rose-100 grid grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
                                <div><label className="text-[10px] font-bold text-rose-400 uppercase">Micros Name</label><input className="w-full p-3 bg-white border border-rose-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.micros_name || ''} onChange={e => setCurrentItem({...currentItem, micros_name: e.target.value})} /></div>
@@ -728,7 +782,10 @@ export default function SettingsPage() {
                                        <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-100 shrink-0">{item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Icon size={18} className="text-slate-400"/>}</div>
                                        <div>
                                            <div className="font-bold text-slate-700 text-sm truncate">{item.generic_name || item.article_name}</div>
-                                           <div className="text-[10px] text-slate-400 uppercase truncate">{item.article_name} • {item.unit}</div>
+                                           <div className="text-[10px] text-slate-400 uppercase truncate">
+                                               {item.article_name} • {item.unit}
+                                               {item.inventory_type && <span className="ml-2 text-indigo-500 font-black tracking-widest">• linked: {item.inventory_type}</span>}
+                                           </div>
                                        </div>
                                    </div>
                                 </td>
