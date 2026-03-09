@@ -335,14 +335,14 @@ export default function SettingsPage() {
               const unitIdx = headers.indexOf('unit');
               const invTypeIdx = headers.indexOf('inventory_type');
 
-              const itemsToInsert = [];
+              // Use a Map to automatically remove duplicate Article Numbers before uploading!
+              const itemsMap = new Map();
 
               for (let i = 1; i < rows.length; i++) {
-                  // Standard CSV splitting handling basic quotes
                   const cols = rows[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)?.map(c => c.replace(/^"|"$/g, '').trim()) || [];
                   if (cols.length < 2 || !cols[idIdx]) continue; 
 
-                  itemsToInsert.push({
+                  itemsMap.set(cols[idIdx], {
                       article_number: cols[idIdx],
                       article_name: cols[nameIdx],
                       generic_name: genNameIdx !== -1 && cols[genNameIdx] ? cols[genNameIdx] : cols[nameIdx],
@@ -353,13 +353,15 @@ export default function SettingsPage() {
                   });
               }
 
-              if (itemsToInsert.length === 0) throw new Error("No valid rows found to import.");
+              const finalItemsToInsert = Array.from(itemsMap.values());
 
-              const { error } = await supabase.from('hsk_master_catalog').upsert(itemsToInsert, { onConflict: 'article_number' });
+              if (finalItemsToInsert.length === 0) throw new Error("No valid rows found to import.");
+
+              const { error } = await supabase.from('hsk_master_catalog').upsert(finalItemsToInsert, { onConflict: 'article_number' });
               
               if (error) throw error;
 
-              toast.success(`Successfully imported ${itemsToInsert.length} items!`, { id: 'csv-upload' });
+              toast.success(`Successfully imported ${finalItemsToInsert.length} items!`, { id: 'csv-upload' });
               fetchMasterList();
 
           } catch (error: any) {
