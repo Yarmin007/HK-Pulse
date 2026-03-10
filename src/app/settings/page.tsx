@@ -24,14 +24,9 @@ const MINIBAR_CATEGORIES = [
   'Bites', 'Sweets', 'Soft Drinks', 'Juices', 'Water', 'Beer', 'Spirits', 'Wines', 'Retail'
 ];
 
-const GENERAL_CATEGORIES = [
-  'Guest Amenities', 'Pillow Menu', 'Baby Items', 'Toiletries', 'General Requests',
-  'Chemicals', 'Linen', 'Stationery', 'Engineering', 'Cleaning Supplies', 'Electronics'
-];
-
 type MasterItem = {
   article_number: string;
-  hk_no: string | null; // The unique internal number
+  hk_no: string | null; 
   article_name: string;   
   generic_name: string;   
   unit: string;
@@ -262,7 +257,6 @@ export default function SettingsPage() {
           return;
       }
 
-      // Check if any existing item contains a similar word
       const possibleDupes = masterList.filter(m => {
           if (!m.generic_name) return false;
           return m.generic_name.toLowerCase().includes(searchName) || searchName.includes(m.generic_name.toLowerCase());
@@ -287,7 +281,7 @@ export default function SettingsPage() {
     const newHK = generateNextHKNo();
     setCurrentItem({ 
         ...defaultItemState, 
-        hk_no: newHK, // Auto Assign New Number
+        hk_no: newHK, 
         is_minibar_item: activeTab === 'Minibar Menu',
         category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'Guest Amenities'
     });
@@ -314,17 +308,36 @@ export default function SettingsPage() {
   };
 
   const handleSaveItem = async () => {
-    if (!currentItem.article_number || !currentItem.article_name) return toast.error("Article Number and Name are required.");
+    // ONLY require Generic Name now
+    if (!currentItem.generic_name && !currentItem.article_name) return toast.error("Please provide a Name for the item.");
+
+    // Generate HK number if missing
+    const generatedHk = currentItem.hk_no || generateNextHKNo();
+    
+    // Auto-fill missing data so the database doesn't complain
+    const finalArticleNumber = currentItem.article_number || generatedHk; 
+    const finalGeneric = currentItem.generic_name || currentItem.article_name;
+    const finalArticle = currentItem.article_name || finalGeneric;
+
+    // CHECK FOR DUPLICATE ARTICLE NUMBER ONLY IF WE AREN'T EDITING
+    if (!isEditing) {
+        const exactMatch = masterList.find(m => m.article_number.trim() === finalArticleNumber.trim());
+        if (exactMatch) {
+            return toast.error(`Cannot save! Article Number ${finalArticleNumber} is already used by "${exactMatch.generic_name || exactMatch.article_name}".`);
+        }
+    }
     
     setIsUploading(true);
     
     const { id, created_at, ...cleanData } = currentItem as any;
-    
+
     const finalData = {
       ...cleanData,
-      generic_name: currentItem.generic_name || currentItem.article_name,
-      micros_name: currentItem.is_minibar_item && !currentItem.micros_name ? currentItem.article_name : currentItem.micros_name,
-      hk_no: currentItem.hk_no || generateNextHKNo() // Fallback just in case
+      article_number: finalArticleNumber,
+      generic_name: finalGeneric,
+      article_name: finalArticle,
+      micros_name: currentItem.is_minibar_item && !currentItem.micros_name ? finalArticle : currentItem.micros_name,
+      hk_no: generatedHk 
     };
 
     if (isEditing) {
@@ -449,7 +462,7 @@ export default function SettingsPage() {
 
                   itemsMap.set(articleNum, {
                       article_number: articleNum,
-                      hk_no: hkIdx !== -1 && cols[hkIdx] ? cols[hkIdx] : generateNextHKNo(), // Auto-generate if missing
+                      hk_no: hkIdx !== -1 && cols[hkIdx] ? cols[hkIdx] : generateNextHKNo(), 
                       article_name: cols[nameIdx] || 'Unnamed Item',
                       generic_name: genNameIdx !== -1 && cols[genNameIdx] ? cols[genNameIdx] : (cols[nameIdx] || 'Unnamed Item'),
                       category: categoryValue,
@@ -654,7 +667,9 @@ export default function SettingsPage() {
     return true;
   });
 
-  const availableCategories = currentItem.is_minibar_item ? MINIBAR_CATEGORIES : GENERAL_CATEGORIES;
+  const availableCategories = currentItem.is_minibar_item 
+      ? MINIBAR_CATEGORIES 
+      : constants.filter(c => c.type === 'category').map(c => c.label);
 
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
@@ -851,7 +866,7 @@ export default function SettingsPage() {
 
            {isFormOpen && (
               <div className="bg-white p-6 rounded-2xl shadow-xl border border-slate-100 mb-8 animate-in slide-in-from-top-4">
-                 <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700">{isEditing ? <Edit3 size={20}/> : <Plus size={20}/>}{isEditing ? `Edit: ${currentItem.article_name}` : `New Entry`}</h3>
+                 <h3 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700">{isEditing ? <Edit3 size={20}/> : <Plus size={20}/>}{isEditing ? `Edit: ${currentItem.generic_name || currentItem.article_name}` : `New Entry`}</h3>
                  <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
                     <div className="md:col-span-3 space-y-4">
                         <div onClick={() => fileInputRef.current?.click()} className={`w-full h-40 bg-slate-50 border-2 border-dashed ${isUploading ? 'border-[#6D2158]' : 'border-slate-200'} rounded-xl flex flex-col items-center justify-center text-slate-400 overflow-hidden relative cursor-pointer hover:border-[#6D2158] transition-all`}>
@@ -873,26 +888,26 @@ export default function SettingsPage() {
 
                         <div className="md:col-span-2">
                            <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name (Display Name)</label>
-                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
+                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} placeholder="e.g. Lemongrass Lotion" />
                            {duplicateWarning && (
                                <p className="text-[10px] font-bold text-amber-600 bg-amber-50 p-2 rounded-lg mt-2 flex items-center gap-1 animate-in fade-in"><AlertTriangle size={12}/> {duplicateWarning}</p>
                            )}
                         </div>
 
                         <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Name</label>
-                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} />
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Name (Optional)</label>
+                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} placeholder="e.g. Body Lotion 50ml Dispenser" />
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Number {isEditing && <span className="text-rose-400 lowercase">(Cannot be changed)</span>}</label>
-                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50'}`} value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
+                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50'}`} value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} placeholder="Leave blank to auto-fill with HK No."/>
                         </div>
                         
                         
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Category</label>
                            <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>
-                               {availableCategories.map(c => <option key={c}>{c}</option>)}
+                               {availableCategories.map((c: any) => <option key={c}>{c}</option>)}
                            </select>
                         </div>
                         <div>

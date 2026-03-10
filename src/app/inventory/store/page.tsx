@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, Plus, ArrowRight, ArrowLeft, FileText, PieChart, Zap, MapPin, X, 
-  PackagePlus, ArrowDownUp, Loader2, Save, ScanBarcode, CheckCircle2, Trash2, Edit3, Download, Camera
+  PackagePlus, ArrowDownUp, Loader2, Save, CheckCircle2, Trash2, Edit3, Download, Camera, Delete
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -68,12 +68,15 @@ export default function PerpetualInventory() {
   const [isSaving, setIsSaving] = useState(false);
   
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // MODALS
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<'Initialize' | 'Log'>('Log');
 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editData, setEditData] = useState<Partial<InventoryRow> | null>(null);
 
+  // --- SMART SEARCH & SCAN STATE ---
   const [articleSearch, setArticleSearch] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedArticle, setSelectedArticle] = useState<MasterItem | null>(null);
@@ -82,9 +85,11 @@ export default function PerpetualInventory() {
   const [scanInput, setScanInput] = useState('');
   const scanInputRef = useRef<HTMLInputElement>(null);
 
+  // --- CUSTOM CALCULATOR STATE ---
+  const [keypadValue, setKeypadValue] = useState('');
+
   const [transData, setTransData] = useState({
-    qty: 0,
-    type: 'Count', 
+    type: 'Count', // 'Count', 'In', 'Consumed', 'Damaged', 'Transferred'
     expiry: '',
     rack: '',
     level: '',
@@ -212,16 +217,18 @@ export default function PerpetualInventory() {
     setSelectedArticle(item);
     setArticleSearch(`${item.generic_name || item.article_name || 'Unnamed Item'} (${item.hk_no ? item.hk_no : '#' + item.article_number})`);
     setShowSuggestions(false);
+    setKeypadValue(''); 
     
     if (modalMode === 'Log') {
         const row = inventoryRows.find(r => r.articleNumber === item.article_number);
-        if(row) setTransData(prev => ({ ...prev, rack: row.rack || '', level: row.level || '', type: 'Count', qty: row.closingStock }));
+        if(row) setTransData(prev => ({ ...prev, rack: row.rack || '', level: row.level || '', type: 'Count' }));
     }
   };
 
   const handleOpenInitialize = () => {
       setModalMode('Initialize');
-      setTransData(prev => ({ ...prev, store: activeStore, qty: 0, rack: '', level: '' }));
+      setTransData(prev => ({ ...prev, store: activeStore, rack: '', level: '' }));
+      setKeypadValue('');
       setIsModalOpen(true);
   };
 
@@ -255,8 +262,28 @@ export default function PerpetualInventory() {
       setScanInput('');
   };
 
+  // --- KEYPAD LOGIC ---
+  const handleKeypadPress = (val: string) => {
+      if (val === 'C') {
+          setKeypadValue('');
+      } else if (val === 'DEL') {
+          setKeypadValue(prev => prev.slice(0, -1));
+      } else {
+          setKeypadValue(prev => {
+              if (prev === '0') return val;
+              if (prev.length >= 6) return prev; 
+              return prev + val;
+          });
+      }
+  };
+
   const handleSaveTransaction = async () => {
     if (!selectedArticle) return toast.error("Please select an item first.");
+    const qtyNum = parseInt(keypadValue || '0', 10);
+
+    if (modalMode === 'Initialize' && qtyNum < 0) return toast.error("Quantity cannot be negative.");
+    if (modalMode === 'Log' && qtyNum === 0 && transData.type !== 'Count') return toast.error("Enter a quantity greater than 0.");
+    
     setIsSaving(true);
     
     const targetMonthKey = getMonthKey(currentDate);
@@ -269,7 +296,7 @@ export default function PerpetualInventory() {
                 month_year: targetMonthKey,
                 article_number: selectedArticle.article_number, 
                 store_name: transData.store,
-                opening_stock: Number(transData.qty), 
+                opening_stock: qtyNum, 
                 added_stock: 0,
                 consumed: 0,
                 damaged: 0,
@@ -279,46 +306,36 @@ export default function PerpetualInventory() {
                 expiry_date: transData.expiry
             });
             if (error) throw error;
-            toast.success(`${selectedArticle.generic_name || selectedArticle.article_name || 'Item'} added to ${transData.store}!`);
+            toast.success(`${selectedArticle.generic_name || selectedArticle.article_name} initialized!`);
 
         } else {
-            if (Number(transData.qty) < 0) {
-                toast.error("Quantity cannot be negative");
-                setIsSaving(false);
-                return;
-            }
-
             let updatedAdded = Number(existingRow?.added || 0);
             let updatedConsumed = Number(existingRow?.consumed || 0);
             let updatedDamaged = Number(existingRow?.damaged || 0);
             let updatedTransferred = Number(existingRow?.transferred || 0);
-            const inputQty = Number(transData.qty);
             
-            // --- EXACT RECONCILIATION ENGINE YOU REQUESTED ---
             if (transData.type === 'Count') {
                 const opening = Number(existingRow?.openingStock || 0);
                 const added = Number(existingRow?.added || 0);
                 const damaged = Number(existingRow?.damaged || 0);
                 const transferred = Number(existingRow?.transferred || 0);
                 
-                // Math: Opening + Added - Damaged - Transferred - Physical Count = Consumed
-                const calculatedConsumed = opening + added - damaged - transferred - inputQty;
+                const calculatedConsumed = opening + added - damaged - transferred - qtyNum;
 
                 if (calculatedConsumed < 0) {
-                    toast.error("Error: Physical count is higher than possible stock. Check additions.", { icon: '❌' });
+                    toast.error("Error: Count is higher than possible stock. Use 'Add Stock (+)' instead.", { icon: '❌' });
                     setIsSaving(false);
                     return;
                 }
 
-                updatedConsumed = calculatedConsumed; // Override the consumed bucket completely
-                toast.success(`Count reconciled! System calculated ${calculatedConsumed} consumed.`, { icon: '✅' });
+                updatedConsumed = calculatedConsumed; 
+                toast.success(`Count reconciled! System logged ${calculatedConsumed} as consumed.`, { icon: '✅' });
             } 
-            // --- STANDARD LOGGING ---
             else {
-                if (transData.type === 'In') updatedAdded += inputQty;
-                else if (transData.type === 'Consumed') updatedConsumed += inputQty;
-                else if (transData.type === 'Damaged') updatedDamaged += inputQty;
-                else if (transData.type === 'Transferred') updatedTransferred += inputQty; 
+                if (transData.type === 'In') updatedAdded += qtyNum;
+                else if (transData.type === 'Consumed') updatedConsumed += qtyNum;
+                else if (transData.type === 'Damaged') updatedDamaged += qtyNum;
+                else if (transData.type === 'Transferred') updatedTransferred += qtyNum; 
                 toast.success("Activity logged successfully!");
             }
             
@@ -349,8 +366,9 @@ export default function PerpetualInventory() {
         }
 
         setIsModalOpen(false);
-        setTransData({ qty: 0, type: 'Count', expiry: '', rack: '', level: '', store: activeStore });
+        setTransData({ type: 'Count', expiry: '', rack: '', level: '', store: activeStore });
         setArticleSearch('');
+        setKeypadValue('');
         setSelectedArticle(null);
         fetchData(); 
 
@@ -361,7 +379,8 @@ export default function PerpetualInventory() {
     }
   };
 
-  const handleOpenEdit = (row: InventoryRow) => {
+  const handleOpenEdit = (e: React.MouseEvent, row: InventoryRow) => {
+      e.stopPropagation(); 
       setEditData({ ...row });
       setIsEditModalOpen(true);
   };
@@ -453,7 +472,7 @@ export default function PerpetualInventory() {
   const totalConsumed = inventoryRows.reduce((s, i) => s + i.consumed, 0);
 
   return (
-    <div className="min-h-screen p-4 md:p-6 pb-28 md:pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
+    <div className="min-h-screen p-4 md:p-6 pb-36 md:pb-24 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
       
       {/* HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-4 md:pb-6 gap-4 md:gap-6">
@@ -484,7 +503,6 @@ export default function PerpetualInventory() {
       <>
         {/* CONTROLS */}
         <div className="mt-4 md:mt-6 flex flex-col md:flex-row justify-between items-center gap-3 md:gap-4">
-           {/* Store & Month */}
            <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
                <div className="bg-white p-1.5 rounded-xl border border-slate-200 flex items-center justify-between w-full md:w-64 shadow-sm">
                   {['HK Main Store', 'HK Chemical Store'].map(s => (
@@ -503,18 +521,17 @@ export default function PerpetualInventory() {
                </div>
            </div>
            
-           {/* Actions */}
            <div className="grid grid-cols-2 md:flex gap-3 w-full md:w-auto">
                <button onClick={handleOpenInitialize} className="flex justify-center items-center gap-2 px-2 py-3.5 md:py-3 bg-white border border-slate-200 text-[#6D2158] rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider hover:bg-slate-50 shadow-sm active:scale-95 transition-all">
                   <PackagePlus size={16}/> Add Item
                </button>
                <button onClick={() => { setModalMode('Log'); setIsModalOpen(true); }} className="flex justify-center items-center gap-2 px-2 py-3.5 md:py-3 bg-[#6D2158] text-white rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-lg active:scale-95 transition-all">
-                  <ArrowDownUp size={16}/> Log Entry
+                  <ArrowDownUp size={16}/> Quick Log
                </button>
            </div>
         </div>
 
-        {/* SEARCH & TOTALS */}
+        {/* SEARCH */}
         <div className="mt-6 p-4 bg-white rounded-t-2xl md:rounded-2xl border-b md:border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
             <div className="relative w-full md:w-80">
                 <Search className="absolute left-3 top-3 text-slate-400" size={18} />
@@ -552,12 +569,12 @@ export default function PerpetualInventory() {
                  {isLoading ? (<tr><td colSpan={8} className="p-10 text-center"><Loader2 className="animate-spin text-[#6D2158] mx-auto" size={28}/></td></tr>) : 
                  inventoryRows.filter(r => (r.hkNo||'').toLowerCase().includes(searchQuery.toLowerCase()) || (r.genericName||'').toLowerCase().includes(searchQuery.toLowerCase()) || (r.articleName||'').toLowerCase().includes(searchQuery.toLowerCase()) || r.articleNumber.includes(searchQuery))
                  .map(row => (
-                   <tr key={row.articleNumber} className="hover:bg-slate-50 transition-colors group">
+                   <tr key={row.articleNumber} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); }}>
                       <td className="p-4">
                          <div className="flex items-start gap-3">
                              <div className="bg-slate-100 border border-slate-200 text-slate-500 font-mono text-[10px] font-black px-2 py-1 rounded mt-0.5 min-w-[50px] text-center">{row.hkNo || 'NO-HK'}</div>
                              <div>
-                                 <span className="block text-sm font-black text-slate-800">{row.genericName || row.articleName || 'Unnamed Item'}</span>
+                                 <span className="block text-sm font-black text-slate-800 group-hover:text-[#6D2158] transition-colors">{row.genericName || row.articleName || 'Unnamed Item'}</span>
                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{row.articleName || 'N/A'} • #{row.articleNumber} • {row.unit}</span>
                              </div>
                          </div>
@@ -574,8 +591,7 @@ export default function PerpetualInventory() {
                       <td className="p-4 text-center bg-[#6D2158]/5"><span className="inline-block px-4 py-1.5 bg-[#6D2158] text-white rounded-xl font-black text-sm shadow-md">{row.closingStock}</span></td>
                       <td className="p-4 text-right">
                          <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                             <button onClick={() => handleOpenEdit(row)} className="p-2 text-slate-300 hover:bg-blue-50 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button>
-                             <button onClick={() => handleDeleteItem(row)} className="p-2 text-slate-300 hover:bg-rose-50 hover:text-rose-500 rounded-lg"><Trash2 size={16}/></button>
+                             <button onClick={(e) => handleOpenEdit(e, row)} className="p-2 text-slate-300 hover:bg-blue-50 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button>
                          </div>
                       </td>
                    </tr>
@@ -590,8 +606,12 @@ export default function PerpetualInventory() {
             {isLoading ? (<div className="p-10 text-center"><Loader2 className="animate-spin text-[#6D2158] mx-auto" size={28}/></div>) : 
             inventoryRows.filter(r => (r.hkNo||'').toLowerCase().includes(searchQuery.toLowerCase()) || (r.genericName||'').toLowerCase().includes(searchQuery.toLowerCase()) || (r.articleName||'').toLowerCase().includes(searchQuery.toLowerCase()) || r.articleNumber.includes(searchQuery))
             .map(row => (
-                <div key={row.articleNumber} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-4 relative">
-                    <div className="flex justify-between items-start z-10">
+                <div 
+                    key={row.articleNumber} 
+                    onClick={() => { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); }}
+                    className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-4 active:bg-slate-50 transition-colors cursor-pointer"
+                >
+                    <div className="flex justify-between items-start">
                         <div>
                             <div className="flex items-center gap-2 mb-2">
                                 <span className="bg-slate-100 border border-slate-200 text-slate-500 font-mono text-[10px] font-black px-2 py-0.5 rounded">{row.hkNo || 'NO-HK'}</span>
@@ -605,11 +625,11 @@ export default function PerpetualInventory() {
                             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">#{row.articleNumber} • {row.unit}</p>
                         </div>
                         <div className="flex flex-col gap-2">
-                            <button onClick={() => handleOpenEdit(row)} className="p-2 text-slate-400 hover:text-blue-500 bg-slate-50 rounded-lg active:scale-95 transition-all border border-slate-100"><Edit3 size={14}/></button>
+                            <button onClick={(e) => handleOpenEdit(e, row)} className="p-2 text-slate-400 hover:text-blue-500 bg-slate-50 rounded-lg active:scale-95 transition-all border border-slate-100"><Edit3 size={14}/></button>
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-2 bg-slate-50 border border-slate-100 rounded-xl p-2.5 text-center items-center z-10">
+                    <div className="grid grid-cols-4 gap-2 bg-slate-50 border border-slate-100 rounded-xl p-2.5 text-center items-center">
                         <div>
                             <span className="block text-[9px] uppercase font-bold text-slate-400 mb-1">Open</span>
                             <span className="text-xs font-black text-slate-600">{row.openingStock}</span>
@@ -627,8 +647,6 @@ export default function PerpetualInventory() {
                             <span className="text-sm font-black text-[#6D2158]">{row.closingStock}</span>
                         </div>
                     </div>
-
-                    <button onClick={() => { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); }} className="absolute inset-0 z-0 bg-transparent rounded-2xl active:bg-slate-50/50 transition-colors"></button>
                 </div>
             ))}
         </div>
@@ -673,7 +691,6 @@ export default function PerpetualInventory() {
                   <div className="w-full overflow-hidden rounded-xl border-4 border-indigo-50 bg-slate-900 min-h-[250px] relative flex justify-center items-center">
                       <Scanner
                           onScan={(result) => {
-                              // Safely extract code depending on scanner package version
                               if (Array.isArray(result) && result[0]?.rawValue) {
                                   handleCodeScanned(result[0].rawValue);
                               } else if (typeof result === 'string') {
@@ -703,29 +720,29 @@ export default function PerpetualInventory() {
           </div>
       )}
 
-      {/* --- SMART LOGGING MODAL --- */}
+      {/* --- SMART LOGGING MODAL WITH TIGHTER VERTICAL SPACING --- */}
       {isModalOpen && (
         <div className="fixed inset-x-0 bottom-0 md:inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-end md:items-center justify-center md:p-4 animate-in fade-in duration-200">
-           <div className="bg-white w-full max-w-lg rounded-t-[2rem] md:rounded-[2rem] shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-y-auto relative animate-in slide-in-from-bottom-8 md:zoom-in-95">
+           <div className="bg-white w-full max-w-lg rounded-t-[2rem] md:rounded-[2rem] shadow-2xl p-5 md:p-6 max-h-[95vh] overflow-y-auto relative animate-in slide-in-from-bottom-8 md:zoom-in-95 pb-12 md:pb-6">
               
-              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 md:hidden"></div>
-              <button onClick={() => setIsModalOpen(false)} className="absolute top-4 md:top-6 right-6 text-slate-400 hover:text-rose-500 bg-slate-100 p-2 rounded-full transition-colors"><X size={18}/></button>
+              <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-4 md:hidden"></div>
+              <button onClick={() => setIsModalOpen(false)} className="absolute top-4 md:top-5 right-5 text-slate-400 hover:text-rose-500 bg-slate-100 p-2 rounded-full transition-colors"><X size={18}/></button>
 
-              <div className="mb-6">
+              <div className="mb-4">
                  <h3 className="text-xl font-black text-slate-800 tracking-tight flex items-center gap-2">
                      {modalMode === 'Log' ? <ArrowDownUp size={22} className="text-[#6D2158]"/> : <PackagePlus size={22} className="text-[#6D2158]"/>}
-                     {modalMode === 'Log' ? 'Log Store Activity' : `Add Item To Store`}
+                     {modalMode === 'Log' ? 'Quick Calculator' : `Add Item To Store`}
                  </h3>
-                 {modalMode === 'Log' && <p className="text-[10px] font-bold text-slate-400 uppercase mt-2 tracking-widest">For {format(currentDate, 'MMMM yyyy')} Ledger</p>}
+                 {modalMode === 'Log' && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1 tracking-widest">For {format(currentDate, 'MMMM yyyy')} Ledger</p>}
               </div>
               
-              <div className="space-y-5">
+              <div className="space-y-4">
 
                  {modalMode === 'Initialize' && (
                      <div>
                          <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Target Store</label>
                          <select 
-                             className="w-full p-4 border border-slate-200 rounded-xl font-bold mt-1 text-[16px] md:text-sm bg-slate-50 focus:border-[#6D2158] outline-none"
+                             className="w-full p-3 border border-slate-200 rounded-xl font-bold mt-1 text-[16px] md:text-sm bg-slate-50 focus:border-[#6D2158] outline-none"
                              value={transData.store}
                              onChange={(e) => setTransData({...transData, store: e.target.value as StoreType})}
                          >
@@ -735,100 +752,122 @@ export default function PerpetualInventory() {
                      </div>
                  )}
 
+                 {/* SEARCH / ITEM DISPLAY */}
                  <div className="relative">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Find Item (HK No, Name, or ID)</label>
-                    <div className="relative">
-                        <Search className="absolute left-4 top-4 text-slate-400" size={18} />
-                        <input 
-                           type="text" 
-                           value={articleSearch} 
-                           onChange={(e) => { setArticleSearch(e.target.value); setShowSuggestions(true); }}
-                           className="w-full p-4 pl-12 border border-slate-200 rounded-xl font-bold mt-1 text-[16px] md:text-sm bg-white focus:border-[#6D2158] outline-none shadow-sm"
-                           placeholder={modalMode === 'Initialize' ? "Search Master Catalog..." : `Search items in ${activeStore}...`}
-                        />
-                    </div>
+                    {!selectedArticle ? (
+                        <>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Find Item (HK No, Name, or ID)</label>
+                            <div className="relative">
+                                <Search className="absolute left-3 top-3.5 text-slate-400" size={18} />
+                                <input 
+                                type="text" 
+                                value={articleSearch} 
+                                onChange={(e) => { setArticleSearch(e.target.value); setShowSuggestions(true); }}
+                                className="w-full p-3 pl-10 border border-slate-200 rounded-xl font-bold mt-1 text-[16px] md:text-sm bg-white focus:border-[#6D2158] outline-none shadow-sm"
+                                placeholder="Search Master Catalog..."
+                                />
+                            </div>
+                        </>
+                    ) : (
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex justify-between items-center mt-1">
+                            <div>
+                                <span className="bg-slate-200 text-slate-600 font-mono text-[10px] font-black px-2 py-0.5 rounded mr-2">{selectedArticle.hk_no || 'NO-HK'}</span>
+                                <span className="text-sm font-bold text-slate-800">{selectedArticle.generic_name || selectedArticle.article_name}</span>
+                            </div>
+                            <button onClick={() => {setSelectedArticle(null); setArticleSearch(''); setKeypadValue('');}} className="p-1 text-slate-400 hover:bg-white rounded"><X size={16}/></button>
+                        </div>
+                    )}
+
                     {showSuggestions && articleSearch.length > 0 && (
-                      <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-2xl mt-2 max-h-56 overflow-y-auto custom-scrollbar">
+                      <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-2xl mt-1 max-h-52 overflow-y-auto custom-scrollbar">
                          {filteredSuggestions.map(item => (
-                            <div key={item.article_number} onClick={() => handleSelectArticle(item)} className="p-4 hover:bg-purple-50 cursor-pointer border-b border-slate-50 last:border-0 transition-colors group">
+                            <div key={item.article_number} onClick={() => handleSelectArticle(item)} className="p-3 hover:bg-purple-50 cursor-pointer border-b border-slate-50 last:border-0 transition-colors group">
                                <p className="text-sm font-bold text-slate-800 group-hover:text-[#6D2158] flex items-center justify-between">
                                    {item.generic_name || item.article_name}
                                    <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded font-mono font-black">{item.hk_no || 'NO-HK'}</span>
                                </p>
-                               <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-1.5">{item.article_name} • #{item.article_number}</p>
+                               <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-1">{item.article_name} • #{item.article_number}</p>
                             </div>
                          ))}
                          {filteredSuggestions.length === 0 && (
-                            <div className="p-5 text-xs font-bold text-slate-400 text-center bg-slate-50">No items found matching your search.</div>
+                            <div className="p-4 text-xs font-bold text-slate-400 text-center bg-slate-50">No items found.</div>
                          )}
                       </div>
                     )}
                  </div>
 
                  {selectedArticle && (
-                 <div className="pt-2 border-t border-slate-100 mt-2">
+                 <div className="pt-2 border-t border-slate-100">
                      {modalMode === 'Initialize' && (
-                         <div className="grid grid-cols-2 gap-4 animate-in slide-in-from-bottom-2">
+                         <div className="grid grid-cols-2 gap-3 animate-in slide-in-from-bottom-2 mt-2">
                              <div className="col-span-2">
                                  <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Initial Opening Stock</label>
-                                 <input type="number" placeholder="Enter starting quantity..." className="w-full p-4 border border-slate-200 rounded-xl font-black text-[20px] text-[#6D2158] mt-1 shadow-inner focus:border-[#6D2158] outline-none text-center" value={transData.qty || ''} onChange={e => setTransData({...transData, qty: Number(e.target.value)})}/>
+                                 <div className="w-full p-3 border border-slate-200 rounded-xl font-black text-2xl text-[#6D2158] mt-1 shadow-inner bg-slate-50 text-center h-14 flex items-center justify-center">
+                                     {keypadValue || '0'}
+                                 </div>
                              </div>
-                             <div><label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Rack (Optional)</label><input type="text" placeholder="e.g. A1" className="w-full p-4 border border-slate-200 bg-slate-50 rounded-xl font-bold mt-1 text-[16px] md:text-sm outline-none focus:border-[#6D2158]" value={transData.rack} onChange={e => setTransData({...transData, rack: e.target.value})}/></div>
-                             <div><label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Level (Optional)</label><input type="text" placeholder="e.g. 2" className="w-full p-4 border border-slate-200 bg-slate-50 rounded-xl font-bold mt-1 text-[16px] md:text-sm outline-none focus:border-[#6D2158]" value={transData.level} onChange={e => setTransData({...transData, level: e.target.value})}/></div>
+                             <div><label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Rack (Opt)</label><input type="text" placeholder="A1" className="w-full p-3 border border-slate-200 bg-slate-50 rounded-xl font-bold mt-1 text-[16px] md:text-sm outline-none focus:border-[#6D2158]" value={transData.rack} onChange={e => setTransData({...transData, rack: e.target.value})}/></div>
+                             <div><label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Level (Opt)</label><input type="text" placeholder="2" className="w-full p-3 border border-slate-200 bg-slate-50 rounded-xl font-bold mt-1 text-[16px] md:text-sm outline-none focus:border-[#6D2158]" value={transData.level} onChange={e => setTransData({...transData, level: e.target.value})}/></div>
                          </div>
                      )}
 
                      {modalMode === 'Log' && (
-                         <div className="grid grid-cols-1 gap-5 animate-in slide-in-from-bottom-2">
+                         <div className="grid grid-cols-1 gap-3 animate-in slide-in-from-bottom-2 mt-2">
                              
-                             <div className="flex bg-slate-100 p-1.5 rounded-xl">
-                                 <button onClick={() => setTransData({...transData, type: 'Count'})} className={`flex-1 py-3 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${transData.type === 'Count' ? 'bg-white text-indigo-600 shadow-sm scale-100' : 'text-slate-400 hover:text-slate-600 scale-95'}`}>Physical Count</button>
-                                 <button onClick={() => setTransData({...transData, type: 'In'})} className={`flex-1 py-3 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${transData.type === 'In' ? 'bg-white text-emerald-600 shadow-sm scale-100' : 'text-slate-400 hover:text-slate-600 scale-95'}`}>Add Stock (+)</button>
-                                 <button onClick={() => setTransData({...transData, type: 'Consumed'})} className={`flex-1 py-3 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${['Consumed', 'Damaged', 'Transferred'].includes(transData.type) && transData.type !== 'Count' ? 'bg-white text-rose-600 shadow-sm scale-100' : 'text-slate-400 hover:text-slate-600 scale-95'}`}>Deduct (-)</button>
+                             <div className="flex bg-slate-100 p-1 rounded-xl">
+                                 <button onClick={() => setTransData({...transData, type: 'Count'})} className={`flex-1 py-2.5 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${transData.type === 'Count' ? 'bg-white text-indigo-600 shadow-sm scale-100' : 'text-slate-400 hover:text-slate-600 scale-95'}`}>Count</button>
+                                 <button onClick={() => setTransData({...transData, type: 'In'})} className={`flex-1 py-2.5 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${transData.type === 'In' ? 'bg-white text-emerald-600 shadow-sm scale-100' : 'text-slate-400 hover:text-slate-600 scale-95'}`}>Add (+)</button>
+                                 <button onClick={() => setTransData({...transData, type: 'Consumed'})} className={`flex-1 py-2.5 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${['Consumed', 'Damaged', 'Transferred'].includes(transData.type) && transData.type !== 'Count' ? 'bg-white text-rose-600 shadow-sm scale-100' : 'text-slate-400 hover:text-slate-600 scale-95'}`}>Deduct (-)</button>
                              </div>
 
                              {['Consumed', 'Damaged', 'Transferred'].includes(transData.type) && (
-                                 <select className="w-full p-4 border border-rose-200 bg-rose-50 text-rose-700 rounded-xl font-bold text-[16px] md:text-sm outline-none focus:border-rose-400" value={transData.type} onChange={e => setTransData({...transData, type: e.target.value})}>
-                                     <option value="Consumed">Deduct: Consumed in Operations</option>
-                                     <option value="Damaged">Deduct: Damaged / Spoilage</option>
-                                     <option value="Transferred">Deduct: Transferred to other Dept</option>
+                                 <select className="w-full p-3 border border-rose-200 bg-rose-50 text-rose-700 rounded-xl font-bold text-[16px] md:text-sm outline-none focus:border-rose-400" value={transData.type} onChange={e => setTransData({...transData, type: e.target.value})}>
+                                     <option value="Consumed">Deduct: Consumed in Ops</option>
+                                     <option value="Damaged">Deduct: Damaged/Spoilage</option>
+                                     <option value="Transferred">Deduct: Transferred out</option>
                                  </select>
                              )}
 
                              <div>
-                                 <div className="flex justify-between items-end mb-2 px-1">
+                                 <div className="flex justify-between items-end mb-1 px-1">
                                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                                         {transData.type === 'Count' ? 'Actual Count on Shelf' : 'Quantity'}
                                     </label>
                                     {transData.type === 'Count' && (
-                                        <span className="text-[9px] font-black text-indigo-500 uppercase tracking-widest bg-indigo-50 px-2 py-1 rounded-md border border-indigo-100">Smart Reconciliation</span>
+                                        <span className="text-[9px] font-black text-indigo-500 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">Auto-Math</span>
                                     )}
                                  </div>
-                                 <input 
-                                     type="number" 
-                                     placeholder="0" 
-                                     className={`w-full p-5 border-2 rounded-2xl font-black text-[32px] md:text-4xl text-center shadow-inner outline-none transition-colors ${
-                                         transData.type === 'Count' ? 'border-indigo-200 focus:border-indigo-500 text-indigo-700 bg-indigo-50/50' : 
-                                         transData.type === 'In' ? 'border-emerald-200 focus:border-emerald-500 text-emerald-700 bg-emerald-50/50' : 
-                                         'border-rose-200 focus:border-rose-500 text-rose-700 bg-rose-50/50'
-                                     }`} 
-                                     value={transData.qty || ''} 
-                                     onChange={e => setTransData({...transData, qty: Number(e.target.value)})}
-                                 />
                                  
-                                 {transData.type === 'Count' && (
-                                     <p className="text-[10px] text-slate-400 font-bold mt-4 text-center px-2 leading-relaxed">
-                                         Input the total amount currently sitting on the shelf. The system will calculate the difference and adjust the <span className="text-rose-500">Consumed</span> or <span className="text-emerald-500">Added</span> buckets automatically.
-                                     </p>
-                                 )}
+                                 {/* Custom Calculator Display */}
+                                 <div className={`w-full p-3 border-2 rounded-2xl font-black text-[28px] md:text-3xl text-center shadow-inner h-16 flex items-center justify-center overflow-hidden transition-colors ${
+                                     transData.type === 'Count' ? 'border-indigo-200 text-indigo-700 bg-indigo-50/50' : 
+                                     transData.type === 'In' ? 'border-emerald-200 text-emerald-700 bg-emerald-50/50' : 
+                                     'border-rose-200 text-rose-700 bg-rose-50/50'
+                                 }`}>
+                                     {keypadValue || '0'}
+                                 </div>
                              </div>
                          </div>
                      )}
+
+                     {/* COMPACT NATIVE NUMPAD */}
+                     <div className="grid grid-cols-3 gap-2 md:gap-3 mt-3 animate-in slide-in-from-bottom-4">
+                        {['1','2','3','4','5','6','7','8','9'].map(num => (
+                            <button key={num} onClick={() => handleKeypadPress(num)} className="bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 text-xl font-black py-2.5 md:py-3 rounded-xl transition-colors select-none">{num}</button>
+                        ))}
+                        <button onClick={() => handleKeypadPress('C')} className="bg-rose-50 text-rose-500 hover:bg-rose-100 active:bg-rose-200 text-lg font-black py-2.5 md:py-3 rounded-xl transition-colors select-none">C</button>
+                        <button onClick={() => handleKeypadPress('0')} className="bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 text-xl font-black py-2.5 md:py-3 rounded-xl transition-colors select-none">0</button>
+                        <button onClick={() => handleKeypadPress('DEL')} className="bg-slate-200 text-slate-600 hover:bg-slate-300 active:bg-slate-400 py-2.5 md:py-3 rounded-xl transition-colors select-none flex items-center justify-center"><Delete size={20}/></button>
+                     </div>
                      
-                     <div className="pb-4">
-                        <button onClick={handleSaveTransaction} disabled={isSaving || transData.qty === null || transData.qty === undefined || (transData.qty === 0 && transData.type !== 'Count')} className="w-full py-5 bg-[#6D2158] text-white rounded-xl font-black mt-6 uppercase tracking-widest text-[16px] md:text-sm shadow-[0_8px_30px_rgb(109,33,88,0.4)] hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:active:scale-100 disabled:shadow-none">
-                            {isSaving ? <Loader2 size={20} className="animate-spin"/> : <CheckCircle2 size={20}/>}
-                            {modalMode === 'Initialize' ? 'Save & Add To Store' : 'Commit to Ledger'}
+                     <div className="pt-4 pb-0">
+                        <button 
+                            onClick={() => { setTransData(prev => ({...prev, qty: parseInt(keypadValue || '0', 10)})); setTimeout(handleSaveTransaction, 50); }} 
+                            disabled={isSaving || keypadValue === '' || (keypadValue === '0' && transData.type !== 'Count')} 
+                            className="w-full py-4 md:py-3.5 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-[16px] md:text-sm shadow-md hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:active:scale-100 disabled:shadow-none"
+                        >
+                            {isSaving ? <Loader2 size={18} className="animate-spin"/> : <CheckCircle2 size={18}/>}
+                            {modalMode === 'Initialize' ? 'Save to Store' : 'Commit to Ledger'}
                         </button>
                      </div>
                  </div>
@@ -841,7 +880,7 @@ export default function PerpetualInventory() {
       {/* --- EDIT / DELETE MODAL (GOD MODE) --- */}
       {isEditModalOpen && editData && (
           <div className="fixed inset-x-0 bottom-0 md:inset-0 bg-black/60 backdrop-blur-sm z-[120] flex items-end md:items-center justify-center md:p-4 animate-in fade-in duration-200">
-             <div className="bg-white w-full max-w-md rounded-t-[2rem] md:rounded-[2rem] shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-y-auto relative animate-in slide-in-from-bottom-8 md:zoom-in-95 border-t-4 border-slate-100">
+             <div className="bg-white w-full max-w-md rounded-t-[2rem] md:rounded-[2rem] shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-y-auto relative animate-in slide-in-from-bottom-8 md:zoom-in-95 border-t-4 border-slate-100 pb-12 md:pb-8">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 md:hidden"></div>
                 <button onClick={() => setIsEditModalOpen(false)} className="absolute top-4 md:top-6 right-6 text-slate-400 hover:text-rose-500 bg-slate-100 p-2 rounded-full transition-colors"><X size={18}/></button>
 
@@ -877,7 +916,7 @@ export default function PerpetualInventory() {
                         <div><label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Level</label><input type="text" className="w-full p-4 border border-slate-200 rounded-xl font-bold mt-1 text-[16px] md:text-sm bg-slate-50 outline-none" value={editData.level} onChange={e => setEditData({...editData, level: e.target.value})}/></div>
                     </div>
                     
-                    <div className="flex flex-col gap-3 mt-6 pb-4">
+                    <div className="flex flex-col gap-3 mt-6 pb-2">
                         <button onClick={handleSaveEdit} disabled={isSaving} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black uppercase tracking-widest text-[16px] md:text-sm shadow-lg hover:bg-blue-700 active:scale-95 transition-all flex items-center justify-center gap-2">
                             {isSaving ? <Loader2 size={18} className="animate-spin"/> : <Save size={18}/>} Save Overrides
                         </button>
