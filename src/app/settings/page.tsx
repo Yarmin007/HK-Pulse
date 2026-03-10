@@ -16,13 +16,18 @@ const CATEGORY_ICONS: any = {
   'Beer': Beer, 'Wines': Wine, 'Spirits': Wine,
   'Bites': Cookie, 'Sweets': Cookie, 'Retail': Zap,
   'Pillow Menu': Cloud, 'Baby Items': Baby, 'Toiletries': Droplet,
+  'Guest Amenities': Star,
   'General Requests': Box, 'Chemicals': AlertTriangle, 'Linen': Layers
 };
 
-const MASTER_CATEGORIES = [
-  'Bites', 'Sweets', 'Soft Drinks', 'Juices', 'Water', 'Beer', 'Spirits', 'Wines', 'Retail',
-  'Pillow Menu', 'Baby Items', 'Toiletries', 'General Requests',
-  'Chemicals', 'Linen', 'Stationery', 'Engineering', 'Cleaning Supplies'
+// FIXED: Split categories so Minibar doesn't show in Master List
+const MINIBAR_CATEGORIES = [
+  'Bites', 'Sweets', 'Soft Drinks', 'Juices', 'Water', 'Beer', 'Spirits', 'Wines', 'Retail'
+];
+
+const GENERAL_CATEGORIES = [
+  'Guest Amenities', 'Pillow Menu', 'Baby Items', 'Toiletries', 'General Requests',
+  'Chemicals', 'Linen', 'Stationery', 'Engineering', 'Cleaning Supplies', 'Electronics'
 ];
 
 type MasterItem = {
@@ -60,7 +65,7 @@ type Host = {
   requires_pin_change?: boolean;
 };
 
-// --- HELPER COMPONENTS (Moved outside to prevent focus loss) ---
+// --- HELPER COMPONENTS ---
 
 const ListManager = ({ type, title, icon: Icon, placeholder, constants, newConstantValue, activeConstantType, setActiveConstantType, setNewConstantValue, handleAddConstant, handleDeleteConstant }: any) => {
   const list = constants.filter((c: any) => c.type === type);
@@ -172,24 +177,20 @@ export default function SettingsPage() {
   const [gemName, setGemName] = useState('');
   const [gemMvpn, setGemMvpn] = useState('');
 
-  // --- ACCESS CONTROL STATE ---
   const [hosts, setHosts] = useState<Host[]>([]);
   const [hostSearch, setHostSearch] = useState('');
   const [selectedLogHost, setSelectedLogHost] = useState<Host | null>(null);
   const [hostLogs, setHostLogs] = useState<any[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
-  // --- DASHBOARD VIEW ACCESS STATE ---
   const [configId, setConfigId] = useState<string | null>(null);
   const [supervisorAccess, setSupervisorAccess] = useState<Record<string, string[]>>({});
   const [accessModalHost, setAccessModalHost] = useState<Host | null>(null);
   const [accessSearchQuery, setAccessSearchQuery] = useState('');
 
-  // --- PUBLIC HOLIDAY STATE ---
   const [holidayName, setHolidayName] = useState('');
   const [holidayDate, setHolidayDate] = useState('');
 
-  // --- EXPIRY BATCH MANAGER STATE ---
   const [selectedExpiryItem, setSelectedExpiryItem] = useState<MasterItem | null>(null);
   const [itemBatches, setItemBatches] = useState<any[]>([]);
   const [newBatchDate, setNewBatchDate] = useState('');
@@ -254,7 +255,11 @@ export default function SettingsPage() {
   };
 
   const handleAddNew = () => {
-    setCurrentItem({ ...defaultItemState, is_minibar_item: activeTab === 'Minibar Menu' });
+    setCurrentItem({ 
+        ...defaultItemState, 
+        is_minibar_item: activeTab === 'Minibar Menu',
+        category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'General Requests'
+    });
     setIsEditing(false);
     setIsFormOpen(true);
   };
@@ -294,11 +299,43 @@ export default function SettingsPage() {
     fetchMasterList();
   };
 
-  // --- CSV UPLOAD/DOWNLOAD LOGIC ---
+  // --- BULLETPROOF CSV PARSER ---
+  const parseCSVLine = (text: string) => {
+      let ret = [];
+      let inQuote = false;
+      let value = '';
+      for (let i = 0; i < text.length; i++) {
+          let ch = text[i];
+          if (inQuote) {
+              if (ch === '"') {
+                  if (i + 1 < text.length && text[i + 1] === '"') {
+                      value += '"'; // escaped quote
+                      i++;
+                  } else {
+                      inQuote = false;
+                  }
+              } else {
+                  value += ch;
+              }
+          } else {
+              if (ch === '"') {
+                  inQuote = true;
+              } else if (ch === ',') {
+                  ret.push(value.trim());
+                  value = '';
+              } else {
+                  value += ch;
+              }
+          }
+      }
+      ret.push(value.trim());
+      return ret;
+  };
+
   const downloadCSVFormat = () => {
       const csvContent = "article_number,article_name,generic_name,category,unit,inventory_type\n" +
-                         "1001,Example Towel,Bath Towel,Linen,Each,Linen Inventory\n" +
-                         "1002,Example Kettle,Water Kettle,Electronics,Each,Asset Inventory";
+                         "3101017,Body Lotion (Lemongrass),Body Lotion - Lemongrass,Guest Amenities,Each,Asset Inventory\n" +
+                         "1002,Example Towel,Bath Towel,Linen,Each,Linen Inventory";
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -319,15 +356,16 @@ export default function SettingsPage() {
       reader.onload = async (e) => {
           try {
               const text = e.target?.result as string;
-              // Regex to correctly parse CSV including commas inside quotes
-              const rows = text.split('\n').filter(row => row.trim().length > 0);
+              const rows = text.split(/\r?\n/).filter(row => row.trim().length > 0);
               
               if(rows.length < 2) throw new Error("CSV is empty or missing data.");
 
-              const headers = rows[0].toLowerCase().split(',').map(h => h.trim());
+              // Parse headers cleanly
+              const headers = parseCSVLine(rows[0]).map(h => h.toLowerCase().trim());
               
               const idIdx = headers.indexOf('article_number');
               const nameIdx = headers.indexOf('article_name');
+              
               if (idIdx === -1 || nameIdx === -1) throw new Error("CSV must contain 'article_number' and 'article_name' columns.");
 
               const genNameIdx = headers.indexOf('generic_name');
@@ -335,27 +373,32 @@ export default function SettingsPage() {
               const unitIdx = headers.indexOf('unit');
               const invTypeIdx = headers.indexOf('inventory_type');
 
-              // Use a Map to automatically remove duplicate Article Numbers before uploading!
               const itemsMap = new Map();
 
               for (let i = 1; i < rows.length; i++) {
-                  const cols = rows[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)?.map(c => c.replace(/^"|"$/g, '').trim()) || [];
-                  if (cols.length < 2 || !cols[idIdx]) continue; 
+                  const cols = parseCSVLine(rows[i]);
+                  
+                  if (!cols[idIdx]) continue; 
+                  
+                  const articleNum = String(cols[idIdx]).trim();
+                  if (!articleNum) continue;
 
-                  itemsMap.set(cols[idIdx], {
-                      article_number: cols[idIdx],
-                      article_name: cols[nameIdx],
-                      generic_name: genNameIdx !== -1 && cols[genNameIdx] ? cols[genNameIdx] : cols[nameIdx],
-                      category: catIdx !== -1 && cols[catIdx] ? cols[catIdx] : 'General Requests',
+                  let categoryValue = catIdx !== -1 && cols[catIdx] ? cols[catIdx] : 'General Requests';
+
+                  itemsMap.set(articleNum, {
+                      article_number: articleNum,
+                      article_name: cols[nameIdx] || 'Unnamed Item',
+                      generic_name: genNameIdx !== -1 && cols[genNameIdx] ? cols[genNameIdx] : (cols[nameIdx] || 'Unnamed Item'),
+                      category: categoryValue,
                       unit: unitIdx !== -1 && cols[unitIdx] ? cols[unitIdx] : 'Each',
                       inventory_type: invTypeIdx !== -1 && cols[invTypeIdx] ? cols[invTypeIdx] : null,
-                      is_minibar_item: false
+                      is_minibar_item: MINIBAR_CATEGORIES.includes(categoryValue) // Auto flag as minibar if category matches
                   });
               }
 
               const finalItemsToInsert = Array.from(itemsMap.values());
 
-              if (finalItemsToInsert.length === 0) throw new Error("No valid rows found to import.");
+              if (finalItemsToInsert.length === 0) throw new Error("No valid rows found to import after parsing.");
 
               const { error } = await supabase.from('hsk_master_catalog').upsert(finalItemsToInsert, { onConflict: 'article_number' });
               
@@ -368,7 +411,7 @@ export default function SettingsPage() {
               toast.error(`Import Error: ${error.message}`, { id: 'csv-upload' });
           } finally {
               setIsUploading(false);
-              if(csvInputRef.current) csvInputRef.current.value = ''; // Reset input
+              if(csvInputRef.current) csvInputRef.current.value = ''; 
           }
       };
       reader.readAsText(file);
@@ -499,6 +542,9 @@ export default function SettingsPage() {
     if (activeTab === 'Expiry Setup') return item.has_expiry;
     return true;
   });
+
+  // Decide which categories to show in the dropdown based on what the user is editing
+  const availableCategories = currentItem.is_minibar_item ? MINIBAR_CATEGORIES : GENERAL_CATEGORIES;
 
   return (
     <div className="min-h-screen p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
@@ -672,7 +718,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                  {/* CSV BULK UPLOAD BUTTONS - ONLY SHOW ON MASTER LIST */}
+                  {/* CSV BULK UPLOAD BUTTONS */}
                   {activeTab === 'Master List' && !isFormOpen && (
                       <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mr-2">
                           <button onClick={downloadCSVFormat} className="px-4 py-3 text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest border-r border-slate-200" title="Download CSV Template">
@@ -719,7 +765,9 @@ export default function SettingsPage() {
                         
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Category</label>
-                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>{MASTER_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
+                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.category || ''} onChange={e => setCurrentItem({...currentItem, category: e.target.value})}>
+                               {availableCategories.map(c => <option key={c}>{c}</option>)}
+                           </select>
                         </div>
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Unit</label>
