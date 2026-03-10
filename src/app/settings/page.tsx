@@ -5,7 +5,7 @@ import {
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar, Building,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User, Eye, CheckCircle2,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
-  Shield, KeyRound, History, Plane, Download, FileSpreadsheet
+  Shield, KeyRound, History, Plane, Download, FileSpreadsheet, Merge
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -20,7 +20,6 @@ const CATEGORY_ICONS: any = {
   'General Requests': Box, 'Chemicals': AlertTriangle, 'Linen': Layers
 };
 
-// FIXED: Split categories so Minibar doesn't show in Master List
 const MINIBAR_CATEGORIES = [
   'Bites', 'Sweets', 'Soft Drinks', 'Juices', 'Water', 'Beer', 'Spirits', 'Wines', 'Retail'
 ];
@@ -47,6 +46,7 @@ type MasterItem = {
   reorder_qty: number;
   primary_supplier: string;
   inventory_type?: string; 
+  legacy_ids?: string; // Newly added to store merged IDs
 };
 
 type Constant = {
@@ -161,10 +161,17 @@ export default function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
   
+  const [csvPreviewData, setCsvPreviewData] = useState<any[] | null>(null);
+
+  // --- ITEM MERGE STATE ---
+  const [mergeModalItem, setMergeModalItem] = useState<MasterItem | null>(null);
+  const [mergeTargetId, setMergeTargetId] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
+
   const defaultItemState: MasterItem = {
     article_number: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
     is_minibar_item: false, micros_name: '', sales_price: 0, avg_cost: 0, sort_order: 0,
-    image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: '', inventory_type: ''
+    image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: '', inventory_type: '', legacy_ids: ''
   };
   
   const [currentItem, setCurrentItem] = useState<MasterItem>(defaultItemState);
@@ -248,20 +255,23 @@ export default function SettingsPage() {
     }
   };
 
+  // --- ITEM ACTIONS ---
   const handleEditItem = (item: MasterItem) => {
     setCurrentItem(item);
     setIsEditing(true);
     setIsFormOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' }); 
   };
 
   const handleAddNew = () => {
     setCurrentItem({ 
         ...defaultItemState, 
         is_minibar_item: activeTab === 'Minibar Menu',
-        category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'General Requests'
+        category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'Guest Amenities'
     });
     setIsEditing(false);
     setIsFormOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -275,31 +285,90 @@ export default function SettingsPage() {
       const { data } = supabase.storage.from('item-images').getPublicUrl(fileName);
       setCurrentItem({ ...currentItem, image_url: data.publicUrl });
     } catch (error: any) {
-      alert('Upload Error: ' + error.message);
+      toast.error('Upload Error: ' + error.message);
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleSaveItem = async () => {
-    if (!currentItem.article_number || !currentItem.article_name) return alert("Article Number and Name are required.");
+    if (!currentItem.article_number || !currentItem.article_name) return toast.error("Article Number and Name are required.");
+    
+    setIsUploading(true);
+    
+    const { id, created_at, ...cleanData } = currentItem as any;
+    
     const finalData = {
-      ...currentItem,
+      ...cleanData,
       generic_name: currentItem.generic_name || currentItem.article_name,
       micros_name: currentItem.is_minibar_item && !currentItem.micros_name ? currentItem.article_name : currentItem.micros_name,
     };
-    const { error } = await supabase.from('hsk_master_catalog').upsert(finalData, { onConflict: 'article_number' });
-    if (error) { alert("Error saving: " + error.message); } 
-    else { setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); fetchMasterList(); }
+
+    if (isEditing) {
+        const { error } = await supabase.from('hsk_master_catalog').update(finalData).eq('article_number', currentItem.article_number);
+        if (error) { toast.error("Error updating: " + error.message); } 
+        else { 
+            setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); 
+            fetchMasterList(); toast.success("Item updated successfully!"); 
+        }
+    } else {
+        const { error } = await supabase.from('hsk_master_catalog').insert(finalData);
+        if (error) { toast.error("Error adding: " + error.message); } 
+        else { 
+            setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); 
+            fetchMasterList(); toast.success("Item added successfully!"); 
+        }
+    }
+    setIsUploading(false);
   };
 
   const handleDeleteItem = async (id: string) => {
-    if(!confirm("Delete this item?")) return;
+    if(!confirm("Delete this item permanently?")) return;
     await supabase.from('hsk_master_catalog').delete().eq('article_number', id);
     fetchMasterList();
+    toast.success("Item deleted.");
   };
 
-  // --- BULLETPROOF CSV PARSER ---
+  // --- ITEM MERGE LOGIC ---
+  const handleConfirmMerge = async () => {
+      if (!mergeModalItem || !mergeTargetId) return toast.error("Select an item to merge into.");
+      if (mergeModalItem.article_number === mergeTargetId) return toast.error("Cannot merge into itself.");
+      
+      const targetItem = masterList.find(i => i.article_number === mergeTargetId);
+      if (!targetItem) return toast.error("Target item not found.");
+
+      if (!confirm(`Are you sure you want to merge ALL history from ${mergeModalItem.article_name} into ${targetItem.article_name}? This will delete the old item.`)) return;
+
+      setIsMerging(true);
+      toast.loading("Merging items...", { id: 'merge-toast' });
+
+      try {
+          // 1. Point all past inventory records to the new ID
+          await supabase.from('hsk_inventory_records').update({ article_number: mergeTargetId }).eq('article_number', mergeModalItem.article_number);
+          
+          // 2. Point all expiry batches to the new ID
+          await supabase.from('hsk_expiry_batches').update({ article_number: mergeTargetId }).eq('article_number', mergeModalItem.article_number);
+          
+          // 3. Update the target item to "archive" the old ID inside its legacy_ids field
+          const newLegacyIds = targetItem.legacy_ids ? `${targetItem.legacy_ids}, ${mergeModalItem.article_number}` : mergeModalItem.article_number;
+          await supabase.from('hsk_master_catalog').update({ legacy_ids: newLegacyIds }).eq('article_number', mergeTargetId);
+          
+          // 4. Finally, delete the old item from the catalog
+          await supabase.from('hsk_master_catalog').delete().eq('article_number', mergeModalItem.article_number);
+
+          toast.success("Items successfully merged!", { id: 'merge-toast' });
+          setMergeModalItem(null);
+          setMergeTargetId('');
+          fetchMasterList();
+
+      } catch (err: any) {
+          toast.error("Merge failed: " + err.message, { id: 'merge-toast' });
+      } finally {
+          setIsMerging(false);
+      }
+  };
+
+  // --- CSV UPLOAD/DOWNLOAD LOGIC ---
   const parseCSVLine = (text: string) => {
       let ret = [];
       let inQuote = false;
@@ -308,24 +377,13 @@ export default function SettingsPage() {
           let ch = text[i];
           if (inQuote) {
               if (ch === '"') {
-                  if (i + 1 < text.length && text[i + 1] === '"') {
-                      value += '"'; // escaped quote
-                      i++;
-                  } else {
-                      inQuote = false;
-                  }
-              } else {
-                  value += ch;
-              }
+                  if (i + 1 < text.length && text[i + 1] === '"') { value += '"'; i++; } 
+                  else { inQuote = false; }
+              } else { value += ch; }
           } else {
-              if (ch === '"') {
-                  inQuote = true;
-              } else if (ch === ',') {
-                  ret.push(value.trim());
-                  value = '';
-              } else {
-                  value += ch;
-              }
+              if (ch === '"') { inQuote = true; } 
+              else if (ch === ',') { ret.push(value.trim()); value = ''; } 
+              else { value += ch; }
           }
       }
       ret.push(value.trim());
@@ -349,9 +407,6 @@ export default function SettingsPage() {
       const file = event.target.files?.[0];
       if (!file) return;
 
-      setIsUploading(true);
-      toast.loading("Processing CSV...", { id: 'csv-upload' });
-
       const reader = new FileReader();
       reader.onload = async (e) => {
           try {
@@ -360,9 +415,7 @@ export default function SettingsPage() {
               
               if(rows.length < 2) throw new Error("CSV is empty or missing data.");
 
-              // Parse headers cleanly
               const headers = parseCSVLine(rows[0]).map(h => h.toLowerCase().trim());
-              
               const idIdx = headers.indexOf('article_number');
               const nameIdx = headers.indexOf('article_name');
               
@@ -377,7 +430,6 @@ export default function SettingsPage() {
 
               for (let i = 1; i < rows.length; i++) {
                   const cols = parseCSVLine(rows[i]);
-                  
                   if (!cols[idIdx]) continue; 
                   
                   const articleNum = String(cols[idIdx]).trim();
@@ -392,32 +444,44 @@ export default function SettingsPage() {
                       category: categoryValue,
                       unit: unitIdx !== -1 && cols[unitIdx] ? cols[unitIdx] : 'Each',
                       inventory_type: invTypeIdx !== -1 && cols[invTypeIdx] ? cols[invTypeIdx] : null,
-                      is_minibar_item: MINIBAR_CATEGORIES.includes(categoryValue) // Auto flag as minibar if category matches
+                      is_minibar_item: MINIBAR_CATEGORIES.includes(categoryValue)
                   });
               }
 
               const finalItemsToInsert = Array.from(itemsMap.values());
-
               if (finalItemsToInsert.length === 0) throw new Error("No valid rows found to import after parsing.");
 
-              const { error } = await supabase.from('hsk_master_catalog').upsert(finalItemsToInsert, { onConflict: 'article_number' });
-              
-              if (error) throw error;
-
-              toast.success(`Successfully imported ${finalItemsToInsert.length} items!`, { id: 'csv-upload' });
-              fetchMasterList();
+              setCsvPreviewData(finalItemsToInsert);
 
           } catch (error: any) {
-              toast.error(`Import Error: ${error.message}`, { id: 'csv-upload' });
+              toast.error(`Parse Error: ${error.message}`);
           } finally {
-              setIsUploading(false);
               if(csvInputRef.current) csvInputRef.current.value = ''; 
           }
       };
       reader.readAsText(file);
   };
 
+  const confirmCSVImport = async () => {
+      if (!csvPreviewData) return;
+      setIsUploading(true);
+      toast.loading("Saving to database...", { id: 'csv-upload' });
 
+      try {
+          const { error } = await supabase.from('hsk_master_catalog').upsert(csvPreviewData, { onConflict: 'article_number' });
+          if (error) throw error;
+
+          toast.success(`Successfully imported ${csvPreviewData.length} items!`, { id: 'csv-upload' });
+          fetchMasterList();
+          setCsvPreviewData(null);
+      } catch (error: any) {
+          toast.error(`Import Error: ${error.message}`, { id: 'csv-upload' });
+      } finally {
+          setIsUploading(false);
+      }
+  };
+
+  // --- MISC SETTINGS FUNCTIONS ---
   const handleAddConstant = async (type: string) => {
     if (!newConstantValue.trim()) return;
     const { error } = await supabase.from('hsk_constants').insert({ type, label: newConstantValue });
@@ -432,7 +496,7 @@ export default function SettingsPage() {
   };
 
   const handleAddGem = async () => {
-    if (!gemName.trim() || !gemMvpn.trim()) return alert("Please enter both Name and MVPN");
+    if (!gemName.trim() || !gemMvpn.trim()) return toast.error("Please enter both Name and MVPN");
     const label = `${gemName.trim()} - ${gemMvpn.trim()}`;
     const { error } = await supabase.from('hsk_constants').insert({ type: 'gem', label });
     if (!error) { setGemName(''); setGemMvpn(''); fetchConstants(); }
@@ -483,14 +547,10 @@ export default function SettingsPage() {
       setIsUploading(true);
       try {
           let currentConfig: any = {};
-          
           if (configId) {
               const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
-              if (data && data.label) { 
-                  try { currentConfig = JSON.parse(data.label); } catch(e){} 
-              }
+              if (data && data.label) { try { currentConfig = JSON.parse(data.label); } catch(e){} }
           }
-          
           currentConfig.supervisorAccess = supervisorAccess;
           const payload = JSON.stringify(currentConfig);
           
@@ -538,12 +598,11 @@ export default function SettingsPage() {
     item.article_number.includes(searchQuery)
   ).filter(item => {
     if (activeTab === 'Minibar Menu') return item.is_minibar_item;
-    if (activeTab === 'Master List') return !item.is_minibar_item; // Hide minibar items from Master List
+    if (activeTab === 'Master List') return !item.is_minibar_item;
     if (activeTab === 'Expiry Setup') return item.has_expiry;
     return true;
   });
 
-  // Decide which categories to show in the dropdown based on what the user is editing
   const availableCategories = currentItem.is_minibar_item ? MINIBAR_CATEGORIES : GENERAL_CATEGORIES;
 
   return (
@@ -674,7 +733,7 @@ export default function SettingsPage() {
                             <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs">{d}</span>
                             <span className="font-bold text-slate-700 text-sm">{n}</span>
                         </div>
-                        <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 p-2"><Trash2 size={16}/></button>
+                        <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 transition-opacity p-2"><Trash2 size={16}/></button>
                      </div>
                     )
                  })}
@@ -702,7 +761,7 @@ export default function SettingsPage() {
                  {constants.filter(c => c.type === 'gem').map(item => (
                    <div key={item.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl group hover:bg-white border border-transparent hover:border-slate-200 transition-all">
                       <div className="flex items-center gap-3"><User size={16} className="text-slate-400" /><span className="font-bold text-slate-700">{item.label}</span></div>
-                      <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-2"><Trash2 size={18}/></button>
+                      <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 transition-opacity p-2"><Trash2 size={18}/></button>
                    </div>
                  ))}
               </div>
@@ -825,7 +884,7 @@ export default function SettingsPage() {
                         {filteredList.map(item => {
                            const Icon = CATEGORY_ICONS[item.category] || Box;
                            return (
-                             <tr key={item.article_number} className="hover:bg-slate-50 group">
+                             <tr key={item.article_number} className="hover:bg-slate-50 transition-colors">
                                 <td className="p-4 text-xs font-bold text-slate-400 font-mono">{item.article_number}</td>
                                 <td className="p-4">
                                    <div className="flex items-center gap-3">
@@ -836,13 +895,22 @@ export default function SettingsPage() {
                                                {item.article_name} • {item.unit}
                                                {item.inventory_type && <span className="ml-2 text-indigo-500 font-black tracking-widest">• linked: {item.inventory_type}</span>}
                                            </div>
+                                           {item.legacy_ids && (
+                                               <div className="text-[9px] font-black text-amber-500 uppercase tracking-widest mt-1 bg-amber-50 px-2 py-0.5 rounded w-max border border-amber-200">
+                                                   Archived IDs: {item.legacy_ids}
+                                               </div>
+                                           )}
                                        </div>
                                    </div>
                                 </td>
                                 <td className="p-4 text-xs font-bold text-slate-500">{item.category}</td>
-                                <td className="p-4 text-right flex justify-end gap-2 items-center">
+                                <td className="p-4 text-right flex justify-end gap-1 items-center">
                                    {activeTab === 'Expiry Setup' && (<button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase flex items-center gap-1 shadow-sm"><Calendar size={14}/> Batches</button>)}
-                                   <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => handleEditItem(item)} className="p-2 text-blue-400 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button><button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-300 hover:text-rose-500 rounded-lg"><Trash2 size={16}/></button></div>
+                                   
+                                   {/* ALWAYS VISIBLE ACTIONS */}
+                                   <button onClick={() => setMergeModalItem(item)} className="p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 rounded-lg transition-colors" title="Merge into another item"><Merge size={16}/></button>
+                                   <button onClick={() => handleEditItem(item)} className="p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600 rounded-lg transition-colors"><Edit3 size={16}/></button>
+                                   <button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-500 rounded-lg transition-colors"><Trash2 size={16}/></button>
                                 </td>
                              </tr>
                            );
@@ -854,8 +922,91 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* --- MODALS --- */}
+      {/* --- MERGE MODAL --- */}
+      {mergeModalItem && (
+          <div className="modal-overlay !z-[9999]">
+              <div className="modal-content !max-w-md">
+                  <div className="flex justify-between items-center mb-6 border-b border-slate-100 pb-4">
+                      <div>
+                          <h3 className="text-xl font-black tracking-tight text-slate-800 flex items-center gap-2"><Merge size={20} className="text-amber-500"/> Merge Item</h3>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Combine history & archive old ID</p>
+                      </div>
+                      <button onClick={() => setMergeModalItem(null)} className="p-2 bg-slate-100 text-slate-500 rounded-full hover:bg-slate-200"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="mb-6 space-y-4">
+                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Old Item (Will be deleted)</p>
+                          <div className="font-bold text-slate-800">{mergeModalItem.article_name} <span className="text-rose-500 font-mono text-sm ml-2">#{mergeModalItem.article_number}</span></div>
+                      </div>
 
+                      <div className="flex justify-center text-slate-300"><Merge size={24}/></div>
+
+                      <div>
+                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Target Item (To merge into)</label>
+                          <select className="w-full p-4 mt-1 border-2 border-amber-200 rounded-xl font-bold text-sm bg-amber-50 text-amber-800 outline-none focus:border-amber-400" value={mergeTargetId} onChange={(e) => setMergeTargetId(e.target.value)}>
+                              <option value="">Select new item...</option>
+                              {masterList.filter(i => i.article_number !== mergeModalItem.article_number && i.is_minibar_item === mergeModalItem.is_minibar_item).map(i => (
+                                  <option key={i.article_number} value={i.article_number}>{i.article_name} (#{i.article_number})</option>
+                              ))}
+                          </select>
+                      </div>
+                  </div>
+
+                  <button onClick={handleConfirmMerge} disabled={isMerging || !mergeTargetId} className="w-full py-4 bg-amber-500 text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg hover:bg-amber-600 transition-colors flex justify-center items-center gap-2 disabled:opacity-50">
+                      {isMerging ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Merge & Archive Old
+                  </button>
+              </div>
+          </div>
+      )}
+
+      {/* --- PREVIEW MODAL --- */}
+      {csvPreviewData && (
+          <div className="modal-overlay !z-[9999]">
+              <div className="modal-content !max-w-4xl flex flex-col h-[80vh]">
+                  <div className="flex justify-between items-center mb-6 shrink-0">
+                      <div>
+                          <h3 className="text-2xl font-black tracking-tight text-slate-800">Review Import</h3>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Found {csvPreviewData.length} items to add or update</p>
+                      </div>
+                      <button onClick={() => setCsvPreviewData(null)} className="p-2 bg-slate-100 text-slate-500 rounded-full hover:bg-slate-200"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl mb-6 custom-scrollbar bg-white">
+                      <table className="w-full text-left text-sm">
+                          <thead className="bg-slate-50 sticky top-0 border-b border-slate-200">
+                              <tr>
+                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">ID</th>
+                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Item Name</th>
+                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Category</th>
+                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Inventory Link</th>
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                              {csvPreviewData.map((item, idx) => (
+                                  <tr key={idx} className="hover:bg-slate-50">
+                                      <td className="p-3 font-mono text-xs">{item.article_number}</td>
+                                      <td className="p-3 font-bold text-slate-700">{item.article_name}</td>
+                                      <td className="p-3 text-xs text-slate-500">{item.category}</td>
+                                      <td className="p-3 text-xs font-bold text-indigo-500">{item.inventory_type || '-'}</td>
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+                  
+                  <div className="flex gap-4 shrink-0">
+                      <button onClick={() => setCsvPreviewData(null)} className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-xl font-bold uppercase tracking-widest text-xs hover:bg-slate-200 transition-colors">Cancel</button>
+                      <button onClick={confirmCSVImport} disabled={isUploading} className="flex-1 py-4 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-widest text-xs shadow-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">
+                          {isUploading ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>}
+                          Confirm & Import
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- OTHER MODALS --- */}
       {selectedLogHost && (
           <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
