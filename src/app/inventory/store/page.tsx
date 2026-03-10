@@ -2,11 +2,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, Plus, ArrowRight, ArrowLeft, FileText, PieChart, Zap, MapPin, X, 
-  PackagePlus, ArrowDownUp, Loader2, Save, ScanBarcode, CheckCircle2, Trash2, Edit3, Download, Barcode, Camera
+  PackagePlus, ArrowDownUp, Loader2, Save, ScanBarcode, CheckCircle2, Trash2, Edit3, Download, Camera
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
+import { Scanner } from '@yudiel/react-qr-scanner'; 
 
 // --- STRICT TYPES ---
 type MasterItem = {
@@ -73,13 +74,13 @@ export default function PerpetualInventory() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editData, setEditData] = useState<Partial<InventoryRow> | null>(null);
 
-  // --- SMART SEARCH & SCAN STATE ---
   const [articleSearch, setArticleSearch] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedArticle, setSelectedArticle] = useState<MasterItem | null>(null);
 
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scanInput, setScanInput] = useState('');
+  const scanInputRef = useRef<HTMLInputElement>(null);
 
   const [transData, setTransData] = useState({
     qty: 0,
@@ -224,38 +225,10 @@ export default function PerpetualInventory() {
       setIsModalOpen(true);
   };
 
-  // --- NATIVE CAMERA SCANNER LOGIC ---
-  useEffect(() => {
-      if (!isScannerOpen) return;
-      let html5QrcodeScanner: any = null;
-
-      import('html5-qrcode').then(({ Html5QrcodeScanner }) => {
-          setTimeout(() => {
-              html5QrcodeScanner = new Html5QrcodeScanner(
-                  "qr-reader",
-                  { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
-                  false
-              );
-              html5QrcodeScanner.render(
-                  (decodedText: string) => {
-                      if (html5QrcodeScanner) html5QrcodeScanner.clear();
-                      setIsScannerOpen(false);
-                      handleCodeScanned(decodedText);
-                  },
-                  (error: any) => { /* Background scan attempts, ignore */ }
-              );
-          }, 100);
-      }).catch(err => {
-          console.error("Scanner failed to load", err);
-          toast.error("Camera module failed to load.");
-      });
-
-      return () => {
-          if (html5QrcodeScanner) {
-              html5QrcodeScanner.clear().catch((e:any) => console.log(e));
-          }
-      };
-  }, [isScannerOpen]);
+  const openScanner = () => {
+      setIsScannerOpen(true);
+      setTimeout(() => { scanInputRef.current?.focus(); }, 100);
+  };
 
   const handleCodeScanned = (code: string) => {
       const cleanCode = code.trim().toLowerCase();
@@ -271,22 +244,17 @@ export default function PerpetualInventory() {
           if (inCurrentStore) {
               setModalMode('Log');
               handleSelectArticle(matchedItem);
+              setIsScannerOpen(false);
               setIsModalOpen(true);
           } else {
-              // If it's scanned but not in the store yet, suggest adding it!
-              setModalMode('Initialize');
-              handleSelectArticle(matchedItem);
-              setIsModalOpen(true);
-              toast.success(`Found ${matchedItem.generic_name || matchedItem.article_name}. Add it to the store first!`);
+              toast.error(`Found ${matchedItem.generic_name || matchedItem.article_name}, but it is not in ${activeStore} yet.`);
           }
       } else {
-          toast.error(`Item code "${code}" not found in Master Catalog.`);
+          toast.error(`Item code "${code}" not found.`);
       }
       setScanInput('');
   };
 
-
-  // --- LOGIC / DATABASE TRANSACTIONS ---
   const handleSaveTransaction = async () => {
     if (!selectedArticle) return toast.error("Please select an item first.");
     setIsSaving(true);
@@ -324,30 +292,33 @@ export default function PerpetualInventory() {
             let updatedConsumed = Number(existingRow?.consumed || 0);
             let updatedDamaged = Number(existingRow?.damaged || 0);
             let updatedTransferred = Number(existingRow?.transferred || 0);
-            const deltaQty = Number(transData.qty);
+            const inputQty = Number(transData.qty);
             
+            // --- EXACT RECONCILIATION ENGINE YOU REQUESTED ---
             if (transData.type === 'Count') {
-                const theoretical = Number(existingRow?.closingStock || 0);
-                const actual = deltaQty;
-                const diff = theoretical - actual;
+                const opening = Number(existingRow?.openingStock || 0);
+                const added = Number(existingRow?.added || 0);
+                const damaged = Number(existingRow?.damaged || 0);
+                const transferred = Number(existingRow?.transferred || 0);
+                
+                // Math: Opening + Added - Damaged - Transferred - Physical Count = Consumed
+                const calculatedConsumed = opening + added - damaged - transferred - inputQty;
 
-                if (diff === 0) {
-                    toast.success("Count matches exactly! No adjustments needed.", { icon: '✅' });
+                if (calculatedConsumed < 0) {
+                    toast.error("Error: Physical count is higher than possible stock. Check additions.", { icon: '❌' });
                     setIsSaving(false);
-                    setIsModalOpen(false);
                     return;
-                } else if (diff > 0) {
-                    updatedConsumed += diff;
-                    toast.success(`Adjusted! Added ${diff} to Consumed.`, { icon: '📉' });
-                } else if (diff < 0) {
-                    updatedAdded += Math.abs(diff);
-                    toast.success(`Adjusted! Added ${Math.abs(diff)} to Stock In.`, { icon: '📈' });
                 }
-            } else {
-                if (transData.type === 'In') updatedAdded += deltaQty;
-                else if (transData.type === 'Consumed') updatedConsumed += deltaQty;
-                else if (transData.type === 'Damaged') updatedDamaged += deltaQty;
-                else if (transData.type === 'Transferred') updatedTransferred += deltaQty; 
+
+                updatedConsumed = calculatedConsumed; // Override the consumed bucket completely
+                toast.success(`Count reconciled! System calculated ${calculatedConsumed} consumed.`, { icon: '✅' });
+            } 
+            // --- STANDARD LOGGING ---
+            else {
+                if (transData.type === 'In') updatedAdded += inputQty;
+                else if (transData.type === 'Consumed') updatedConsumed += inputQty;
+                else if (transData.type === 'Damaged') updatedDamaged += inputQty;
+                else if (transData.type === 'Transferred') updatedTransferred += inputQty; 
                 toast.success("Activity logged successfully!");
             }
             
@@ -501,9 +472,6 @@ export default function PerpetualInventory() {
         <div className="flex w-full md:w-auto gap-2">
             <button onClick={downloadExcel} className="hidden md:flex px-5 py-2 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-emerald-100 transition-colors">
                 <Download size={16}/> Export
-            </button>
-            <button onClick={() => setIsScannerOpen(true)} className="hidden md:flex px-5 py-2 bg-indigo-600 border border-indigo-700 text-white rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-indigo-700 transition-colors">
-                <Camera size={16}/> Scan QR Label
             </button>
             <div className="flex bg-white rounded-xl shadow-sm border border-slate-100 p-1 w-full md:w-auto">
                <button onClick={() => setActiveView('Inventory')} className={`flex-1 md:flex-none justify-center px-4 py-2.5 md:py-2 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 transition-colors ${activeView === 'Inventory' ? 'bg-[#6D2158] text-white' : 'text-slate-400 hover:text-[#6D2158]'}`}><FileText size={14}/> Log</button>
@@ -687,8 +655,8 @@ export default function PerpetualInventory() {
          </div>
       )}
 
-      {/* --- CAMERA SCANNER FAB (MOBILE) --- */}
-      <button onClick={() => setIsScannerOpen(true)} className="fixed bottom-6 right-6 md:hidden z-40 bg-indigo-600 text-white p-4 rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.4)] active:scale-95 transition-all flex items-center justify-center border-4 border-white">
+      {/* --- CAMERA SCANNER FAB (MOBILE ONLY) --- */}
+      <button onClick={() => setIsScannerOpen(true)} className="fixed bottom-24 right-6 md:hidden z-40 bg-indigo-600 text-white p-4 rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.4)] active:scale-95 transition-all flex items-center justify-center border-4 border-white">
           <Camera size={24} />
       </button>
 
@@ -699,17 +667,30 @@ export default function PerpetualInventory() {
               
               <div className="w-full max-w-sm bg-white rounded-[2rem] p-4 flex flex-col items-center text-center shadow-2xl relative overflow-hidden">
                   <h2 className="text-xl font-black text-slate-800 tracking-tight mb-2 mt-4">Scan QR Label</h2>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Point your camera at the item's HK No QR Code</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Point your camera at the item's QR Code</p>
                   
-                  {/* The live camera feed appears here! */}
-                  <div id="qr-reader" className="w-full overflow-hidden rounded-xl border-4 border-indigo-50 bg-slate-100 min-h-[250px]"></div>
+                  {/* LIVE CAMERA COMPONENT */}
+                  <div className="w-full overflow-hidden rounded-xl border-4 border-indigo-50 bg-slate-900 min-h-[250px] relative flex justify-center items-center">
+                      <Scanner
+                          onScan={(result) => {
+                              // Safely extract code depending on scanner package version
+                              if (Array.isArray(result) && result[0]?.rawValue) {
+                                  handleCodeScanned(result[0].rawValue);
+                              } else if (typeof result === 'string') {
+                                  handleCodeScanned(result as string);
+                              } else if (result && (result as any).text) {
+                                  handleCodeScanned((result as any).text);
+                              }
+                          }}
+                          styles={{ container: { width: '100%', height: '100%' } }}
+                      />
+                  </div>
 
-                  {/* Fallback for manual entry */}
                   <div className="mt-6 w-full">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Or type code manually</p>
                     <input 
                       type="text" 
-                      className="w-full p-4 border-2 border-slate-200 rounded-xl text-center font-mono font-bold text-lg text-slate-700 focus:border-[#6D2158] outline-none"
+                      className="w-full p-4 border-2 border-slate-200 rounded-xl text-center font-mono font-bold text-[16px] text-slate-700 focus:border-[#6D2158] outline-none"
                       placeholder="e.g. HK-1001"
                       value={scanInput}
                       onChange={(e) => setScanInput(e.target.value)}
