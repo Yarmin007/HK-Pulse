@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
-  Search, ArrowRight, ArrowLeft, FileText, PieChart, Zap, MapPin, X, 
+  Search, Plus, ArrowRight, ArrowLeft, FileText, PieChart, Zap, MapPin, X, 
   PackagePlus, ArrowDownUp, Loader2, Save, ScanBarcode, CheckCircle2, Trash2, Edit3, Download, Barcode
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -139,20 +139,25 @@ export default function PerpetualInventory() {
         if (rec.expiry_date) lastKnownExpiry = rec.expiry_date;
 
         if (rec.month_year < targetMonthKey) {
-           const netChange = (rec.opening_stock || 0) + (rec.added_stock || 0) - (rec.consumed || 0) - (rec.damaged || 0) - (rec.transferred || 0);
-           opening = netChange; 
+           // Ensure these are treated as numbers
+           const os = Number(rec.opening_stock || 0);
+           const a = Number(rec.added_stock || 0);
+           const c = Number(rec.consumed || 0);
+           const d = Number(rec.damaged || 0);
+           const t = Number(rec.transferred || 0);
+           opening = os + a - c - d - t; 
         } else if (rec.month_year === targetMonthKey) {
            currentRecord = rec;
            if (currentRecord.opening_stock !== undefined && currentRecord.opening_stock !== null) {
-               opening = currentRecord.opening_stock;
+               opening = Number(currentRecord.opening_stock);
            }
         }
       });
 
-      const added = currentRecord?.added_stock || 0;
-      const consumed = currentRecord?.consumed || 0;
-      const damaged = currentRecord?.damaged || 0;
-      const transferred = currentRecord?.transferred || 0;
+      const added = Number(currentRecord?.added_stock || 0);
+      const consumed = Number(currentRecord?.consumed || 0);
+      const damaged = Number(currentRecord?.damaged || 0);
+      const transferred = Number(currentRecord?.transferred || 0);
       const others = damaged + transferred;
       const closing = opening + added - consumed - others;
       
@@ -196,7 +201,7 @@ export default function PerpetualInventory() {
     } else {
         const existingIds = new Set(inventoryRows.map(r => r.articleNumber));
         return masterList.filter(m => existingIds.has(m.article_number) && (
-            (m.hk_no || '').toLowerCase().includes(lower) || 
+            (m.hk_no || '').toLowerCase().includes(lower) ||
             (m.generic_name || '').toLowerCase().includes(lower) || 
             (m.article_name || '').toLowerCase().includes(lower) || 
             (m.article_number || '').includes(lower)
@@ -267,7 +272,7 @@ export default function PerpetualInventory() {
                 month_year: targetMonthKey,
                 article_number: selectedArticle.article_number, 
                 store_name: transData.store,
-                opening_stock: transData.qty, 
+                opening_stock: Number(transData.qty), 
                 added_stock: 0,
                 consumed: 0,
                 damaged: 0,
@@ -280,17 +285,22 @@ export default function PerpetualInventory() {
             toast.success(`${selectedArticle.generic_name || selectedArticle.article_name || 'Item'} added to ${transData.store}!`);
 
         } else {
-            if (transData.qty < 0) {
+            if (Number(transData.qty) < 0) {
                 toast.error("Quantity cannot be negative");
                 setIsSaving(false);
                 return;
             }
 
-            const updates: Record<string, number> = {};
+            // GUARANTEED NUMBER TYPES
+            let updatedAdded = Number(existingRow?.added || 0);
+            let updatedConsumed = Number(existingRow?.consumed || 0);
+            let updatedDamaged = Number(existingRow?.damaged || 0);
+            let updatedTransferred = Number(existingRow?.transferred || 0);
+            const deltaQty = Number(transData.qty);
             
             if (transData.type === 'Count') {
-                const theoretical = existingRow?.closingStock || 0;
-                const actual = transData.qty;
+                const theoretical = Number(existingRow?.closingStock || 0);
+                const actual = deltaQty;
                 const diff = theoretical - actual;
 
                 if (diff === 0) {
@@ -299,34 +309,38 @@ export default function PerpetualInventory() {
                     setIsModalOpen(false);
                     return;
                 } else if (diff > 0) {
-                    updates.consumed = (existingRow?.consumed || 0) + diff;
+                    updatedConsumed += diff;
                     toast.success(`Adjusted! Added ${diff} to Consumed.`, { icon: '📉' });
                 } else if (diff < 0) {
-                    updates.added_stock = (existingRow?.added || 0) + Math.abs(diff);
+                    updatedAdded += Math.abs(diff);
                     toast.success(`Adjusted! Added ${Math.abs(diff)} to Stock In.`, { icon: '📈' });
                 }
             } else {
-                const deltaQty = transData.qty;
-                if (transData.type === 'In') updates.added_stock = (existingRow?.added || 0) + deltaQty;
-                else if (transData.type === 'Consumed') updates.consumed = (existingRow?.consumed || 0) + deltaQty;
-                else if (transData.type === 'Damaged') updates.damaged = (existingRow?.damaged || 0) + deltaQty;
-                else if (transData.type === 'Transferred') updates.transferred = (existingRow?.transferred || 0) + deltaQty; 
+                if (transData.type === 'In') updatedAdded += deltaQty;
+                else if (transData.type === 'Consumed') updatedConsumed += deltaQty;
+                else if (transData.type === 'Damaged') updatedDamaged += deltaQty;
+                else if (transData.type === 'Transferred') updatedTransferred += deltaQty; 
                 toast.success("Activity logged successfully!");
             }
             
             if (existingRecordId) {
-              const { error } = await supabase.from('hsk_monthly_stock').update(updates).eq('id', existingRecordId);
+              const { error } = await supabase.from('hsk_monthly_stock').update({
+                  added_stock: updatedAdded,
+                  consumed: updatedConsumed,
+                  damaged: updatedDamaged,
+                  transferred: updatedTransferred
+              }).eq('id', existingRecordId);
               if (error) throw error;
             } else {
               const baseInsert = {
                 month_year: targetMonthKey,
                 article_number: selectedArticle.article_number, 
                 store_name: activeStore,
-                opening_stock: existingRow?.closingStock || 0, 
-                added_stock: updates.added_stock || 0,
-                consumed: updates.consumed || 0,
-                damaged: updates.damaged || 0,
-                transferred: updates.transferred || 0,
+                opening_stock: Number(existingRow?.closingStock || 0), 
+                added_stock: updatedAdded,
+                consumed: updatedConsumed,
+                damaged: updatedDamaged,
+                transferred: updatedTransferred,
                 rack: existingRow?.rack || '',
                 shelf_level: existingRow?.level || '',
               };
@@ -360,11 +374,11 @@ export default function PerpetualInventory() {
       try {
           if (editData.recordId) {
               const { error } = await supabase.from('hsk_monthly_stock').update({
-                  opening_stock: editData.openingStock,
-                  added_stock: editData.added,
-                  consumed: editData.consumed,
-                  damaged: editData.damaged,
-                  transferred: editData.transferred,
+                  opening_stock: Number(editData.openingStock),
+                  added_stock: Number(editData.added),
+                  consumed: Number(editData.consumed),
+                  damaged: Number(editData.damaged),
+                  transferred: Number(editData.transferred),
                   rack: editData.rack,
                   shelf_level: editData.level
               }).eq('id', editData.recordId);
@@ -374,11 +388,11 @@ export default function PerpetualInventory() {
                   month_year: getMonthKey(currentDate),
                   article_number: editData.articleNumber,
                   store_name: activeStore,
-                  opening_stock: editData.openingStock,
-                  added_stock: editData.added,
-                  consumed: editData.consumed,
-                  damaged: editData.damaged,
-                  transferred: editData.transferred,
+                  opening_stock: Number(editData.openingStock),
+                  added_stock: Number(editData.added),
+                  consumed: Number(editData.consumed),
+                  damaged: Number(editData.damaged),
+                  transferred: Number(editData.transferred),
                   rack: editData.rack,
                   shelf_level: editData.level
               });
@@ -462,6 +476,9 @@ export default function PerpetualInventory() {
         <div className="flex w-full md:w-auto gap-2">
             <button onClick={downloadExcel} className="hidden md:flex px-5 py-2 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-emerald-100 transition-colors">
                 <Download size={16}/> Export
+            </button>
+            <button onClick={openScanner} className="hidden md:flex px-5 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-indigo-100 transition-colors">
+                <ScanBarcode size={16}/> Scan Item
             </button>
             <div className="flex bg-white rounded-xl shadow-sm border border-slate-100 p-1 w-full md:w-auto">
                <button onClick={() => setActiveView('Inventory')} className={`flex-1 md:flex-none justify-center px-4 py-2.5 md:py-2 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 transition-colors ${activeView === 'Inventory' ? 'bg-[#6D2158] text-white' : 'text-slate-400 hover:text-[#6D2158]'}`}><FileText size={14}/> Log</button>
@@ -646,7 +663,7 @@ export default function PerpetualInventory() {
          </div>
       )}
 
-      {/* --- FLOATING ACTION BUTTON (SCANNER) --- */}
+      {/* --- FLOATING ACTION BUTTON (SCANNER - MOBILE ONLY) --- */}
       <button onClick={openScanner} className="fixed bottom-6 right-6 md:hidden z-40 bg-indigo-600 text-white p-4 rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.4)] active:scale-95 transition-all flex items-center justify-center border-4 border-white">
           <Barcode size={24} />
       </button>
@@ -674,7 +691,6 @@ export default function PerpetualInventory() {
                  {modalMode === 'Initialize' && (
                      <div>
                          <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Target Store</label>
-                         {/* Native 16px font to prevent zoom */}
                          <select 
                              className="w-full p-4 border border-slate-200 rounded-xl font-bold mt-1 text-[16px] md:text-sm bg-slate-50 focus:border-[#6D2158] outline-none"
                              value={transData.store}
@@ -690,7 +706,6 @@ export default function PerpetualInventory() {
                     <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Find Item (HK No, Name, or ID)</label>
                     <div className="relative">
                         <Search className="absolute left-4 top-4 text-slate-400" size={18} />
-                        {/* Native 16px font to prevent zoom */}
                         <input 
                            type="text" 
                            value={articleSearch} 
@@ -777,9 +792,8 @@ export default function PerpetualInventory() {
                          </div>
                      )}
                      
-                     {/* Safe area padding block for modern iPhones */}
                      <div className="pb-4">
-                        <button onClick={handleSaveTransaction} disabled={isSaving || transData.qty === null || transData.qty === undefined || transData.qty === 0} className="w-full py-5 bg-[#6D2158] text-white rounded-xl font-black mt-6 uppercase tracking-widest text-[16px] md:text-sm shadow-[0_8px_30px_rgb(109,33,88,0.4)] hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:active:scale-100 disabled:shadow-none">
+                        <button onClick={handleSaveTransaction} disabled={isSaving || transData.qty === null || transData.qty === undefined || (transData.qty === 0 && transData.type !== 'Count')} className="w-full py-5 bg-[#6D2158] text-white rounded-xl font-black mt-6 uppercase tracking-widest text-[16px] md:text-sm shadow-[0_8px_30px_rgb(109,33,88,0.4)] hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:active:scale-100 disabled:shadow-none">
                             {isSaving ? <Loader2 size={20} className="animate-spin"/> : <CheckCircle2 size={20}/>}
                             {modalMode === 'Initialize' ? 'Save & Add To Store' : 'Commit to Ledger'}
                         </button>
