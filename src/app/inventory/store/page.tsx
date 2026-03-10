@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Search, Plus, ArrowRight, ArrowLeft, FileText, PieChart, Zap, MapPin, X, 
-  PackagePlus, ArrowDownUp, Loader2, Save, ScanBarcode, CheckCircle2, Trash2, Edit3, Download, Barcode
+  PackagePlus, ArrowDownUp, Loader2, Save, ScanBarcode, CheckCircle2, Trash2, Edit3, Download, Barcode, Camera
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -73,14 +73,13 @@ export default function PerpetualInventory() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editData, setEditData] = useState<Partial<InventoryRow> | null>(null);
 
-  // --- SMART SEARCH STATE ---
+  // --- SMART SEARCH & SCAN STATE ---
   const [articleSearch, setArticleSearch] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedArticle, setSelectedArticle] = useState<MasterItem | null>(null);
 
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scanInput, setScanInput] = useState('');
-  const scanInputRef = useRef<HTMLInputElement>(null);
 
   const [transData, setTransData] = useState({
     qty: 0,
@@ -139,7 +138,6 @@ export default function PerpetualInventory() {
         if (rec.expiry_date) lastKnownExpiry = rec.expiry_date;
 
         if (rec.month_year < targetMonthKey) {
-           // Ensure these are treated as numbers
            const os = Number(rec.opening_stock || 0);
            const a = Number(rec.added_stock || 0);
            const c = Number(rec.consumed || 0);
@@ -226,38 +224,69 @@ export default function PerpetualInventory() {
       setIsModalOpen(true);
   };
 
-  const openScanner = () => {
-      setIsScannerOpen(true);
-      setTimeout(() => { scanInputRef.current?.focus(); }, 100);
-  };
+  // --- NATIVE CAMERA SCANNER LOGIC ---
+  useEffect(() => {
+      if (!isScannerOpen) return;
+      let html5QrcodeScanner: any = null;
 
-  const handleScanInput = (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === 'Enter') {
-          const code = scanInput.trim().toLowerCase();
-          const matchedItem = masterList.find(m => 
-              (m.hk_no || '').toLowerCase() === code || 
-              (m.article_number || '').toLowerCase() === code
-          );
-          
-          if (matchedItem) {
-              const inCurrentStore = inventoryRows.some(r => r.articleNumber === matchedItem.article_number);
-              if (inCurrentStore) {
-                  setModalMode('Log');
-                  handleSelectArticle(matchedItem);
-                  setIsScannerOpen(false);
-                  setIsModalOpen(true);
-                  setScanInput('');
-              } else {
-                  toast.error(`Found ${matchedItem.generic_name || matchedItem.article_name}, but it is not in ${activeStore} yet.`);
-                  setScanInput('');
-              }
-          } else {
-              toast.error("Item not found in master catalog.");
-              setScanInput('');
+      import('html5-qrcode').then(({ Html5QrcodeScanner }) => {
+          setTimeout(() => {
+              html5QrcodeScanner = new Html5QrcodeScanner(
+                  "qr-reader",
+                  { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
+                  false
+              );
+              html5QrcodeScanner.render(
+                  (decodedText: string) => {
+                      if (html5QrcodeScanner) html5QrcodeScanner.clear();
+                      setIsScannerOpen(false);
+                      handleCodeScanned(decodedText);
+                  },
+                  (error: any) => { /* Background scan attempts, ignore */ }
+              );
+          }, 100);
+      }).catch(err => {
+          console.error("Scanner failed to load", err);
+          toast.error("Camera module failed to load.");
+      });
+
+      return () => {
+          if (html5QrcodeScanner) {
+              html5QrcodeScanner.clear().catch((e:any) => console.log(e));
           }
+      };
+  }, [isScannerOpen]);
+
+  const handleCodeScanned = (code: string) => {
+      const cleanCode = code.trim().toLowerCase();
+      if (!cleanCode) return;
+
+      const matchedItem = masterList.find(m => 
+          (m.hk_no || '').toLowerCase() === cleanCode || 
+          (m.article_number || '').toLowerCase() === cleanCode
+      );
+      
+      if (matchedItem) {
+          const inCurrentStore = inventoryRows.some(r => r.articleNumber === matchedItem.article_number);
+          if (inCurrentStore) {
+              setModalMode('Log');
+              handleSelectArticle(matchedItem);
+              setIsModalOpen(true);
+          } else {
+              // If it's scanned but not in the store yet, suggest adding it!
+              setModalMode('Initialize');
+              handleSelectArticle(matchedItem);
+              setIsModalOpen(true);
+              toast.success(`Found ${matchedItem.generic_name || matchedItem.article_name}. Add it to the store first!`);
+          }
+      } else {
+          toast.error(`Item code "${code}" not found in Master Catalog.`);
       }
+      setScanInput('');
   };
 
+
+  // --- LOGIC / DATABASE TRANSACTIONS ---
   const handleSaveTransaction = async () => {
     if (!selectedArticle) return toast.error("Please select an item first.");
     setIsSaving(true);
@@ -291,7 +320,6 @@ export default function PerpetualInventory() {
                 return;
             }
 
-            // GUARANTEED NUMBER TYPES
             let updatedAdded = Number(existingRow?.added || 0);
             let updatedConsumed = Number(existingRow?.consumed || 0);
             let updatedDamaged = Number(existingRow?.damaged || 0);
@@ -370,7 +398,6 @@ export default function PerpetualInventory() {
   const handleSaveEdit = async () => {
       if (!editData) return;
       setIsSaving(true);
-      
       try {
           if (editData.recordId) {
               const { error } = await supabase.from('hsk_monthly_stock').update({
@@ -398,7 +425,6 @@ export default function PerpetualInventory() {
               });
               if (error) throw error;
           }
-          
           toast.success("Record updated successfully.");
           setIsEditModalOpen(false);
           fetchData();
@@ -458,7 +484,7 @@ export default function PerpetualInventory() {
   return (
     <div className="min-h-screen p-4 md:p-6 pb-28 md:pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
       
-      {/* MOBILE-FRIENDLY HEADER */}
+      {/* HEADER */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-4 md:pb-6 gap-4 md:gap-6">
         <div className="w-full flex justify-between items-center md:block">
           <div>
@@ -467,7 +493,6 @@ export default function PerpetualInventory() {
               Perpetual • {activeStore}
             </p>
           </div>
-          {/* Top Mobile Export Button */}
           <button onClick={downloadExcel} className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl md:hidden shadow-sm border border-emerald-100">
              <Download size={18}/>
           </button>
@@ -477,8 +502,8 @@ export default function PerpetualInventory() {
             <button onClick={downloadExcel} className="hidden md:flex px-5 py-2 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-emerald-100 transition-colors">
                 <Download size={16}/> Export
             </button>
-            <button onClick={openScanner} className="hidden md:flex px-5 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-indigo-100 transition-colors">
-                <ScanBarcode size={16}/> Scan Item
+            <button onClick={() => setIsScannerOpen(true)} className="hidden md:flex px-5 py-2 bg-indigo-600 border border-indigo-700 text-white rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-indigo-700 transition-colors">
+                <Camera size={16}/> Scan QR Label
             </button>
             <div className="flex bg-white rounded-xl shadow-sm border border-slate-100 p-1 w-full md:w-auto">
                <button onClick={() => setActiveView('Inventory')} className={`flex-1 md:flex-none justify-center px-4 py-2.5 md:py-2 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 transition-colors ${activeView === 'Inventory' ? 'bg-[#6D2158] text-white' : 'text-slate-400 hover:text-[#6D2158]'}`}><FileText size={14}/> Log</button>
@@ -489,9 +514,9 @@ export default function PerpetualInventory() {
 
       {activeView === 'Inventory' && (
       <>
-        {/* RESPONSIVE CONTROLS */}
+        {/* CONTROLS */}
         <div className="mt-4 md:mt-6 flex flex-col md:flex-row justify-between items-center gap-3 md:gap-4">
-           {/* Store & Month (Full width on mobile) */}
+           {/* Store & Month */}
            <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
                <div className="bg-white p-1.5 rounded-xl border border-slate-200 flex items-center justify-between w-full md:w-64 shadow-sm">
                   {['HK Main Store', 'HK Chemical Store'].map(s => (
@@ -510,7 +535,7 @@ export default function PerpetualInventory() {
                </div>
            </div>
            
-           {/* Actions (Full width grid on mobile) */}
+           {/* Actions */}
            <div className="grid grid-cols-2 md:flex gap-3 w-full md:w-auto">
                <button onClick={handleOpenInitialize} className="flex justify-center items-center gap-2 px-2 py-3.5 md:py-3 bg-white border border-slate-200 text-[#6D2158] rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider hover:bg-slate-50 shadow-sm active:scale-95 transition-all">
                   <PackagePlus size={16}/> Add Item
@@ -540,7 +565,7 @@ export default function PerpetualInventory() {
             </div>
         </div>
         
-        {/* DESKTOP TABLE VIEW (Hidden on Mobile) */}
+        {/* DESKTOP TABLE VIEW */}
         <div className="hidden md:block bg-white rounded-b-2xl shadow-sm border border-t-0 border-slate-200 overflow-x-auto">
            <table className="w-full text-left min-w-[1000px]">
               <thead>
@@ -592,7 +617,7 @@ export default function PerpetualInventory() {
            </table>
         </div>
 
-        {/* MOBILE CARD VIEW (Hidden on Desktop) */}
+        {/* MOBILE CARD VIEW */}
         <div className="md:hidden space-y-4 mt-4">
             {isLoading ? (<div className="p-10 text-center"><Loader2 className="animate-spin text-[#6D2158] mx-auto" size={28}/></div>) : 
             inventoryRows.filter(r => (r.hkNo||'').toLowerCase().includes(searchQuery.toLowerCase()) || (r.genericName||'').toLowerCase().includes(searchQuery.toLowerCase()) || (r.articleName||'').toLowerCase().includes(searchQuery.toLowerCase()) || r.articleNumber.includes(searchQuery))
@@ -635,7 +660,6 @@ export default function PerpetualInventory() {
                         </div>
                     </div>
 
-                    {/* Invisible full-card click target for Logging Activity */}
                     <button onClick={() => { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); }} className="absolute inset-0 z-0 bg-transparent rounded-2xl active:bg-slate-50/50 transition-colors"></button>
                 </div>
             ))}
@@ -663,19 +687,47 @@ export default function PerpetualInventory() {
          </div>
       )}
 
-      {/* --- FLOATING ACTION BUTTON (SCANNER - MOBILE ONLY) --- */}
-      <button onClick={openScanner} className="fixed bottom-6 right-6 md:hidden z-40 bg-indigo-600 text-white p-4 rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.4)] active:scale-95 transition-all flex items-center justify-center border-4 border-white">
-          <Barcode size={24} />
+      {/* --- CAMERA SCANNER FAB (MOBILE) --- */}
+      <button onClick={() => setIsScannerOpen(true)} className="fixed bottom-6 right-6 md:hidden z-40 bg-indigo-600 text-white p-4 rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.4)] active:scale-95 transition-all flex items-center justify-center border-4 border-white">
+          <Camera size={24} />
       </button>
 
-      {/* --- SMART LOGGING MODAL (BOTTOM SHEET ON MOBILE) --- */}
+      {/* --- NATIVE CAMERA SCANNER OVERLAY --- */}
+      {isScannerOpen && (
+          <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-[200] flex flex-col items-center justify-center p-6 animate-in fade-in">
+              <button onClick={() => setIsScannerOpen(false)} className="absolute top-12 right-8 text-white/50 hover:text-white bg-white/10 p-3 rounded-full transition-colors z-10"><X size={28}/></button>
+              
+              <div className="w-full max-w-sm bg-white rounded-[2rem] p-4 flex flex-col items-center text-center shadow-2xl relative overflow-hidden">
+                  <h2 className="text-xl font-black text-slate-800 tracking-tight mb-2 mt-4">Scan QR Label</h2>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Point your camera at the item's HK No QR Code</p>
+                  
+                  {/* The live camera feed appears here! */}
+                  <div id="qr-reader" className="w-full overflow-hidden rounded-xl border-4 border-indigo-50 bg-slate-100 min-h-[250px]"></div>
+
+                  {/* Fallback for manual entry */}
+                  <div className="mt-6 w-full">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Or type code manually</p>
+                    <input 
+                      type="text" 
+                      className="w-full p-4 border-2 border-slate-200 rounded-xl text-center font-mono font-bold text-lg text-slate-700 focus:border-[#6D2158] outline-none"
+                      placeholder="e.g. HK-1001"
+                      value={scanInput}
+                      onChange={(e) => setScanInput(e.target.value)}
+                      onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleCodeScanned(scanInput);
+                      }}
+                    />
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- SMART LOGGING MODAL --- */}
       {isModalOpen && (
         <div className="fixed inset-x-0 bottom-0 md:inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-end md:items-center justify-center md:p-4 animate-in fade-in duration-200">
            <div className="bg-white w-full max-w-lg rounded-t-[2rem] md:rounded-[2rem] shadow-2xl p-6 md:p-8 max-h-[90vh] overflow-y-auto relative animate-in slide-in-from-bottom-8 md:zoom-in-95">
               
-              {/* Mobile Drag Handle */}
               <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 md:hidden"></div>
-              
               <button onClick={() => setIsModalOpen(false)} className="absolute top-4 md:top-6 right-6 text-slate-400 hover:text-rose-500 bg-slate-100 p-2 rounded-full transition-colors"><X size={18}/></button>
 
               <div className="mb-6">
@@ -854,34 +906,6 @@ export default function PerpetualInventory() {
                     </div>
                 </div>
              </div>
-          </div>
-      )}
-
-      {/* --- FULL SCREEN SCANNER OVERLAY --- */}
-      {isScannerOpen && (
-          <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-[200] flex flex-col items-center justify-center p-6 animate-in fade-in">
-              <button onClick={() => setIsScannerOpen(false)} className="absolute top-12 right-8 text-white/50 hover:text-white bg-white/10 p-3 rounded-full transition-colors"><X size={28}/></button>
-              
-              <div className="w-full max-w-sm bg-white rounded-[2rem] p-8 flex flex-col items-center text-center shadow-2xl relative overflow-hidden">
-                  <div className="absolute top-0 left-0 w-full h-2 bg-indigo-500 animate-pulse"></div>
-                  <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mb-6 text-indigo-500 shadow-inner">
-                      <ScanBarcode size={48}/>
-                  </div>
-                  <h2 className="text-2xl font-black text-slate-800 tracking-tight mb-2">Scan Barcode</h2>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-8 leading-relaxed">Aim your scanner at the item or type the code below.</p>
-                  
-                  <input 
-                      ref={scanInputRef}
-                      type="text" 
-                      className="w-full p-5 border-4 border-indigo-100 rounded-2xl text-center font-mono font-black text-[20px] md:text-2xl text-indigo-800 focus:border-indigo-500 outline-none shadow-sm"
-                      placeholder="Waiting for code..."
-                      value={scanInput}
-                      onChange={(e) => setScanInput(e.target.value)}
-                      onKeyDown={handleScanInput}
-                      autoFocus
-                      onBlur={() => setTimeout(() => scanInputRef.current?.focus(), 100)} 
-                  />
-              </div>
           </div>
       )}
 

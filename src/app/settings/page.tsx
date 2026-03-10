@@ -5,7 +5,7 @@ import {
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar, Building,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User, Eye, CheckCircle2,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
-  Shield, KeyRound, History, Plane, Download, FileSpreadsheet, Merge
+  Shield, KeyRound, History, Plane, Download, FileSpreadsheet, Merge, QrCode
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -31,6 +31,7 @@ const GENERAL_CATEGORIES = [
 
 type MasterItem = {
   article_number: string;
+  hk_no: string | null; // The unique internal number
   article_name: string;   
   generic_name: string;   
   unit: string;
@@ -46,40 +47,20 @@ type MasterItem = {
   reorder_qty: number;
   primary_supplier: string;
   inventory_type?: string; 
-  legacy_ids?: string; // Newly added to store merged IDs
+  legacy_ids?: string;
 };
 
-type Constant = {
-  id: string;
-  type: string;
-  label: string;
-};
-
-type Host = {
-  id: string;
-  full_name: string;
-  host_id: string;
-  role: string;
-  system_role?: string;
-  pin?: string;
-  requires_pin_change?: boolean;
-};
+type Constant = { id: string; type: string; label: string; };
+type Host = { id: string; full_name: string; host_id: string; role: string; system_role?: string; pin?: string; requires_pin_change?: boolean; };
 
 // --- HELPER COMPONENTS ---
-
 const ListManager = ({ type, title, icon: Icon, placeholder, constants, newConstantValue, activeConstantType, setActiveConstantType, setNewConstantValue, handleAddConstant, handleDeleteConstant }: any) => {
   const list = constants.filter((c: any) => c.type === type);
   return (
     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
       <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
       <div className="flex gap-2 mb-4">
-        <input 
-          type="text" 
-          placeholder={placeholder} 
-          className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" 
-          value={activeConstantType === type ? newConstantValue : ''} 
-          onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}
-        />
+        <input type="text" placeholder={placeholder} className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={activeConstantType === type ? newConstantValue : ''} onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}/>
         <button onClick={() => handleAddConstant(type)} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs">Add</button>
       </div>
       <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
@@ -100,10 +81,8 @@ const RankManager = ({ type, title, icon: Icon, constants, hosts, fetchConstants
       const rankB = parseInt(b.label.split('::')[1] || '999');
       return rankA - rankB;
   });
-  
   const [roleName, setRoleName] = useState('');
   const [roleRank, setRoleRank] = useState('');
-
   const uniqueRoles = Array.from(new Set(hosts.map((h: any) => h.role).filter(Boolean))).sort((a: any, b: any) => a.localeCompare(b));
 
   const handleAdd = async () => {
@@ -118,11 +97,7 @@ const RankManager = ({ type, title, icon: Icon, constants, hosts, fetchConstants
       <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
       <p className="text-[10px] text-slate-400 mb-3 font-bold">Assign a rank (1 = Top) to sort roles across all lists.</p>
       <div className="flex gap-2 mb-4">
-        <select 
-          className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" 
-          value={roleName} 
-          onChange={(e) => setRoleName(e.target.value)}
-        >
+        <select className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleName} onChange={(e) => setRoleName(e.target.value)}>
             <option value="" disabled>Select Role...</option>
             {uniqueRoles.map((role: any) => (
                 <option key={role} value={role}>{role}</option>
@@ -163,13 +138,15 @@ export default function SettingsPage() {
   
   const [csvPreviewData, setCsvPreviewData] = useState<any[] | null>(null);
 
-  // --- ITEM MERGE STATE ---
   const [mergeModalItem, setMergeModalItem] = useState<MasterItem | null>(null);
   const [mergeTargetId, setMergeTargetId] = useState('');
   const [isMerging, setIsMerging] = useState(false);
 
+  // NEW: Printing QR
+  const [qrModalItem, setQrModalItem] = useState<MasterItem | null>(null);
+
   const defaultItemState: MasterItem = {
-    article_number: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
+    article_number: '', hk_no: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
     is_minibar_item: false, micros_name: '', sales_price: 0, avg_cost: 0, sort_order: 0,
     image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: '', inventory_type: '', legacy_ids: ''
   };
@@ -202,6 +179,9 @@ export default function SettingsPage() {
   const [itemBatches, setItemBatches] = useState<any[]>([]);
   const [newBatchDate, setNewBatchDate] = useState('');
   const [isLoadingBatches, setIsLoadingBatches] = useState(false);
+
+  // DUPLICATE DETECTOR STATE
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
 
   useEffect(() => { fetchMasterList(); fetchConstants(); fetchHosts(); }, []);
 
@@ -242,7 +222,6 @@ export default function SettingsPage() {
                 if (role && rank) roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
             });
         }
-
         const sortedHosts = [...hostRes.data].sort((a: any, b: any) => {
             const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
             const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
@@ -255,7 +234,48 @@ export default function SettingsPage() {
     }
   };
 
-  // --- ITEM ACTIONS ---
+  // --- SMART AUTO-HK GENERATOR ---
+  const generateNextHKNo = () => {
+      let maxNum = 1000; // Starting point
+      masterList.forEach(item => {
+          if (item.hk_no && item.hk_no.startsWith('HK-')) {
+              const numStr = item.hk_no.replace('HK-', '');
+              const num = parseInt(numStr, 10);
+              if (!isNaN(num) && num > maxNum) {
+                  maxNum = num;
+              }
+          }
+      });
+      return `HK-${maxNum + 1}`;
+  };
+
+  // --- DUPLICATE CHECKER ---
+  useEffect(() => {
+      if (!isFormOpen || isEditing || !currentItem.generic_name) {
+          setDuplicateWarning(null);
+          return;
+      }
+      
+      const searchName = currentItem.generic_name.toLowerCase().trim();
+      if (searchName.length < 3) {
+          setDuplicateWarning(null);
+          return;
+      }
+
+      // Check if any existing item contains a similar word
+      const possibleDupes = masterList.filter(m => {
+          if (!m.generic_name) return false;
+          return m.generic_name.toLowerCase().includes(searchName) || searchName.includes(m.generic_name.toLowerCase());
+      });
+
+      if (possibleDupes.length > 0) {
+          setDuplicateWarning(`Wait! We found similar items: ${possibleDupes.slice(0,2).map(d => d.generic_name).join(', ')}`);
+      } else {
+          setDuplicateWarning(null);
+      }
+  }, [currentItem.generic_name, isFormOpen, isEditing, masterList]);
+
+
   const handleEditItem = (item: MasterItem) => {
     setCurrentItem(item);
     setIsEditing(true);
@@ -264,8 +284,10 @@ export default function SettingsPage() {
   };
 
   const handleAddNew = () => {
+    const newHK = generateNextHKNo();
     setCurrentItem({ 
         ...defaultItemState, 
+        hk_no: newHK, // Auto Assign New Number
         is_minibar_item: activeTab === 'Minibar Menu',
         category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'Guest Amenities'
     });
@@ -302,6 +324,7 @@ export default function SettingsPage() {
       ...cleanData,
       generic_name: currentItem.generic_name || currentItem.article_name,
       micros_name: currentItem.is_minibar_item && !currentItem.micros_name ? currentItem.article_name : currentItem.micros_name,
+      hk_no: currentItem.hk_no || generateNextHKNo() // Fallback just in case
     };
 
     if (isEditing) {
@@ -343,17 +366,11 @@ export default function SettingsPage() {
       toast.loading("Merging items...", { id: 'merge-toast' });
 
       try {
-          // 1. Point all past inventory records to the new ID
-          await supabase.from('hsk_inventory_records').update({ article_number: mergeTargetId }).eq('article_number', mergeModalItem.article_number);
-          
-          // 2. Point all expiry batches to the new ID
+          await supabase.from('hsk_monthly_stock').update({ article_number: mergeTargetId }).eq('article_number', mergeModalItem.article_number);
           await supabase.from('hsk_expiry_batches').update({ article_number: mergeTargetId }).eq('article_number', mergeModalItem.article_number);
           
-          // 3. Update the target item to "archive" the old ID inside its legacy_ids field
           const newLegacyIds = targetItem.legacy_ids ? `${targetItem.legacy_ids}, ${mergeModalItem.article_number}` : mergeModalItem.article_number;
           await supabase.from('hsk_master_catalog').update({ legacy_ids: newLegacyIds }).eq('article_number', mergeTargetId);
-          
-          // 4. Finally, delete the old item from the catalog
           await supabase.from('hsk_master_catalog').delete().eq('article_number', mergeModalItem.article_number);
 
           toast.success("Items successfully merged!", { id: 'merge-toast' });
@@ -370,20 +387,13 @@ export default function SettingsPage() {
 
   // --- CSV UPLOAD/DOWNLOAD LOGIC ---
   const parseCSVLine = (text: string) => {
-      let ret = [];
-      let inQuote = false;
-      let value = '';
+      let ret = []; let inQuote = false; let value = '';
       for (let i = 0; i < text.length; i++) {
           let ch = text[i];
           if (inQuote) {
-              if (ch === '"') {
-                  if (i + 1 < text.length && text[i + 1] === '"') { value += '"'; i++; } 
-                  else { inQuote = false; }
-              } else { value += ch; }
+              if (ch === '"') { if (i + 1 < text.length && text[i + 1] === '"') { value += '"'; i++; } else { inQuote = false; } } else { value += ch; }
           } else {
-              if (ch === '"') { inQuote = true; } 
-              else if (ch === ',') { ret.push(value.trim()); value = ''; } 
-              else { value += ch; }
+              if (ch === '"') { inQuote = true; } else if (ch === ',') { ret.push(value.trim()); value = ''; } else { value += ch; }
           }
       }
       ret.push(value.trim());
@@ -391,13 +401,12 @@ export default function SettingsPage() {
   };
 
   const downloadCSVFormat = () => {
-      const csvContent = "article_number,article_name,generic_name,category,unit,inventory_type\n" +
-                         "3101017,Body Lotion (Lemongrass),Body Lotion - Lemongrass,Guest Amenities,Each,Asset Inventory\n" +
-                         "1002,Example Towel,Bath Towel,Linen,Each,Linen Inventory";
+      const csvContent = "hk_no,article_number,article_name,generic_name,category,unit,inventory_type\n" +
+                         "HK-1001,3101017,Body Lotion (Lemongrass),Body Lotion - Lemongrass,Guest Amenities,Each,Asset Inventory\n" +
+                         "HK-1002,1002,Example Towel,Bath Towel,Linen,Each,Linen Inventory";
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
+      a.href = window.URL.createObjectURL(blob);
       a.download = "MasterCatalog_Upload_Format.csv";
       a.click();
       toast.success("Format Downloaded!");
@@ -422,6 +431,7 @@ export default function SettingsPage() {
               if (idIdx === -1 || nameIdx === -1) throw new Error("CSV must contain 'article_number' and 'article_name' columns.");
 
               const genNameIdx = headers.indexOf('generic_name');
+              const hkIdx = headers.indexOf('hk_no');
               const catIdx = headers.indexOf('category');
               const unitIdx = headers.indexOf('unit');
               const invTypeIdx = headers.indexOf('inventory_type');
@@ -439,6 +449,7 @@ export default function SettingsPage() {
 
                   itemsMap.set(articleNum, {
                       article_number: articleNum,
+                      hk_no: hkIdx !== -1 && cols[hkIdx] ? cols[hkIdx] : generateNextHKNo(), // Auto-generate if missing
                       article_name: cols[nameIdx] || 'Unnamed Item',
                       generic_name: genNameIdx !== -1 && cols[genNameIdx] ? cols[genNameIdx] : (cols[nameIdx] || 'Unnamed Item'),
                       category: categoryValue,
@@ -480,6 +491,44 @@ export default function SettingsPage() {
           setIsUploading(false);
       }
   };
+
+  const handlePrintQR = () => {
+      if (!qrModalItem) return;
+      
+      const printWindow = window.open('', '_blank');
+      if (!printWindow) return;
+
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qrModalItem.hk_no || qrModalItem.article_number)}`;
+
+      printWindow.document.write(`
+          <html>
+          <head>
+              <title>Print Label - ${qrModalItem.hk_no}</title>
+              <style>
+                  body { font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #fff; }
+                  .label { border: 2px solid #000; padding: 20px; text-align: center; width: 250px; border-radius: 12px; }
+                  .qr { width: 150px; height: 150px; margin-bottom: 10px; }
+                  .hk { font-size: 24px; font-weight: 900; margin: 0; }
+                  .name { font-size: 14px; margin: 5px 0 0 0; color: #333; font-weight: bold; }
+                  .article { font-size: 10px; margin: 5px 0 0 0; color: #666; font-family: monospace;}
+              </style>
+          </head>
+          <body>
+              <div class="label">
+                  <img src="${qrUrl}" class="qr"/>
+                  <h1 class="hk">${qrModalItem.hk_no || 'NO-HK'}</h1>
+                  <p class="name">${qrModalItem.generic_name || qrModalItem.article_name}</p>
+                  <p class="article">Art No: ${qrModalItem.article_number}</p>
+              </div>
+              <script>
+                  window.onload = function() { setTimeout(() => { window.print(); window.close(); }, 500); }
+              </script>
+          </body>
+          </html>
+      `);
+      printWindow.document.close();
+  };
+
 
   // --- MISC SETTINGS FUNCTIONS ---
   const handleAddConstant = async (type: string) => {
@@ -594,7 +643,9 @@ export default function SettingsPage() {
   };
 
   const filteredList = masterList.filter(item => 
-    item.article_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (item.article_name||'').toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (item.generic_name||'').toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (item.hk_no||'').toLowerCase().includes(searchQuery.toLowerCase()) || 
     item.article_number.includes(searchQuery)
   ).filter(item => {
     if (activeTab === 'Minibar Menu') return item.is_minibar_item;
@@ -809,18 +860,34 @@ export default function SettingsPage() {
                         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload}/>
                     </div>
                     <div className="md:col-span-9 grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Number</label>
-                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100' : 'bg-slate-50'}`} value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
+                        
+                        <div className="col-span-2 p-3 bg-indigo-50 border border-indigo-100 rounded-xl mb-2 flex items-center gap-4">
+                            <div className="flex-1">
+                                <label className="text-[10px] font-black text-indigo-500 uppercase ml-1 flex items-center gap-1"><Zap size={12}/> Unique HK Number</label>
+                                <input disabled={true} className="w-full p-2 bg-transparent font-mono font-black text-indigo-800 text-lg outline-none" value={currentItem.hk_no || ''} />
+                            </div>
+                            <button onClick={() => setCurrentItem({...currentItem, hk_no: generateNextHKNo()})} className="px-4 py-2 bg-white text-indigo-600 rounded-lg text-[10px] font-bold uppercase shadow-sm border border-indigo-100 hover:bg-indigo-600 hover:text-white transition-colors">
+                                Generate New
+                            </button>
                         </div>
+
+                        <div className="md:col-span-2">
+                           <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name (Display Name)</label>
+                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
+                           {duplicateWarning && (
+                               <p className="text-[10px] font-bold text-amber-600 bg-amber-50 p-2 rounded-lg mt-2 flex items-center gap-1 animate-in fade-in"><AlertTriangle size={12}/> {duplicateWarning}</p>
+                           )}
+                        </div>
+
                         <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Article Name</label>
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Name</label>
                            <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} />
                         </div>
-                        <div className="md:col-span-2">
-                           <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name</label>
-                           <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} />
+                        <div>
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Number {isEditing && <span className="text-rose-400 lowercase">(Cannot be changed)</span>}</label>
+                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50'}`} value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} />
                         </div>
+                        
                         
                         <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Category</label>
@@ -865,7 +932,7 @@ export default function SettingsPage() {
                         )}
                     </div>
                  </div>
-                 <button onClick={handleSaveItem} disabled={isUploading} className="w-full mt-6 py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] transition-all flex items-center justify-center gap-2"><Save size={18}/> {isEditing ? 'Update Catalog' : 'Save to Catalog'}</button>
+                 <button onClick={handleSaveItem} disabled={isUploading || !!duplicateWarning} className="w-full mt-6 py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] transition-all flex items-center justify-center gap-2 disabled:opacity-50"><Save size={18}/> {isEditing ? 'Update Catalog' : 'Save to Catalog'}</button>
               </div>
            )}
 
@@ -874,7 +941,7 @@ export default function SettingsPage() {
                   <table className="w-full text-left">
                      <thead className="bg-slate-50 border-b border-slate-100">
                         <tr>
-                           <th className="p-4 text-xs font-bold text-slate-400 uppercase w-20">ID</th>
+                           <th className="p-4 text-xs font-bold text-slate-400 uppercase w-20">HK No</th>
                            <th className="p-4 text-xs font-bold text-slate-400 uppercase">Item Details</th>
                            <th className="p-4 text-xs font-bold text-slate-400 uppercase">Category</th>
                            <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Action</th>
@@ -884,15 +951,19 @@ export default function SettingsPage() {
                         {filteredList.map(item => {
                            const Icon = CATEGORY_ICONS[item.category] || Box;
                            return (
-                             <tr key={item.article_number} className="hover:bg-slate-50 transition-colors">
-                                <td className="p-4 text-xs font-bold text-slate-400 font-mono">{item.article_number}</td>
+                             <tr key={item.article_number} className="hover:bg-slate-50 transition-colors group">
+                                <td className="p-4">
+                                    <div className="bg-slate-100 text-slate-600 font-mono font-black text-[10px] px-2 py-1 rounded text-center w-max border border-slate-200">
+                                        {item.hk_no || '-'}
+                                    </div>
+                                </td>
                                 <td className="p-4">
                                    <div className="flex items-center gap-3">
                                        <div className="w-10 h-10 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-100 shrink-0">{item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <Icon size={18} className="text-slate-400"/>}</div>
                                        <div>
-                                           <div className="font-bold text-slate-700 text-sm truncate">{item.generic_name || item.article_name}</div>
+                                           <div className="font-bold text-slate-800 text-sm truncate">{item.generic_name || item.article_name}</div>
                                            <div className="text-[10px] text-slate-400 uppercase truncate">
-                                               {item.article_name} • {item.unit}
+                                               {item.article_name} • #{item.article_number} • {item.unit}
                                                {item.inventory_type && <span className="ml-2 text-indigo-500 font-black tracking-widest">• linked: {item.inventory_type}</span>}
                                            </div>
                                            {item.legacy_ids && (
@@ -908,6 +979,7 @@ export default function SettingsPage() {
                                    {activeTab === 'Expiry Setup' && (<button onClick={() => handleOpenExpiryBatches(item)} className="px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors text-[10px] font-bold uppercase flex items-center gap-1 shadow-sm"><Calendar size={14}/> Batches</button>)}
                                    
                                    {/* ALWAYS VISIBLE ACTIONS */}
+                                   <button onClick={() => {setQrModalItem(item); handlePrintQR();}} className="p-2 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 rounded-lg transition-colors" title="Print QR Code Label"><QrCode size={16}/></button>
                                    <button onClick={() => setMergeModalItem(item)} className="p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 rounded-lg transition-colors" title="Merge into another item"><Merge size={16}/></button>
                                    <button onClick={() => handleEditItem(item)} className="p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600 rounded-lg transition-colors"><Edit3 size={16}/></button>
                                    <button onClick={() => handleDeleteItem(item.article_number)} className="p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-500 rounded-lg transition-colors"><Trash2 size={16}/></button>
@@ -937,7 +1009,7 @@ export default function SettingsPage() {
                   <div className="mb-6 space-y-4">
                       <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                           <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Old Item (Will be deleted)</p>
-                          <div className="font-bold text-slate-800">{mergeModalItem.article_name} <span className="text-rose-500 font-mono text-sm ml-2">#{mergeModalItem.article_number}</span></div>
+                          <div className="font-bold text-slate-800">{mergeModalItem.generic_name || mergeModalItem.article_name} <span className="text-rose-500 font-mono text-sm ml-2">#{mergeModalItem.article_number}</span></div>
                       </div>
 
                       <div className="flex justify-center text-slate-300"><Merge size={24}/></div>
@@ -947,7 +1019,7 @@ export default function SettingsPage() {
                           <select className="w-full p-4 mt-1 border-2 border-amber-200 rounded-xl font-bold text-sm bg-amber-50 text-amber-800 outline-none focus:border-amber-400" value={mergeTargetId} onChange={(e) => setMergeTargetId(e.target.value)}>
                               <option value="">Select new item...</option>
                               {masterList.filter(i => i.article_number !== mergeModalItem.article_number && i.is_minibar_item === mergeModalItem.is_minibar_item).map(i => (
-                                  <option key={i.article_number} value={i.article_number}>{i.article_name} (#{i.article_number})</option>
+                                  <option key={i.article_number} value={i.article_number}>{i.generic_name || i.article_name} (#{i.article_number})</option>
                               ))}
                           </select>
                       </div>
@@ -963,7 +1035,7 @@ export default function SettingsPage() {
       {/* --- PREVIEW MODAL --- */}
       {csvPreviewData && (
           <div className="modal-overlay !z-[9999]">
-              <div className="modal-content !max-w-4xl flex flex-col h-[80vh]">
+              <div className="modal-content !max-w-5xl flex flex-col h-[80vh]">
                   <div className="flex justify-between items-center mb-6 shrink-0">
                       <div>
                           <h3 className="text-2xl font-black tracking-tight text-slate-800">Review Import</h3>
@@ -974,10 +1046,11 @@ export default function SettingsPage() {
                   
                   <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl mb-6 custom-scrollbar bg-white">
                       <table className="w-full text-left text-sm">
-                          <thead className="bg-slate-50 sticky top-0 border-b border-slate-200">
+                          <thead className="bg-slate-50 sticky top-0 border-b border-slate-200 shadow-sm">
                               <tr>
+                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">HK No</th>
                                   <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">ID</th>
-                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Item Name</th>
+                                  <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Display Name</th>
                                   <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Category</th>
                                   <th className="p-3 font-bold text-slate-500 uppercase text-[10px] tracking-wider">Inventory Link</th>
                               </tr>
@@ -985,8 +1058,9 @@ export default function SettingsPage() {
                           <tbody className="divide-y divide-slate-100">
                               {csvPreviewData.map((item, idx) => (
                                   <tr key={idx} className="hover:bg-slate-50">
+                                      <td className="p-3 font-mono text-xs font-black text-indigo-600">{item.hk_no}</td>
                                       <td className="p-3 font-mono text-xs">{item.article_number}</td>
-                                      <td className="p-3 font-bold text-slate-700">{item.article_name}</td>
+                                      <td className="p-3 font-bold text-slate-800">{item.generic_name} <span className="block text-[9px] text-slate-400 font-normal">{item.article_name}</span></td>
                                       <td className="p-3 text-xs text-slate-500">{item.category}</td>
                                       <td className="p-3 text-xs font-bold text-indigo-500">{item.inventory_type || '-'}</td>
                                   </tr>
@@ -998,15 +1072,14 @@ export default function SettingsPage() {
                   <div className="flex gap-4 shrink-0">
                       <button onClick={() => setCsvPreviewData(null)} className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-xl font-bold uppercase tracking-widest text-xs hover:bg-slate-200 transition-colors">Cancel</button>
                       <button onClick={confirmCSVImport} disabled={isUploading} className="flex-1 py-4 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-widest text-xs shadow-lg hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">
-                          {isUploading ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>}
-                          Confirm & Import
+                          {isUploading ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Confirm & Import
                       </button>
                   </div>
               </div>
           </div>
       )}
 
-      {/* --- OTHER MODALS --- */}
+      {/* --- OTHER MODALS (HOST LOGS / EXPIRY) --- */}
       {selectedLogHost && (
           <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
