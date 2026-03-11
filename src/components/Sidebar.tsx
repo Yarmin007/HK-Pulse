@@ -7,12 +7,13 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { name: "Task Hub", icon: CheckSquare, path: "/tasks" },
   { name: "Requests", icon: ClipboardList, path: "/requests" },
 ];
 
@@ -32,7 +33,7 @@ const MENU_ITEMS = [
 ];
 
 const TEAM_ITEMS = [
-  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, // <-- ADDED HERE
+  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, 
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
@@ -59,7 +60,7 @@ const STAFF_CORE_BASE = [
 
 const STAFF_PROFILE_ITEMS = [
   { name: "My Profile", icon: Contact, path: "/profile" },
-  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, // <-- ADDED HERE FOR STAFF
+  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" },
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
@@ -133,7 +134,7 @@ export default function Sidebar() {
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: ClipboardList, path: "/requests" },
-      { name: "Guest List", icon: Users, path: "/guests" },
+      { name: "Task Hub", icon: CheckSquare, path: "/tasks" }, // <-- Updated to Task Hub
   ];
 
   const STAFF_BOTTOM_TABS = isPoolAttendant ? [

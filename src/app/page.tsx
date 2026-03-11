@@ -3,16 +3,17 @@ import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { 
   Users, ShoppingCart, Clock, AlertTriangle, 
   CheckCircle2, BarChart2, Edit3, Loader2, Search,
-  Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft
+  Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft,
+  CheckSquare, CalendarDays, RefreshCw
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
 import { differenceInDays, parseISO, isAfter, isBefore, format, isSameDay, startOfWeek, endOfWeek, addDays } from 'date-fns';
+import toast from 'react-hot-toast';
 
 // =========================================================================
-// 🧠 FAST MATH ENGINE (Built directly into the file - No imports needed!)
+// 🧠 FAST MATH ENGINE
 // =========================================================================
-
 const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
 
 const getPayrollPeriod = (date = new Date()) => {
@@ -154,7 +155,6 @@ const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr: strin
     };
 };
 
-
 // =========================================================================
 // 🖥️ MAIN DASHBOARD COMPONENT
 // =========================================================================
@@ -208,6 +208,9 @@ export default function Dashboard() {
   const [isHolidayModalOpen, setIsHolidayModalOpen] = useState(false);
   const [publicHolidays, setPublicHolidays] = useState<{id: string, date: string, name: string}[]>([]);
 
+  // ADMIN TASKS STATE
+  const [adminTasks, setAdminTasks] = useState<any[]>([]);
+
   useEffect(() => { 
       fetchDashboardData(); 
       const reqChannel = supabase.channel('dashboard_reqs')
@@ -217,7 +220,6 @@ export default function Dashboard() {
       return () => { supabase.removeChannel(reqChannel); supabase.removeChannel(orderChannel); };
   }, []);
 
-  // Update RPC stats dynamically when date picker changes
   useEffect(() => {
       if (!isLoading) {
           const fetchRPC = async () => {
@@ -228,7 +230,6 @@ export default function Dashboard() {
       }
   }, [cutoffDate]);
 
-  // Handle Team Modal Host Click (Fetches just 1 month of attendance instantly)
   const handleHostClick = async (itemData: any) => {
       setSelectedTeamHost(itemData);
       setSelectedTeamHostAtt([]);
@@ -375,9 +376,15 @@ export default function Dashboard() {
             return { ...b, item_name: masterItem?.article_name || b.article_number, days };
         }).filter((b: any) => b.days <= 60).sort((a: any, b: any) => a.days - b.days);
 
+        const { data: tasksData } = await supabase.from('hsk_admin_tasks')
+            .select('*')
+            .eq('status', 'Pending')
+            .order('due_date', { ascending: true });
+
         setStats({ totalHosts: hostCount || 0, pendingOrders: orderCount || 0, pendingReqs: pendingReqsCount, expiringBatches: expiringList.length });
         setCriticalItems(expiringList);
         setRecentActivity((reqs || []).slice(0, 6));
+        setAdminTasks(tasksData || []);
     } 
     
     if (loggedHostId) {
@@ -395,6 +402,19 @@ export default function Dashboard() {
     }
 
     if (showLoading) setIsLoading(false);
+  };
+
+  const handleCompleteTask = async (id: string) => {
+      const { error } = await supabase.from('hsk_admin_tasks').update({ 
+          status: 'Completed', 
+          completed_at: new Date().toISOString(), 
+          completed_by: currentUser?.full_name || 'Admin' 
+      }).eq('id', id);
+
+      if (!error) {
+          setAdminTasks(adminTasks.filter(t => t.id !== id));
+          toast.success('Task Completed!');
+      }
   };
 
   const saveNickname = async () => {
@@ -451,6 +471,7 @@ export default function Dashboard() {
       return computeLeaveBalancesRPC(currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
   }, [currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves]);
 
+  // FULLY RESPONSIVE CALENDAR GRID
   const renderPayrollGrid = (attendanceArray: any[], startDateObj: Date, endDateObj: Date) => {
       if (!attendanceArray) return null;
       
@@ -502,28 +523,28 @@ export default function Dashboard() {
               }
 
               days.push(
-                  <div key={dateStr} className={`min-h-[75px] xl:min-h-[95px] p-2 flex flex-col rounded-2xl border-2 transition-all ${bgClass} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-2 shadow-md transform scale-105 z-10 bg-white' : ''}`}>
-                      <span className={`text-xs xl:text-sm font-black mb-1 ${isToday ? 'text-[#6D2158]' : textClass}`}>
-                          {format(day, 'd')} <span className="text-[9px] font-normal opacity-60 ml-0.5">{format(day, 'MMM')}</span>
+                  <div key={dateStr} className={`min-h-[55px] md:min-h-[85px] p-1.5 md:p-2 flex flex-col rounded-xl md:rounded-2xl border-2 transition-all overflow-hidden ${bgClass} ${isToday ? 'ring-2 ring-[#6D2158] ring-offset-1 md:ring-offset-2 shadow-md transform md:scale-105 z-10 bg-white' : ''}`}>
+                      <span className={`text-[10px] md:text-sm font-black mb-0.5 md:mb-1 ${isToday ? 'text-[#6D2158]' : textClass}`}>
+                          {format(day, 'd')} <span className="hidden md:inline text-[9px] font-normal opacity-60 ml-0.5">{format(day, 'MMM')}</span>
                       </span>
                       {isCurrentPeriod && status && (
-                          <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-widest w-fit mb-1 border shadow-sm ${badgeClass}`}>
+                          <span className={`px-1 py-0.5 rounded text-[8px] md:text-[9px] font-black uppercase tracking-widest w-fit mb-0.5 md:mb-1 border shadow-sm ${badgeClass}`}>
                               {status}
                           </span>
                       )}
                       {isCurrentPeriod && duty && (
-                          <div className={`mt-auto flex items-center gap-1 text-[9px] font-bold uppercase ${textClass} opacity-80`}>
-                              <Clock size={10} className="shrink-0"/> <span className="truncate">{duty}</span>
+                          <div className={`mt-auto flex items-center gap-0.5 md:gap-1 text-[8px] md:text-[9px] font-bold uppercase ${textClass} opacity-80 truncate`}>
+                              <Clock size={8} className="shrink-0 hidden md:block"/> <span className="truncate">{duty}</span>
                           </div>
                       )}
                   </div>
               );
               day = addDays(day, 1);
           }
-          rows.push(<div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 xl:mb-3 min-w-[600px]" key={day.toString()}>{days}</div>);
+          rows.push(<div className="grid grid-cols-7 gap-1 md:gap-3 mb-1 md:mb-3 w-full" key={day.toString()}>{days}</div>);
           days = [];
       }
-      return <div className="mt-2 overflow-x-auto custom-scrollbar pb-4">{rows}</div>;
+      return <div className="mt-2 w-full pb-4">{rows}</div>;
   };
 
   const hour = new Date().getHours();
@@ -541,95 +562,106 @@ export default function Dashboard() {
   }
 
   const BalanceCard = ({ label, value, color, isTotal = false }: any) => (
-      <div className={`p-4 rounded-2xl border flex flex-col justify-center items-center ${
-          isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform scale-105' : `bg-${color}-50 border-${color}-100`
+      <div className={`p-3 md:p-4 rounded-2xl border flex flex-col justify-center items-center ${
+          isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform md:scale-105' : `bg-${color}-50 border-${color}-100`
       }`}>
-          <span className={`text-[10px] font-bold uppercase tracking-widest text-center ${isTotal ? 'text-white/80' : `text-${color}-500`}`}>{label}</span>
-          <span className={`text-2xl font-black mt-1 ${isTotal ? 'text-white' : `text-${color}-700`}`}>{value}</span>
+          <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-center leading-tight ${isTotal ? 'text-white/80' : `text-${color}-500`}`}>{label}</span>
+          <span className={`text-xl md:text-2xl font-black mt-1 ${isTotal ? 'text-white' : `text-${color}-700`}`}>{value}</span>
       </div>
   );
 
   return (
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
       
-      {/* NATIVE STICKY HEADER WITH PROFILE */}
-      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200 px-4 py-5 md:px-8 md:py-6 shadow-sm flex flex-col xl:flex-row justify-between xl:items-end gap-6">
-        <div className="flex items-center gap-5">
-           <div className="w-16 h-16 md:w-20 md:h-20 rounded-[1.25rem] overflow-hidden bg-slate-100 border-2 border-slate-200 shrink-0 shadow-sm flex items-center justify-center text-[#6D2158]">
-               {currentUser?.image_url ? (
-                   <img src={currentUser.image_url} className="w-full h-full object-cover" alt="Profile" />
-               ) : (
-                   <span className="text-3xl font-black">{displayName.charAt(0) || <User/>}</span>
-               )}
-           </div>
-           <div>
-              <div className="flex items-center gap-3">
-                  {isEditingName ? (
-                      <div className="flex items-center gap-2">
-                          <span className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">{greeting},</span>
-                          <input 
-                              type="text" 
-                              autoFocus
-                              className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158] bg-white border border-[#6D2158] rounded-lg px-2 outline-none w-40 shadow-sm" 
-                              value={tempName} 
-                              onChange={(e) => setTempName(e.target.value)}
-                              onKeyDown={(e) => e.key === 'Enter' && saveNickname()}
-                          />
-                          <button onClick={saveNickname} className="p-2 bg-emerald-100 text-emerald-600 rounded-lg hover:bg-emerald-200 shadow-sm"><CheckCircle2 size={16}/></button>
-                      </div>
-                  ) : (
-                      <div className="flex items-center gap-2 group cursor-pointer" onClick={() => { setTempName(displayName); setIsEditingName(true); }}>
-                          <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">
-                              {greeting}, {displayName}
-                          </h1>
-                          <Edit3 size={16} className="text-slate-300 group-hover:text-[#6D2158] transition-colors opacity-0 group-hover:opacity-100"/>
-                      </div>
-                  )}
+      {/* REDESIGNED CENTERED PROFILE HEADER */}
+      <div className="relative pt-10 md:pt-16 pb-8 px-4 md:px-8 flex flex-col items-center justify-center text-center bg-white/80 backdrop-blur-xl border-b border-slate-200 shadow-[0_4px_30px_rgba(0,0,0,0.02)] z-30 animate-in fade-in slide-in-from-top-4">
+          
+          <div 
+              className="relative w-28 h-28 md:w-32 md:h-32 rounded-full overflow-hidden bg-slate-100 border-[6px] border-white shadow-xl mb-5 text-[#6D2158] flex items-center justify-center cursor-pointer group transition-transform active:scale-95" 
+              onClick={() => { setTempName(displayName); setIsEditingName(true); }}
+          >
+              {currentUser?.image_url ? (
+                  <img src={currentUser.image_url} className="w-full h-full object-cover" alt="Profile" />
+              ) : (
+                  <span className="text-4xl font-black">{displayName.charAt(0) || <User size={40}/>}</span>
+              )}
+              <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Edit3 size={24} className="text-white"/>
               </div>
-              <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest flex items-center gap-2">
-                 {currentUser?.role || 'Staff'} • {currentUser?.host_id || 'Unknown ID'}
-                 <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active</span>
-              </p>
-           </div>
-        </div>
+          </div>
 
-        <div className="flex flex-col items-start xl:items-end gap-2">
-            <div className="flex items-center gap-3">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">My Leave Balances As Of</span>
-                
-                {/* NEW TEAM LEAVES BUTTON */}
-                {isSupervisor && (
-                    <button onClick={loadTeamLeaves} className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2.5 py-1 rounded-full hover:bg-purple-100 transition-colors uppercase tracking-wider border border-purple-200 relative z-30 flex items-center gap-1 shadow-sm">
-                        <BarChart2 size={12}/> Team Leaves
-                    </button>
-                )}
+          {isEditingName ? (
+              <div className="flex items-center justify-center gap-2 mb-3">
+                  <input 
+                      type="text" 
+                      autoFocus
+                      className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158] bg-white border-2 border-[#6D2158] rounded-xl px-3 py-1 text-center outline-none w-48 shadow-lg" 
+                      value={tempName} 
+                      onChange={(e) => setTempName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && saveNickname()}
+                  />
+                  <button onClick={saveNickname} className="p-2.5 bg-emerald-100 text-emerald-600 rounded-xl hover:bg-emerald-200 shadow-md transition-colors"><CheckCircle2 size={24}/></button>
+              </div>
+          ) : (
+              <h1 className="text-2xl md:text-4xl font-black tracking-tight text-[#6D2158] mb-1.5">
+                  {greeting}, {displayName}
+              </h1>
+          )}
+          
+          <p className="text-xs md:text-sm font-bold text-slate-400 uppercase tracking-widest flex flex-wrap items-center justify-center gap-2">
+              {currentUser?.role || 'Staff'} • {currentUser?.host_id || 'Unknown ID'}
+              <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] md:text-[10px] flex items-center gap-1.5 shadow-sm border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
+              </span>
+          </p>
 
-                <button onClick={() => setIsHolidayModalOpen(true)} className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full hover:bg-blue-100 transition-colors uppercase tracking-wider border border-blue-200 relative z-30">
-                    View Holidays
-                </button>
-            </div>
-            
-            {/* FULLY CLICKABLE DATE PICKER BOX */}
-            <div className="relative cursor-pointer group w-fit">
-                <input 
-                    type="date" 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-                    value={cutoffDate}
-                    onChange={e => e.target.value && setCutoffDate(e.target.value)}
-                />
-                <div className="flex items-center bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm group-hover:border-[#6D2158] transition-colors gap-2 pointer-events-none">
-                    <Calendar size={16} className="text-[#6D2158] shrink-0 group-focus-within:animate-pulse"/>
-                    <span className="font-black text-sm text-[#6D2158] tracking-wide">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
-                </div>
-            </div>
-        </div>
+          {/* Quick Actions centered below profile */}
+          <div className="flex flex-wrap items-center justify-center gap-3 mt-6 w-full">
+              {isSupervisor && (
+                  <button onClick={loadTeamLeaves} className="text-[10px] md:text-xs font-black text-purple-600 bg-purple-50 px-4 md:px-5 py-2.5 md:py-3 rounded-xl hover:bg-purple-100 transition-colors uppercase tracking-widest border border-purple-200 flex items-center gap-2 shadow-sm">
+                      <BarChart2 size={16}/> Team Leaves
+                  </button>
+              )}
+              <button onClick={() => setIsHolidayModalOpen(true)} className="text-[10px] md:text-xs font-black text-blue-600 bg-blue-50 px-4 md:px-5 py-2.5 md:py-3 rounded-xl hover:bg-blue-100 transition-colors uppercase tracking-widest border border-blue-200 flex items-center gap-2 shadow-sm">
+                  <Plane size={16}/> Holidays
+              </button>
+              
+              <div className="relative cursor-pointer group">
+                  <input 
+                      type="date" 
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30"
+                      value={cutoffDate}
+                      onChange={e => e.target.value && setCutoffDate(e.target.value)}
+                  />
+                  <div className="flex items-center bg-white px-4 md:px-5 py-2.5 md:py-3 rounded-xl border border-slate-200 shadow-sm group-hover:border-[#6D2158] transition-colors gap-2">
+                      <Calendar size={16} className="text-[#6D2158]"/>
+                      <span className="font-black text-[10px] md:text-xs text-[#6D2158] uppercase tracking-widest">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
+                  </div>
+              </div>
+          </div>
       </div>
 
-      <div className="p-4 md:p-8 space-y-8 pb-32">
+      <div className="p-4 md:p-8 space-y-6 md:space-y-8 pb-32">
           
+          {/* USER BALANCES STRIP */}
+          {userBalances && (
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4">
+                  <BalanceCard label="Total Owed" value={userBalances.balTotal} isTotal />
+                  <BalanceCard label="Off Days" value={userBalances.balOff} color="emerald" />
+                  <BalanceCard label="Annual" value={userBalances.balAL} color="cyan" />
+                  <BalanceCard label="Public Hol" value={userBalances.balPH} color="blue" />
+                  {userBalances.balRR !== '-' && <BalanceCard label="Rest & Rec" value={userBalances.balRR} color="fuchsia" />}
+                  
+                  <div className="col-span-3 sm:col-span-4 lg:col-span-1 lg:flex items-center justify-center hidden"><div className="h-10 w-px bg-slate-300"></div></div>
+                  
+                  <BalanceCard label="Sick Lvl" value={userBalances.balSL} color="rose" />
+                  <BalanceCard label="Emergency" value={userBalances.balEL} color="orange" />
+              </div>
+          )}
+
           {/* UPCOMING LEAVE WIDGET */}
           {upcomingLeaveInfo && (
-              <div className={`p-5 rounded-3xl shadow-sm border flex flex-col md:flex-row items-center justify-between gap-6 animate-in slide-in-from-top-4 ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-cyan-50 border-cyan-200 shadow-cyan-100' : 'bg-white border-slate-200'}`}>
+              <div className={`p-5 rounded-3xl shadow-sm border flex flex-col md:flex-row items-center justify-between gap-6 animate-in slide-in-from-bottom-5 ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-cyan-50 border-cyan-200 shadow-cyan-100' : 'bg-white border-slate-200'}`}>
                   <div className="flex items-center gap-4">
                       <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-inner border ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-white border-cyan-100 text-cyan-600' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
                           {upcomingLeaveInfo.isOnLeaveNow ? <Plane size={24}/> : <Timer size={24}/>}
@@ -664,33 +696,17 @@ export default function Dashboard() {
               </div>
           )}
 
-          {/* USER BALANCES STRIP */}
-          {userBalances && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-                  <BalanceCard label="Off Days" value={userBalances.balOff} color="emerald" />
-                  <BalanceCard label="Annual" value={userBalances.balAL} color="cyan" />
-                  <BalanceCard label="Public Hol" value={userBalances.balPH} color="blue" />
-                  {userBalances.balRR !== '-' && <BalanceCard label="Rest & Rec" value={userBalances.balRR} color="fuchsia" />}
-                  <BalanceCard label="Total Owed" value={userBalances.balTotal} isTotal />
-                  
-                  <div className="hidden lg:flex items-center justify-center"><div className="h-10 w-px bg-slate-300"></div></div>
-                  
-                  <BalanceCard label="Sick Lvl" value={userBalances.balSL} color="rose" />
-                  <BalanceCard label="Emergency" value={userBalances.balEL} color="orange" />
-              </div>
-          )}
-
           {isAdmin ? (
               <>
                   {/* ADMIN ONLY: KPI GRID */}
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 animate-in slide-in-from-bottom-6">
                      <Link href="/requests" className="bg-white p-5 rounded-[2rem] shadow-sm border border-slate-100 hover:shadow-md active:scale-95 transition-all group flex flex-col">
                         <div className="flex justify-between items-start mb-4">
                            <div className={`p-3 rounded-2xl transition-colors ${stats.pendingReqs > 0 ? 'bg-amber-100 text-amber-600 group-hover:bg-amber-500 group-hover:text-white' : 'bg-slate-50 text-slate-400'}`}>
                               <ClipboardList size={24}/>
                            </div>
                         </div>
-                        <h3 className="text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.pendingReqs}</h3>
+                        <h3 className="text-3xl md:text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.pendingReqs}</h3>
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Pending Reqs</p>
                      </Link>
 
@@ -700,7 +716,7 @@ export default function Dashboard() {
                               <ShoppingCart size={24}/>
                            </div>
                         </div>
-                        <h3 className="text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.pendingOrders}</h3>
+                        <h3 className="text-3xl md:text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.pendingOrders}</h3>
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Open Orders</p>
                      </Link>
 
@@ -710,7 +726,7 @@ export default function Dashboard() {
                               {stats.expiringBatches > 0 ? <AlertTriangle size={24}/> : <CheckCircle2 size={24}/>}
                            </div>
                         </div>
-                        <h3 className="text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.expiringBatches}</h3>
+                        <h3 className="text-3xl md:text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.expiringBatches}</h3>
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Expiry Alerts</p>
                      </Link>
 
@@ -718,15 +734,17 @@ export default function Dashboard() {
                         <div className="flex justify-between items-start mb-4">
                            <div className="p-3 bg-purple-100 text-purple-600 rounded-2xl group-hover:bg-purple-600 group-hover:text-white transition-colors"><Users size={24}/></div>
                         </div>
-                        <h3 className="text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.totalHosts}</h3>
+                        <h3 className="text-3xl md:text-4xl font-black text-slate-800 mb-1 tracking-tighter">{stats.totalHosts}</h3>
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Staff</p>
                      </Link>
                   </div>
 
-                  {/* ADMIN ONLY: LIVE FEED & ALERTS */}
-                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                  {/* ADMIN ONLY: MAIN DASHBOARD PANELS */}
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start animate-in slide-in-from-bottom-7">
+                     
+                     {/* LIVE FEED */}
                      <div className="xl:col-span-2 bg-white rounded-[2rem] shadow-sm border border-slate-100 flex flex-col overflow-hidden">
-                        <div className="p-6 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
+                        <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
                            <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2"><Bell size={16}/> Live Feed</h3>
                            <Link href="/requests" className="text-[10px] bg-white px-3 py-1.5 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] uppercase tracking-wider active:scale-95 transition-transform">View All</Link>
                         </div>
@@ -739,22 +757,21 @@ export default function Dashboard() {
                            ) : (
                                <div className="space-y-3">
                                    {recentActivity.map((log: any) => (
-                                      <div key={log.id} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 animate-in slide-in-from-top-2">
-                                         <div className={`w-12 h-12 rounded-[1rem] flex items-center justify-center font-black text-lg shadow-sm ${log.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                                      <div key={log.id} className="flex items-center gap-3 md:gap-4 p-3 md:p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                                         <div className={`w-10 h-10 md:w-12 md:h-12 rounded-[1rem] flex items-center justify-center font-black text-base md:text-lg shadow-sm shrink-0 ${log.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
                                             {log.villa_number}
                                          </div>
-                                         <div className="flex-1">
-                                            <p className="text-sm font-bold text-slate-800 line-clamp-1">{log.item_details.replace(/\n/g, ', ')}</p>
+                                         <div className="flex-1 min-w-0">
+                                            <p className="text-xs md:text-sm font-bold text-slate-800 truncate">{log.item_details.replace(/\n/g, ', ')}</p>
                                             <div className="flex gap-2 mt-1">
-                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{log.attendant_name}</span>
-                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">•</span>
-                                                <span className="text-[10px] font-bold text-[#6D2158] uppercase tracking-wider">{new Date(log.request_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Dhaka'})}</span>
+                                                <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">{log.attendant_name}</span>
+                                                <span className="text-[9px] md:text-[10px] font-bold text-[#6D2158] uppercase tracking-wider shrink-0">• {new Date(log.request_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Dhaka'})}</span>
                                             </div>
                                          </div>
-                                         <div>
+                                         <div className="shrink-0">
                                              {(log.request_type === 'Minibar' ? log.is_posted : log.is_done) 
-                                                ? <span className="bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase">Done</span>
-                                                : <span className="bg-slate-200 text-slate-500 px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase">Pending</span>
+                                                ? <span className="bg-emerald-100 text-emerald-700 px-2 md:px-3 py-1 md:py-1.5 rounded-xl text-[9px] md:text-[10px] font-bold uppercase">Done</span>
+                                                : <span className="bg-slate-200 text-slate-500 px-2 md:px-3 py-1 md:py-1.5 rounded-xl text-[9px] md:text-[10px] font-bold uppercase">Pending</span>
                                              }
                                          </div>
                                       </div>
@@ -764,25 +781,70 @@ export default function Dashboard() {
                         </div>
                      </div>
 
+                     {/* RIGHT COLUMN STACK */}
                      <div className="space-y-6 flex flex-col">
-                         <div className={`p-6 rounded-[2rem] shadow-xl flex flex-col relative overflow-hidden ${criticalItems.length > 0 ? 'bg-rose-600 text-white shadow-rose-200' : 'bg-emerald-600 text-white shadow-emerald-200'}`}>
+                         
+                         {/* DASHBOARD REMINDERS (MINI) */}
+                         <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 flex flex-col overflow-hidden relative">
+                            <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-purple-50/30">
+                                <div>
+                                    <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2"><CheckSquare size={16}/> Daily Reminders</h3>
+                                </div>
+                                <Link href="/tasks" className="text-[10px] bg-[#6D2158] text-white px-3 py-1.5 rounded-full shadow-sm font-bold uppercase tracking-wider hover:bg-[#5a1b49] active:scale-95 transition-transform">Task Hub</Link>
+                            </div>
+                            <div className="p-4">
+                                {adminTasks.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center text-slate-300 py-6">
+                                        <CheckSquare size={32} className="mb-2 opacity-20"/>
+                                        <p className="text-xs font-bold text-slate-400">All caught up!</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {adminTasks.slice(0, 4).map(task => {
+                                            const isOverdue = parseISO(task.due_date) < new Date(new Date().setHours(0,0,0,0));
+                                            return (
+                                                <div key={task.id} className={`p-3 rounded-xl border flex items-center justify-between ${isOverdue ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
+                                                    <div className="min-w-0 pr-3">
+                                                        <h4 className="font-bold text-xs md:text-sm text-slate-800 line-clamp-1">{task.title}</h4>
+                                                        <p className={`text-[9px] font-black uppercase tracking-widest mt-1 flex items-center gap-1 ${isOverdue ? 'text-rose-500' : 'text-slate-400'}`}>
+                                                            {task.frequency !== 'One-Off' && <RefreshCw size={8}/>} Due: {format(parseISO(task.due_date), 'MMM d')}
+                                                        </p>
+                                                    </div>
+                                                    <button onClick={() => handleCompleteTask(task.id)} className="w-8 h-8 shrink-0 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-500 transition-colors shadow-sm">
+                                                        <CheckCircle2 size={16}/>
+                                                    </button>
+                                                </div>
+                                            )
+                                        })}
+                                        {adminTasks.length > 4 && (
+                                            <Link href="/tasks" className="block text-center mt-3 text-[10px] font-bold text-slate-400 hover:text-[#6D2158] uppercase tracking-widest transition-colors">
+                                                View {adminTasks.length - 4} More
+                                            </Link>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                         </div>
+                         
+                         {/* EXPIRY ALERTS */}
+                         <div className={`p-5 md:p-6 rounded-[2rem] shadow-xl flex flex-col relative overflow-hidden ${criticalItems.length > 0 ? 'bg-rose-600 text-white shadow-rose-200' : 'bg-emerald-600 text-white shadow-emerald-200'}`}>
                             <div className="relative z-10">
-                                <h3 className="text-lg font-black mb-1 flex items-center gap-2">
+                                <h3 className="text-base md:text-lg font-black mb-1 flex items-center gap-2">
                                     {criticalItems.length > 0 ? <AlertTriangle size={20}/> : <CheckCircle2 size={20}/>} 
                                     {criticalItems.length > 0 ? 'Expiry Action Required' : 'Stock Healthy'}
                                 </h3>
-                                <p className="text-white/80 text-[10px] font-bold uppercase tracking-widest mb-6">
+                                <p className="text-white/80 text-[9px] md:text-[10px] font-bold uppercase tracking-widest mb-6">
                                     {criticalItems.length > 0 ? 'Items expiring within 60 days' : 'No upcoming expirations'}
                                 </p>
                                 
-                                <ul className="space-y-3">
+                                <ul className="space-y-2 md:space-y-3">
                                     {criticalItems.slice(0, 4).map((item: any) => (
-                                        <li key={item.id} className="flex justify-between items-center bg-black/10 p-3 rounded-xl backdrop-blur-sm">
-                                            <div className="flex-1 pr-4">
-                                                <span className="text-sm font-bold block truncate">{item.item_name}</span>
-                                                <span className="text-[10px] uppercase tracking-wider text-white/70">Batch: {new Date(item.expiry_date).toLocaleDateString('en-GB', {month:'short', year:'numeric'})}</span>
+                                        <li key={item.id} className="flex justify-between items-center bg-black/10 p-2.5 md:p-3 rounded-xl backdrop-blur-sm">
+                                            <div className="flex-1 pr-3 min-w-0">
+                                                <span className="text-xs md:text-sm font-bold block truncate">{item.item_name}</span>
+                                                <span className="text-[9px] md:text-[10px] uppercase tracking-wider text-white/70">Batch: {new Date(item.expiry_date).toLocaleDateString('en-GB', {month:'short', year:'numeric'})}</span>
                                             </div>
-                                            <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest ${item.days <= 0 ? 'bg-white text-rose-600 animate-pulse' : 'bg-white/20'}`}>
+                                            <span className={`px-2 md:px-3 py-1 md:py-1.5 rounded-lg text-[9px] md:text-[10px] font-black uppercase tracking-widest shrink-0 ${item.days <= 0 ? 'bg-white text-rose-600 animate-pulse' : 'bg-white/20'}`}>
                                                 {item.days < 0 ? 'Expired' : `${item.days} Days`}
                                             </span>
                                         </li>
@@ -790,7 +852,7 @@ export default function Dashboard() {
                                 </ul>
                                 
                                 {criticalItems.length > 4 && (
-                                    <Link href="/minibar/expiry" className="block text-center mt-4 text-xs font-bold uppercase tracking-widest hover:text-white/70 transition-colors">
+                                    <Link href="/minibar/expiry" className="block text-center mt-4 text-[10px] font-bold uppercase tracking-widest hover:text-white/70 transition-colors">
                                         + {criticalItems.length - 4} More Items
                                     </Link>
                                 )}
@@ -803,19 +865,20 @@ export default function Dashboard() {
           ) : (
               /* STAFF ONLY: PAYROLL MONTH ATTENDANCE GRID */
               <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden flex flex-col animate-in fade-in">
-                  <div className="p-6 md:p-8 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
-                     <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-3">
-                        <Calendar size={18}/> My Attendance ({format(payrollStart, 'MMM d')} - {format(payrollEnd, 'MMM d')})
+                  <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
+                     <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2">
+                        <Calendar size={16}/> My Attendance
                      </h3>
-                     <Link href="/schedule" className="text-[10px] bg-white px-4 py-2.5 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] hover:shadow-md uppercase tracking-wider active:scale-95 transition-all">Full History</Link>
+                     <Link href="/schedule" className="text-[10px] bg-white px-3 py-1.5 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] uppercase tracking-wider active:scale-95 transition-all">Full History</Link>
                   </div>
                   
-                  <div className="p-4 md:p-8 overflow-x-auto">
-                      <div className="min-w-[600px]">
-                          <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2">
+                  <div className="p-3 md:p-6 w-full overflow-hidden">
+                      <div className="w-full">
+                          <div className="grid grid-cols-7 gap-1 md:gap-3 mb-1 w-full">
                               {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-                                  <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
-                                      {d}
+                                  <div key={d} className="text-center text-[9px] md:text-xs font-black uppercase text-slate-400 tracking-widest">
+                                      <span className="md:hidden">{d.substring(0, 1)}</span>
+                                      <span className="hidden md:inline">{d}</span>
                                   </div>
                               ))}
                           </div>
@@ -894,7 +957,6 @@ export default function Dashboard() {
                               <p className="font-bold text-lg">No team members found in your scope.</p>
                           </div>
                       ) : selectedTeamHost ? (
-                          // CALENDAR VIEW FOR SPECIFIC HOST
                           <div className="flex flex-col h-full bg-slate-50 animate-in slide-in-from-right-8">
                               <div className="p-4 md:p-6 border-b border-slate-200 bg-white shrink-0 flex items-center justify-between">
                                   <div>
@@ -927,10 +989,7 @@ export default function Dashboard() {
                           </div>
                       ) : (
                           <>
-                              {/* TABS & CONTROLS */}
                               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 md:p-6 border-b border-slate-200 bg-white shrink-0">
-                                  
-                                  {/* Horizontal Scroll Container for Tabs */}
                                   <div className="flex-1 flex gap-2 overflow-x-auto custom-scrollbar pb-2 w-full min-w-0">
                                       <button onClick={() => setActiveDeptTab('All')} className={`shrink-0 px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
                                       
@@ -939,7 +998,6 @@ export default function Dashboard() {
                                       ))}
                                   </div>
                                   
-                                  {/* Sort and Search Block */}
                                   <div className="flex gap-2 w-full lg:w-auto shrink-0">
                                       <select 
                                           className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[10px] md:text-xs outline-none focus:border-[#6D2158] transition-colors text-slate-600 uppercase tracking-widest cursor-pointer shrink-0"
@@ -957,7 +1015,6 @@ export default function Dashboard() {
                                   </div>
                               </div>
 
-                              {/* Content */}
                               <div className="p-4 md:p-8 overflow-y-auto flex-1 custom-scrollbar bg-slate-50 md:bg-white">
                                   {(() => {
                                       let deptData = [...teamBalances];
@@ -968,7 +1025,6 @@ export default function Dashboard() {
                                           deptData = deptData.filter((c: any) => c.host.full_name.toLowerCase().includes(teamSearch.toLowerCase()) || String(c.host.host_id).includes(teamSearch));
                                       }
 
-                                      // DYNAMIC SORTING BASED ON USER SELECTION
                                       deptData.sort((a: any, b: any) => parseFloat(b.balances[teamSortBy]) - parseFloat(a.balances[teamSortBy]));
 
                                       const totalOff = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balOff), 0);
@@ -1037,7 +1093,6 @@ export default function Dashboard() {
                                                                                   <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-0.5 rounded-md shrink-0">{host.role}</span>
                                                                               </div>
                                                                               
-                                                                              {/* UPCOMING LEAVE BADGE */}
                                                                               <div className="pl-5 mt-1.5 flex flex-wrap gap-2">
                                                                                   {upcoming?.isOnLeaveNow && (
                                                                                       <span className="text-[9px] bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1 w-max border border-cyan-200">
