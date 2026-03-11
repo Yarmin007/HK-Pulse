@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -32,6 +32,7 @@ const MENU_ITEMS = [
 ];
 
 const TEAM_ITEMS = [
+  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, // <-- ADDED HERE
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
@@ -58,6 +59,7 @@ const STAFF_CORE_BASE = [
 
 const STAFF_PROFILE_ITEMS = [
   { name: "My Profile", icon: Contact, path: "/profile" },
+  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, // <-- ADDED HERE FOR STAFF
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
@@ -73,8 +75,8 @@ export default function Sidebar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const isMinibarRoute = pathname?.includes('/minibar');
-  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart');
-  const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart');
+  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart') || pathname?.includes('/team');
+  const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart') || pathname?.includes('/team');
   const isInventoryRoute = pathname?.includes('/inventory');
   
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);

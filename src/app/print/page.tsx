@@ -23,7 +23,7 @@ type Host = {
     role: string; 
     department?: string;
     joining_date?: string;
-    contact_no?: string;
+    personal_mobile?: string;
 };
 
 const getToday = () => {
@@ -171,10 +171,9 @@ export default function PrintHubPage() {
         fetchHosts();
         fetchFlightHistory();
         
-        // Restore mappings from localStorage for BOTH modes
-        const savedFlightMap = localStorage.getItem('flight_field_mapping');
-        if (savedFlightMap) {
-            try { setFlightFieldMapping(JSON.parse(savedFlightMap)); } catch(e) {}
+        const savedMap = localStorage.getItem('flight_field_mapping');
+        if (savedMap) {
+            try { setFlightFieldMapping(JSON.parse(savedMap)); } catch(e) {}
         }
     } else {
         setPreviewUrl(null);
@@ -225,8 +224,6 @@ export default function PrintHubPage() {
       
       if (mode === 'DEPARTURE') {
           setPdfFields(fields);
-          
-          // Auto-Load from Local Storage for Departure
           const savedDepMap = localStorage.getItem('dep_field_mapping');
           if (savedDepMap) {
               try { setFieldMapping(JSON.parse(savedDepMap)); } catch(e) {}
@@ -510,14 +507,13 @@ export default function PrintHubPage() {
       setHostSearch('');
       setIsHostDropdownOpen(false);
 
-      // 1. COMPLETELY RESET STATE FIRST (So passenger data doesn't bleed over)
       const resetData = {
           name: host.full_name || '',
           host_id: host.host_id || '',
           designation: host.role || '',
           department: host.department || 'Housekeeping',
           hire_date: host.joining_date?.split('T')[0] || '', 
-          contact_no: host.contact_no || '',
+          contact_no: host.personal_mobile || '',
           p1_name: '', p1_id: '', p1_rel: '',
           p2_name: '', p2_id: '', p2_rel: '',
           p3_name: '', p3_id: '', p3_rel: '',
@@ -532,7 +528,6 @@ export default function PrintHubPage() {
 
       setFlightData(resetData);
 
-      // 2. Fetch history from DB to auto-fill previous passengers/contact info
       try {
           const { data } = await supabase
               .from('hsk_flight_requests')
@@ -616,7 +611,6 @@ export default function PrintHubPage() {
               let val = '';
               
               if (dataKey.startsWith('tick_')) {
-                  // Advanced Checkbox / X logic (Allows Multi-Select)
                   if (dataKey === 'tick_al' && flightData.leave_types.includes('AL')) val = 'X';
                   if (dataKey === 'tick_business' && flightData.leave_types.includes('Business')) val = 'X';
                   if (dataKey === 'tick_rr' && flightData.leave_types.includes('R&R')) val = 'X';
@@ -626,10 +620,7 @@ export default function PrintHubPage() {
                   if (dataKey === 'tick_payroll_yes' && flightData.payroll_deduction === 'Yes') val = 'X';
                   if (dataKey === 'tick_payroll_no' && flightData.payroll_deduction === 'No') val = 'X';
               } else {
-                  // Standard Text values
                   val = (flightData as any)[dataKey] || '';
-                  
-                  // Auto-format dates for the PDF
                   if (['hire_date', 'dom_dep_date', 'dom_arr_date', 'int_dep_date', 'int_arr_date'].includes(dataKey)) {
                       val = formatDateForPDF(val);
                   }
@@ -658,7 +649,6 @@ export default function PrintHubPage() {
           addToLog("✅ Flight Form Generated.");
           setIsProcessing(false);
 
-          // 3. Save History and Form Data Payload to Database
           try {
               await supabase.from('hsk_flight_requests').insert({
                   host_name: flightData.name,
@@ -684,31 +674,31 @@ export default function PrintHubPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 font-sans text-slate-800 relative flex flex-col h-screen overflow-hidden">
+    <div className="min-h-screen bg-slate-50 p-4 md:p-6 pb-24 md:pb-6 font-sans text-slate-800 relative flex flex-col md:h-screen md:overflow-hidden">
       
       {/* HEADER */}
-      <div className="flex-none mb-4 flex justify-between items-center">
+      <div className="flex-none mb-4 flex justify-between items-center shrink-0">
           <div>
               <h1 className="text-2xl font-bold text-[#6D2158] flex items-center gap-2"><Printer/> Print Hub</h1>
               <p className="text-xs text-slate-400 font-bold uppercase tracking-wide">Automated PDF Generation</p>
           </div>
           {activeMode !== 'DASHBOARD' && (
-              <button onClick={() => setActiveMode('DASHBOARD')} className="bg-slate-200 hover:bg-slate-300 text-slate-600 px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2">
-                  <X size={16}/> Close Tool
+              <button onClick={() => setActiveMode('DASHBOARD')} className="bg-slate-200 hover:bg-slate-300 text-slate-600 px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-colors active:scale-95">
+                  <X size={16}/> Close
               </button>
           )}
       </div>
 
       {/* DASHBOARD */}
       {activeMode === 'DASHBOARD' && (
-          <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-6 content-start animate-in fade-in">
-               <button onClick={() => setActiveMode('DEPARTURE')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-[#6D2158]/10 hover:border-[#6D2158] text-left transition-all group h-40">
+          <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 content-start animate-in fade-in">
+               <button onClick={() => setActiveMode('DEPARTURE')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-[#6D2158]/10 hover:border-[#6D2158] text-left transition-all group h-auto md:h-40 flex flex-col justify-center active:scale-95">
                   <div className="w-14 h-14 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><Download size={28}/></div>
                   <h3 className="text-lg font-bold text-slate-800">Dep. Laundry Letter</h3>
                   <p className="text-xs text-slate-400 mt-2">Bulk Generate (PDF/Excel)</p>
               </button>
 
-              <button onClick={() => setActiveMode('FLIGHT')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-[#6D2158]/10 hover:border-[#6D2158] text-left transition-all group h-40">
+              <button onClick={() => setActiveMode('FLIGHT')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-[#6D2158]/10 hover:border-[#6D2158] text-left transition-all group h-auto md:h-40 flex flex-col justify-center active:scale-95">
                   <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><Plane size={28}/></div>
                   <h3 className="text-lg font-bold text-slate-800">Flight Request Form</h3>
                   <p className="text-xs text-slate-400 mt-2">Generate Host Ticket Requisition</p>
@@ -718,15 +708,15 @@ export default function PrintHubPage() {
 
       {/* DEPARTURE LAUNDRY MODE */}
       {activeMode === 'DEPARTURE' && (
-          <div className="flex-1 flex gap-6 overflow-hidden animate-in slide-in-from-bottom-4">
+          <div className="flex-1 flex flex-col md:flex-row gap-4 md:gap-6 overflow-y-auto md:overflow-hidden animate-in slide-in-from-bottom-4">
               
               {/* LEFT: CONTROLS */}
-              <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2 pb-10 custom-scrollbar">
+              <div className="w-full md:w-[45%] flex flex-col gap-4 md:overflow-y-auto md:pr-2 pb-4 md:pb-10 custom-scrollbar shrink-0">
                   
                   {/* 1. UPLOAD */}
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
                       <h3 className="font-bold text-slate-700 mb-3 text-sm flex items-center gap-2"><span className="bg-slate-100 w-5 h-5 flex items-center justify-center rounded-full text-[10px]">1</span> Data Source</h3>
-                      <div className="border-2 border-dashed border-slate-200 rounded-lg p-4 text-center hover:bg-slate-50 relative cursor-pointer group">
+                      <div className="border-2 border-dashed border-slate-200 rounded-lg p-4 text-center hover:bg-slate-50 relative cursor-pointer group transition-colors">
                           <input type="file" accept=".xlsx,.pdf" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
                           <p className="text-xs font-bold text-slate-500 group-hover:text-[#6D2158]">Upload List (PDF/Excel)</p>
                       </div>
@@ -743,7 +733,7 @@ export default function PrintHubPage() {
                           ) : (
                               <div className="relative overflow-hidden">
                                   <input type="file" accept=".pdf" onChange={e => handleTemplateUpload(e, DEPARTURE_TEMPLATE, setTemplateBytes, setTemplateStatus, 'DEPARTURE')} className="absolute inset-0 opacity-0 cursor-pointer"/>
-                                  <span className="text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200 cursor-pointer">Upload</span>
+                                  <span className="text-[10px] bg-slate-100 px-3 py-1.5 rounded hover:bg-slate-200 cursor-pointer font-bold">Upload</span>
                               </div>
                           )}
                       </div>
@@ -755,54 +745,54 @@ export default function PrintHubPage() {
                           ) : (
                               <div className="relative overflow-hidden">
                                   <input type="file" accept=".ttf" onChange={handleFontUpload} className="absolute inset-0 opacity-0 cursor-pointer"/>
-                                  <span className="text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200 cursor-pointer">Upload .ttf</span>
+                                  <span className="text-[10px] bg-slate-100 px-3 py-1.5 rounded hover:bg-slate-200 cursor-pointer font-bold">Upload .ttf</span>
                               </div>
                           )}
                       </div>
                   </div>
 
                   {/* 3. EDIT LIST */}
-                  <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-1 min-h-[200px] flex flex-col">
-                      <div className="flex justify-between items-center mb-2">
+                  <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-1 min-h-[250px] flex flex-col">
+                      <div className="flex justify-between items-center mb-3">
                           <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2"><Eye size={14}/> Guests ({villaGroups.length})</h3>
-                          <button onClick={() => setIsEditing(!isEditing)} className="text-[10px] font-bold text-slate-400 hover:text-[#6D2158]">{isEditing ? 'Done' : 'Edit'}</button>
+                          <button onClick={() => setIsEditing(!isEditing)} className="text-[10px] font-bold text-slate-400 bg-slate-100 px-3 py-1.5 rounded hover:text-[#6D2158] transition-colors">{isEditing ? 'Done' : 'Edit'}</button>
                       </div>
-                      <div className="flex-1 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                      <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
                           {villaGroups.map(g => (
-                              <div key={g.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded border border-slate-100 text-[11px]">
+                              <div key={g.id} className="flex items-center gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100 text-[11px]">
                                   {isEditing ? (
                                       <>
-                                          <input className="w-8 p-0.5 bg-white border rounded text-center font-bold" value={g.villa} onChange={e => updateVillaGroup(g.id, 'villa', e.target.value)}/>
-                                          <input className="flex-1 p-0.5 bg-white border rounded" value={g.salutation} onChange={e => updateVillaGroup(g.id, 'salutation', e.target.value)}/>
-                                          <button onClick={() => removeVillaGroup(g.id)} className="text-rose-500"><Trash2 size={12}/></button>
+                                          <input type="text" className="w-10 p-1 bg-white border border-slate-200 rounded text-center font-bold outline-none" value={g.villa || ''} onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateVillaGroup(g.id, 'villa', e.target.value)}/>
+                                          <input type="text" className="flex-1 p-1 bg-white border border-slate-200 rounded outline-none" value={g.salutation || ''} onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateVillaGroup(g.id, 'salutation', e.target.value)}/>
+                                          <button type="button" onClick={() => removeVillaGroup(g.id)} className="text-rose-400 hover:text-rose-600 p-1"><Trash2 size={14}/></button>
                                       </>
                                   ) : (
                                       <>
                                           <span className="font-bold text-slate-400 w-8 text-center">{g.villa}</span>
-                                          <span className="font-bold text-slate-700 truncate">{g.salutation}</span>
+                                          <span className="font-bold text-slate-700 truncate flex-1">{g.salutation}</span>
                                       </>
                                   )}
                               </div>
                           ))}
-                          {villaGroups.length === 0 && <div className="text-center py-8 text-slate-300 text-xs italic">No guests loaded.</div>}
+                          {villaGroups.length === 0 && <div className="text-center py-10 text-slate-300 text-xs italic">No guests loaded.</div>}
                       </div>
                   </div>
 
                   {/* 4. MAPPING */}
                   {pdfFields.length > 0 && (
                       <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-                          <div className="flex justify-between items-center mb-2">
-                              <h3 className="font-bold text-slate-700 text-sm"><Settings size={14}/> Map Fields</h3>
-                              <button onClick={() => identifyFields(templateBytes)} className="flex items-center gap-1 text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">
+                          <div className="flex justify-between items-center mb-3">
+                              <h3 className="font-bold text-slate-700 text-sm"><Settings size={14} className="inline mr-1"/> Map Fields</h3>
+                              <button onClick={() => identifyFields(templateBytes)} className="flex items-center gap-1 text-[10px] bg-slate-100 px-3 py-1.5 font-bold rounded hover:bg-slate-200 transition-colors">
                                   <Search size={10}/> Identify
                               </button>
                           </div>
                           
-                          <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
+                          <div className="space-y-2.5 max-h-40 overflow-y-auto custom-scrollbar">
                               {pdfFields.map(field => (
                                   <div key={field} className="flex justify-between items-center pr-2">
-                                      <span className="text-[10px] font-bold text-slate-400 truncate max-w-[80px]" title={field}>{field}</span>
-                                      <select className="w-24 p-1 text-[10px] border rounded bg-slate-50" value={fieldMapping[field] || ''} onChange={(e) => updateDepartureMapping(field, e.target.value)}>
+                                      <span className="text-[10px] font-bold text-slate-500 truncate max-w-[120px]" title={field}>{field}</span>
+                                      <select className="w-28 p-1.5 text-[10px] border border-slate-200 rounded-lg bg-slate-50 font-bold outline-none" value={fieldMapping[field] || ''} onChange={(e) => updateDepartureMapping(field, e.target.value)}>
                                           <option value="">Skip</option>
                                           <option value="salutation">Name</option>
                                           <option value="villa">Villa (Sz 6)</option>
@@ -816,46 +806,51 @@ export default function PrintHubPage() {
                   )}
                   
                   {/* GENERATE */}
-                  <button onClick={generateMergedPdf} disabled={isProcessing || templateStatus !== 'READY' || villaGroups.length === 0} className="w-full bg-[#6D2158] text-white py-3 rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2 text-sm shrink-0">
-                      {isProcessing ? <Loader2 className="animate-spin" size={16}/> : <ArrowRight size={16}/>}
+                  <button onClick={generateMergedPdf} disabled={isProcessing || templateStatus !== 'READY' || villaGroups.length === 0} className="w-full bg-[#6D2158] text-white py-4 rounded-xl font-black uppercase tracking-widest shadow-lg hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2 text-sm shrink-0 active:scale-95">
+                      {isProcessing ? <Loader2 className="animate-spin" size={18}/> : <ArrowRight size={18}/>}
                       {isProcessing ? 'Generating...' : 'Generate PDFs'} 
                   </button>
 
-                  {/* LOGS */}
-                  <div className="bg-slate-100 p-2 rounded-lg h-24 overflow-y-auto text-[10px] font-mono text-slate-500 shrink-0 custom-scrollbar">
-                      {logs.map((log, i) => <div key={i}>{log}</div>)}
+                  {/* DESKTOP LOGS (Hidden on mobile) */}
+                  <div className="hidden md:block bg-slate-100 p-3 rounded-xl h-24 overflow-y-auto text-[10px] font-mono text-slate-500 shrink-0 custom-scrollbar">
+                      {logs.map((log, i) => <div key={i} className="mb-1">{log}</div>)}
                   </div>
               </div>
 
-              {/* RIGHT: LIVE PREVIEW */}
-              <div className="w-2/3 bg-slate-200 rounded-2xl border border-slate-300 shadow-inner flex flex-col overflow-hidden relative">
+              {/* RIGHT: LIVE PREVIEW (Stacks on mobile) */}
+              <div className="w-full md:w-[55%] h-[500px] md:h-auto md:flex-1 bg-slate-200 rounded-2xl border border-slate-300 shadow-inner flex flex-col overflow-hidden relative shrink-0">
                   {previewUrl ? (
                       <iframe src={previewUrl} className="w-full h-full" title="PDF Preview"/>
                   ) : (
                       <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                          <FileText size={48} className="mb-2 opacity-50"/>
+                          <FileText size={48} className="mb-3 opacity-30"/>
                           <p className="text-sm font-bold">No Preview Generated</p>
                       </div>
                   )}
+              </div>
+
+              {/* MOBILE LOGS (Hidden on desktop) */}
+              <div className="md:hidden w-full bg-slate-100 p-3 rounded-xl h-24 overflow-y-auto text-[10px] font-mono text-slate-500 shrink-0 custom-scrollbar mt-2">
+                  {logs.map((log, i) => <div key={i} className="mb-1">{log}</div>)}
               </div>
           </div>
       )}
 
       {/* FLIGHT REQUISITION MODE */}
       {activeMode === 'FLIGHT' && (
-          <div className="flex-1 flex gap-6 overflow-hidden animate-in slide-in-from-bottom-4">
+          <div className="flex-1 flex flex-col md:flex-row gap-4 md:gap-6 overflow-y-auto md:overflow-hidden animate-in slide-in-from-bottom-4">
               
               {/* LEFT CONTROLS (TALL SCROLLABLE) */}
-              <div className="w-[45%] flex flex-col overflow-y-auto pr-3 pb-10 custom-scrollbar space-y-4">
+              <div className="w-full md:w-[50%] lg:w-[45%] flex flex-col md:overflow-y-auto md:pr-3 pb-4 md:pb-10 custom-scrollbar space-y-4 shrink-0">
                   
                   {/* 1. HOST SEARCH */}
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 relative">
                       <h3 className="font-bold text-slate-700 mb-3 text-sm flex items-center gap-2"><Users size={16} className="text-[#6D2158]"/> Auto-Fill Database Search</h3>
                       <div className="relative">
-                          <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
+                          <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
                           <input 
                               type="text" 
-                              className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" 
+                              className="w-full pl-10 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158] transition-colors" 
                               placeholder="Search host name or SSL to auto-fill..."
                               value={hostSearch}
                               onChange={e => setHostSearch(e.target.value)}
@@ -863,14 +858,14 @@ export default function PrintHubPage() {
                               onBlur={() => setTimeout(() => setIsHostDropdownOpen(false), 200)}
                           />
                           {isHostDropdownOpen && (
-                              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-2xl mt-1 max-h-48 overflow-y-auto custom-scrollbar">
+                              <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-2xl mt-2 max-h-56 overflow-y-auto custom-scrollbar">
                                   {hosts.filter(h => (h.full_name || '').toLowerCase().includes(hostSearch.toLowerCase()) || (h.host_id || '').toLowerCase().includes(hostSearch.toLowerCase())).map(h => (
-                                      <div key={h.id} onMouseDown={() => selectHostForFlight(h)} className="p-3 hover:bg-purple-50 cursor-pointer border-b border-slate-50 text-xs font-bold text-slate-700 flex justify-between items-center group">
+                                      <div key={h.id} onMouseDown={() => selectHostForFlight(h)} className="p-3 hover:bg-purple-50 cursor-pointer border-b border-slate-50 text-xs font-bold text-slate-700 flex justify-between items-center group transition-colors">
                                           <span className="group-hover:text-[#6D2158]">{h.full_name}</span> 
                                           <span className="text-[10px] text-slate-400 bg-slate-100 px-2 py-0.5 rounded">{h.host_id}</span>
                                       </div>
                                   ))}
-                                  {hosts.length === 0 && <div className="p-3 text-xs text-slate-400 italic">No hosts found. Type manually below.</div>}
+                                  {hosts.length === 0 && <div className="p-4 text-xs text-slate-400 italic text-center">No hosts found. Type manually below.</div>}
                               </div>
                           )}
                       </div>
@@ -878,79 +873,79 @@ export default function PrintHubPage() {
 
                   {/* 2. HOST DETAILS (Editable) */}
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-3">
-                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-2"><FileText size={16}/> Host Details</h3>
-                      <div className="grid grid-cols-2 gap-3">
-                          <div className="col-span-2"><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Host Name</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none" value={flightData.name} onChange={e=>setFlightData({...flightData, name: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">SSL No</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none" value={flightData.host_id} onChange={e=>setFlightData({...flightData, host_id: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Contact No</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none" value={flightData.contact_no} onChange={e=>setFlightData({...flightData, contact_no: e.target.value})}/></div>
-                          <div className="col-span-2"><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Designation</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none" value={flightData.designation} onChange={e=>setFlightData({...flightData, designation: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Department</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none" value={flightData.department} onChange={e=>setFlightData({...flightData, department: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Hire Date</label><input type="date" className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none text-slate-700" value={flightData.hire_date} onChange={e=>setFlightData({...flightData, hire_date: e.target.value})}/></div>
+                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-3"><FileText size={16}/> Host Details</h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="sm:col-span-2"><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Host Name</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={flightData.name} onChange={e=>setFlightData({...flightData, name: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">SSL No</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={flightData.host_id} onChange={e=>setFlightData({...flightData, host_id: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Contact No</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={flightData.contact_no} onChange={e=>setFlightData({...flightData, contact_no: e.target.value})}/></div>
+                          <div className="sm:col-span-2"><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Designation</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={flightData.designation} onChange={e=>setFlightData({...flightData, designation: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Department</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={flightData.department} onChange={e=>setFlightData({...flightData, department: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Hire Date</label><input type="date" className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors text-slate-700" value={flightData.hire_date} onChange={e=>setFlightData({...flightData, hire_date: e.target.value})}/></div>
                       </div>
                   </div>
 
                   {/* 3. ADDITIONAL PASSENGERS */}
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-3">
-                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-2"><UserPlus size={16}/> Additional Passengers</h3>
+                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-3"><UserPlus size={16}/> Additional Passengers</h3>
                       
                       {[1,2,3,4].map(num => (
-                          <div key={num} className="grid grid-cols-12 gap-2 pb-2 mb-2 border-b border-slate-50 last:border-0 last:mb-0 last:pb-0">
-                              <div className="col-span-5"><input placeholder={`P${num} Name`} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={(flightData as any)[`p${num}_name`]} onChange={e=>setFlightData({...flightData, [`p${num}_name`]: e.target.value})}/></div>
-                              <div className="col-span-4"><input placeholder={`ID / Passport`} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={(flightData as any)[`p${num}_id`]} onChange={e=>setFlightData({...flightData, [`p${num}_id`]: e.target.value})}/></div>
-                              <div className="col-span-3"><input placeholder={`Rel`} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={(flightData as any)[`p${num}_rel`]} onChange={e=>setFlightData({...flightData, [`p${num}_rel`]: e.target.value})}/></div>
+                          <div key={num} className="grid grid-cols-12 gap-2 pb-3 mb-3 border-b border-slate-50 last:border-0 last:mb-0 last:pb-0">
+                              <div className="col-span-12 sm:col-span-5"><input placeholder={`P${num} Name`} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-indigo-300" value={(flightData as any)[`p${num}_name`]} onChange={e=>setFlightData({...flightData, [`p${num}_name`]: e.target.value})}/></div>
+                              <div className="col-span-7 sm:col-span-4"><input placeholder={`ID / Passport`} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-indigo-300" value={(flightData as any)[`p${num}_id`]} onChange={e=>setFlightData({...flightData, [`p${num}_id`]: e.target.value})}/></div>
+                              <div className="col-span-5 sm:col-span-3"><input placeholder={`Relation`} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-indigo-300" value={(flightData as any)[`p${num}_rel`]} onChange={e=>setFlightData({...flightData, [`p${num}_rel`]: e.target.value})}/></div>
                           </div>
                       ))}
                   </div>
 
                   {/* 4. REQUEST OPTIONS */}
-                  <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-3">
-                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-2">Request Options</h3>
+                  <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-4">
+                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-3">Request Options</h3>
                       
                       <div className="grid grid-cols-3 gap-2">
                           {['AL', 'Business', 'R&R', 'HET', 'Personal', 'Other'].map(opt => (
-                              <label key={opt} className={`text-[10px] font-bold border rounded-lg p-2 flex items-center justify-center cursor-pointer transition-colors ${flightData.leave_types.includes(opt) ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-inner' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'}`}>
+                              <label key={opt} className={`text-[10px] font-bold border rounded-lg p-2.5 flex items-center justify-center cursor-pointer transition-all ${flightData.leave_types.includes(opt) ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-inner' : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'}`}>
                                   <input type="checkbox" className="hidden" checked={flightData.leave_types.includes(opt)} onChange={() => toggleLeaveType(opt)}/> {opt}
                               </label>
                           ))}
                       </div>
 
-                      <div className="mt-2"><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Int. Destination / Route</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.int_destination} onChange={e=>setFlightData({...flightData, int_destination: e.target.value})}/></div>
+                      <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Int. Destination / Route</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" placeholder="e.g. MLE - CMB" value={flightData.int_destination} onChange={e=>setFlightData({...flightData, int_destination: e.target.value})}/></div>
 
-                      <div className="flex gap-4 items-center bg-slate-50 p-3 rounded-xl border border-slate-200 mt-2">
+                      <div className="flex gap-6 items-center bg-slate-50 p-3 rounded-xl border border-slate-200">
                           <span className="text-xs font-bold text-slate-600">Payroll Deduction?</span>
-                          <label className="text-xs font-bold flex items-center gap-1 cursor-pointer"><input type="radio" name="payroll" checked={flightData.payroll_deduction === 'Yes'} onChange={() => setFlightData({...flightData, payroll_deduction: 'Yes'})}/> Yes</label>
-                          <label className="text-xs font-bold flex items-center gap-1 cursor-pointer"><input type="radio" name="payroll" checked={flightData.payroll_deduction === 'No'} onChange={() => setFlightData({...flightData, payroll_deduction: 'No'})}/> No</label>
+                          <label className="text-xs font-bold flex items-center gap-1.5 cursor-pointer text-slate-700"><input type="radio" name="payroll" checked={flightData.payroll_deduction === 'Yes'} onChange={() => setFlightData({...flightData, payroll_deduction: 'Yes'})}/> Yes</label>
+                          <label className="text-xs font-bold flex items-center gap-1.5 cursor-pointer text-slate-700"><input type="radio" name="payroll" checked={flightData.payroll_deduction === 'No'} onChange={() => setFlightData({...flightData, payroll_deduction: 'No'})}/> No</label>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 pt-2">
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase">Payroll Month</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.payroll_month} onChange={e=>setFlightData({...flightData, payroll_month: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase">Total Deductable</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.total_deductable} onChange={e=>setFlightData({...flightData, total_deductable: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase">Domestic Cost</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.domestic_flight} onChange={e=>setFlightData({...flightData, domestic_flight: e.target.value})}/></div>
-                          <div><label className="text-[9px] font-bold text-slate-400 uppercase">Int. Cost</label><input className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.int_flight} onChange={e=>setFlightData({...flightData, int_flight: e.target.value})}/></div>
+                      <div className="grid grid-cols-2 gap-3">
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Payroll Month</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={flightData.payroll_month} onChange={e=>setFlightData({...flightData, payroll_month: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Total Deductable</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={flightData.total_deductable} onChange={e=>setFlightData({...flightData, total_deductable: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Domestic Cost</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={flightData.domestic_flight} onChange={e=>setFlightData({...flightData, domestic_flight: e.target.value})}/></div>
+                          <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Int. Cost</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={flightData.int_flight} onChange={e=>setFlightData({...flightData, int_flight: e.target.value})}/></div>
                       </div>
                   </div>
 
                   {/* 5. FLIGHT SCHEDULE */}
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-3">
-                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-2"><Plane size={16}/> Flight Schedule</h3>
+                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 border-b border-slate-100 pb-3"><Plane size={16}/> Flight Schedule</h3>
                       
-                      <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-100 mb-2">
-                          <p className="text-[10px] font-black text-blue-600 mb-2">DOMESTIC</p>
-                          <div className="grid grid-cols-2 gap-2">
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Dep Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none text-slate-700" value={flightData.dom_dep_date} onChange={e=>setFlightData({...flightData, dom_dep_date: e.target.value})}/></div>
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Dep Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.dom_dep_time} onChange={e=>setFlightData({...flightData, dom_dep_time: e.target.value})}/></div>
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Arr Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none text-slate-700" value={flightData.dom_arr_date} onChange={e=>setFlightData({...flightData, dom_arr_date: e.target.value})}/></div>
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Arr Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.dom_arr_time} onChange={e=>setFlightData({...flightData, dom_arr_time: e.target.value})}/></div>
+                      <div className="bg-blue-50/50 p-3 rounded-xl border border-blue-100 mb-3">
+                          <p className="text-[10px] font-black text-blue-600 mb-2">DOMESTIC SECTOR</p>
+                          <div className="grid grid-cols-2 gap-2.5">
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Dep Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-blue-400 text-slate-700" value={flightData.dom_dep_date} onChange={e=>setFlightData({...flightData, dom_dep_date: e.target.value})}/></div>
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Dep Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-blue-400" value={flightData.dom_dep_time} onChange={e=>setFlightData({...flightData, dom_dep_time: e.target.value})}/></div>
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Arr Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-blue-400 text-slate-700" value={flightData.dom_arr_date} onChange={e=>setFlightData({...flightData, dom_arr_date: e.target.value})}/></div>
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Arr Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-blue-400" value={flightData.dom_arr_time} onChange={e=>setFlightData({...flightData, dom_arr_time: e.target.value})}/></div>
                           </div>
                       </div>
 
                       <div className="bg-amber-50/50 p-3 rounded-xl border border-amber-100">
-                          <p className="text-[10px] font-black text-amber-600 mb-2">INTERNATIONAL</p>
-                          <div className="grid grid-cols-2 gap-2">
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Dep Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none text-slate-700" value={flightData.int_dep_date} onChange={e=>setFlightData({...flightData, int_dep_date: e.target.value})}/></div>
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Dep Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.int_dep_time} onChange={e=>setFlightData({...flightData, int_dep_time: e.target.value})}/></div>
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Arr Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none text-slate-700" value={flightData.int_arr_date} onChange={e=>setFlightData({...flightData, int_arr_date: e.target.value})}/></div>
-                              <div><label className="text-[9px] font-bold text-slate-400 uppercase">Arr Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none" value={flightData.int_arr_time} onChange={e=>setFlightData({...flightData, int_arr_time: e.target.value})}/></div>
+                          <p className="text-[10px] font-black text-amber-600 mb-2">INTERNATIONAL SECTOR</p>
+                          <div className="grid grid-cols-2 gap-2.5">
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Dep Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-amber-400 text-slate-700" value={flightData.int_dep_date} onChange={e=>setFlightData({...flightData, int_dep_date: e.target.value})}/></div>
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Dep Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-amber-400" value={flightData.int_dep_time} onChange={e=>setFlightData({...flightData, int_dep_time: e.target.value})}/></div>
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Arr Date</label><input type="date" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-amber-400 text-slate-700" value={flightData.int_arr_date} onChange={e=>setFlightData({...flightData, int_arr_date: e.target.value})}/></div>
+                              <div><label className="text-[9px] font-bold text-slate-400 uppercase ml-1">Arr Time</label><input type="text" placeholder="HH:MM" className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-amber-400" value={flightData.int_arr_time} onChange={e=>setFlightData({...flightData, int_arr_time: e.target.value})}/></div>
                           </div>
                       </div>
                   </div>
@@ -959,8 +954,8 @@ export default function PrintHubPage() {
                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
                       <h3 className="font-bold text-slate-700 mb-3 text-sm flex items-center justify-between">
                           <span className="flex items-center gap-2"><Settings size={16}/> Template & Map</span>
-                          {flightTemplateStatus === 'READY' ? <span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-1 rounded font-bold">Ready</span> : (
-                              <div className="relative cursor-pointer text-[10px] bg-slate-100 hover:bg-slate-200 px-2 py-1 rounded font-bold">
+                          {flightTemplateStatus === 'READY' ? <span className="text-[10px] text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded font-bold">Ready</span> : (
+                              <div className="relative cursor-pointer text-[10px] bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded font-bold transition-colors">
                                   Upload Template
                                   <input type="file" accept=".pdf" onChange={e => handleTemplateUpload(e, FLIGHT_TEMPLATE, setFlightTemplateBytes, setFlightTemplateStatus, 'FLIGHT')} className="absolute inset-0 opacity-0 cursor-pointer"/>
                               </div>
@@ -968,12 +963,12 @@ export default function PrintHubPage() {
                       </h3>
                       
                       {flightPdfFields.length > 0 && (
-                          <div className="space-y-2 mt-4 border-t border-slate-100 pt-3 max-h-40 overflow-y-auto custom-scrollbar pr-2">
-                              <div className="flex justify-end"><button onClick={() => identifyFields(flightTemplateBytes)} className="text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200 flex items-center gap-1"><Search size={10}/> Identify Fields</button></div>
+                          <div className="space-y-2 mt-4 border-t border-slate-100 pt-3 max-h-48 overflow-y-auto custom-scrollbar pr-2">
+                              <div className="flex justify-end"><button onClick={() => identifyFields(flightTemplateBytes)} className="text-[10px] bg-slate-100 px-3 py-1.5 font-bold rounded hover:bg-slate-200 flex items-center gap-1 transition-colors"><Search size={12}/> Identify Fields</button></div>
                               {flightPdfFields.map(field => (
-                                  <div key={field} className="flex justify-between items-center">
-                                      <span className="text-[10px] font-bold text-slate-400 truncate max-w-[100px]" title={field}>{field}</span>
-                                      <select className="w-32 p-1 text-[10px] border rounded bg-slate-50 outline-none font-bold" value={flightFieldMapping[field] || ''} onChange={(e) => updateFlightMapping(field, e.target.value)}>
+                                  <div key={field} className="flex justify-between items-center bg-slate-50 p-1.5 rounded border border-transparent hover:border-slate-200 transition-colors">
+                                      <span className="text-[10px] font-bold text-slate-500 truncate max-w-[120px]" title={field}>{field}</span>
+                                      <select className="w-32 p-1.5 text-[10px] border border-slate-200 rounded-lg bg-white outline-none font-bold shadow-sm" value={flightFieldMapping[field] || ''} onChange={(e) => updateFlightMapping(field, e.target.value)}>
                                           <option value="">Skip</option>
                                           {FLIGHT_MAPPING_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                                       </select>
@@ -984,37 +979,52 @@ export default function PrintHubPage() {
                   </div>
 
                   {/* GENERATE */}
-                  <button onClick={generateFlightPdf} disabled={isProcessing || flightTemplateStatus !== 'READY' || !flightData.name} className="w-full bg-[#6D2158] text-white py-4 rounded-xl font-black tracking-widest uppercase shadow-lg hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2 text-sm shrink-0">
+                  <button onClick={generateFlightPdf} disabled={isProcessing || flightTemplateStatus !== 'READY' || !flightData.name} className="w-full bg-[#6D2158] text-white py-4 md:py-5 rounded-xl font-black tracking-widest uppercase shadow-lg hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2 text-sm shrink-0 active:scale-95">
                       {isProcessing ? <Loader2 className="animate-spin" size={18}/> : <Printer size={18}/>}
                       Generate Request
                   </button>
 
-                  {/* HISTORY */}
-                  <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-1 min-h-[150px] flex flex-col">
-                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 mb-3"><HistoryIcon size={16}/> Generated History</h3>
+                  {/* DESKTOP HISTORY (Hidden on mobile) */}
+                  <div className="hidden md:flex bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex-1 min-h-[200px] flex-col shrink-0">
+                      <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 mb-3 border-b border-slate-100 pb-2"><HistoryIcon size={16}/> Generated History</h3>
                       <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pr-2">
                           {flightHistory.map(h => (
-                              <div key={h.id} className="p-2.5 bg-slate-50 border border-slate-100 rounded-lg flex justify-between items-center group">
-                                  <span className="font-bold text-xs text-slate-700">{h.host_name} <span className="text-[10px] text-slate-400 font-normal ml-1">{h.host_id}</span></span>
-                                  <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{new Date(h.created_at).toLocaleDateString('en-GB')}</span>
+                              <div key={h.id} className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex justify-between items-center group">
+                                  <span className="font-bold text-sm text-slate-700">{h.host_name} <span className="text-[10px] text-slate-400 font-normal ml-1">{h.host_id}</span></span>
+                                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{new Date(h.created_at).toLocaleDateString('en-GB')}</span>
                               </div>
                           ))}
-                          {flightHistory.length === 0 && <div className="text-center text-xs text-slate-400 py-4 font-bold italic">No history yet.</div>}
+                          {flightHistory.length === 0 && <div className="text-center text-xs text-slate-400 py-6 font-bold italic">No history yet.</div>}
                       </div>
                   </div>
 
               </div>
 
-              {/* RIGHT PREVIEW */}
-              <div className="w-[55%] bg-slate-200 rounded-2xl border border-slate-300 shadow-inner flex flex-col overflow-hidden relative">
+              {/* RIGHT PREVIEW (Stacks below form on mobile) */}
+              <div className="w-full md:w-[50%] lg:w-[55%] h-[500px] md:h-auto md:flex-1 bg-slate-200 rounded-2xl border border-slate-300 shadow-inner flex flex-col overflow-hidden relative shrink-0">
                   {previewUrl ? (
                       <iframe src={previewUrl} className="w-full h-full" title="PDF Preview"/>
                   ) : (
                       <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                          <FileText size={48} className="mb-2 opacity-50"/>
+                          <FileText size={48} className="mb-4 opacity-30"/>
                           <p className="text-sm font-bold">No Preview Generated</p>
+                          <p className="text-[10px] uppercase tracking-widest mt-2 max-w-[200px] text-center">Fill out the form and hit generate to see the PDF.</p>
                       </div>
                   )}
+              </div>
+
+              {/* MOBILE HISTORY (Hidden on desktop, placed after preview on mobile) */}
+              <div className="flex md:hidden bg-white p-4 rounded-xl shadow-sm border border-slate-200 min-h-[200px] flex-col shrink-0 mt-2">
+                  <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2 mb-3 border-b border-slate-100 pb-2"><HistoryIcon size={16}/> Generated History</h3>
+                  <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pr-2">
+                      {flightHistory.map(h => (
+                          <div key={h.id} className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex justify-between items-center group">
+                              <span className="font-bold text-sm text-slate-700">{h.host_name} <span className="block text-[10px] text-slate-400 font-normal mt-0.5">{h.host_id}</span></span>
+                              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{new Date(h.created_at).toLocaleDateString('en-GB')}</span>
+                          </div>
+                      ))}
+                      {flightHistory.length === 0 && <div className="text-center text-xs text-slate-400 py-6 font-bold italic">No history yet.</div>}
+                  </div>
               </div>
           </div>
       )}
@@ -1022,7 +1032,7 @@ export default function PrintHubPage() {
       {/* TOAST */}
       {toast && (
           <div className={`fixed top-6 right-6 px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 animate-in z-50 ${
-              toast.type === 'success' ? 'toast-success' : 'toast-error'
+              toast.type === 'success' ? 'bg-emerald-50 text-emerald-700 border-2 border-emerald-200' : 'bg-rose-50 text-rose-700 border-2 border-rose-200'
           }`}>
               {toast.type === 'success' ? <CheckCircle2 size={20}/> : <AlertCircle size={20}/>}
               <span className="font-bold text-sm">{toast.msg}</span>
