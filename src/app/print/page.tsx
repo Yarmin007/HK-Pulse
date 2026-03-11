@@ -22,7 +22,7 @@ type Host = {
     full_name: string; 
     role: string; 
     department?: string;
-    joining_date?: string; // FIXED: Matches DB column
+    joining_date?: string;
     contact_no?: string;
 };
 
@@ -36,10 +36,8 @@ const getTargetDate = () => {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
-// Formats HTML YYYY-MM-DD from the date picker to DD/MM/YYYY for the PDF
 const formatDateForPDF = (dateStr: string) => {
     if (!dateStr) return '';
-    // Strip timestamp if present, then split by dash
     const parts = dateStr.split('T')[0].split('-');
     if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
     return dateStr;
@@ -173,9 +171,10 @@ export default function PrintHubPage() {
         fetchHosts();
         fetchFlightHistory();
         
-        const savedMap = localStorage.getItem('flight_field_mapping');
-        if (savedMap) {
-            try { setFlightFieldMapping(JSON.parse(savedMap)); } catch(e) {}
+        // Restore mappings from localStorage for BOTH modes
+        const savedFlightMap = localStorage.getItem('flight_field_mapping');
+        if (savedFlightMap) {
+            try { setFlightFieldMapping(JSON.parse(savedFlightMap)); } catch(e) {}
         }
     } else {
         setPreviewUrl(null);
@@ -226,15 +225,22 @@ export default function PrintHubPage() {
       
       if (mode === 'DEPARTURE') {
           setPdfFields(fields);
-          const initialMap: Record<string, string> = {};
-          fields.forEach(f => {
-              const lower = f.toLowerCase();
-              if (lower.includes('text3')) initialMap[f] = 'villa'; 
-              else if (lower.includes('text4')) initialMap[f] = 'targetDate'; 
-              else if (lower.includes('name') || lower.includes('guest')) initialMap[f] = 'salutation'; 
-              else if (lower.includes('date') && !lower.includes('target')) initialMap[f] = 'todayDate'; 
-          });
-          setFieldMapping(initialMap);
+          
+          // Auto-Load from Local Storage for Departure
+          const savedDepMap = localStorage.getItem('dep_field_mapping');
+          if (savedDepMap) {
+              try { setFieldMapping(JSON.parse(savedDepMap)); } catch(e) {}
+          } else {
+              const initialMap: Record<string, string> = {};
+              fields.forEach(f => {
+                  const lower = f.toLowerCase();
+                  if (lower.includes('text3')) initialMap[f] = 'villa'; 
+                  else if (lower.includes('text4')) initialMap[f] = 'targetDate'; 
+                  else if (lower.includes('name') || lower.includes('guest')) initialMap[f] = 'salutation'; 
+                  else if (lower.includes('date') && !lower.includes('target')) initialMap[f] = 'todayDate'; 
+              });
+              setFieldMapping(initialMap);
+          }
       } else if (mode === 'FLIGHT') {
           setFlightPdfFields(fields);
       }
@@ -430,6 +436,12 @@ export default function PrintHubPage() {
       showToast('success', `Found ${processed.length} villas.`);
   };
 
+  const updateDepartureMapping = (field: string, val: string) => {
+      const newMap = { ...fieldMapping, [field]: val };
+      setFieldMapping(newMap);
+      localStorage.setItem('dep_field_mapping', JSON.stringify(newMap));
+  };
+
   const generateMergedPdf = async () => {
       if (!templateBytes || villaGroups.length === 0) return showToast('error', "Missing Data");
       
@@ -498,18 +510,29 @@ export default function PrintHubPage() {
       setHostSearch('');
       setIsHostDropdownOpen(false);
 
-      // Reset basic info first, safely extract date from DB timestamp if needed
-      setFlightData(prev => ({
-          ...prev,
+      // 1. COMPLETELY RESET STATE FIRST (So passenger data doesn't bleed over)
+      const resetData = {
           name: host.full_name || '',
           host_id: host.host_id || '',
           designation: host.role || '',
           department: host.department || 'Housekeeping',
-          hire_date: host.joining_date?.split('T')[0] || '', // FIXED: Map joining_date
-          contact_no: host.contact_no || ''
-      }));
+          hire_date: host.joining_date?.split('T')[0] || '', 
+          contact_no: host.contact_no || '',
+          p1_name: '', p1_id: '', p1_rel: '',
+          p2_name: '', p2_id: '', p2_rel: '',
+          p3_name: '', p3_id: '', p3_rel: '',
+          p4_name: '', p4_id: '', p4_rel: '',
+          leave_types: [] as string[], 
+          payroll_deduction: '',
+          int_destination: '',
+          payroll_month: '', domestic_flight: '', int_flight: '', total_deductable: '',
+          dom_dep_date: '', dom_dep_time: '', dom_arr_date: '', dom_arr_time: '',
+          int_dep_date: '', int_dep_time: '', int_arr_date: '', int_arr_time: ''
+      };
 
-      // Auto-fill from DB History if available
+      setFlightData(resetData);
+
+      // 2. Fetch history from DB to auto-fill previous passengers/contact info
       try {
           const { data } = await supabase
               .from('hsk_flight_requests')
@@ -779,7 +802,7 @@ export default function PrintHubPage() {
                               {pdfFields.map(field => (
                                   <div key={field} className="flex justify-between items-center pr-2">
                                       <span className="text-[10px] font-bold text-slate-400 truncate max-w-[80px]" title={field}>{field}</span>
-                                      <select className="w-24 p-1 text-[10px] border rounded bg-slate-50" value={fieldMapping[field] || ''} onChange={(e) => setFieldMapping({...fieldMapping, [field]: e.target.value})}>
+                                      <select className="w-24 p-1 text-[10px] border rounded bg-slate-50" value={fieldMapping[field] || ''} onChange={(e) => updateDepartureMapping(field, e.target.value)}>
                                           <option value="">Skip</option>
                                           <option value="salutation">Name</option>
                                           <option value="villa">Villa (Sz 6)</option>
