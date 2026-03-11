@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Lock, Plus, Minus, Save, CheckCircle2, 
   Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
-  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -29,7 +29,15 @@ const getCategoryWeight = (cat: string) => {
 };
 
 type Host = { id: string; full_name: string; host_id: string; };
-type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; };
+type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; };
+
+// NEW TYPE FOR UNIVERSAL ASSIGNMENTS
+type UniversalTask = {
+    schedule_id: string;
+    inventory_type: string;
+    villa_number: string;
+    status: string;
+};
 
 const parseVillas = (input: string, doubleVillas: string[]) => {
     const result = new Set<string>();
@@ -63,16 +71,22 @@ export default function MyTasksResponsive() {
   const [currentHost, setCurrentHost] = useState<Host | null>(null);
   const [dailyTask, setDailyTask] = useState<{shift_type?: string, shift_note?: string} | null>(null);
 
-  const [invStatus, setInvStatus] = useState<'OPEN' | 'CLOSED'>('CLOSED');
-  const [activePeriod, setActivePeriod] = useState<string>('');
-  const [assignedVillas, setAssignedVillas] = useState<string[]>([]);
-  const [completedVillas, setCompletedVillas] = useState<string[]>([]);
+  // --- UNIVERSAL TASK STATE ---
+  const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
+  const [activeTaskType, setActiveTaskType] = useState<string>(''); // Determines which type we are counting (e.g. Minibar, Linen)
+  const [activeScheduleId, setActiveScheduleId] = useState<string>('');
+  const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
+  
+  // These hold the active audit data
   const [selectedVilla, setSelectedVilla] = useState('');
-  const [previousSubmissions, setPreviousSubmissions] = useState<Record<string, Record<string, number>>>({});
-  const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [activeCategory, setActiveCategory] = useState('All');
 
+  // KEYPAD STATE
+  const [keypadTarget, setKeypadTarget] = useState<string | null>(null);
+  const [keypadValue, setKeypadValue] = useState<string>('');
+
+  // Expiry Specific
   const [isExpiryMode, setIsExpiryMode] = useState(false);
   const [expiryTargets, setExpiryTargets] = useState<any[]>([]);
   const [expiryAssignedVillas, setExpiryAssignedVillas] = useState<string[]>([]);
@@ -88,47 +102,80 @@ export default function MyTasksResponsive() {
       const todayStr = getLocalToday();
       const currentMonth = getLocalMonth();
 
+      // 1. Fetch Shift Info
       const { data: att } = await supabase.from('hsk_attendance').select('shift_type, shift_note').eq('host_id', hostId).eq('date', todayStr).maybeSingle();
       if (att) setDailyTask(att);
 
-      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
-      const status = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
-      const period = constData?.find(c => c.type === 'mb_active_period')?.label;
-      const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
-      const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
+      // 2. Fetch UNIVERSAL Inventory Assignments (This catches Linen, Assets, etc.)
+      const { data: activeSchedules } = await supabase.from('hsk_inventory_schedules')
+          .select('id, inventory_type')
+          .eq('status', 'Active');
+      
+      const taskMap: Record<string, UniversalTask[]> = {};
 
-      setInvStatus(status as 'OPEN' | 'CLOSED');
-      if (period) setActivePeriod(period);
+      if (activeSchedules && activeSchedules.length > 0) {
+          const scheduleIds = activeSchedules.map(s => s.id);
+          const { data: assignments } = await supabase.from('hsk_inventory_assignments')
+              .select('*')
+              .in('schedule_id', scheduleIds)
+              .eq('host_id', hostId);
 
-      if (period) {
-          const allocDate = `${period}-01`;
-          const { data: allocations } = await supabase.from('hsk_minibar_allocations').select('villas').eq('date', allocDate).eq('host_id', hostId).maybeSingle();
-          if (allocations && allocations.villas) setAssignedVillas(parseVillas(allocations.villas, dvList));
-
-          const [y, m] = period.split('-').map(Number);
-          const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
-          const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
-          
-          const { data: submissions } = await supabase.from('hsk_villa_minibar_inventory').select('villa_number, inventory_data, logged_at').gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC).eq('host_id', hostId).order('logged_at', { ascending: false }); 
-
-          if (submissions) {
-              const done = Array.from(new Set(submissions.map(s => s.villa_number)));
-              setCompletedVillas(done);
-
-              const prevData: Record<string, Record<string, number>> = {};
-              submissions.forEach(sub => {
-                  if (!prevData[sub.villa_number]) {
-                      const itemMap: Record<string, number> = {};
-                      if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
-                          sub.inventory_data.forEach((item: any) => { itemMap[item.article_number] = item.qty; });
-                      }
-                      prevData[sub.villa_number] = itemMap;
-                  }
+          if (assignments) {
+              assignments.forEach(a => {
+                  if (!taskMap[a.inventory_type]) taskMap[a.inventory_type] = [];
+                  taskMap[a.inventory_type].push({
+                      schedule_id: a.schedule_id,
+                      inventory_type: a.inventory_type,
+                      villa_number: a.villa_number,
+                      status: a.status
+                  });
               });
-              setPreviousSubmissions(prevData);
+              
+              // Sort villas within each type
+              Object.values(taskMap).forEach(arr => {
+                  arr.sort((a,b) => {
+                      const numA = parseInt(a.villa_number) || 9999;
+                      const numB = parseInt(b.villa_number) || 9999;
+                      return numA - numB;
+                  });
+              });
           }
       }
 
+      // 3. Fetch Legacy MINIBAR Assignments (If any are active)
+      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
+      const mbStatus = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
+      const mbPeriod = constData?.find(c => c.type === 'mb_active_period')?.label;
+      const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
+      const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
+
+      if (mbStatus === 'OPEN' && mbPeriod) {
+          const allocDate = `${mbPeriod}-01`;
+          const { data: mbAllocations } = await supabase.from('hsk_minibar_allocations').select('villas').eq('date', allocDate).eq('host_id', hostId).maybeSingle();
+          
+          if (mbAllocations && mbAllocations.villas) {
+              const mbVillas = parseVillas(mbAllocations.villas, dvList);
+              
+              // Find which ones are already completed
+              const [y, m] = mbPeriod.split('-').map(Number);
+              const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
+              const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
+              const { data: mbSubmissions } = await supabase.from('hsk_villa_minibar_inventory').select('villa_number').gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC).eq('host_id', hostId);
+              
+              const completedMbVillas = new Set((mbSubmissions || []).map(s => s.villa_number));
+
+              taskMap['Legacy Minibar'] = mbVillas.map(v => ({
+                  schedule_id: 'legacy_minibar',
+                  inventory_type: 'Legacy Minibar',
+                  villa_number: v,
+                  status: completedMbVillas.has(v) ? 'Submitted' : 'Pending'
+              }));
+          }
+      }
+
+      setUniversalTasks(taskMap);
+
+      // 4. Fetch EXPIRY Targets
       const [expiryTargetRes, expiryAllocRes, expiryRemRes] = await Promise.all([
           supabase.from('hsk_expiry_targets').select('*').eq('month_period', currentMonth),
           supabase.from('hsk_expiry_allocations').select('villas').eq('month_period', currentMonth).eq('host_id', hostId).maybeSingle(),
@@ -140,7 +187,6 @@ export default function MyTasksResponsive() {
       if (expiryAllocRes.data && expiryAllocRes.data.villas) {
           const parsedExpiryVillas = parseVillas(expiryAllocRes.data.villas, dvList);
           setExpiryAssignedVillas(parsedExpiryVillas);
-          if (isManualRefresh && !silent) toast.success(`Found ${parsedExpiryVillas.length} Audit Villas!`);
       } else {
           setExpiryAssignedVillas([]);
       }
@@ -155,12 +201,10 @@ export default function MyTasksResponsive() {
   }, []);
 
   const fetchCatalog = useCallback(async () => {
-    const { data: catRes } = await supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true);
-    const { data: constRes } = await supabase.from('hsk_constants').select('*').eq('type', 'hidden_mb_item');
+    // Fetch EVERYTHING. We will filter it based on what task they click.
+    const { data: catRes } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
     if (catRes) {
-        const hiddenList = constRes ? constRes.map(h => h.label) : [];
-        const filteredAndSorted = catRes.filter(i => !hiddenList.includes(i.article_number)).sort((a, b) => getCategoryWeight(a.category) - getCategoryWeight(b.category) || a.article_name.localeCompare(b.article_name));
-        setCatalog(filteredAndSorted);
+        setMasterCatalog(catRes);
     }
   }, []);
 
@@ -183,17 +227,6 @@ export default function MyTasksResponsive() {
     setIsMounted(true);
     fetchCatalog();
   }, [loadInitialData, fetchCatalog]);
-
-  // --- MOBILE REAL-TIME SUBSCRIPTION ---
-  useEffect(() => {
-      if (!currentHost) return;
-      const channel = supabase.channel('mobile_realtime_removals')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_expiry_removals' }, (payload) => {
-              loadInitialData(currentHost.host_id, false, true); 
-          })
-          .subscribe();
-      return () => { supabase.removeChannel(channel); };
-  }, [currentHost, loadInitialData]);
 
   const groupedTargets = useMemo(() => {
       const expMap: Record<string, any> = {};
@@ -231,14 +264,47 @@ export default function MyTasksResponsive() {
       }
   }, [step, isExpiryMode, selectedVilla, expiryVillaData]);
 
-  const startAudit = (villa: string) => {
+  // --- START A TASK (UNIVERSAL) ---
+  const startAudit = async (villa: string, taskType: string, scheduleId: string) => {
+    setIsLoading(true);
     setSelectedVilla(villa);
+    setActiveTaskType(taskType);
+    setActiveScheduleId(scheduleId);
     setIsExpiryMode(false);
+    
     const initialCounts: Record<string, number> = {};
-    const previousData = previousSubmissions[villa] || {};
-    catalog.forEach(item => { initialCounts[item.article_number] = previousData[item.article_number] || 0; });
+
+    // DYNAMIC CATALOG FILTERING based on task type
+    const relevantItems = taskType === 'Legacy Minibar' 
+        ? masterCatalog.filter(i => i.is_minibar_item)
+        : masterCatalog.filter(i => i.inventory_type === taskType);
+
+    // FETCH PREVIOUS RECORDS IF EDITING (Now allowed even if Done)
+    if (taskType === 'Legacy Minibar') {
+        const mbPeriod = getLocalMonth();
+        const [y, m] = mbPeriod.split('-').map(Number);
+        const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
+        const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
+        
+        const { data: sub } = await supabase.from('hsk_villa_minibar_inventory').select('inventory_data').eq('villa_number', villa).gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC).order('logged_at', { ascending: false }).limit(1).maybeSingle();
+        
+        relevantItems.forEach(item => { initialCounts[item.article_number] = 0; });
+        if (sub && sub.inventory_data) {
+            sub.inventory_data.forEach((item: any) => { initialCounts[item.article_number] = item.qty; });
+        }
+    } else {
+        // Universal Inventory DB
+        const { data: recs } = await supabase.from('hsk_inventory_records').select('article_number, counted_qty').eq('schedule_id', scheduleId).eq('villa_number', villa);
+        
+        relevantItems.forEach(item => { initialCounts[item.article_number] = 0; });
+        if (recs) {
+            recs.forEach(r => { initialCounts[r.article_number] = r.counted_qty; });
+        }
+    }
+
     setCounts(initialCounts);
     setStep(3);
+    setIsLoading(false);
   };
 
   const updateCount = (article_number: string, delta: number) => {
@@ -248,26 +314,88 @@ export default function MyTasksResponsive() {
     });
   };
 
-  const requestAllOk = () => {
-      setConfirmModal({
-          isOpen: true, title: "Fill & Submit?", message: `This will auto-fill standard PAR and submit immediately.`, confirmText: "Fill & Submit", isDestructive: false,
-          onConfirm: () => {
-              const newCounts: Record<string, number> = {};
-              catalog.forEach(item => {
-                  const cat = (item.category || '').toLowerCase();
-                  const name = (item.generic_name || item.article_name || '').toLowerCase();
-                  let par = 1; 
-                  if (cat.includes('soft') || cat.includes('juice') || cat.includes('water') || cat.includes('beverage') || cat.includes('beer')) par = 2;
-                  else if (cat.includes('wine') || cat.includes('spirit') || cat.includes('liquor') || cat.includes('hard') || cat.includes('alcohol') || cat.includes('bite') || cat.includes('sweet') || cat.includes('food') || cat.includes('snack')) par = 1;
-                  if (name.includes('light tonic') || name.includes('indian tonic') || name.includes('ginger beer') || name.includes('ginger ale')) par = 1;
-                  if (name.includes('zero') || name.includes('fanta')) par = 0;
-                  newCounts[item.article_number] = par;
-              });
-              setCounts(newCounts);
-              setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              executeSaveInventory(newCounts);
-          }
-      });
+  // --- KEYPAD LOGIC ---
+  const openKeypad = (article_number: string) => {
+      setKeypadTarget(article_number);
+      setKeypadValue(String(counts[article_number] || 0));
+  };
+
+  const handleKeypadPress = (val: string) => {
+      if (val === 'DEL') {
+          setKeypadValue(prev => prev.length > 1 ? prev.slice(0, -1) : '0');
+      } else if (val === 'CLR') {
+          setKeypadValue('0');
+      } else {
+          setKeypadValue(prev => prev === '0' ? val : prev + val);
+      }
+  };
+
+  const saveKeypadValue = () => {
+      if (keypadTarget) {
+          const num = parseInt(keypadValue, 10);
+          setCounts(prev => ({ ...prev, [keypadTarget]: isNaN(num) ? 0 : num }));
+      }
+      setKeypadTarget(null);
+  };
+
+  const executeSaveInventory = async () => {
+    setIsLoading(true);
+    
+    if (activeTaskType === 'Legacy Minibar') {
+        const countedItems = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => {
+                const item = masterCatalog.find(c => c.article_number === artNo);
+                return { article_number: artNo, name: item?.generic_name || item?.article_name, qty };
+        });
+
+        const payload = {
+            villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name,
+            inventory_data: countedItems, logged_at: new Date().toISOString() 
+        };
+
+        const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
+        if (!error) {
+            // Update local state instantly so checkmark appears
+            setUniversalTasks(prev => {
+                const updated = { ...prev };
+                if (updated['Legacy Minibar']) {
+                    updated['Legacy Minibar'] = updated['Legacy Minibar'].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t);
+                }
+                return updated;
+            });
+        }
+    } else {
+        // UNIVERSAL INVENTORY SAVE
+        const recordsToInsert = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => ({
+            schedule_id: activeScheduleId,
+            villa_number: selectedVilla,
+            article_number: artNo,
+            counted_qty: qty,
+            host_id: currentHost?.host_id
+        }));
+
+        // 1. Delete old records for this villa/schedule just in case (Overrides)
+        await supabase.from('hsk_inventory_records').delete().eq('schedule_id', activeScheduleId).eq('villa_number', selectedVilla);
+        
+        // 2. Insert new records
+        if (recordsToInsert.length > 0) {
+            await supabase.from('hsk_inventory_records').insert(recordsToInsert);
+        }
+
+        // 3. Mark Assignment as Submitted
+        await supabase.from('hsk_inventory_assignments').update({ status: 'Submitted' }).eq('schedule_id', activeScheduleId).eq('villa_number', selectedVilla);
+        
+        // Update local state instantly
+        setUniversalTasks(prev => {
+            const updated = { ...prev };
+            if (updated[activeTaskType]) {
+                updated[activeTaskType] = updated[activeTaskType].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t);
+            }
+            return updated;
+        });
+    }
+
+    setIsLoading(false);
+    setShowSuccess(true);
   };
 
   const requestEmptyMinibar = () => {
@@ -275,43 +403,19 @@ export default function MyTasksResponsive() {
           isOpen: true, title: "Empty & Submit?", message: "This will set all items to 0 and submit immediately.", confirmText: "Empty & Submit", isDestructive: true,
           onConfirm: () => {
               const newCounts: Record<string, number> = {};
-              catalog.forEach(item => { newCounts[item.article_number] = 0; });
+              Object.keys(counts).forEach(key => { newCounts[key] = 0; });
               setCounts(newCounts);
               setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              executeSaveInventory(newCounts);
+              executeSaveInventory(); // Pass empty implicitly through state
           }
       });
   };
 
   const requestSaveInventory = () => {
       setConfirmModal({
-          isOpen: true, title: `Submit Villa ${selectedVilla}?`, message: "Are you sure you want to save this inventory record?", confirmText: "Submit Record", isDestructive: false,
+          isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this inventory record?", confirmText: "Submit Record", isDestructive: false,
           onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); }
       });
-  };
-
-  const executeSaveInventory = async (overrideCounts?: Record<string, number>) => {
-    setIsLoading(true);
-    const finalCounts = overrideCounts || counts;
-    const countedItems = Object.entries(finalCounts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => {
-            const item = catalog.find(c => c.article_number === artNo);
-            return { article_number: artNo, name: item?.generic_name || item?.article_name, qty };
-        });
-
-    const payload = {
-        villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name,
-        inventory_data: countedItems, logged_at: new Date().toISOString() 
-    };
-
-    const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
-    setIsLoading(false);
-
-    if (error) { toast.error(`DB Error: Please contact Admin.`); } 
-    else {
-        setCompletedVillas(prev => Array.from(new Set([...prev, selectedVilla])));
-        setPreviousSubmissions(prev => ({ ...prev, [selectedVilla]: finalCounts }));
-        setShowSuccess(true);
-    }
   };
 
   // --- EXPIRY FUNCTIONS ---
@@ -437,10 +541,16 @@ export default function MyTasksResponsive() {
     setShowSuccess(false);
     setSelectedVilla('');
     setIsExpiryMode(false);
+    setKeypadTarget(null);
     setStep(2);
   };
 
-  const categories = ['All', ...Array.from(new Set(catalog.map(i => i.category)))];
+  // Derive categories dynamically based on active task
+  const activeCatalog = activeTaskType === 'Legacy Minibar' 
+      ? masterCatalog.filter(i => i.is_minibar_item) 
+      : masterCatalog.filter(i => i.inventory_type === activeTaskType);
+      
+  const categories = ['All', ...Array.from(new Set(activeCatalog.map(i => i.category)))];
 
   if (!isMounted) return null;
 
@@ -515,50 +625,42 @@ export default function MyTasksResponsive() {
                             </div>
                         )}
 
-                        {/* MINIBAR INVENTORY CARD */}
-                        {assignedVillas.length > 0 && (
-                            <div className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
-                                <div className="flex justify-between items-start mb-6">
-                                    <div>
-                                        <h3 className="text-xl font-bold text-slate-800 mb-1">Minibar Inventory</h3>
-                                        <p className="text-xs text-slate-400 font-medium">
-                                            {invStatus === 'OPEN' ? 'Tap a villa to begin auditing.' : `Locked • Upcoming: ${activePeriod}`}
-                                        </p>
-                                    </div>
-                                    {invStatus === 'CLOSED' && (
-                                        <div className="bg-rose-50 text-rose-600 p-3 rounded-2xl border border-rose-100">
-                                            <Lock size={20}/>
+                        {/* DYNAMIC UNIVERSAL INVENTORY CARDS */}
+                        {Object.keys(universalTasks).length === 0 && expiryAssignedVillas.length === 0 ? (
+                            <div className="text-center py-20 bg-white rounded-3xl border border-slate-100 shadow-sm">
+                                <CheckCircle size={48} className="mx-auto text-emerald-300 mb-4"/>
+                                <p className="font-bold text-slate-500">You have no active tasks right now.</p>
+                            </div>
+                        ) : (
+                            Object.entries(universalTasks).map(([taskType, assignments]) => (
+                                <div key={taskType} className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
+                                    <div className="flex justify-between items-start mb-6">
+                                        <div>
+                                            <h3 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                                <PackageSearch size={20} className="text-[#6D2158]"/> {taskType} Count
+                                            </h3>
+                                            <p className="text-xs text-slate-400 font-medium">Tap a location to begin auditing. You can tap 'Done' locations to re-edit.</p>
                                         </div>
-                                    )}
-                                </div>
-
-                                {invStatus === 'CLOSED' ? (
-                                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 text-center">
-                                        <AlertCircle size={32} className="mx-auto text-slate-300 mb-3"/>
-                                        <p className="text-base font-bold text-slate-600 mb-2">Inventory is currently Locked.</p>
-                                        <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">
-                                            Assigned Villas: {assignedVillas.join(', ')}
-                                        </p>
                                     </div>
-                                ) : (
+
                                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4">
-                                        {assignedVillas.map(villa => {
-                                            const isDone = completedVillas.includes(villa);
+                                        {assignments.map(task => {
+                                            const isDone = task.status === 'Submitted';
                                             return (
                                                 <button 
-                                                    key={villa}
-                                                    onClick={() => !isDone && startAudit(villa)}
-                                                    className={`aspect-square rounded-3xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700 cursor-default' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
+                                                    key={task.villa_number}
+                                                    onClick={() => startAudit(task.villa_number, taskType, task.schedule_id)}
+                                                    className={`aspect-square rounded-3xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
                                                 >
                                                     {isDone && <CheckCircle2 size={16} className="absolute top-3 right-3 text-emerald-500"/>}
-                                                    <span className={`font-black ${villa.includes('-') ? 'text-2xl md:text-3xl' : 'text-3xl md:text-4xl'}`}>{villa}</span>
-                                                    <span className="text-[10px] md:text-xs font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
+                                                    <span className={`font-black ${task.villa_number.includes('-') ? 'text-xl md:text-2xl' : 'text-2xl md:text-3xl'} ${!/^\d+$/.test(task.villa_number) && !task.villa_number.includes('-') ? 'text-lg' : ''}`}>{task.villa_number}</span>
+                                                    <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
                                                 </button>
                                             );
                                         })}
                                     </div>
-                                )}
-                            </div>
+                                </div>
+                            ))
                         )}
 
                     </div>
@@ -575,18 +677,15 @@ export default function MyTasksResponsive() {
                     <div className="flex items-center gap-4">
                         <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={20}/></button>
                         <div>
-                            <h2 className={`text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>Villa {selectedVilla}</h2>
-                            <p className={`text-xs font-bold uppercase tracking-widest mt-1 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Targeted Tasks' : 'Audit Mode'}</p>
+                            <h2 className={`text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
+                            <p className={`text-xs font-bold uppercase tracking-widest mt-1 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Targeted Tasks' : `${activeTaskType} Audit`}</p>
                         </div>
                     </div>
                     
                     {!isExpiryMode && (
                         <div className="flex gap-2 w-full md:w-auto">
                             <button onClick={requestEmptyMinibar} className="flex-1 md:flex-none px-6 py-3 bg-rose-50 text-rose-600 rounded-xl text-xs font-black uppercase tracking-widest border border-rose-100 hover:bg-rose-100 transition-all flex items-center justify-center gap-2">
-                                <Trash2 size={16}/> Empty
-                            </button>
-                            <button onClick={requestAllOk} className="flex-1 md:flex-none px-6 py-3 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-black uppercase tracking-widest border border-emerald-200 hover:bg-emerald-100 transition-all flex items-center justify-center gap-2">
-                                <CheckCircle2 size={16}/> All OK
+                                <Trash2 size={16}/> Zero All
                             </button>
                         </div>
                     )}
@@ -615,7 +714,7 @@ export default function MyTasksResponsive() {
                                 
                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                                 {(expiryVillaData[selectedVilla]?.removal_data || []).map((item: any) => {
-                                    const masterItem = catalog.find(c => c.article_number === item.article_number);
+                                    const masterItem = masterCatalog.find(c => c.article_number === item.article_number);
                                     const currentRefill = refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty;
                                     const isNotRefilled = currentRefill === 0;
                                     const isPartial = currentRefill > 0 && currentRefill < item.qty;
@@ -680,7 +779,7 @@ export default function MyTasksResponsive() {
                                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                                                 {groupedTargets.expiry.map((t: any) => {
                                                     const key = t.article_number;
-                                                    const masterItem = catalog.find(c => c.article_number === t.article_number);
+                                                    const masterItem = masterCatalog.find(c => c.article_number === t.article_number);
                                                     const qty = expiryCounts[key] || 0;
 
                                                     return (
@@ -731,7 +830,7 @@ export default function MyTasksResponsive() {
                                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                                                 {groupedTargets.refill.map((t: any) => {
                                                     const key = t.article_number;
-                                                    const masterItem = catalog.find(c => c.article_number === t.article_number);
+                                                    const masterItem = masterCatalog.find(c => c.article_number === t.article_number);
                                                     const qty = expiryCounts[key] || 0;
 
                                                     return (
@@ -782,7 +881,7 @@ export default function MyTasksResponsive() {
                         </div>
                     )
                 ) : (
-                    // --- STANDARD MINIBAR MODE (Vertical Image Cards) ---
+                    // --- STANDARD INVENTORY MODE (UNIVERSAL + KEYPAD) ---
                     <>
                         <div className="flex gap-2 overflow-x-auto no-scrollbar pb-4 mb-2">
                             {categories.map(cat => (
@@ -797,13 +896,14 @@ export default function MyTasksResponsive() {
                         </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 pb-48">
-                            {catalog.filter(i => activeCategory === 'All' || i.category === activeCategory).map(item => {
+                            {activeCatalog.filter(i => activeCategory === 'All' || i.category === activeCategory).map(item => {
                                 const qty = counts[item.article_number] || 0;
+                                const isKeypadActive = keypadTarget === item.article_number;
                                 
                                 return (
-                                <div key={item.article_number} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 ? 'border-[#6D2158] ring-4 ring-[#6D2158]/5' : 'border-slate-200'}`}>
+                                <div key={item.article_number} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 || isKeypadActive ? 'border-[#6D2158] ring-4 ring-[#6D2158]/5' : 'border-slate-200'}`}>
                                     
-                                    <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-3">
+                                    <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-3 relative">
                                         {item.image_url ? <img src={item.image_url} className="w-full h-full object-contain drop-shadow-sm"/> : <Wine size={32} className="text-slate-300"/>}
                                     </div>
                                     
@@ -816,9 +916,15 @@ export default function MyTasksResponsive() {
                                         <button onClick={() => updateCount(item.article_number, -1)} className="w-9 h-9 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
                                             <Minus size={16}/>
                                         </button>
-                                        <span className={`w-8 text-center font-black text-lg ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400'}`}>
+                                        
+                                        {/* TAPPING NUMBER OPENS KEYPAD */}
+                                        <button 
+                                            onClick={() => openKeypad(item.article_number)} 
+                                            className={`w-10 text-center font-black text-xl py-1 rounded-lg transition-colors ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400 hover:bg-slate-200'} ${isKeypadActive ? 'bg-[#6D2158]/10 text-[#6D2158] ring-2 ring-[#6D2158]' : ''}`}
+                                        >
                                             {qty}
-                                        </span>
+                                        </button>
+
                                         <button onClick={() => updateCount(item.article_number, 1)} className="w-9 h-9 flex items-center justify-center bg-[#6D2158] rounded-lg shadow-sm text-white active:scale-95 transition-all">
                                             <Plus size={16}/>
                                         </button>
@@ -841,6 +947,48 @@ export default function MyTasksResponsive() {
                         </div>
                     </>
                 )}
+            </div>
+        )}
+
+        {/* --- CUSTOM KEYPAD OVERLAY --- */}
+        {keypadTarget && (
+            <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex flex-col justify-end animate-in fade-in duration-200">
+                <div className="absolute inset-0" onClick={saveKeypadValue}></div>
+                <div className="bg-[#FDFBFD] w-full rounded-t-[2.5rem] p-6 pb-safe shadow-2xl animate-in slide-in-from-bottom-8 relative z-10">
+                    
+                    <div className="flex justify-between items-center mb-6">
+                        <div>
+                            <h4 className="font-black text-slate-800 text-lg">Direct Input</h4>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                                {activeCatalog.find(c => c.article_number === keypadTarget)?.generic_name || 'Item'}
+                            </p>
+                        </div>
+                        <div className="text-4xl font-black text-[#6D2158] bg-purple-50 px-6 py-2 rounded-2xl border border-purple-100">
+                            {keypadValue}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 mb-6">
+                        {[1,2,3,4,5,6,7,8,9].map(num => (
+                            <button key={num} onClick={() => handleKeypadPress(String(num))} className="py-4 bg-white rounded-2xl shadow-sm border border-slate-200 text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                                {num}
+                            </button>
+                        ))}
+                        <button onClick={() => handleKeypadPress('CLR')} className="py-4 bg-rose-50 rounded-2xl border border-rose-100 text-sm font-black text-rose-600 uppercase tracking-widest active:scale-95 transition-all">
+                            Clear
+                        </button>
+                        <button onClick={() => handleKeypadPress('0')} className="py-4 bg-white rounded-2xl shadow-sm border border-slate-200 text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                            0
+                        </button>
+                        <button onClick={() => handleKeypadPress('DEL')} className="py-4 bg-slate-100 rounded-2xl border border-slate-200 text-sm font-black text-slate-600 uppercase tracking-widest active:scale-95 transition-all">
+                            Del
+                        </button>
+                    </div>
+
+                    <button onClick={saveKeypadValue} className="w-full py-5 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-sm shadow-xl active:scale-95 transition-all">
+                        Confirm Amount
+                    </button>
+                </div>
             </div>
         )}
 
@@ -873,10 +1021,10 @@ export default function MyTasksResponsive() {
                     <CheckCircle2 size={64} className="text-white"/>
                 </div>
                 <h2 className="text-4xl font-black text-center mb-2">Saved!</h2>
-                <p className="text-center font-medium text-emerald-100 mb-12 text-lg">Villa {selectedVilla} record has been logged.</p>
+                <p className="text-center font-medium text-emerald-100 mb-12 text-lg">Location {selectedVilla} record has been logged.</p>
                 
                 <button onClick={resetFlow} className="px-10 py-5 bg-white text-emerald-700 rounded-2xl font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all hover:scale-105">
-                    Log Next Villa
+                    Log Next Task
                 </button>
             </div>
         )}

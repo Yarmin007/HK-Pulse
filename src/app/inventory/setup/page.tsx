@@ -61,6 +61,9 @@ export default function InventorySettings() {
   const [selectedVillas, setSelectedVillas] = useState<string[]>([]);
   const [selectedCustomLoc, setSelectedCustomLoc] = useState('');
 
+  // NOTIFICATION STATE
+  const [customNotifyMsg, setCustomNotifyMsg] = useState('');
+
   useEffect(() => {
     const session = localStorage.getItem('hk_pulse_session');
     const adminFlag = localStorage.getItem('hk_pulse_admin_auth') === 'true' || (session && JSON.parse(session).system_role === 'admin');
@@ -117,6 +120,7 @@ export default function InventorySettings() {
   const selectSchedule = async (sched: any) => {
       setActiveSchedule(sched);
       setNewScheduleType(''); 
+      setCustomNotifyMsg(''); // Reset message on schedule switch
       refreshAssignments(sched.id);
   };
 
@@ -154,6 +158,26 @@ export default function InventorySettings() {
       }
   };
 
+  const deleteSchedule = async () => {
+      if (!activeSchedule) return;
+      
+      const confirmed = await confirmAction({ 
+          title: 'Delete Schedule?', 
+          message: `Are you sure you want to permanently delete the ${activeSchedule.inventory_type} schedule for ${selectedMonth}? All assignments and records will be lost.`, 
+          confirmText: 'Delete Permanently' 
+      });
+      
+      if (confirmed) {
+          // Delete assignments first to be safe, then schedule
+          await supabase.from('hsk_inventory_assignments').delete().eq('schedule_id', activeSchedule.id);
+          await supabase.from('hsk_inventory_schedules').delete().eq('id', activeSchedule.id);
+          
+          toast.success('Schedule deleted completely.');
+          setActiveSchedule(null);
+          fetchMonthSchedules(selectedMonth);
+      }
+  };
+
   const toggleScheduleStatus = async () => {
       if (!activeSchedule) return;
       const newStatus = activeSchedule.status === 'Draft' ? 'Active' : 'Draft';
@@ -171,13 +195,18 @@ export default function InventorySettings() {
   };
 
   const sendBulkNotification = async () => {
+      const bodyMsg = customNotifyMsg.trim() || `Please check your My Tasks dashboard to complete your count.`;
       toast.success('Sending notifications to allocated staff...');
       try {
           await fetch('/api/notify', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: `${activeSchedule.inventory_type} Count is LIVE!`, body: `Please check your My Tasks dashboard to complete your count.` })
+              body: JSON.stringify({ 
+                  title: `${activeSchedule.inventory_type} Count is LIVE!`, 
+                  body: bodyMsg 
+              })
           });
+          setCustomNotifyMsg('');
       } catch(e) {}
   };
 
@@ -362,23 +391,41 @@ export default function InventorySettings() {
 
                       {activeSchedule && (
                           <div className={`p-6 rounded-3xl border shadow-sm transition-all animate-in fade-in ${activeSchedule.status === 'Active' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
-                              <div className="flex items-center gap-3 mb-6">
-                                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${activeSchedule.status === 'Active' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'bg-slate-200 text-slate-500'}`}>
-                                      {activeSchedule.status === 'Active' ? <Unlock size={20}/> : <Lock size={20}/>}
+                              <div className="flex items-center justify-between mb-6">
+                                  <div className="flex items-center gap-3">
+                                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${activeSchedule.status === 'Active' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'bg-slate-200 text-slate-500'}`}>
+                                          {activeSchedule.status === 'Active' ? <Unlock size={20}/> : <Lock size={20}/>}
+                                      </div>
+                                      <div>
+                                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Current Status</div>
+                                          <div className={`font-black text-xl ${activeSchedule.status === 'Active' ? 'text-emerald-700' : 'text-slate-700'}`}>{activeSchedule.status === 'Active' ? 'UNLOCKED / LIVE' : 'LOCKED / DRAFT'}</div>
+                                      </div>
                                   </div>
-                                  <div>
-                                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Current Status</div>
-                                      <div className={`font-black text-xl ${activeSchedule.status === 'Active' ? 'text-emerald-700' : 'text-slate-700'}`}>{activeSchedule.status === 'Active' ? 'UNLOCKED / LIVE' : 'LOCKED / DRAFT'}</div>
-                                  </div>
+                                  <button onClick={deleteSchedule} title="Delete Schedule" className="p-2 text-rose-400 hover:bg-rose-100 hover:text-rose-600 rounded-xl transition-colors">
+                                      <Trash2 size={20}/>
+                                  </button>
                               </div>
+
                               <div className="space-y-3">
                                   <button onClick={toggleScheduleStatus} className={`w-full py-4 rounded-xl font-black uppercase text-xs tracking-widest transition-colors ${activeSchedule.status === 'Active' ? 'bg-slate-800 text-white hover:bg-slate-900 shadow-md' : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md'}`}>
                                       {activeSchedule.status === 'Active' ? 'Lock Inventory' : 'Unlock Inventory'}
                                   </button>
+
+                                  {/* CUSTOM NOTIFICATION PANEL */}
                                   {activeSchedule.status === 'Active' && (
-                                      <button onClick={sendBulkNotification} className="w-full py-4 bg-white text-emerald-600 border border-emerald-200 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-emerald-100 transition-colors flex justify-center items-center gap-2 shadow-sm">
-                                          <BellRing size={18}/> Notify Staff
-                                      </button>
+                                      <div className="bg-white p-3 rounded-2xl border border-slate-200 mt-4 shadow-sm animate-in fade-in slide-in-from-top-2">
+                                          <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Custom Message</label>
+                                          <textarea 
+                                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-emerald-400 transition-colors resize-none mb-2 custom-scrollbar"
+                                              rows={2}
+                                              placeholder="e.g., 'Please complete by 5 PM today!'"
+                                              value={customNotifyMsg}
+                                              onChange={(e) => setCustomNotifyMsg(e.target.value)}
+                                          />
+                                          <button onClick={sendBulkNotification} className="w-full py-3 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-emerald-100 transition-colors flex justify-center items-center gap-2">
+                                              <BellRing size={16}/> Notify Staff
+                                          </button>
+                                      </div>
                                   )}
                               </div>
                           </div>
