@@ -61,10 +61,10 @@ export default function InventorySettings() {
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [locMode, setLocMode] = useState<'Villa' | 'Custom'>('Villa');
   
-  // VILLA MULTI-SELECT STATE
+  // VILLA / MULTI-SELECT STATE
   const [villaInput, setVillaInput] = useState('');
   const [selectedVillas, setSelectedVillas] = useState<string[]>([]);
-  const [selectedCustomLoc, setSelectedCustomLoc] = useState('');
+  const [selectedCustomLocs, setSelectedCustomLocs] = useState<string[]>([]); // Changed to Array for Multi-Select
 
   // NOTIFICATION STATE
   const [customNotifyMsg, setCustomNotifyMsg] = useState('');
@@ -251,13 +251,25 @@ export default function InventorySettings() {
       setSelectedVillas(selectedVillas.filter(item => item !== v));
   };
 
+  const handleCustomLocSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const val = e.target.value;
+      if (val && !selectedCustomLocs.includes(val) && !assignments.some(a => a.villa_number === val)) {
+          setSelectedCustomLocs([...selectedCustomLocs, val]);
+      }
+      e.target.value = ''; // reset select
+  };
+
+  const removeCustomLoc = (loc: string) => {
+      setSelectedCustomLocs(selectedCustomLocs.filter(item => item !== loc));
+  };
+
 
   // --- ASSIGNMENT SUBMIT LOGIC ---
   const handleAssign = async () => {
       if (!selectedHost || !activeSchedule) return toast.error("Select staff and location.");
       
-      const locationsToAssign = locMode === 'Villa' ? selectedVillas : [selectedCustomLoc];
-      if (locationsToAssign.length === 0 || !locationsToAssign[0]) return toast.error("Select at least one location.");
+      const locationsToAssign = locMode === 'Villa' ? selectedVillas : selectedCustomLocs;
+      if (locationsToAssign.length === 0) return toast.error("Select at least one location.");
 
       setIsLoading(true);
 
@@ -265,7 +277,8 @@ export default function InventorySettings() {
           schedule_id: activeSchedule.id,
           host_id: selectedHost.host_id,
           villa_number: loc,
-          inventory_type: activeSchedule.inventory_type
+          inventory_type: activeSchedule.inventory_type,
+          assigned_at: new Date().toISOString() // Force stamp to sort recent to top
       }));
 
       const { error } = await supabase.from('hsk_inventory_assignments').insert(inserts);
@@ -275,7 +288,7 @@ export default function InventorySettings() {
       if (!error) { 
           toast.success(`Assigned ${locationsToAssign.length} location(s) to ${selectedHost.full_name}!`); 
           setSelectedVillas([]);
-          setSelectedCustomLoc('');
+          setSelectedCustomLocs([]);
           setSelectedHost(null);
           setHostSearch('');
           refreshAssignments(); 
@@ -297,18 +310,24 @@ export default function InventorySettings() {
   };
 
   const groupedAssignments = useMemo(() => {
-      const groups: Record<string, { host: Host | undefined, items: Assignment[] }> = {};
+      const groups: Record<string, { host: Host | undefined, items: Assignment[], latest_assignment: string }> = {};
       
       assignments.forEach((a: Assignment) => {
           if (!groups[a.host_id]) {
               groups[a.host_id] = {
                   host: hosts.find(h => h.host_id === a.host_id),
-                  items: []
+                  items: [],
+                  latest_assignment: a.assigned_at || '0'
               };
           }
           groups[a.host_id].items.push(a);
+          // Keep track of the newest assignment timestamp to sort the groups
+          if (a.assigned_at && a.assigned_at > groups[a.host_id].latest_assignment) {
+              groups[a.host_id].latest_assignment = a.assigned_at;
+          }
       });
 
+      // Sort items within each group
       Object.values(groups).forEach(g => {
           g.items.sort((a, b) => {
               const numA = parseInt(a.villa_number) || 9999;
@@ -317,7 +336,10 @@ export default function InventorySettings() {
           });
       });
 
-      return Object.values(groups);
+      // Sort groups themselves by the latest_assignment date (descending, newest at top)
+      return Object.values(groups).sort((a, b) => {
+          return new Date(b.latest_assignment).getTime() - new Date(a.latest_assignment).getTime();
+      });
   }, [assignments, hosts]);
 
 
@@ -435,11 +457,11 @@ export default function InventorySettings() {
 
                   {/* RIGHT COLUMN: Assigner */}
                   {activeSchedule ? (
-                      <div className="lg:col-span-8 bg-white rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex flex-col md:flex-row overflow-hidden min-h-[500px] animate-in fade-in">
+                      <div className="lg:col-span-8 bg-white rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex flex-col md:flex-row overflow-hidden max-h-[800px] animate-in fade-in">
                           
                           {/* Assignment Panel */}
-                          <div className="md:w-1/2 p-4 md:p-6 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col bg-white">
-                              <h4 className="font-black text-slate-800 mb-4 md:mb-6 flex items-center gap-2"><ArrowRight size={18} className="text-[#6D2158]"/> Dispatch Tasks</h4>
+                          <div className="md:w-1/2 p-4 md:p-6 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col bg-white overflow-y-auto custom-scrollbar">
+                              <h4 className="font-black text-slate-800 mb-4 md:mb-6 flex items-center gap-2 shrink-0"><ArrowRight size={18} className="text-[#6D2158]"/> Dispatch Tasks</h4>
                               
                               <div className="space-y-4 md:space-y-6 flex-1">
                                   
@@ -516,27 +538,39 @@ export default function InventorySettings() {
                                               )}
                                           </div>
                                       ) : (
-                                          <div>
-                                              <select className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" value={selectedCustomLoc} onChange={e=>setSelectedCustomLoc(e.target.value)}>
-                                                  <option value="">Select from list...</option>
+                                          <div className="space-y-3">
+                                              <select className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" onChange={handleCustomLocSelect}>
+                                                  <option value="">Select an area to add...</option>
                                                   {invLocations.map(l => <option key={l.id} value={l.label}>{l.label}</option>)}
                                               </select>
+
+                                              {/* Selected Custom Area Tokens */}
+                                              {selectedCustomLocs.length > 0 && (
+                                                  <div className="flex flex-wrap gap-2 p-3 bg-slate-50 border border-slate-100 rounded-xl min-h-[60px]">
+                                                      {selectedCustomLocs.map(loc => (
+                                                          <div key={loc} className="flex items-center gap-1.5 bg-indigo-500 text-white px-2.5 py-1 rounded-lg text-xs md:text-sm font-black shadow-sm animate-in zoom-in">
+                                                              {loc}
+                                                              <button onClick={() => removeCustomLoc(loc)} className="text-white/60 hover:text-white transition-colors ml-1"><X size={14}/></button>
+                                                          </div>
+                                                      ))}
+                                                  </div>
+                                              )}
                                           </div>
                                       )}
                                   </div>
                               </div>
 
-                              <div className="pt-4 md:pt-6 mt-4 border-t border-slate-100">
-                                  <button onClick={handleAssign} disabled={isLoading || !selectedHost || (locMode === 'Villa' ? selectedVillas.length === 0 : !selectedCustomLoc)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-[16px] md:text-sm shadow-lg hover:bg-[#5a1b49] active:scale-95 transition-all disabled:opacity-50 disabled:shadow-none flex justify-center items-center gap-2">
+                              <div className="pt-4 md:pt-6 mt-4 border-t border-slate-100 shrink-0 sticky bottom-0 bg-white pb-2">
+                                  <button onClick={handleAssign} disabled={isLoading || !selectedHost || (locMode === 'Villa' ? selectedVillas.length === 0 : selectedCustomLocs.length === 0)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-[16px] md:text-sm shadow-lg hover:bg-[#5a1b49] active:scale-95 transition-all disabled:opacity-50 disabled:shadow-none flex justify-center items-center gap-2">
                                       {isLoading ? <Loader2 size={18} className="animate-spin"/> : <Plus size={18}/>} 
-                                      Dispatch {locMode === 'Villa' && selectedVillas.length > 0 ? `(${selectedVillas.length})` : ''}
+                                      Dispatch {(locMode === 'Villa' ? selectedVillas.length : selectedCustomLocs.length) > 0 ? `(${locMode === 'Villa' ? selectedVillas.length : selectedCustomLocs.length})` : ''}
                                   </button>
                               </div>
                           </div>
 
                           {/* Current Assignments List (GROUPED BY HOST) */}
-                          <div className="md:w-1/2 bg-slate-50 p-4 md:p-6 flex flex-col h-full shrink-0">
-                              <div className="flex justify-between items-center mb-4 md:mb-6">
+                          <div className="md:w-1/2 bg-slate-50 p-4 md:p-6 flex flex-col h-full shrink-0 border-t md:border-t-0 md:border-l border-slate-200">
+                              <div className="flex justify-between items-center mb-4 md:mb-6 shrink-0">
                                   <h4 className="font-black text-slate-800 flex items-center gap-2"><CheckCircle2 size={18} className="text-emerald-500"/> Dispatched</h4>
                                   <span className="bg-white px-2 md:px-3 py-1 md:py-1.5 rounded-lg text-[9px] md:text-[10px] font-black text-slate-500 shadow-sm border border-slate-200">{assignments.length} Locations</span>
                               </div>

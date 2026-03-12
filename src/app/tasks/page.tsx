@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   CheckSquare, Plus, Bell, CalendarDays, RefreshCw, 
-  Trash2, Loader2, CheckCircle2, Shield, Calendar, Box, X
+  Trash2, Loader2, CheckCircle2, Shield, Calendar, Box, X, Users, MapPin, AlertTriangle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -18,6 +18,9 @@ export default function AdminTaskHub() {
 
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     const [newTask, setNewTask] = useState({ title: '', description: '', frequency: 'One-Off', due_date: format(new Date(), 'yyyy-MM-dd') });
+
+    // --- PROGRESS MODAL STATE ---
+    const [selectedScheduleProgress, setSelectedScheduleProgress] = useState<any | null>(null);
 
     useEffect(() => {
         const session = localStorage.getItem('hk_pulse_session');
@@ -39,21 +42,56 @@ export default function AdminTaskHub() {
         if (tasksData) setTasks(tasksData);
 
         // Fetch LIVE Inventory Schedules & Progress
+        // We include host_id here so we can group the progress by staff member
         const { data: activeSchedules } = await supabase.from('hsk_inventory_schedules')
             .select(`
                 id, 
                 inventory_type, 
                 month_year,
-                assignments:hsk_inventory_assignments(status)
+                assignments:hsk_inventory_assignments(id, status, host_id, villa_number)
             `)
             .eq('status', 'Active');
+        
+        // Also fetch hosts so we can map host_id to a real name
+        const { data: hosts } = await supabase.from('hsk_hosts').select('host_id, full_name');
+        const hostMap: Record<string, string> = {};
+        if (hosts) {
+            hosts.forEach(h => hostMap[h.host_id] = h.full_name);
+        }
         
         if (activeSchedules) {
             const mappedSchedules = activeSchedules.map(sched => {
                 const total = sched.assignments.length;
                 const done = sched.assignments.filter((a: any) => a.status === 'Submitted').length;
                 const percentage = total === 0 ? 0 : Math.round((done / total) * 100);
-                return { ...sched, total, done, percentage };
+                
+                // Group assignments by host
+                const hostProgress: Record<string, { name: string, total: number, done: number, pendingLocations: string[] }> = {};
+                
+                sched.assignments.forEach((a: any) => {
+                    const hId = a.host_id || 'unassigned';
+                    if (!hostProgress[hId]) {
+                        hostProgress[hId] = { 
+                            name: hostMap[hId] || hId, 
+                            total: 0, 
+                            done: 0,
+                            pendingLocations: []
+                        };
+                    }
+                    hostProgress[hId].total += 1;
+                    if (a.status === 'Submitted') {
+                        hostProgress[hId].done += 1;
+                    } else {
+                        hostProgress[hId].pendingLocations.push(a.villa_number);
+                    }
+                });
+
+                // Convert object to sorted array (those with most pending items at the top)
+                const detailedProgress = Object.values(hostProgress).sort((a, b) => {
+                    return (b.total - b.done) - (a.total - a.done);
+                });
+
+                return { ...sched, total, done, percentage, detailedProgress };
             });
             setInventorySchedules(mappedSchedules);
         }
@@ -141,10 +179,14 @@ export default function AdminTaskHub() {
                                 <p className="text-sm font-bold text-slate-400 text-center py-6">No active inventory schedules.</p>
                             ) : (
                                 inventorySchedules.map(sched => (
-                                    <div key={sched.id} className="space-y-2">
+                                    <div 
+                                        key={sched.id} 
+                                        onClick={() => setSelectedScheduleProgress(sched)}
+                                        className="space-y-2 cursor-pointer p-4 rounded-2xl hover:bg-slate-50 border border-transparent hover:border-slate-200 transition-all group"
+                                    >
                                         <div className="flex justify-between items-end">
                                             <div>
-                                                <h4 className="font-black text-slate-800">{sched.inventory_type}</h4>
+                                                <h4 className="font-black text-slate-800 group-hover:text-[#6D2158] transition-colors">{sched.inventory_type}</h4>
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{format(parseISO(sched.month_year + '-01'), 'MMMM yyyy')}</p>
                                             </div>
                                             <span className={`font-black text-lg ${sched.percentage === 100 ? 'text-emerald-500' : 'text-[#6D2158]'}`}>{sched.percentage}%</span>
@@ -155,6 +197,9 @@ export default function AdminTaskHub() {
                                         <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                                             <span>{sched.done} Done</span>
                                             <span>{sched.total} Total</span>
+                                        </div>
+                                        <div className="text-center pt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <span className="text-[9px] font-black text-[#6D2158] uppercase tracking-widest">Tap to view staff details</span>
                                         </div>
                                     </div>
                                 ))
@@ -301,6 +346,89 @@ export default function AdminTaskHub() {
                     </div>
                 </div>
             )}
+
+            {/* --- DETAILED PROGRESS MODAL --- */}
+            {selectedScheduleProgress && (
+                <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+                    <div className="bg-[#FDFBFD] w-full max-w-2xl rounded-[2.5rem] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden animate-in zoom-in-95">
+                        
+                        <div className="p-6 md:p-8 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
+                            <div>
+                                <h3 className="font-black text-xl md:text-2xl tracking-tight flex items-center gap-2"><Users size={24}/> Progress Breakdown</h3>
+                                <p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">{selectedScheduleProgress.inventory_type} • {format(parseISO(selectedScheduleProgress.month_year + '-01'), 'MMM yyyy')}</p>
+                            </div>
+                            <button onClick={() => setSelectedScheduleProgress(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
+                        </div>
+                        
+                        <div className="p-6 border-b border-slate-200 bg-white shrink-0 flex items-center justify-between">
+                            <div>
+                                <div className="text-3xl font-black text-[#6D2158]">{selectedScheduleProgress.percentage}%</div>
+                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Overall Completion</div>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-xl font-black text-slate-800">{selectedScheduleProgress.done} / {selectedScheduleProgress.total}</div>
+                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-0.5">Locations Audited</div>
+                            </div>
+                        </div>
+
+                        <div className="p-4 md:p-6 overflow-y-auto flex-1 custom-scrollbar space-y-3 bg-slate-50">
+                            {selectedScheduleProgress.detailedProgress.length === 0 ? (
+                                <p className="text-center font-bold text-slate-400 py-10">No staff assigned to this count yet.</p>
+                            ) : (
+                                selectedScheduleProgress.detailedProgress.map((hostData: any, idx: number) => {
+                                    const isComplete = hostData.done === hostData.total;
+                                    const staffPercentage = Math.round((hostData.done / hostData.total) * 100);
+
+                                    return (
+                                        <div key={idx} className={`p-4 md:p-5 rounded-2xl border transition-all flex flex-col gap-3 shadow-sm ${isComplete ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
+                                            
+                                            <div className="flex justify-between items-center">
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-lg ${isComplete ? 'bg-emerald-500 text-white' : 'bg-purple-50 text-[#6D2158]'}`}>
+                                                        {isComplete ? <CheckCircle2 size={20}/> : hostData.name.charAt(0)}
+                                                    </div>
+                                                    <div>
+                                                        <h4 className={`font-black text-sm md:text-base ${isComplete ? 'text-emerald-800' : 'text-slate-800'}`}>{hostData.name}</h4>
+                                                        <p className={`text-[10px] font-bold uppercase tracking-widest ${isComplete ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                                            {hostData.done} of {hostData.total} Done
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                <div className={`font-black text-lg ${isComplete ? 'text-emerald-600' : 'text-[#6D2158]'}`}>
+                                                    {staffPercentage}%
+                                                </div>
+                                            </div>
+
+                                            {/* Progress Bar */}
+                                            <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                                                <div className={`h-full ${isComplete ? 'bg-emerald-500' : 'bg-[#6D2158]'}`} style={{width: `${staffPercentage}%`}}></div>
+                                            </div>
+
+                                            {/* Display pending locations if they are not finished! */}
+                                            {!isComplete && hostData.pendingLocations.length > 0 && (
+                                                <div className="mt-1 pt-3 border-t border-slate-100">
+                                                    <p className="text-[9px] font-black uppercase text-rose-500 tracking-widest mb-2 flex items-center gap-1">
+                                                        <AlertTriangle size={10}/> Waiting On:
+                                                    </p>
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {hostData.pendingLocations.map((loc: string, i: number) => (
+                                                            <span key={i} className="px-2 py-1 bg-rose-50 border border-rose-100 text-rose-700 rounded text-[10px] font-black flex items-center gap-1">
+                                                                <MapPin size={10}/> {loc}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 }

@@ -90,6 +90,7 @@ export default function MyTasksResponsive() {
 
   // GUIDE STATE
   const [showGuideModal, setShowGuideModal] = useState(false);
+  const [hasSeenGuideThisSession, setHasSeenGuideThisSession] = useState(false);
 
   // Expiry Specific
   const [isExpiryMode, setIsExpiryMode] = useState(false);
@@ -275,7 +276,7 @@ export default function MyTasksResponsive() {
     setActiveTaskType(taskType);
     setActiveScheduleId(scheduleId);
     setIsExpiryMode(false);
-    setActiveLocation('All'); // Reset location filter on start
+    setActiveLocation('All'); 
     
     const initialCounts: Record<string, number> = {};
 
@@ -315,14 +316,14 @@ export default function MyTasksResponsive() {
     setStep(3);
     setIsLoading(false);
 
-    // Trigger the guide modal if it's their first time
-    if (!localStorage.getItem('hk_pulse_inv_guide_seen')) {
+    // Trigger the guide modal ONLY ONCE per page load
+    if (!hasSeenGuideThisSession) {
         setShowGuideModal(true);
+        setHasSeenGuideThisSession(true);
     }
   };
 
   const closeGuide = () => {
-      localStorage.setItem('hk_pulse_inv_guide_seen', 'true');
       setShowGuideModal(false);
   };
 
@@ -1006,7 +1007,7 @@ export default function MyTasksResponsive() {
                     <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shrink-0 shadow-inner">
                         <Info size={32} />
                     </div>
-                    <h3 className="text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0 flex items-center justify-center gap-2">
+                    <h3 className="text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0">
                         How to count / <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal' }}>ގުނާނެ ގޮތް</span>
                     </h3>
                     
@@ -1023,10 +1024,10 @@ export default function MyTasksResponsive() {
                         <div className="border-t border-slate-200 pt-4" dir="rtl">
                             <p className="text-slate-800 mb-3 font-bold" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
                             <div className="space-y-3 text-sm md:text-base leading-loose text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
-                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <span className="font-sans font-bold text-slate-800 text-lg">'1'</span>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <span className="font-sans font-bold text-slate-800 text-lg">'0'</span> ޖަހާށެވެ.</p>
-                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <span className="font-sans font-bold text-slate-800 text-lg">Location Tabs</span> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
-                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <span className="font-sans font-bold text-[#6D2158] text-lg">ނަންބަރަށް</span> ފިއްތާލާށެވެ. ނުވަތަ <span className="font-sans font-bold text-slate-800 text-lg">+/-</span> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
-                                <p>4. <span className="font-sans font-bold text-[#6D2158] text-lg">'ސަބްމިޓް އޮޑިޓް'</span> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
+                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <b className="font-bold text-slate-800 text-lg">'1'</b>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <b className="font-bold text-slate-800 text-lg">'0'</b> ޖަހާށެވެ.</p>
+                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <b className="font-bold text-slate-800 text-lg">Location Tabs</b> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
+                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <b className="font-bold text-[#6D2158] text-lg">ނަންބަރަށް</b> ފިއްތާލާށެވެ. ނުވަތަ <b className="font-bold text-slate-800 text-lg">+/-</b> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
+                                <p>4. <b className="font-bold text-[#6D2158] text-lg">'ސަބްމިޓް އޮޑިޓް'</b> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
                             </div>
                         </div>
                     </div>
