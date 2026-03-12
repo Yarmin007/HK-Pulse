@@ -72,8 +72,6 @@ const STAFF_MENU_ITEMS = [
 
 export default function Sidebar() {
   const pathname = usePathname();
-  
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const isMinibarRoute = pathname?.includes('/minibar');
   const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart') || pathname?.includes('/team');
@@ -134,7 +132,7 @@ export default function Sidebar() {
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: ClipboardList, path: "/requests" },
-      { name: "Task Hub", icon: CheckSquare, path: "/tasks" }, // <-- Updated to Task Hub
+      { name: "Task Hub", icon: CheckSquare, path: "/tasks" },
   ];
 
   const STAFF_BOTTOM_TABS = isPoolAttendant ? [
@@ -418,133 +416,14 @@ export default function Sidebar() {
             )
          })}
          
-         <button onClick={() => setIsMobileMenuOpen(true)} className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform">
-            <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
-               <Menu size={22} strokeWidth={isMobileMenuOpen ? 2.5 : 2} />
+         {/* MENU NOW LINKS TO THE MENU PAGE DIRECTLY */}
+         <Link href="/menu" className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform">
+            <div className={`p-1.5 rounded-xl transition-all ${pathname === '/menu' ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
+               <Menu size={22} strokeWidth={pathname === '/menu' ? 2.5 : 2} />
             </div>
-            <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
-         </button>
+            <span className={`text-[10px] mt-1 font-bold ${pathname === '/menu' ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
+         </Link>
       </div>
-
-      {/* UNIVERSAL MOBILE HAMBURGER MENU */}
-      {isMobileMenuOpen && (
-          <div className="md:hidden fixed inset-0 z-[1000] flex flex-col justify-end">
-              <div className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-in fade-in" onClick={() => setIsMobileMenuOpen(false)}></div>
-              
-              <div className="relative bg-[#FDFBFD] w-full rounded-t-[2.5rem] p-6 pb-24 shadow-2xl animate-in-up flex flex-col max-h-[85vh]">
-                  <div className="w-12 h-1.5 bg-slate-300 rounded-full mx-auto mb-6"></div>
-                  
-                  <div className="flex justify-between items-center mb-6">
-                    <Logo className="h-6 w-auto text-[#6D2158]" />
-                    <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-500 active:scale-90"><X size={18}/></button>
-                  </div>
-
-                  <div className="overflow-y-auto flex-1 no-scrollbar space-y-6">
-                    {isAdmin ? (
-                        <>
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Core</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {ADMIN_CORE_TABS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== ADMIN_CORE_TABS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-                            
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Inventory Hub</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {INVENTORY_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-emerald-50 transition-colors ${idx !== INVENTORY_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Team Hub</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {TEAM_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-blue-50 transition-colors ${idx !== TEAM_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Minibar</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {MINIBAR_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-rose-50 transition-colors ${idx !== MINIBAR_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Operations</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {MENU_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-                        </>
-                    ) : (
-                        <>
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">Profile & Org</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {STAFF_PROFILE_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-amber-50 transition-colors ${idx !== STAFF_PROFILE_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-amber-50 text-amber-700 flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-
-                            <div>
-                                <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-2 mb-3 px-2">More Options</h4>
-                                <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-                                  {STAFF_MENU_ITEMS.map((item, idx) => (
-                                     <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)} className={`flex items-center gap-3 p-4 active:bg-slate-50 transition-colors ${idx !== STAFF_MENU_ITEMS.length - 1 ? 'border-b border-slate-50' : ''}`}>
-                                         <div className="w-8 h-8 rounded-full bg-slate-50 text-[#6D2158] flex items-center justify-center"><item.icon size={16}/></div>
-                                         <span className="text-sm font-bold text-slate-700">{item.name}</span>
-                                         <ChevronRight size={16} className="ml-auto text-slate-300"/>
-                                     </Link>
-                                  ))}
-                                </div>
-                            </div>
-                        </>
-                    )}
-
-                    <button onClick={handleLogout} className="w-full py-4 bg-rose-50 text-rose-600 font-bold uppercase rounded-2xl tracking-widest text-xs mt-4">
-                        Sign Out
-                    </button>
-
-                 </div>
-             </div>
-         </div>
-      )}
     </>
   );
 }
