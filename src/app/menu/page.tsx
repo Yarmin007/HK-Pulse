@@ -100,9 +100,9 @@ export default function MobileMenu() {
     return (
         <div className="min-h-screen bg-[#F2F2F7] pb-32 animate-in fade-in md:hidden font-sans">
             
-            {/* Header / Profile Card - REMOVED EXCESSIVE TOP PADDING */}
+            {/* Header / Profile Card */}
             <div className="bg-white px-4 pt-6 pb-6 border-b border-slate-200 shadow-sm mb-6">
-                <h1 className="text-3xl font-black text-slate-800 tracking-tight mb-4">Settings</h1>
+                <h1 className="text-3xl font-black text-slate-800 tracking-tight mb-4">Menu</h1>
                 
                 <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100">
                     <div className="w-14 h-14 rounded-full bg-slate-200 text-slate-500 overflow-hidden flex items-center justify-center shrink-0 border-2 border-white shadow-sm">
