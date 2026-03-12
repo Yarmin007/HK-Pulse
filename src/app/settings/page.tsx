@@ -127,6 +127,7 @@ export default function SettingsPage() {
   const [masterList, setMasterList] = useState<MasterItem[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [originalArticleNumber, setOriginalArticleNumber] = useState<string>(''); // To track ID changes
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
@@ -246,7 +247,7 @@ export default function SettingsPage() {
 
   // --- DUPLICATE CHECKER ---
   useEffect(() => {
-      if (!isFormOpen || isEditing || !currentItem.generic_name) {
+      if (!isFormOpen || !currentItem.generic_name) {
           setDuplicateWarning(null);
           return;
       }
@@ -257,21 +258,24 @@ export default function SettingsPage() {
           return;
       }
 
+      // Find similar items, but exclude the one we are currently editing
       const possibleDupes = masterList.filter(m => {
           if (!m.generic_name) return false;
+          if (isEditing && m.article_number === originalArticleNumber) return false; // Don't match against itself
           return m.generic_name.toLowerCase().includes(searchName) || searchName.includes(m.generic_name.toLowerCase());
       });
 
       if (possibleDupes.length > 0) {
-          setDuplicateWarning(`Wait! We found similar items: ${possibleDupes.slice(0,2).map(d => d.generic_name).join(', ')}`);
+          setDuplicateWarning(`Similar items found: ${possibleDupes.slice(0,2).map(d => d.generic_name).join(', ')}. Ensure this isn't a duplicate.`);
       } else {
           setDuplicateWarning(null);
       }
-  }, [currentItem.generic_name, isFormOpen, isEditing, masterList]);
+  }, [currentItem.generic_name, isFormOpen, isEditing, masterList, originalArticleNumber]);
 
 
   const handleEditItem = (item: MasterItem) => {
     setCurrentItem(item);
+    setOriginalArticleNumber(item.article_number); // Store original in case they change it
     setIsEditing(true);
     setIsFormOpen(true);
     window.scrollTo({ top: 0, behavior: 'smooth' }); 
@@ -285,6 +289,7 @@ export default function SettingsPage() {
         is_minibar_item: activeTab === 'Minibar Menu',
         category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'Guest Amenities'
     });
+    setOriginalArticleNumber('');
     setIsEditing(false);
     setIsFormOpen(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -319,8 +324,8 @@ export default function SettingsPage() {
     const finalGeneric = currentItem.generic_name || currentItem.article_name;
     const finalArticle = currentItem.article_name || finalGeneric;
 
-    // CHECK FOR DUPLICATE ARTICLE NUMBER ONLY IF WE AREN'T EDITING
-    if (!isEditing) {
+    // Check if they are trying to use an existing Article Number for a NEW item, OR if they changed an existing item's ID to clash with another
+    if (!isEditing || (isEditing && finalArticleNumber !== originalArticleNumber)) {
         const exactMatch = masterList.find(m => m.article_number.trim() === finalArticleNumber.trim());
         if (exactMatch) {
             return toast.error(`Cannot save! Article Number ${finalArticleNumber} is already used by "${exactMatch.generic_name || exactMatch.article_name}".`);
@@ -341,11 +346,28 @@ export default function SettingsPage() {
     };
 
     if (isEditing) {
-        const { error } = await supabase.from('hsk_master_catalog').update(finalData).eq('article_number', currentItem.article_number);
-        if (error) { toast.error("Error updating: " + error.message); } 
-        else { 
-            setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); 
-            fetchMasterList(); toast.success("Item updated successfully!"); 
+        // If they changed the article number, we must delete the old one and insert the new one
+        if (finalArticleNumber !== originalArticleNumber) {
+            const { error: delError } = await supabase.from('hsk_master_catalog').delete().eq('article_number', originalArticleNumber);
+            if (delError) {
+                toast.error("Failed to update ID: " + delError.message);
+                setIsUploading(false);
+                return;
+            }
+            const { error: insError } = await supabase.from('hsk_master_catalog').insert(finalData);
+            if (insError) toast.error("Error creating new ID: " + insError.message);
+            else {
+                setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); 
+                fetchMasterList(); toast.success("Item ID and details updated!"); 
+            }
+        } else {
+            // Normal update
+            const { error } = await supabase.from('hsk_master_catalog').update(finalData).eq('article_number', originalArticleNumber);
+            if (error) { toast.error("Error updating: " + error.message); } 
+            else { 
+                setIsFormOpen(false); setIsEditing(false); setCurrentItem(defaultItemState); 
+                fetchMasterList(); toast.success("Item updated successfully!"); 
+            }
         }
     } else {
         const { error } = await supabase.from('hsk_master_catalog').insert(finalData);
@@ -843,24 +865,24 @@ export default function SettingsPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                  {/* CSV BULK UPLOAD BUTTONS */}
-                  {activeTab === 'Master List' && !isFormOpen && (
-                      <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mr-2">
-                          <button onClick={downloadCSVFormat} className="px-4 py-3 text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest border-r border-slate-200" title="Download CSV Template">
-                              <Download size={16}/> Format
-                          </button>
-                          <label className="px-4 py-3 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest cursor-pointer" title="Upload Filled CSV">
-                              {isUploading ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>}
-                              Upload
-                              <input type="file" ref={csvInputRef} accept=".csv" className="hidden" onChange={handleCSVUpload}/>
-                          </label>
-                      </div>
-                  )}
+                 {/* CSV BULK UPLOAD BUTTONS */}
+                 {activeTab === 'Master List' && !isFormOpen && (
+                     <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mr-2">
+                         <button onClick={downloadCSVFormat} className="px-4 py-3 text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest border-r border-slate-200" title="Download CSV Template">
+                             <Download size={16}/> Format
+                         </button>
+                         <label className="px-4 py-3 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest cursor-pointer" title="Upload Filled CSV">
+                             {isUploading ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>}
+                             Upload
+                             <input type="file" ref={csvInputRef} accept=".csv" className="hidden" onChange={handleCSVUpload}/>
+                         </label>
+                     </div>
+                 )}
 
-                  <button onClick={() => isFormOpen ? setIsFormOpen(false) : handleAddNew()} className="bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-lg whitespace-nowrap transition-all hover:bg-[#5a1b49]">
+                 <button onClick={() => isFormOpen ? setIsFormOpen(false) : handleAddNew()} className="bg-[#6D2158] text-white px-5 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-lg whitespace-nowrap transition-all hover:bg-[#5a1b49]">
                      {isFormOpen ? <X size={18}/> : <Plus size={18}/>}
                      {isFormOpen ? 'Close Form' : 'Add Item'}
-                  </button>
+                 </button>
               </div>
            </div>
 
@@ -889,6 +911,8 @@ export default function SettingsPage() {
                         <div className="md:col-span-2">
                            <label className="text-[10px] font-black text-[#6D2158] uppercase ml-1">Generic Name (Display Name)</label>
                            <input className="w-full p-3 bg-white border-2 border-[#6D2158]/20 rounded-xl font-black text-slate-800 outline-none focus:border-[#6D2158]" value={currentItem.generic_name || ''} onChange={e => setCurrentItem({...currentItem, generic_name: e.target.value})} placeholder="e.g. Lemongrass Lotion" />
+                           
+                           {/* CHANGED: Warning now just shows a message, doesn't disable save */}
                            {duplicateWarning && (
                                <p className="text-[10px] font-bold text-amber-600 bg-amber-50 p-2 rounded-lg mt-2 flex items-center gap-1 animate-in fade-in"><AlertTriangle size={12}/> {duplicateWarning}</p>
                            )}
@@ -899,8 +923,9 @@ export default function SettingsPage() {
                            <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={currentItem.article_name || ''} onChange={e => setCurrentItem({...currentItem, article_name: e.target.value})} placeholder="e.g. Body Lotion 50ml Dispenser" />
                         </div>
                         <div>
-                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Number {isEditing && <span className="text-rose-400 lowercase">(Cannot be changed)</span>}</label>
-                           <input disabled={isEditing} className={`w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] ${isEditing ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50'}`} value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} placeholder="Leave blank to auto-fill with HK No."/>
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Official Article Number {isEditing && <span className="text-amber-500 lowercase">(Change with caution)</span>}</label>
+                           {/* CHANGED: Removed disabled={isEditing} */}
+                           <input className="w-full p-3 border rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158] bg-slate-50" value={currentItem.article_number || ''} onChange={e => setCurrentItem({...currentItem, article_number: e.target.value})} placeholder="Leave blank to auto-fill with HK No."/>
                         </div>
                         
                         
@@ -947,7 +972,8 @@ export default function SettingsPage() {
                         )}
                     </div>
                  </div>
-                 <button onClick={handleSaveItem} disabled={isUploading || !!duplicateWarning} className="w-full mt-6 py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] transition-all flex items-center justify-center gap-2 disabled:opacity-50"><Save size={18}/> {isEditing ? 'Update Catalog' : 'Save to Catalog'}</button>
+                 {/* CHANGED: Removed the !!duplicateWarning check from the disabled property */}
+                 <button onClick={handleSaveItem} disabled={isUploading} className="w-full mt-6 py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase shadow-lg hover:bg-[#5a1b49] transition-all flex items-center justify-center gap-2 disabled:opacity-50"><Save size={18}/> {isEditing ? 'Update Catalog' : 'Save to Catalog'}</button>
               </div>
            )}
 
@@ -1003,7 +1029,7 @@ export default function SettingsPage() {
                            );
                         })}
                      </tbody>
-                  </table>
+                 </table>
               </div>
            </div>
         </div>
@@ -1099,8 +1125,8 @@ export default function SettingsPage() {
           <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
               <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95">
                   <div className="p-6 bg-[#6D2158] text-white flex justify-between items-center">
-                     <div><h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><History size={20}/> {selectedLogHost.full_name}'s Activity</h3><p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">Latest 50 System Actions</p></div>
-                     <button onClick={() => setSelectedLogHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
+                      <div><h3 className="font-bold text-xl tracking-tight flex items-center gap-2"><History size={20}/> {selectedLogHost.full_name}'s Activity</h3><p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">Latest 50 System Actions</p></div>
+                      <button onClick={() => setSelectedLogHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
                   </div>
                   <div className="p-0 overflow-y-auto flex-1 bg-slate-50 custom-scrollbar">
                      {isLoadingLogs ? (<div className="flex justify-center items-center py-20 text-slate-400"><Loader2 className="animate-spin" size={28}/></div>) : hostLogs.length === 0 ? (<div className="flex justify-center items-center py-20 text-slate-400 font-bold italic text-sm">No recent activity.</div>) : (

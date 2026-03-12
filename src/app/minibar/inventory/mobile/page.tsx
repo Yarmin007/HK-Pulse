@@ -291,7 +291,7 @@ export default function MyTasksResponsive() {
         const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
         const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
         
-        const { data: sub } = await supabase.from('hsk_villa_minibar_inventory').select('inventory_data').eq('villa_number', villa).gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC).order('logged_at', { ascending: false }).limit(1).maybeSingle();
+        const { data: sub, error: subErr } = await supabase.from('hsk_villa_minibar_inventory').select('inventory_data').eq('villa_number', villa).gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC).order('logged_at', { ascending: false }).limit(1).maybeSingle();
         
         relevantItems.forEach(item => { initialCounts[item.article_number] = 0; });
         if (sub && sub.inventory_data) {
@@ -299,8 +299,12 @@ export default function MyTasksResponsive() {
         }
     } else {
         // Universal Inventory DB
-        const { data: recs } = await supabase.from('hsk_inventory_records').select('article_number, counted_qty').eq('schedule_id', scheduleId).eq('villa_number', villa);
+        const { data: recs, error: fetchErr } = await supabase.from('hsk_inventory_records').select('article_number, counted_qty').eq('schedule_id', scheduleId).eq('villa_number', villa);
         
+        if (fetchErr) {
+            toast.error("Failed to load previous counts!");
+        }
+
         relevantItems.forEach(item => { initialCounts[item.article_number] = 0; });
         if (recs) {
             recs.forEach(r => { initialCounts[r.article_number] = r.counted_qty; });
@@ -363,37 +367,73 @@ export default function MyTasksResponsive() {
         });
 
         const payload = {
-            villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name,
-            inventory_data: countedItems, logged_at: new Date().toISOString() 
+            villa_number: selectedVilla, 
+            host_id: currentHost?.host_id, 
+            host_name: currentHost?.full_name,
+            inventory_data: countedItems, 
+            logged_at: new Date().toISOString() 
         };
 
         const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
-        if (!error) {
-            setUniversalTasks(prev => {
-                const updated = { ...prev };
-                if (updated['Legacy Minibar']) {
-                    updated['Legacy Minibar'] = updated['Legacy Minibar'].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t);
-                }
-                return updated;
-            });
+        if (error) {
+            toast.error("Failed to save minibar: " + error.message);
+            setIsLoading(false);
+            return;
         }
+        
+        setUniversalTasks(prev => {
+            const updated = { ...prev };
+            if (updated['Legacy Minibar']) {
+                updated['Legacy Minibar'] = updated['Legacy Minibar'].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t);
+            }
+            return updated;
+        });
+        
     } else {
-        const recordsToInsert = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => ({
-            schedule_id: activeScheduleId,
-            villa_number: selectedVilla,
-            article_number: artNo,
-            counted_qty: qty,
-            host_id: currentHost?.host_id
-        }));
-
-        await supabase.from('hsk_inventory_records').delete().eq('schedule_id', activeScheduleId).eq('villa_number', selectedVilla);
+        // --- UNIVERSAL INVENTORY SAVE ---
         
-        if (recordsToInsert.length > 0) {
-            await supabase.from('hsk_inventory_records').insert(recordsToInsert);
+        // 1. Prepare records. Added inventory_type to fix the schema cache / null constraint.
+        const recordsToInsert = Object.entries(counts)
+            .filter(([_, qty]) => qty > 0)
+            .map(([artNo, qty]) => ({
+                schedule_id: activeScheduleId,
+                villa_number: selectedVilla,
+                article_number: artNo,
+                counted_qty: qty,
+                inventory_type: activeTaskType
+            }));
+
+        // 2. Delete old records explicitly
+        const { error: delErr } = await supabase.from('hsk_inventory_records')
+            .delete()
+            .match({ schedule_id: activeScheduleId, villa_number: selectedVilla });
+            
+        if (delErr) {
+            toast.error("Database error (Clear): " + delErr.message);
+            setIsLoading(false);
+            return;
         }
 
-        await supabase.from('hsk_inventory_assignments').update({ status: 'Submitted' }).eq('schedule_id', activeScheduleId).eq('villa_number', selectedVilla);
+        // 3. Insert new records
+        if (recordsToInsert.length > 0) {
+            const { error: insErr } = await supabase.from('hsk_inventory_records').insert(recordsToInsert);
+            if (insErr) {
+                toast.error("Database error (Save): " + insErr.message);
+                setIsLoading(false);
+                return;
+            }
+        }
+
+        // 4. Mark assignment as submitted
+        const { error: updErr } = await supabase.from('hsk_inventory_assignments')
+            .update({ status: 'Submitted' })
+            .match({ schedule_id: activeScheduleId, villa_number: selectedVilla });
+            
+        if (updErr) {
+             console.error("Assignment Update Error:", updErr);
+        }
         
+        // 5. Update local state
         setUniversalTasks(prev => {
             const updated = { ...prev };
             if (updated[activeTaskType]) {
@@ -966,31 +1006,33 @@ export default function MyTasksResponsive() {
                     <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shrink-0 shadow-inner">
                         <Info size={32} />
                     </div>
-                    <h3 className="text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0">How to count / ގުނާނެ ގޮތް</h3>
+                    <h3 className="text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0 flex items-center justify-center gap-2">
+                        How to count / <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal' }}>ގުނާނެ ގޮތް</span>
+                    </h3>
                     
                     <div className="text-sm text-slate-600 font-medium mb-6 space-y-4 bg-slate-50 p-4 md:p-5 rounded-2xl border border-slate-100 overflow-y-auto custom-scrollbar flex-1">
                         <div className="text-left">
                             <p className="font-black text-slate-800 mb-2">🇬🇧 English:</p>
                             <div className="space-y-3 text-xs md:text-sm">
-                                <p>1. This is an inventory count. You must count exactly what is physically present. If there is 1 item, enter <b>'1'</b>. If it is missing or empty, enter <b>'0'</b>.</p>
-                                <p>2. Use the <b className="text-slate-800">Location Tabs</b> at the top (e.g. Wardrobe, Bathroom) to check items room-by-room so nothing is missed.</p>
-                                <p>3. Tap the <b className="text-[#6D2158]">large number</b> to open the fast keypad, or use the <b className="text-slate-800">+/-</b> buttons to adjust the count.</p>
-                                <p>4. Make sure you have checked every location before tapping <b className="text-[#6D2158]">Submit Audit</b>.</p>
+                                <p>1. This is an inventory count. You must count exactly what is physically present. If there is 1 item, enter <b className="text-slate-800 text-base">'1'</b>. If it is missing or empty, enter <b className="text-slate-800 text-base">'0'</b>.</p>
+                                <p>2. Use the <b className="text-slate-800 text-base">Location Tabs</b> at the top (e.g. Wardrobe, Bathroom) to check items room-by-room so nothing is missed.</p>
+                                <p>3. Tap the <b className="text-[#6D2158] text-base">large number</b> to open the fast keypad, or use the <b className="text-slate-800 text-base">+/-</b> buttons to adjust the count.</p>
+                                <p>4. Make sure you have checked every location before tapping <b className="text-[#6D2158] text-base">Submit Audit</b>.</p>
                             </div>
                         </div>
                         <div className="border-t border-slate-200 pt-4" dir="rtl">
-                            <p className="font-black text-slate-800 mb-3" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
-                            <div className="space-y-3 text-sm md:text-base leading-relaxed text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
-                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <b>'1'</b>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <b>'0'</b> ޖަހާށެވެ.</p>
-                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <b className="text-slate-800">ލޮކޭޝަން ޓެބްތައް</b> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
-                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <b className="text-[#6D2158]">ނަންބަރަށް</b> ފިއްތާލާށެވެ. ނުވަތަ <b className="text-slate-800">+/-</b> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
-                                <p>4. <b className="text-[#6D2158]">'ސަބްމިޓް އޮޑިޓް'</b> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
+                            <p className="text-slate-800 mb-3 font-bold" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
+                            <div className="space-y-3 text-sm md:text-base leading-loose text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
+                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <span className="font-sans font-bold text-slate-800 text-lg">'1'</span>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <span className="font-sans font-bold text-slate-800 text-lg">'0'</span> ޖަހާށެވެ.</p>
+                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <span className="font-sans font-bold text-slate-800 text-lg">Location Tabs</span> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
+                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <span className="font-sans font-bold text-[#6D2158] text-lg">ނަންބަރަށް</span> ފިއްތާލާށެވެ. ނުވަތަ <span className="font-sans font-bold text-slate-800 text-lg">+/-</span> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
+                                <p>4. <span className="font-sans font-bold text-[#6D2158] text-lg">'ސަބްމިޓް އޮޑިޓް'</span> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
                             </div>
                         </div>
                     </div>
 
-                    <button onClick={closeGuide} className="w-full py-4 text-white bg-[#6D2158] rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg shadow-purple-900/20 active:scale-95 transition-all shrink-0">
-                        I Understand / ވިސްނިއްޖެ
+                    <button onClick={closeGuide} className="w-full py-4 text-white bg-[#6D2158] rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg shadow-purple-900/20 active:scale-95 transition-all shrink-0 flex items-center justify-center gap-2">
+                        I Understand <span className="opacity-50">/</span> <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal', fontSize: '16px' }} className="mt-1">ވިސްނިއްޖެ</span>
                     </button>
                 </div>
             </div>
