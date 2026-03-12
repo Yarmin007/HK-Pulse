@@ -12,7 +12,7 @@ import { useConfirm } from '@/components/ConfirmProvider';
 import PageHeader from '@/components/PageHeader';
 
 type Host = { host_id: string; full_name: string; role: string; };
-type MasterItem = { article_number: string; article_name: string; category: string; inventory_type: string; is_minibar_item: boolean; image_url?: string; };
+type MasterItem = { article_number: string; article_name: string; category: string; inventory_type: string; is_minibar_item: boolean; image_url?: string; villa_location?: string; };
 
 type Assignment = {
     id: string;
@@ -28,7 +28,6 @@ export default function InventorySettings() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
-  // TABS REORDERED: Allocations is now default
   const [activeTab, setActiveTab] = useState<'Allocations' | 'Items' | 'Types'>('Allocations');
 
   // --- DATA STATES ---
@@ -43,6 +42,12 @@ export default function InventorySettings() {
 
   // --- ITEMS STATE ---
   const [itemSearch, setItemSearch] = useState('');
+  
+  // Dynamic list of unique locations currently in use
+  const availableVillaLocations = useMemo(() => {
+      const used = new Set(catalog.map(c => c.villa_location).filter(Boolean));
+      return Array.from(used).sort() as string[];
+  }, [catalog]);
 
   // --- ALLOCATIONS STATE ---
   const [selectedMonth, setSelectedMonth] = useState(format(startOfMonth(new Date()), 'yyyy-MM'));
@@ -72,7 +77,6 @@ export default function InventorySettings() {
     else setIsLoading(false);
   }, []);
 
-  // AUTO-LOAD SCHEDULES WHEN MONTH CHANGES
   useEffect(() => {
       if (selectedMonth) {
           fetchMonthSchedules(selectedMonth);
@@ -104,7 +108,6 @@ export default function InventorySettings() {
       setMonthSchedules(schedules);
       
       if (schedules.length > 0) {
-          // If activeSchedule doesn't exist or is from a different month, auto-select the first one
           const stillExists = activeSchedule && schedules.find(s => s.id === activeSchedule.id);
           if (!stillExists) {
               selectSchedule(schedules[0]);
@@ -120,7 +123,7 @@ export default function InventorySettings() {
   const selectSchedule = async (sched: any) => {
       setActiveSchedule(sched);
       setNewScheduleType(''); 
-      setCustomNotifyMsg(''); // Reset message on schedule switch
+      setCustomNotifyMsg(''); 
       refreshAssignments(sched.id);
   };
 
@@ -144,7 +147,11 @@ export default function InventorySettings() {
   const updateItemType = async (article_number: string, newInvType: string) => {
       await supabase.from('hsk_master_catalog').update({ inventory_type: newInvType }).eq('article_number', article_number);
       setCatalog(catalog.map(c => c.article_number === article_number ? { ...c, inventory_type: newInvType } : c));
-      toast.success('Item linked to inventory type!');
+      toast.success('Item linked to inventory count type!');
+  };
+
+  const updateItemVillaLocation = async (article_number: string, newLocation: string) => {
+      await supabase.from('hsk_master_catalog').update({ villa_location: newLocation }).eq('article_number', article_number);
   };
 
   const initializeSchedule = async () => {
@@ -168,7 +175,6 @@ export default function InventorySettings() {
       });
       
       if (confirmed) {
-          // Delete assignments first to be safe, then schedule
           await supabase.from('hsk_inventory_assignments').delete().eq('schedule_id', activeSchedule.id);
           await supabase.from('hsk_inventory_schedules').delete().eq('id', activeSchedule.id);
           
@@ -217,7 +223,6 @@ export default function InventorySettings() {
           let val = villaInput.trim();
           if (!val) return;
 
-          // Expand ranges like "01-05"
           if (val.includes('-')) {
               const [startStr, endStr] = val.split('-');
               const start = parseInt(startStr, 10);
@@ -291,7 +296,6 @@ export default function InventorySettings() {
       toast.success("Assignments removed.");
   };
 
-  // --- GROUP ASSIGNMENTS BY HOST FOR DISPLAY ---
   const groupedAssignments = useMemo(() => {
       const groups: Record<string, { host: Host | undefined, items: Assignment[] }> = {};
       
@@ -321,12 +325,11 @@ export default function InventorySettings() {
   if (!isAdmin) return <div className="flex-1 flex items-center justify-center h-full"><Shield size={40} className="text-rose-500 animate-pulse"/></div>;
 
   return (
-    <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800 pb-36">
+    <div className="flex flex-col min-h-full bg-[#FDFBFD] font-sans text-slate-800 pb-36">
       
       <PageHeader title="Inventory Settings" date={new Date()} onDateChange={() => {}} />
 
-      {/* TABS REORDERED */}
-      <div className="px-4 md:px-8 mt-4 mb-6 overflow-x-auto no-scrollbar flex gap-2">
+      <div className="px-4 md:px-8 mt-4 mb-4 md:mb-6 overflow-x-auto no-scrollbar flex gap-2">
           {[
               { id: 'Allocations', label: '1. Allocations & Dispatch' },
               { id: 'Items', label: '2. Master Items' },
@@ -335,7 +338,7 @@ export default function InventorySettings() {
               <button 
                   key={tab.id} 
                   onClick={() => setActiveTab(tab.id as any)}
-                  className={`px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest whitespace-nowrap transition-all ${activeTab === tab.id ? 'bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20' : 'bg-white text-slate-500 border border-slate-200 hover:border-[#6D2158]'}`}
+                  className={`px-4 md:px-6 py-2.5 md:py-3 rounded-xl text-[10px] md:text-xs font-black uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeTab === tab.id ? 'bg-[#6D2158] text-white shadow-[#6D2158]/20 border border-[#6D2158]' : 'bg-white text-slate-500 border border-slate-200 hover:border-[#6D2158]'}`}
               >
                   {tab.label}
               </button>
@@ -346,59 +349,57 @@ export default function InventorySettings() {
           
           {/* TAB 1: ALLOCATIONS */}
           {activeTab === 'Allocations' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-in fade-in">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6 animate-in fade-in">
                   
                   {/* LEFT COLUMN: Selector & Status */}
-                  <div className="lg:col-span-4 space-y-6">
-                      <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                          <h3 className="font-black text-lg mb-5 flex items-center gap-2"><Calendar size={20} className="text-[#6D2158]"/> Period & Schedule</h3>
+                  <div className="lg:col-span-4 space-y-4 md:space-y-6">
+                      <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100">
+                          <h3 className="font-black text-base md:text-lg mb-4 md:mb-5 flex items-center gap-2"><Calendar size={20} className="text-[#6D2158]"/> Period & Schedule</h3>
                           
                           <div>
                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 block mb-1.5">Target Month</label>
-                              <input type="month" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[16px] md:text-sm outline-none focus:border-[#6D2158] mb-6" value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)} />
+                              <input type="month" className="w-full p-3 md:p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[16px] md:text-sm outline-none focus:border-[#6D2158] mb-4 md:mb-6" value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)} />
                           </div>
 
-                          {/* DYNAMIC LIST OF CREATED SCHEDULES */}
                           <div>
                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-2 block">Created Schedules</label>
-                              <div className="space-y-3 mb-6">
+                              <div className="space-y-2 md:space-y-3 mb-4 md:mb-6">
                                   {monthSchedules.length === 0 && <div className="text-xs text-slate-400 italic font-bold p-4 bg-slate-50 rounded-xl text-center border border-slate-100">No schedules created yet.</div>}
                                   {monthSchedules.map(sched => (
                                       <div 
                                           key={sched.id} 
                                           onClick={() => selectSchedule(sched)}
-                                          className={`p-4 rounded-2xl border cursor-pointer flex justify-between items-center transition-all ${activeSchedule?.id === sched.id ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-md scale-[1.02]' : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-[#6D2158]'}`}
+                                          className={`p-3 md:p-4 rounded-xl md:rounded-2xl border cursor-pointer flex justify-between items-center transition-all ${activeSchedule?.id === sched.id ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-md scale-[1.02]' : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-[#6D2158]'}`}
                                       >
                                           <span className="font-black text-sm md:text-base">{sched.inventory_type}</span>
-                                          <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1.5 rounded-lg ${activeSchedule?.id === sched.id ? 'bg-white/20' : (sched.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500')}`}>{sched.status}</span>
+                                          <span className={`text-[9px] font-black uppercase tracking-widest px-2 md:px-2.5 py-1 md:py-1.5 rounded-lg ${activeSchedule?.id === sched.id ? 'bg-white/20' : (sched.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-500')}`}>{sched.status}</span>
                                       </div>
                                   ))}
                               </div>
                           </div>
 
-                          {/* INITIALIZE NEW SECTION */}
-                          <div className="pt-5 border-t border-slate-100">
+                          <div className="pt-4 md:pt-5 border-t border-slate-100">
                               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 block mb-1.5">Initialize New Type</label>
                               <div className="flex gap-2">
-                                  <select className="flex-1 p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[16px] md:text-sm outline-none focus:border-[#6D2158]" value={newScheduleType} onChange={e=>setNewScheduleType(e.target.value)}>
+                                  <select className="flex-1 p-3 md:p-4 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[16px] md:text-sm outline-none focus:border-[#6D2158]" value={newScheduleType} onChange={e=>setNewScheduleType(e.target.value)}>
                                       <option value="">Select Type...</option>
                                       {invTypes.filter(t => !monthSchedules.some(ms => ms.inventory_type === t.label)).map(t => <option key={t.id} value={t.label}>{t.label}</option>)}
                                   </select>
-                                  <button onClick={initializeSchedule} disabled={!newScheduleType} className="bg-amber-500 text-white px-5 py-4 rounded-xl font-black uppercase text-xs shadow-md hover:bg-amber-600 disabled:opacity-50 active:scale-95 transition-all"><Plus size={20}/></button>
+                                  <button onClick={initializeSchedule} disabled={!newScheduleType} className="bg-amber-500 text-white px-4 md:px-5 py-3 md:py-4 rounded-xl font-black uppercase text-xs shadow-md hover:bg-amber-600 disabled:opacity-50 active:scale-95 transition-all"><Plus size={20}/></button>
                               </div>
                           </div>
                       </div>
 
                       {activeSchedule && (
-                          <div className={`p-6 rounded-3xl border shadow-sm transition-all animate-in fade-in ${activeSchedule.status === 'Active' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
-                              <div className="flex items-center justify-between mb-6">
+                          <div className={`p-4 md:p-6 rounded-2xl md:rounded-3xl border shadow-sm transition-all animate-in fade-in ${activeSchedule.status === 'Active' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+                              <div className="flex items-center justify-between mb-4 md:mb-6">
                                   <div className="flex items-center gap-3">
-                                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${activeSchedule.status === 'Active' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'bg-slate-200 text-slate-500'}`}>
-                                          {activeSchedule.status === 'Active' ? <Unlock size={20}/> : <Lock size={20}/>}
+                                      <div className={`w-10 h-10 md:w-12 md:h-12 rounded-xl md:rounded-2xl flex items-center justify-center shrink-0 ${activeSchedule.status === 'Active' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'bg-slate-200 text-slate-500'}`}>
+                                          {activeSchedule.status === 'Active' ? <Unlock size={18}/> : <Lock size={18}/>}
                                       </div>
                                       <div>
-                                          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Current Status</div>
-                                          <div className={`font-black text-xl ${activeSchedule.status === 'Active' ? 'text-emerald-700' : 'text-slate-700'}`}>{activeSchedule.status === 'Active' ? 'UNLOCKED / LIVE' : 'LOCKED / DRAFT'}</div>
+                                          <div className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-slate-400">Current Status</div>
+                                          <div className={`font-black text-lg md:text-xl ${activeSchedule.status === 'Active' ? 'text-emerald-700' : 'text-slate-700'}`}>{activeSchedule.status === 'Active' ? 'UNLOCKED / LIVE' : 'LOCKED / DRAFT'}</div>
                                       </div>
                                   </div>
                                   <button onClick={deleteSchedule} title="Delete Schedule" className="p-2 text-rose-400 hover:bg-rose-100 hover:text-rose-600 rounded-xl transition-colors">
@@ -407,23 +408,23 @@ export default function InventorySettings() {
                               </div>
 
                               <div className="space-y-3">
-                                  <button onClick={toggleScheduleStatus} className={`w-full py-4 rounded-xl font-black uppercase text-xs tracking-widest transition-colors ${activeSchedule.status === 'Active' ? 'bg-slate-800 text-white hover:bg-slate-900 shadow-md' : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md'}`}>
+                                  <button onClick={toggleScheduleStatus} className={`w-full py-3 md:py-4 rounded-xl font-black uppercase text-xs tracking-widest transition-colors ${activeSchedule.status === 'Active' ? 'bg-slate-800 text-white hover:bg-slate-900 shadow-md' : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md'}`}>
                                       {activeSchedule.status === 'Active' ? 'Lock Inventory' : 'Unlock Inventory'}
                                   </button>
 
                                   {/* CUSTOM NOTIFICATION PANEL */}
                                   {activeSchedule.status === 'Active' && (
-                                      <div className="bg-white p-3 rounded-2xl border border-slate-200 mt-4 shadow-sm animate-in fade-in slide-in-from-top-2">
+                                      <div className="bg-white p-3 rounded-xl md:rounded-2xl border border-slate-200 mt-3 md:mt-4 shadow-sm animate-in fade-in slide-in-from-top-2">
                                           <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Custom Message</label>
                                           <textarea 
-                                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-emerald-400 transition-colors resize-none mb-2 custom-scrollbar"
+                                              className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-emerald-400 transition-colors resize-none mb-2 custom-scrollbar"
                                               rows={2}
                                               placeholder="e.g., 'Please complete by 5 PM today!'"
                                               value={customNotifyMsg}
                                               onChange={(e) => setCustomNotifyMsg(e.target.value)}
                                           />
-                                          <button onClick={sendBulkNotification} className="w-full py-3 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-emerald-100 transition-colors flex justify-center items-center gap-2">
-                                              <BellRing size={16}/> Notify Staff
+                                          <button onClick={sendBulkNotification} className="w-full py-2.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg font-black uppercase text-[10px] md:text-xs tracking-widest hover:bg-emerald-100 transition-colors flex justify-center items-center gap-2">
+                                              <BellRing size={14}/> Notify Staff
                                           </button>
                                       </div>
                                   )}
@@ -434,25 +435,25 @@ export default function InventorySettings() {
 
                   {/* RIGHT COLUMN: Assigner */}
                   {activeSchedule ? (
-                      <div className="lg:col-span-8 bg-white rounded-3xl shadow-sm border border-slate-100 flex flex-col md:flex-row overflow-hidden min-h-[500px] animate-in fade-in">
+                      <div className="lg:col-span-8 bg-white rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 flex flex-col md:flex-row overflow-hidden min-h-[500px] animate-in fade-in">
                           
                           {/* Assignment Panel */}
-                          <div className="md:w-1/2 p-6 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col bg-white">
-                              <h4 className="font-black text-slate-800 mb-6 flex items-center gap-2"><ArrowRight size={18} className="text-[#6D2158]"/> Dispatch Tasks</h4>
+                          <div className="md:w-1/2 p-4 md:p-6 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col bg-white">
+                              <h4 className="font-black text-slate-800 mb-4 md:mb-6 flex items-center gap-2"><ArrowRight size={18} className="text-[#6D2158]"/> Dispatch Tasks</h4>
                               
-                              <div className="space-y-6 flex-1">
+                              <div className="space-y-4 md:space-y-6 flex-1">
                                   
                                   {/* 1. SMART HOST SEARCH */}
                                   <div>
-                                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 block mb-2">1. Select Staff Member</label>
+                                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 block mb-1.5 md:mb-2">1. Select Staff Member</label>
                                       
                                       {!selectedHost ? (
                                           <div className="relative">
-                                              <Search className="absolute left-4 top-4 text-slate-400" size={18}/>
+                                              <Search className="absolute left-3.5 top-3.5 text-slate-400" size={18}/>
                                               <input 
                                                   type="text" 
                                                   placeholder="Type staff name..." 
-                                                  className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" 
+                                                  className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" 
                                                   value={hostSearch} 
                                                   onChange={e => setHostSearch(e.target.value)} 
                                               />
@@ -469,33 +470,33 @@ export default function InventorySettings() {
                                               )}
                                           </div>
                                       ) : (
-                                          <div className="flex justify-between items-center p-4 bg-purple-50 border border-purple-200 rounded-2xl shadow-sm">
+                                          <div className="flex justify-between items-center p-3 md:p-4 bg-purple-50 border border-purple-200 rounded-xl md:rounded-2xl shadow-sm">
                                               <div>
-                                                  <div className="font-black text-[#6D2158] text-base">{selectedHost.full_name}</div>
+                                                  <div className="font-black text-[#6D2158] text-sm md:text-base">{selectedHost.full_name}</div>
                                                   <div className="text-[10px] font-bold text-purple-400 uppercase tracking-widest mt-0.5">{selectedHost.role}</div>
                                               </div>
-                                              <button onClick={() => setSelectedHost(null)} className="p-2.5 bg-white text-rose-500 rounded-xl shadow-sm hover:bg-rose-50 transition-colors"><X size={18}/></button>
+                                              <button onClick={() => setSelectedHost(null)} className="p-2 bg-white text-rose-500 rounded-lg md:rounded-xl shadow-sm hover:bg-rose-50 transition-colors"><X size={16}/></button>
                                           </div>
                                       )}
                                   </div>
 
                                   {/* 2. VILLA / CUSTOM SELECTOR */}
                                   <div className="opacity-100 transition-opacity">
-                                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-2 block">2. Select Locations</label>
+                                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1 mb-1.5 md:mb-2 block">2. Select Locations</label>
                                       
-                                      <div className="flex bg-slate-100 p-1.5 rounded-xl mb-4">
-                                          <button onClick={() => setLocMode('Villa')} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${locMode === 'Villa' ? 'bg-white shadow text-slate-800 scale-100' : 'text-slate-500 scale-95'}`}>Villas</button>
-                                          <button onClick={() => setLocMode('Custom')} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${locMode === 'Custom' ? 'bg-white shadow text-slate-800 scale-100' : 'text-slate-500 scale-95'}`}>Other Areas</button>
+                                      <div className="flex bg-slate-100 p-1.5 rounded-xl mb-3 md:mb-4">
+                                          <button onClick={() => setLocMode('Villa')} className={`flex-1 py-1.5 md:py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${locMode === 'Villa' ? 'bg-white shadow text-slate-800 scale-100' : 'text-slate-500 scale-95'}`}>Villas</button>
+                                          <button onClick={() => setLocMode('Custom')} className={`flex-1 py-1.5 md:py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${locMode === 'Custom' ? 'bg-white shadow text-slate-800 scale-100' : 'text-slate-500 scale-95'}`}>Other Areas</button>
                                       </div>
 
                                       {locMode === 'Villa' ? (
                                           <div className="space-y-3">
                                               <div className="relative">
-                                                  <MapPin className="absolute left-4 top-4 text-slate-400" size={18}/>
+                                                  <MapPin className="absolute left-3.5 top-3.5 text-slate-400" size={18}/>
                                                   <input 
                                                       type="text" 
                                                       placeholder="Type villa (e.g. 05 or 1-10) & press Enter" 
-                                                      className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" 
+                                                      className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" 
                                                       value={villaInput} 
                                                       onChange={e => setVillaInput(e.target.value)} 
                                                       onKeyDown={handleVillaKeyDown}
@@ -504,9 +505,9 @@ export default function InventorySettings() {
                                               
                                               {/* Selected Villa Tokens */}
                                               {selectedVillas.length > 0 && (
-                                                  <div className="flex flex-wrap gap-2 p-4 bg-slate-50 border border-slate-100 rounded-2xl min-h-[60px]">
+                                                  <div className="flex flex-wrap gap-2 p-3 bg-slate-50 border border-slate-100 rounded-xl min-h-[60px]">
                                                       {selectedVillas.map(v => (
-                                                          <div key={v} className="flex items-center gap-1.5 bg-[#6D2158] text-white px-3 py-1.5 rounded-lg text-sm font-black shadow-sm animate-in zoom-in">
+                                                          <div key={v} className="flex items-center gap-1.5 bg-[#6D2158] text-white px-2.5 py-1 rounded-lg text-xs md:text-sm font-black shadow-sm animate-in zoom-in">
                                                               {v}
                                                               <button onClick={() => removeVilla(v)} className="text-white/60 hover:text-white transition-colors ml-1"><X size={14}/></button>
                                                           </div>
@@ -516,7 +517,7 @@ export default function InventorySettings() {
                                           </div>
                                       ) : (
                                           <div>
-                                              <select className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" value={selectedCustomLoc} onChange={e=>setSelectedCustomLoc(e.target.value)}>
+                                              <select className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" value={selectedCustomLoc} onChange={e=>setSelectedCustomLoc(e.target.value)}>
                                                   <option value="">Select from list...</option>
                                                   {invLocations.map(l => <option key={l.id} value={l.label}>{l.label}</option>)}
                                               </select>
@@ -525,53 +526,53 @@ export default function InventorySettings() {
                                   </div>
                               </div>
 
-                              <div className="pt-6 mt-4 border-t border-slate-100">
-                                  <button onClick={handleAssign} disabled={isLoading || !selectedHost || (locMode === 'Villa' ? selectedVillas.length === 0 : !selectedCustomLoc)} className="w-full py-4 md:py-5 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-[16px] md:text-sm shadow-[0_8px_30px_rgb(109,33,88,0.3)] hover:bg-[#5a1b49] active:scale-95 transition-all disabled:opacity-50 disabled:shadow-none flex justify-center items-center gap-2">
-                                      {isLoading ? <Loader2 size={20} className="animate-spin"/> : <Plus size={20}/>} 
+                              <div className="pt-4 md:pt-6 mt-4 border-t border-slate-100">
+                                  <button onClick={handleAssign} disabled={isLoading || !selectedHost || (locMode === 'Villa' ? selectedVillas.length === 0 : !selectedCustomLoc)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-[16px] md:text-sm shadow-lg hover:bg-[#5a1b49] active:scale-95 transition-all disabled:opacity-50 disabled:shadow-none flex justify-center items-center gap-2">
+                                      {isLoading ? <Loader2 size={18} className="animate-spin"/> : <Plus size={18}/>} 
                                       Dispatch {locMode === 'Villa' && selectedVillas.length > 0 ? `(${selectedVillas.length})` : ''}
                                   </button>
                               </div>
                           </div>
 
                           {/* Current Assignments List (GROUPED BY HOST) */}
-                          <div className="md:w-1/2 bg-slate-50 p-6 flex flex-col h-full shrink-0">
-                              <div className="flex justify-between items-center mb-6">
+                          <div className="md:w-1/2 bg-slate-50 p-4 md:p-6 flex flex-col h-full shrink-0">
+                              <div className="flex justify-between items-center mb-4 md:mb-6">
                                   <h4 className="font-black text-slate-800 flex items-center gap-2"><CheckCircle2 size={18} className="text-emerald-500"/> Dispatched</h4>
-                                  <span className="bg-white px-3 py-1.5 rounded-lg text-[10px] font-black text-slate-500 shadow-sm border border-slate-200">{assignments.length} Locations</span>
+                                  <span className="bg-white px-2 md:px-3 py-1 md:py-1.5 rounded-lg text-[9px] md:text-[10px] font-black text-slate-500 shadow-sm border border-slate-200">{assignments.length} Locations</span>
                               </div>
                               
-                              <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+                              <div className="flex-1 overflow-y-auto space-y-3 pr-1 md:pr-2 custom-scrollbar">
                                   {groupedAssignments.length === 0 ? (
                                       <div className="flex flex-col items-center justify-center h-40 text-slate-400">
                                           <Box size={32} className="mb-2 opacity-50"/>
                                           <p className="font-bold text-sm">No active tasks</p>
                                       </div>
                                   ) : groupedAssignments.map(group => (
-                                      <div key={group.host?.host_id || 'unknown'} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm animate-in slide-in-from-right-2">
-                                          <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
-                                              <div className="flex items-center gap-3">
-                                                  <div className="w-10 h-10 bg-purple-50 text-[#6D2158] rounded-xl flex items-center justify-center font-black text-base shadow-inner">
+                                      <div key={group.host?.host_id || 'unknown'} className="bg-white p-3 md:p-4 rounded-xl border border-slate-200 shadow-sm animate-in slide-in-from-right-2">
+                                          <div className="flex justify-between items-center mb-2 md:mb-3 border-b border-slate-100 pb-2">
+                                              <div className="flex items-center gap-2 md:gap-3">
+                                                  <div className="w-8 h-8 md:w-10 md:h-10 bg-purple-50 text-[#6D2158] rounded-lg flex items-center justify-center font-black text-sm md:text-base shadow-inner">
                                                       {(group.host?.full_name || 'U').charAt(0)}
                                                   </div>
                                                   <div>
-                                                      <div className="font-black text-sm text-slate-800">{group.host?.full_name || 'Unknown Staff'}</div>
-                                                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{group.items.length} locations</div>
+                                                      <div className="font-black text-xs md:text-sm text-slate-800">{group.host?.full_name || 'Unknown Staff'}</div>
+                                                      <div className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">{group.items.length} locations</div>
                                                   </div>
                                               </div>
-                                              <button onClick={() => handleRemoveHostAssignments(group.host?.host_id || '')} className="text-slate-300 hover:text-rose-500 transition-colors p-2 bg-slate-50 hover:bg-rose-50 rounded-lg" title="Remove all assignments for this host">
-                                                  <Trash2 size={16}/>
+                                              <button onClick={() => handleRemoveHostAssignments(group.host?.host_id || '')} className="text-slate-300 hover:text-rose-500 transition-colors p-1.5 bg-slate-50 hover:bg-rose-50 rounded-md" title="Remove all assignments for this host">
+                                                  <Trash2 size={14}/>
                                               </button>
                                           </div>
                                           
-                                          <div className="flex flex-wrap gap-2 mt-3">
+                                          <div className="flex flex-wrap gap-1.5 mt-2 md:mt-3">
                                               {group.items.map((a: Assignment) => {
                                                   const isNumber = /^\d+$/.test(a.villa_number);
                                                   return (
-                                                      <div key={a.id} className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs font-black text-slate-700 shadow-sm group/item">
-                                                          {!isNumber && <Building size={12} className="text-slate-400"/>}
+                                                      <div key={a.id} className="flex items-center gap-1 bg-slate-50 border border-slate-200 px-2 py-1 rounded-md text-[10px] md:text-xs font-black text-slate-700 shadow-sm group/item">
+                                                          {!isNumber && <Building size={10} className="text-slate-400"/>}
                                                           {a.villa_number}
-                                                          <button onClick={() => handleRemoveSingleAssignment(a.id)} className="text-slate-400 hover:text-rose-500 ml-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
-                                                              <X size={14}/>
+                                                          <button onClick={() => handleRemoveSingleAssignment(a.id)} className="text-slate-400 hover:text-rose-500 ml-0.5 opacity-100 md:opacity-0 group-hover/item:opacity-100 transition-opacity">
+                                                              <X size={12}/>
                                                           </button>
                                                       </div>
                                                   );
@@ -584,10 +585,10 @@ export default function InventorySettings() {
                       </div>
                   ) : (
                       // Empty state when no schedule is active
-                      <div className="lg:col-span-8 flex flex-col items-center justify-center bg-white rounded-3xl border border-slate-100 min-h-[500px] text-slate-400 p-8 text-center animate-in fade-in">
-                          <PackagePlus size={64} className="mb-4 opacity-20 text-[#6D2158]"/>
-                          <h3 className="text-xl font-black text-slate-600 mb-2">No Schedule Selected</h3>
-                          <p className="text-sm font-bold max-w-md leading-relaxed">Select a created schedule from the left, or initialize a new inventory type to start dispatching counting tasks to your team.</p>
+                      <div className="lg:col-span-8 flex flex-col items-center justify-center bg-white rounded-2xl md:rounded-3xl border border-slate-100 min-h-[300px] md:min-h-[500px] text-slate-400 p-6 md:p-8 text-center animate-in fade-in">
+                          <PackagePlus size={48} className="mb-3 opacity-20 text-[#6D2158]"/>
+                          <h3 className="text-lg md:text-xl font-black text-slate-600 mb-1.5">No Schedule Selected</h3>
+                          <p className="text-xs md:text-sm font-bold max-w-md leading-relaxed">Select a created schedule from the left, or initialize a new inventory type to start dispatching tasks.</p>
                       </div>
                   )}
               </div>
@@ -595,27 +596,29 @@ export default function InventorySettings() {
 
           {/* TAB 2: ITEMS */}
           {activeTab === 'Items' && (
-              <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden animate-in fade-in">
-                  <div className="p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between gap-4 md:items-center bg-slate-50">
+              <div className="bg-white rounded-2xl md:rounded-3xl shadow-sm border border-slate-100 overflow-hidden animate-in fade-in">
+                  <div className="p-4 md:p-6 border-b border-slate-100 flex flex-col md:flex-row justify-between gap-3 md:gap-4 md:items-center bg-slate-50">
                       <div>
-                          <h3 className="font-black text-lg flex items-center gap-2"><Box size={20} className="text-[#6D2158]"/> Item Linker</h3>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Assign Master Catalog items to Inventory Types</p>
+                          <h3 className="font-black text-base md:text-lg flex items-center gap-2"><Box size={18} className="text-[#6D2158]"/> Item Linker</h3>
+                          <p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 md:mt-1">Assign Master Items to Types & Villa Locations</p>
                       </div>
-                      <div className="flex gap-3">
+                      <div className="flex gap-2 md:gap-3 w-full md:w-auto">
                           <div className="relative w-full md:w-80">
                               <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
-                              <input type="text" placeholder="Search catalog..." className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158] shadow-sm" value={itemSearch} onChange={e=>setItemSearch(e.target.value)} />
+                              <input type="text" placeholder="Search catalog..." className="w-full pl-9 pr-3 py-2.5 md:py-3 bg-white border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158] shadow-sm" value={itemSearch} onChange={e=>setItemSearch(e.target.value)} />
                           </div>
                       </div>
                   </div>
 
-                  <div className="overflow-x-auto max-h-[60vh] custom-scrollbar">
-                      <table className="w-full text-left">
+                  {/* DESKTOP TABLE VIEW */}
+                  <div className="hidden md:block overflow-x-auto max-h-[65vh] custom-scrollbar">
+                      <table className="w-full text-left min-w-[800px]">
                           <thead className="bg-slate-100 sticky top-0 z-10 text-[10px] font-black uppercase text-slate-400 tracking-widest border-b border-slate-200">
                               <tr>
                                   <th className="p-4 w-16">Pic</th>
                                   <th className="p-4">Item Details</th>
-                                  <th className="p-4">Linked Inventory Type</th>
+                                  <th className="p-4">Inventory Type (Count Group)</th>
+                                  <th className="p-4">Villa Location (Physical Spot)</th>
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-50">
@@ -635,7 +638,7 @@ export default function InventorySettings() {
                                       </td>
                                       <td className="p-4">
                                           <select 
-                                              className={`p-3 border rounded-xl text-[16px] md:text-xs font-bold outline-none cursor-pointer transition-colors ${item.inventory_type ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-indigo-300'}`}
+                                              className={`w-full p-3 border rounded-xl text-[16px] md:text-xs font-bold outline-none cursor-pointer transition-colors ${item.inventory_type ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-indigo-300'}`}
                                               value={item.inventory_type || ''}
                                               onChange={(e) => updateItemType(item.article_number, e.target.value)}
                                           >
@@ -643,50 +646,130 @@ export default function InventorySettings() {
                                               {invTypes.map(t => <option key={t.id} value={t.label}>{t.label}</option>)}
                                           </select>
                                       </td>
+                                      <td className="p-4">
+                                          <div className="relative">
+                                              <MapPin className="absolute left-3 top-3 text-slate-400 pointer-events-none" size={14}/>
+                                              <input 
+                                                  type="text" 
+                                                  list="villa-locations"
+                                                  placeholder="e.g. Wardrobe"
+                                                  className={`w-full p-3 pl-9 border rounded-xl text-[16px] md:text-xs font-bold outline-none transition-colors ${item.villa_location ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-blue-300'}`}
+                                                  value={item.villa_location || ''}
+                                                  onChange={(e) => {
+                                                      setCatalog(catalog.map(c => c.article_number === item.article_number ? { ...c, villa_location: e.target.value } : c));
+                                                  }}
+                                                  onBlur={(e) => {
+                                                      updateItemVillaLocation(item.article_number, e.target.value);
+                                                  }}
+                                                  onKeyDown={(e) => {
+                                                      if (e.key === 'Enter') e.currentTarget.blur();
+                                                  }}
+                                              />
+                                              <datalist id="villa-locations">
+                                                  {availableVillaLocations.map(loc => <option key={loc} value={loc} />)}
+                                              </datalist>
+                                          </div>
+                                      </td>
                                   </tr>
                               ))}
                           </tbody>
                       </table>
+                  </div>
+
+                  {/* MOBILE CARD VIEW */}
+                  <div className="md:hidden flex flex-col divide-y divide-slate-100 max-h-[65vh] overflow-y-auto custom-scrollbar bg-slate-50/50">
+                      {catalog.filter(i => {
+                          if (i.is_minibar_item && !itemSearch) return false;
+                          return (i.article_name||'').toLowerCase().includes(itemSearch.toLowerCase()) || i.article_number.includes(itemSearch);
+                      }).map(item => (
+                          <div key={item.article_number} className="p-4 flex flex-col gap-3 bg-white">
+                              <div className="flex gap-3 items-center">
+                                  <div className="w-12 h-12 bg-slate-50 rounded-xl border border-slate-100 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
+                                      {item.image_url ? <img src={item.image_url} className="w-full h-full object-cover"/> : <ImageIcon size={20} className="text-slate-300"/>}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                      <h4 className="font-black text-sm text-slate-800 truncate leading-tight">{item.article_name}</h4>
+                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 truncate">{item.article_number} • {item.category}</p>
+                                  </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 mt-1">
+                                  <div>
+                                      <label className="text-[8px] font-black uppercase text-slate-400 tracking-widest block mb-1">Inv Type</label>
+                                      <select 
+                                          className={`w-full p-2.5 rounded-lg border text-xs font-bold outline-none transition-colors ${item.inventory_type ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-slate-50 border-slate-200 text-slate-400'}`}
+                                          value={item.inventory_type || ''}
+                                          onChange={(e) => updateItemType(item.article_number, e.target.value)}
+                                      >
+                                          <option value="">Unlinked</option>
+                                          {invTypes.map(t => <option key={t.id} value={t.label}>{t.label}</option>)}
+                                      </select>
+                                  </div>
+                                  <div className="relative">
+                                      <label className="text-[8px] font-black uppercase text-slate-400 tracking-widest block mb-1">Location</label>
+                                      <MapPin className="absolute left-2 top-[22px] text-slate-400 pointer-events-none" size={12}/>
+                                      <input 
+                                          type="text" 
+                                          list={`mobile-villa-locations-${item.article_number}`}
+                                          placeholder="Wardrobe"
+                                          className={`w-full p-2.5 pl-6 rounded-lg border text-xs font-bold outline-none transition-colors ${item.villa_location ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
+                                          value={item.villa_location || ''}
+                                          onChange={(e) => {
+                                              setCatalog(catalog.map(c => c.article_number === item.article_number ? { ...c, villa_location: e.target.value } : c));
+                                          }}
+                                          onBlur={(e) => {
+                                              updateItemVillaLocation(item.article_number, e.target.value);
+                                          }}
+                                          onKeyDown={(e) => {
+                                              if (e.key === 'Enter') e.currentTarget.blur();
+                                          }}
+                                      />
+                                      <datalist id={`mobile-villa-locations-${item.article_number}`}>
+                                          {availableVillaLocations.map(loc => <option key={loc} value={loc} />)}
+                                      </datalist>
+                                  </div>
+                              </div>
+                          </div>
+                      ))}
                   </div>
               </div>
           )}
 
           {/* TAB 3: TYPES & LOCATIONS */}
           {activeTab === 'Types' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
-                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                      <div className="flex items-center gap-3 mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 animate-in fade-in">
+                  <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100">
+                      <div className="flex items-center gap-3 mb-4 md:mb-6">
                           <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center"><Layers size={20}/></div>
-                          <div><h3 className="font-black text-lg">Inventory Types</h3><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">e.g., Linen, Assets, Cutlery</p></div>
+                          <div><h3 className="font-black text-base md:text-lg">Inventory Types</h3><p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">e.g., Linen, Assets, Cutlery</p></div>
                       </div>
-                      <div className="flex gap-2 mb-4">
+                      <div className="flex gap-2 mb-3 md:mb-4">
                           <input type="text" placeholder="Add new type..." className="input-field flex-1 text-[16px] md:text-sm" value={newType} onChange={e=>setNewType(e.target.value)} />
-                          <button onClick={() => addConstant('inv_type', newType, setNewType)} className="px-6 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs shadow-md"><Plus size={18}/></button>
+                          <button onClick={() => addConstant('inv_type', newType, setNewType)} className="px-5 md:px-6 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs shadow-md"><Plus size={18}/></button>
                       </div>
                       <div className="space-y-2 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
                           {invTypes.map(t => (
-                              <div key={t.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl border border-slate-100 group">
-                                  <span className="font-bold text-slate-700 text-sm">{t.label}</span>
-                                  <button onClick={() => deleteConstant(t.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={18}/></button>
+                              <div key={t.id} className="flex justify-between items-center p-3 md:p-4 bg-slate-50 rounded-xl border border-slate-100 group">
+                                  <span className="font-bold text-slate-700 text-xs md:text-sm">{t.label}</span>
+                                  <button onClick={() => deleteConstant(t.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={16} className="md:w-[18px] md:h-[18px]"/></button>
                               </div>
                           ))}
                       </div>
                   </div>
 
-                  <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
-                      <div className="flex items-center gap-3 mb-6">
+                  <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-100">
+                      <div className="flex items-center gap-3 mb-4 md:mb-6">
                           <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center"><Building size={20}/></div>
-                          <div><h3 className="font-black text-lg">Custom Locations</h3><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">e.g., F&B Main, Spa</p></div>
+                          <div><h3 className="font-black text-base md:text-lg">Custom Locations</h3><p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">e.g., F&B Main, Spa</p></div>
                       </div>
-                      <div className="flex gap-2 mb-4">
+                      <div className="flex gap-2 mb-3 md:mb-4">
                           <input type="text" placeholder="Add new location..." className="input-field flex-1 text-[16px] md:text-sm" value={newLoc} onChange={e=>setNewLoc(e.target.value)} />
-                          <button onClick={() => addConstant('inv_location', newLoc, setNewLoc)} className="px-6 py-2 bg-amber-500 text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600"><Plus size={18}/></button>
+                          <button onClick={() => addConstant('inv_location', newLoc, setNewLoc)} className="px-5 md:px-6 py-2 bg-amber-500 text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600"><Plus size={18}/></button>
                       </div>
                       <div className="space-y-2 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
                           {invLocations.map(t => (
-                              <div key={t.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl border border-slate-100 group">
-                                  <span className="font-bold text-slate-700 text-sm">{t.label}</span>
-                                  <button onClick={() => deleteConstant(t.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={18}/></button>
+                              <div key={t.id} className="flex justify-between items-center p-3 md:p-4 bg-slate-50 rounded-xl border border-slate-100 group">
+                                  <span className="font-bold text-slate-700 text-xs md:text-sm">{t.label}</span>
+                                  <button onClick={() => deleteConstant(t.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={16} className="md:w-[18px] md:h-[18px]"/></button>
                               </div>
                           ))}
                       </div>

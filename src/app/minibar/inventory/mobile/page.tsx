@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Lock, Plus, Minus, Save, CheckCircle2, 
   Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
-  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator, MapPin, Info
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -29,7 +29,7 @@ const getCategoryWeight = (cat: string) => {
 };
 
 type Host = { id: string; full_name: string; host_id: string; };
-type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; };
+type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; };
 
 // NEW TYPE FOR UNIVERSAL ASSIGNMENTS
 type UniversalTask = {
@@ -73,18 +73,23 @@ export default function MyTasksResponsive() {
 
   // --- UNIVERSAL TASK STATE ---
   const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
-  const [activeTaskType, setActiveTaskType] = useState<string>(''); // Determines which type we are counting (e.g. Minibar, Linen)
+  const [activeTaskType, setActiveTaskType] = useState<string>(''); 
   const [activeScheduleId, setActiveScheduleId] = useState<string>('');
   const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
   
   // These hold the active audit data
   const [selectedVilla, setSelectedVilla] = useState('');
   const [counts, setCounts] = useState<Record<string, number>>({});
-  const [activeCategory, setActiveCategory] = useState('All');
+  
+  // Active Location Filter
+  const [activeLocation, setActiveLocation] = useState('All');
 
   // KEYPAD STATE
   const [keypadTarget, setKeypadTarget] = useState<string | null>(null);
   const [keypadValue, setKeypadValue] = useState<string>('');
+
+  // GUIDE STATE
+  const [showGuideModal, setShowGuideModal] = useState(false);
 
   // Expiry Specific
   const [isExpiryMode, setIsExpiryMode] = useState(false);
@@ -106,7 +111,7 @@ export default function MyTasksResponsive() {
       const { data: att } = await supabase.from('hsk_attendance').select('shift_type, shift_note').eq('host_id', hostId).eq('date', todayStr).maybeSingle();
       if (att) setDailyTask(att);
 
-      // 2. Fetch UNIVERSAL Inventory Assignments (This catches Linen, Assets, etc.)
+      // 2. Fetch UNIVERSAL Inventory Assignments 
       const { data: activeSchedules } = await supabase.from('hsk_inventory_schedules')
           .select('id, inventory_type')
           .eq('status', 'Active');
@@ -142,7 +147,7 @@ export default function MyTasksResponsive() {
           }
       }
 
-      // 3. Fetch Legacy MINIBAR Assignments (If any are active)
+      // 3. Fetch Legacy MINIBAR Assignments
       const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas']);
       const mbStatus = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
       const mbPeriod = constData?.find(c => c.type === 'mb_active_period')?.label;
@@ -201,7 +206,6 @@ export default function MyTasksResponsive() {
   }, []);
 
   const fetchCatalog = useCallback(async () => {
-    // Fetch EVERYTHING. We will filter it based on what task they click.
     const { data: catRes } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
     if (catRes) {
         setMasterCatalog(catRes);
@@ -271,6 +275,7 @@ export default function MyTasksResponsive() {
     setActiveTaskType(taskType);
     setActiveScheduleId(scheduleId);
     setIsExpiryMode(false);
+    setActiveLocation('All'); // Reset location filter on start
     
     const initialCounts: Record<string, number> = {};
 
@@ -279,7 +284,7 @@ export default function MyTasksResponsive() {
         ? masterCatalog.filter(i => i.is_minibar_item)
         : masterCatalog.filter(i => i.inventory_type === taskType);
 
-    // FETCH PREVIOUS RECORDS IF EDITING (Now allowed even if Done)
+    // FETCH PREVIOUS RECORDS IF EDITING
     if (taskType === 'Legacy Minibar') {
         const mbPeriod = getLocalMonth();
         const [y, m] = mbPeriod.split('-').map(Number);
@@ -305,6 +310,16 @@ export default function MyTasksResponsive() {
     setCounts(initialCounts);
     setStep(3);
     setIsLoading(false);
+
+    // Trigger the guide modal if it's their first time
+    if (!localStorage.getItem('hk_pulse_inv_guide_seen')) {
+        setShowGuideModal(true);
+    }
+  };
+
+  const closeGuide = () => {
+      localStorage.setItem('hk_pulse_inv_guide_seen', 'true');
+      setShowGuideModal(false);
   };
 
   const updateCount = (article_number: string, delta: number) => {
@@ -354,7 +369,6 @@ export default function MyTasksResponsive() {
 
         const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
         if (!error) {
-            // Update local state instantly so checkmark appears
             setUniversalTasks(prev => {
                 const updated = { ...prev };
                 if (updated['Legacy Minibar']) {
@@ -364,7 +378,6 @@ export default function MyTasksResponsive() {
             });
         }
     } else {
-        // UNIVERSAL INVENTORY SAVE
         const recordsToInsert = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => ({
             schedule_id: activeScheduleId,
             villa_number: selectedVilla,
@@ -373,18 +386,14 @@ export default function MyTasksResponsive() {
             host_id: currentHost?.host_id
         }));
 
-        // 1. Delete old records for this villa/schedule just in case (Overrides)
         await supabase.from('hsk_inventory_records').delete().eq('schedule_id', activeScheduleId).eq('villa_number', selectedVilla);
         
-        // 2. Insert new records
         if (recordsToInsert.length > 0) {
             await supabase.from('hsk_inventory_records').insert(recordsToInsert);
         }
 
-        // 3. Mark Assignment as Submitted
         await supabase.from('hsk_inventory_assignments').update({ status: 'Submitted' }).eq('schedule_id', activeScheduleId).eq('villa_number', selectedVilla);
         
-        // Update local state instantly
         setUniversalTasks(prev => {
             const updated = { ...prev };
             if (updated[activeTaskType]) {
@@ -396,19 +405,6 @@ export default function MyTasksResponsive() {
 
     setIsLoading(false);
     setShowSuccess(true);
-  };
-
-  const requestEmptyMinibar = () => {
-      setConfirmModal({
-          isOpen: true, title: "Empty & Submit?", message: "This will set all items to 0 and submit immediately.", confirmText: "Empty & Submit", isDestructive: true,
-          onConfirm: () => {
-              const newCounts: Record<string, number> = {};
-              Object.keys(counts).forEach(key => { newCounts[key] = 0; });
-              setCounts(newCounts);
-              setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              executeSaveInventory(); // Pass empty implicitly through state
-          }
-      });
   };
 
   const requestSaveInventory = () => {
@@ -545,12 +541,17 @@ export default function MyTasksResponsive() {
     setStep(2);
   };
 
-  // Derive categories dynamically based on active task
+  // Derive Catalog & Unique Locations
   const activeCatalog = activeTaskType === 'Legacy Minibar' 
       ? masterCatalog.filter(i => i.is_minibar_item) 
       : masterCatalog.filter(i => i.inventory_type === activeTaskType);
       
-  const categories = ['All', ...Array.from(new Set(activeCatalog.map(i => i.category)))];
+  const uniqueLocations = Array.from(new Set(activeCatalog.map(i => i.villa_location).filter(Boolean))) as string[];
+  const hasUnassignedLocations = activeCatalog.some(i => !i.villa_location);
+  
+  // Build location filter array
+  const locationFilters = ['All', ...uniqueLocations];
+  if (hasUnassignedLocations) locationFilters.push('Unassigned');
 
   if (!isMounted) return null;
 
@@ -673,7 +674,7 @@ export default function MyTasksResponsive() {
             <div className="flex-1 flex flex-col animate-in slide-in-from-right-8 duration-300">
                 
                 {/* Router Header */}
-                <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-6 rounded-[2.5rem] shadow-sm border mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4`}>
+                <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-6 rounded-[2.5rem] shadow-sm border mb-6 flex items-center justify-between gap-4`}>
                     <div className="flex items-center gap-4">
                         <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={20}/></button>
                         <div>
@@ -683,11 +684,9 @@ export default function MyTasksResponsive() {
                     </div>
                     
                     {!isExpiryMode && (
-                        <div className="flex gap-2 w-full md:w-auto">
-                            <button onClick={requestEmptyMinibar} className="flex-1 md:flex-none px-6 py-3 bg-rose-50 text-rose-600 rounded-xl text-xs font-black uppercase tracking-widest border border-rose-100 hover:bg-rose-100 transition-all flex items-center justify-center gap-2">
-                                <Trash2 size={16}/> Zero All
-                            </button>
-                        </div>
+                        <button onClick={() => setShowGuideModal(true)} className="p-3 text-slate-400 hover:text-[#6D2158] hover:bg-purple-50 rounded-xl transition-colors active:scale-95" title="How to Count">
+                            <Info size={24}/>
+                        </button>
                     )}
                 </div>
 
@@ -883,20 +882,26 @@ export default function MyTasksResponsive() {
                 ) : (
                     // --- STANDARD INVENTORY MODE (UNIVERSAL + KEYPAD) ---
                     <>
-                        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-4 mb-2">
-                            {categories.map(cat => (
+                        {/* DYNAMIC VILLA LOCATION TABS */}
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar pb-4 mb-2 border-b border-slate-100">
+                            {locationFilters.map(loc => (
                                 <button 
-                                    key={cat} 
-                                    onClick={() => setActiveCategory(cat)}
-                                    className={`px-5 py-2.5 rounded-full text-xs font-bold whitespace-nowrap transition-colors border shadow-sm ${activeCategory === cat ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}
+                                    key={loc} 
+                                    onClick={() => setActiveLocation(loc)}
+                                    className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest whitespace-nowrap transition-all border shadow-sm flex items-center gap-1.5 ${activeLocation === loc ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:bg-slate-50'}`}
                                 >
-                                    {cat}
+                                    {loc !== 'All' && loc !== 'Unassigned' && <MapPin size={12}/>}
+                                    {loc}
                                 </button>
                             ))}
                         </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 pb-48">
-                            {activeCatalog.filter(i => activeCategory === 'All' || i.category === activeCategory).map(item => {
+                            {activeCatalog.filter(i => {
+                                if (activeLocation === 'All') return true;
+                                if (activeLocation === 'Unassigned') return !i.villa_location;
+                                return i.villa_location === activeLocation;
+                            }).map(item => {
                                 const qty = counts[item.article_number] || 0;
                                 const isKeypadActive = keypadTarget === item.article_number;
                                 
@@ -909,7 +914,12 @@ export default function MyTasksResponsive() {
                                     
                                     <div className="flex flex-col flex-1 px-1">
                                         <h4 className="text-[11px] font-black text-slate-800 leading-tight line-clamp-2">{item.generic_name || item.article_name}</h4>
-                                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{item.category}</p>
+                                        <div className="flex items-center justify-between mt-1">
+                                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{item.category}</p>
+                                            {item.villa_location && activeLocation === 'All' && (
+                                                <p className="text-[8px] font-black text-[#6D2158] uppercase tracking-widest bg-purple-50 px-1.5 py-0.5 rounded truncate max-w-[60px]">{item.villa_location}</p>
+                                            )}
+                                        </div>
                                     </div>
 
                                     <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
@@ -917,7 +927,6 @@ export default function MyTasksResponsive() {
                                             <Minus size={16}/>
                                         </button>
                                         
-                                        {/* TAPPING NUMBER OPENS KEYPAD */}
                                         <button 
                                             onClick={() => openKeypad(item.article_number)} 
                                             className={`w-10 text-center font-black text-xl py-1 rounded-lg transition-colors ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400 hover:bg-slate-200'} ${isKeypadActive ? 'bg-[#6D2158]/10 text-[#6D2158] ring-2 ring-[#6D2158]' : ''}`}
@@ -947,6 +956,43 @@ export default function MyTasksResponsive() {
                         </div>
                     </>
                 )}
+            </div>
+        )}
+
+        {/* --- BILINGUAL GUIDE MODAL --- */}
+        {showGuideModal && (
+            <div className="fixed inset-0 z-[130] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-md rounded-[2.5rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
+                    <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shrink-0 shadow-inner">
+                        <Info size={32} />
+                    </div>
+                    <h3 className="text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0">How to count / ގުނާނެ ގޮތް</h3>
+                    
+                    <div className="text-sm text-slate-600 font-medium mb-6 space-y-4 bg-slate-50 p-4 md:p-5 rounded-2xl border border-slate-100 overflow-y-auto custom-scrollbar flex-1">
+                        <div className="text-left">
+                            <p className="font-black text-slate-800 mb-2">🇬🇧 English:</p>
+                            <div className="space-y-3 text-xs md:text-sm">
+                                <p>1. This is an inventory count. You must count exactly what is physically present. If there is 1 item, enter <b>'1'</b>. If it is missing or empty, enter <b>'0'</b>.</p>
+                                <p>2. Use the <b className="text-slate-800">Location Tabs</b> at the top (e.g. Wardrobe, Bathroom) to check items room-by-room so nothing is missed.</p>
+                                <p>3. Tap the <b className="text-[#6D2158]">large number</b> to open the fast keypad, or use the <b className="text-slate-800">+/-</b> buttons to adjust the count.</p>
+                                <p>4. Make sure you have checked every location before tapping <b className="text-[#6D2158]">Submit Audit</b>.</p>
+                            </div>
+                        </div>
+                        <div className="border-t border-slate-200 pt-4" dir="rtl">
+                            <p className="font-black text-slate-800 mb-3" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
+                            <div className="space-y-3 text-sm md:text-base leading-relaxed text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
+                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <b>'1'</b>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <b>'0'</b> ޖަހާށެވެ.</p>
+                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <b className="text-slate-800">ލޮކޭޝަން ޓެބްތައް</b> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
+                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <b className="text-[#6D2158]">ނަންބަރަށް</b> ފިއްތާލާށެވެ. ނުވަތަ <b className="text-slate-800">+/-</b> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
+                                <p>4. <b className="text-[#6D2158]">'ސަބްމިޓް އޮޑިޓް'</b> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onClick={closeGuide} className="w-full py-4 text-white bg-[#6D2158] rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg shadow-purple-900/20 active:scale-95 transition-all shrink-0">
+                        I Understand / ވިސްނިއްޖެ
+                    </button>
+                </div>
             </div>
         )}
 

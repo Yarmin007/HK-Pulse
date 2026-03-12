@@ -6,6 +6,15 @@
   --primary: #6D2158;
 }
 
+/* --- ADD FARUMA FONT --- */
+@font-face {
+  font-family: 'Faruma';
+  src: url('/fonts/Faruma.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 html, body {
   font-family: "Book Antiqua", "Palatino Linotype", serif;
   background-color: #FDFBFD; 
