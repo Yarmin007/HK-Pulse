@@ -303,7 +303,7 @@ export default function Dashboard() {
         if (hostData) {
             setCurrentUser(hostData);
             const localNick = localStorage.getItem(`nickname_${hostData.host_id}`);
-            setDisplayName(config.nicknames[hostData.host_id] || localNick || hostData.full_name.split(' ')[0]);
+            setDisplayName(config.nicknames[hostData.host_id] || localNick || '');
         }
         
         if (superFlag) {
@@ -552,7 +552,7 @@ export default function Dashboard() {
 
   if (isLoading) {
       return (
-          <div className="flex-1 flex items-center justify-center text-[#6D2158] h-full">
+          <div className="flex-1 flex items-center justify-center text-[#6D2158] h-full min-h-screen">
               <div className="flex flex-col items-center gap-4">
                   <div className="w-12 h-12 border-4 border-[#6D2158]/20 border-t-[#6D2158] rounded-full animate-spin"></div>
                   <p className="font-bold uppercase tracking-widest text-sm animate-pulse">Syncing Pulse...</p>
@@ -583,7 +583,7 @@ export default function Dashboard() {
               {currentUser?.image_url ? (
                   <img src={currentUser.image_url} className="w-full h-full object-cover" alt="Profile" />
               ) : (
-                  <span className="text-4xl font-black">{displayName.charAt(0) || <User size={40}/>}</span>
+                  <span className="text-4xl font-black">{(currentUser?.full_name || 'U').charAt(0)}</span>
               )}
               <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                   <Edit3 size={24} className="text-white"/>
@@ -591,24 +591,34 @@ export default function Dashboard() {
           </div>
 
           {isEditingName ? (
-              <div className="flex items-center justify-center gap-2 mb-3">
-                  <input 
-                      type="text" 
-                      autoFocus
-                      className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158] bg-white border-2 border-[#6D2158] rounded-xl px-3 py-1 text-center outline-none w-48 shadow-lg" 
-                      value={tempName} 
-                      onChange={(e) => setTempName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && saveNickname()}
-                  />
-                  <button onClick={saveNickname} className="p-2.5 bg-emerald-100 text-emerald-600 rounded-xl hover:bg-emerald-200 shadow-md transition-colors"><CheckCircle2 size={24}/></button>
+              <div className="flex flex-col items-center justify-center gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                      <input 
+                          type="text" 
+                          autoFocus
+                          placeholder="Set Nickname"
+                          className="text-lg font-black tracking-tight text-[#6D2158] bg-white border-2 border-[#6D2158] rounded-xl px-3 py-1 text-center outline-none w-48 shadow-lg" 
+                          value={tempName} 
+                          onChange={(e) => setTempName(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && saveNickname()}
+                      />
+                      <button onClick={saveNickname} className="p-2 bg-emerald-100 text-emerald-600 rounded-xl hover:bg-emerald-200 shadow-md transition-colors"><CheckCircle2 size={20}/></button>
+                  </div>
               </div>
           ) : (
-              <h1 className="text-2xl md:text-4xl font-black tracking-tight text-[#6D2158] mb-1.5">
-                  {greeting}, {displayName}
-              </h1>
+              <div className="flex flex-col items-center">
+                  <h1 className="text-2xl md:text-4xl font-black tracking-tight text-[#6D2158] mb-1.5">
+                      {greeting}, {currentUser?.full_name.split(' ')[0]}
+                  </h1>
+                  {displayName && displayName !== currentUser?.full_name.split(' ')[0] && (
+                      <span className="text-[10px] font-black uppercase tracking-widest bg-purple-50 text-[#6D2158] px-3 py-1 rounded-full border border-purple-100 shadow-sm mb-2">
+                          AKA: {displayName}
+                      </span>
+                  )}
+              </div>
           )}
           
-          <p className="text-xs md:text-sm font-bold text-slate-400 uppercase tracking-widest flex flex-wrap items-center justify-center gap-2">
+          <p className="text-xs md:text-sm font-bold text-slate-400 uppercase tracking-widest flex flex-wrap items-center justify-center gap-2 mt-1">
               {currentUser?.role || 'Staff'} • {currentUser?.host_id || 'Unknown ID'}
               <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full text-[9px] md:text-[10px] flex items-center gap-1.5 shadow-sm border border-emerald-200">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
@@ -641,11 +651,12 @@ export default function Dashboard() {
           </div>
       </div>
 
-      <div className="p-4 md:p-8 space-y-6 md:space-y-8 pb-32">
+      {/* Main Content Area (No side padding on mobile for edge-to-edge look) */}
+      <div className="p-0 md:p-8 space-y-6 md:space-y-8 pb-32">
           
           {/* USER BALANCES STRIP */}
           {userBalances && (
-              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4">
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4 px-2 md:px-0 pt-4 md:pt-0">
                   <BalanceCard label="Total Owed" value={userBalances.balTotal} isTotal />
                   <BalanceCard label="Off Days" value={userBalances.balOff} color="emerald" />
                   <BalanceCard label="Annual" value={userBalances.balAL} color="cyan" />
@@ -661,43 +672,45 @@ export default function Dashboard() {
 
           {/* UPCOMING LEAVE WIDGET */}
           {upcomingLeaveInfo && (
-              <div className={`p-5 rounded-3xl shadow-sm border flex flex-col md:flex-row items-center justify-between gap-6 animate-in slide-in-from-bottom-5 ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-cyan-50 border-cyan-200 shadow-cyan-100' : 'bg-white border-slate-200'}`}>
-                  <div className="flex items-center gap-4">
-                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-inner border ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-white border-cyan-100 text-cyan-600' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
-                          {upcomingLeaveInfo.isOnLeaveNow ? <Plane size={24}/> : <Timer size={24}/>}
+              <div className="px-2 md:px-0">
+                  <div className={`p-5 rounded-3xl shadow-sm border flex flex-col md:flex-row items-center justify-between gap-6 animate-in slide-in-from-bottom-5 ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-cyan-50 border-cyan-200 shadow-cyan-100' : 'bg-white border-slate-200'}`}>
+                      <div className="flex items-center gap-4">
+                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-inner border ${upcomingLeaveInfo.isOnLeaveNow ? 'bg-white border-cyan-100 text-cyan-600' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                              {upcomingLeaveInfo.isOnLeaveNow ? <Plane size={24}/> : <Timer size={24}/>}
+                          </div>
+                          <div>
+                              <h3 className="font-black text-lg text-slate-800 tracking-tight">
+                                  {upcomingLeaveInfo.isOnLeaveNow ? "You are currently on leave." : "Upcoming Leave Scheduled"}
+                              </h3>
+                              <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">
+                                  <span className="text-[#6D2158]">{format(upcomingLeaveInfo.startDate, 'MMM d, yyyy')}</span>
+                                  <span className="mx-2 text-slate-300">to</span>
+                                  <span className="text-[#6D2158]">{format(upcomingLeaveInfo.endDate, 'MMM d, yyyy')}</span>
+                              </p>
+                          </div>
                       </div>
-                      <div>
-                          <h3 className="font-black text-lg text-slate-800 tracking-tight">
-                              {upcomingLeaveInfo.isOnLeaveNow ? "You are currently on leave." : "Upcoming Leave Scheduled"}
-                          </h3>
-                          <p className="text-xs font-bold text-slate-500 mt-1 uppercase tracking-widest">
-                              <span className="text-[#6D2158]">{format(upcomingLeaveInfo.startDate, 'MMM d, yyyy')}</span>
-                              <span className="mx-2 text-slate-300">to</span>
-                              <span className="text-[#6D2158]">{format(upcomingLeaveInfo.endDate, 'MMM d, yyyy')}</span>
-                          </p>
-                      </div>
-                  </div>
 
-                  <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto text-center md:text-right">
-                      {upcomingLeaveInfo.isOnLeaveNow ? (
-                          <div className="px-6 py-3 bg-cyan-600 text-white rounded-xl shadow-lg font-black uppercase tracking-widest text-xs flex flex-col items-center">
-                              <span>Return to Duty</span>
-                              <span className="text-sm mt-0.5">{format(upcomingLeaveInfo.returnDate, 'EEEE, MMM d')}</span>
+                      <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto text-center md:text-right">
+                          {upcomingLeaveInfo.isOnLeaveNow ? (
+                              <div className="px-6 py-3 bg-cyan-600 text-white rounded-xl shadow-lg font-black uppercase tracking-widest text-xs flex flex-col items-center">
+                                  <span>Return to Duty</span>
+                                  <span className="text-sm mt-0.5">{format(upcomingLeaveInfo.returnDate, 'EEEE, MMM d')}</span>
+                              </div>
+                          ) : (
+                              <div className="px-6 py-3 bg-slate-800 text-white rounded-xl shadow-lg font-black uppercase tracking-widest text-xs flex items-center gap-2">
+                                  {upcomingLeaveInfo.daysUntilLeave === 1 ? 'Starts Tomorrow' : `Starts in ${upcomingLeaveInfo.daysUntilLeave} Days`}
+                              </div>
+                          )}
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+                              {upcomingLeaveInfo.totalLeaveDays} Days Total
                           </div>
-                      ) : (
-                          <div className="px-6 py-3 bg-slate-800 text-white rounded-xl shadow-lg font-black uppercase tracking-widest text-xs flex items-center gap-2">
-                              {upcomingLeaveInfo.daysUntilLeave === 1 ? 'Starts Tomorrow' : `Starts in ${upcomingLeaveInfo.daysUntilLeave} Days`}
-                          </div>
-                      )}
-                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                          {upcomingLeaveInfo.totalLeaveDays} Days Total
                       </div>
                   </div>
               </div>
           )}
 
           {isAdmin ? (
-              <>
+              <div className="px-2 md:px-0 space-y-6 md:space-y-8">
                   {/* ADMIN ONLY: KPI GRID */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 animate-in slide-in-from-bottom-6">
                      <Link href="/requests" className="bg-white p-5 rounded-[2rem] shadow-sm border border-slate-100 hover:shadow-md active:scale-95 transition-all group flex flex-col">
@@ -743,22 +756,22 @@ export default function Dashboard() {
                   <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start animate-in slide-in-from-bottom-7">
                      
                      {/* LIVE FEED */}
-                     <div className="xl:col-span-2 bg-white rounded-[2rem] shadow-sm border border-slate-100 flex flex-col overflow-hidden">
+                     <div className="xl:col-span-2 bg-white md:rounded-[2rem] shadow-sm border-t border-b md:border border-slate-100 flex flex-col overflow-hidden">
                         <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
                            <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2"><Bell size={16}/> Live Feed</h3>
                            <Link href="/requests" className="text-[10px] bg-white px-3 py-1.5 rounded-full shadow-sm font-bold text-slate-500 hover:text-[#6D2158] uppercase tracking-wider active:scale-95 transition-transform">View All</Link>
                         </div>
-                        <div className="p-4 flex-1">
+                        <div className="p-2 md:p-4 flex-1">
                            {recentActivity.length === 0 ? (
                                <div className="h-full flex flex-col items-center justify-center text-slate-300 py-10">
                                    <CheckCircle2 size={48} className="mb-4 opacity-20"/>
                                    <p className="text-sm font-bold">No requests logged today.</p>
                                </div>
                            ) : (
-                               <div className="space-y-3">
+                               <div className="space-y-0 md:space-y-3">
                                    {recentActivity.map((log: any) => (
-                                      <div key={log.id} className="flex items-center gap-3 md:gap-4 p-3 md:p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                                         <div className={`w-10 h-10 md:w-12 md:h-12 rounded-[1rem] flex items-center justify-center font-black text-base md:text-lg shadow-sm shrink-0 ${log.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                                      <div key={log.id} className="flex items-center gap-3 md:gap-4 p-3 md:p-4 bg-white md:bg-slate-50 border-b border-slate-100 md:border md:rounded-2xl last:border-0">
+                                         <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full md:rounded-[1rem] flex items-center justify-center font-black text-base md:text-lg shadow-sm shrink-0 ${log.request_type === 'Minibar' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
                                             {log.villa_number}
                                          </div>
                                          <div className="flex-1 min-w-0">
@@ -785,14 +798,16 @@ export default function Dashboard() {
                      <div className="space-y-6 flex flex-col">
                          
                          {/* DASHBOARD REMINDERS (MINI) */}
-                         <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 flex flex-col overflow-hidden relative">
+                         <div className="bg-white md:rounded-[2rem] shadow-sm border-t border-b md:border border-slate-100 flex flex-col overflow-hidden relative">
                             <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-purple-50/30">
                                 <div>
                                     <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2"><CheckSquare size={16}/> Daily Reminders</h3>
                                 </div>
-                                <Link href="/tasks" className="text-[10px] bg-[#6D2158] text-white px-3 py-1.5 rounded-full shadow-sm font-bold uppercase tracking-wider hover:bg-[#5a1b49] active:scale-95 transition-transform">Task Hub</Link>
+                                <div className="flex items-center gap-2">
+                                    <Link href="/tasks" className="text-[10px] bg-white text-slate-600 px-3 py-1.5 rounded-full shadow-sm font-bold uppercase tracking-wider hover:text-[#6D2158] active:scale-95 transition-transform border border-slate-200">Hub</Link>
+                                </div>
                             </div>
-                            <div className="p-4">
+                            <div className="p-2 md:p-4">
                                 {adminTasks.length === 0 ? (
                                     <div className="flex flex-col items-center justify-center text-slate-300 py-6">
                                         <CheckSquare size={32} className="mb-2 opacity-20"/>
@@ -802,6 +817,8 @@ export default function Dashboard() {
                                     <div className="space-y-2">
                                         {adminTasks.slice(0, 4).map(task => {
                                             const isOverdue = parseISO(task.due_date) < new Date(new Date().setHours(0,0,0,0));
+                                            const isToday = task.due_date === format(new Date(), 'yyyy-MM-dd');
+                                            
                                             return (
                                                 <div key={task.id} className={`p-3 rounded-xl border flex items-center justify-between ${isOverdue ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
                                                     <div className="min-w-0 pr-3">
@@ -810,24 +827,21 @@ export default function Dashboard() {
                                                             {task.frequency !== 'One-Off' && <RefreshCw size={8}/>} Due: {format(parseISO(task.due_date), 'MMM d')}
                                                         </p>
                                                     </div>
-                                                    <button onClick={() => handleCompleteTask(task.id)} className="w-8 h-8 shrink-0 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-500 transition-colors shadow-sm">
-                                                        <CheckCircle2 size={16}/>
-                                                    </button>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <button onClick={() => handleCompleteTask(task.id)} className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-500 transition-colors shadow-sm">
+                                                            <CheckCircle2 size={16}/>
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             )
                                         })}
-                                        {adminTasks.length > 4 && (
-                                            <Link href="/tasks" className="block text-center mt-3 text-[10px] font-bold text-slate-400 hover:text-[#6D2158] uppercase tracking-widest transition-colors">
-                                                View {adminTasks.length - 4} More
-                                            </Link>
-                                        )}
                                     </div>
                                 )}
                             </div>
                          </div>
                          
                          {/* EXPIRY ALERTS */}
-                         <div className={`p-5 md:p-6 rounded-[2rem] shadow-xl flex flex-col relative overflow-hidden ${criticalItems.length > 0 ? 'bg-rose-600 text-white shadow-rose-200' : 'bg-emerald-600 text-white shadow-emerald-200'}`}>
+                         <div className={`p-5 md:p-6 mx-2 md:mx-0 rounded-3xl md:rounded-[2rem] shadow-xl flex flex-col relative overflow-hidden ${criticalItems.length > 0 ? 'bg-rose-600 text-white shadow-rose-200' : 'bg-emerald-600 text-white shadow-emerald-200'}`}>
                             <div className="relative z-10">
                                 <h3 className="text-base md:text-lg font-black mb-1 flex items-center gap-2">
                                     {criticalItems.length > 0 ? <AlertTriangle size={20}/> : <CheckCircle2 size={20}/>} 
@@ -861,10 +875,10 @@ export default function Dashboard() {
                          </div>
                      </div>
                   </div>
-              </>
+              </div>
           ) : (
               /* STAFF ONLY: PAYROLL MONTH ATTENDANCE GRID */
-              <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden flex flex-col animate-in fade-in">
+              <div className="bg-white md:rounded-[2.5rem] shadow-sm border-t border-b md:border border-slate-100 overflow-hidden flex flex-col animate-in fade-in">
                   <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
                      <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2">
                         <Calendar size={16}/> My Attendance
@@ -921,9 +935,9 @@ export default function Dashboard() {
 
       {/* --- GRAPHICAL TEAM LEAVE INSIGHTS MODAL --- */}
       {isTeamModalOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-2 md:p-4 animate-in fade-in duration-200">
-              <div className="bg-[#FDFBFD] w-full max-w-6xl rounded-3xl md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col h-[95vh] md:max-h-[90vh] animate-in zoom-in-95">
-                  <div className="p-4 md:p-6 bg-[#6D2158] text-white flex flex-col md:flex-row justify-between items-start md:items-center shrink-0 gap-4">
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-0 md:p-4 animate-in fade-in duration-200">
+              <div className="bg-[#FDFBFD] w-full max-w-6xl rounded-none md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col h-[100dvh] md:h-[95vh] md:max-h-[90vh] animate-in zoom-in-95">
+                  <div className="p-4 md:p-6 bg-[#6D2158] text-white flex flex-col md:flex-row justify-between items-start md:items-center shrink-0 gap-4 pt-10 md:pt-6">
                       <div className="flex justify-between w-full md:w-auto items-start">
                           <div>
                               <h3 className="font-black text-xl md:text-3xl flex items-center gap-2 md:gap-3 tracking-tight"><BarChart2 className="w-6 h-6 md:w-8 md:h-8"/> Team Leaves</h3>
@@ -945,7 +959,7 @@ export default function Dashboard() {
                       </div>
                   </div>
 
-                  <div className="flex flex-col h-full overflow-hidden">
+                  <div className="flex flex-col flex-1 overflow-hidden">
                       {isLoadingTeam ? (
                           <div className="flex flex-col items-center justify-center h-full text-[#6D2158]">
                                <Loader2 size={48} className="animate-spin mb-4"/>
@@ -963,7 +977,7 @@ export default function Dashboard() {
                                       <button onClick={() => setSelectedTeamHost(null)} className="text-[10px] font-bold uppercase tracking-widest text-[#6D2158] flex items-center gap-1 mb-2 hover:opacity-70 transition-opacity">
                                           <ChevronLeft size={14}/> Back to Team List
                                       </button>
-                                      <h3 className="font-black text-xl text-slate-800">{teamConfig.nicknames?.[selectedTeamHost.host.host_id] || selectedTeamHost.host.full_name}</h3>
+                                      <h3 className="font-black text-xl text-slate-800">{selectedTeamHost.host.full_name}</h3>
                                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{selectedTeamHost.host.role}</p>
                                   </div>
                                   <div className="text-right">
@@ -971,7 +985,7 @@ export default function Dashboard() {
                                       <p className="text-3xl font-black text-[#6D2158]">{selectedTeamHost.balances.balTotal}</p>
                                   </div>
                               </div>
-                              <div className="p-4 md:p-8 overflow-y-auto flex-1">
+                              <div className="p-4 md:p-8 overflow-y-auto flex-1 pb-32">
                                   <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
                                       <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 min-w-[600px]">
                                           {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
@@ -988,7 +1002,7 @@ export default function Dashboard() {
                               </div>
                           </div>
                       ) : (
-                          <>
+                          <div className="flex flex-col h-full">
                               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 md:p-6 border-b border-slate-200 bg-white shrink-0">
                                   <div className="flex-1 flex gap-2 overflow-x-auto custom-scrollbar pb-2 w-full min-w-0">
                                       <button onClick={() => setActiveDeptTab('All')} className={`shrink-0 px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
@@ -1015,7 +1029,7 @@ export default function Dashboard() {
                                   </div>
                               </div>
 
-                              <div className="p-4 md:p-8 overflow-y-auto flex-1 custom-scrollbar bg-slate-50 md:bg-white">
+                              <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50 md:bg-white pb-32">
                                   {(() => {
                                       let deptData = [...teamBalances];
                                       if (activeDeptTab !== 'All') {
@@ -1036,7 +1050,7 @@ export default function Dashboard() {
                                       const alPct = overall ? (totalAL / overall) * 100 : 0;
 
                                       return (
-                                          <div className="space-y-6 md:space-y-8 animate-in fade-in duration-300">
+                                          <div className="p-4 md:p-8 space-y-6 md:space-y-8 animate-in fade-in duration-300">
                                               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
                                                   <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
                                                       <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Liability</div>
@@ -1047,7 +1061,7 @@ export default function Dashboard() {
                                                   <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
                                                       <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Highest Balance</div>
                                                       <div className="text-2xl md:text-4xl font-black text-amber-600">{deptData[0]?.balances.balTotal || 0} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
-                                                      <div className="text-[9px] md:text-xs font-bold text-slate-600 bg-amber-50 px-2 py-1 md:px-3 md:py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100 truncate max-w-[100px] md:max-w-full">{teamConfig.nicknames?.[deptData[0]?.host.host_id] || deptData[0]?.host.full_name || 'N/A'}</div>
+                                                      <div className="text-[9px] md:text-xs font-bold text-slate-600 bg-amber-50 px-2 py-1 md:px-3 md:py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100 truncate max-w-[100px] md:max-w-full">{deptData[0]?.host.full_name || 'N/A'}</div>
                                                       <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 h-24 bg-amber-50 rounded-full blur-2xl"></div>
                                                   </div>
 
@@ -1063,10 +1077,10 @@ export default function Dashboard() {
                                                   </div>
                                               </div>
 
-                                              <div className="bg-white p-4 md:p-8 rounded-2xl md:rounded-[2rem] shadow-sm border border-slate-200">
-                                                  <div className="space-y-3 md:space-y-5">
+                                              <div className="bg-white p-0 md:p-8 rounded-2xl md:rounded-[2rem] md:shadow-sm md:border border-slate-200">
+                                                  <div className="flex flex-col space-y-0 md:space-y-3">
                                                       {deptData.length === 0 ? (
-                                                          <div className="text-center py-10 text-slate-400 font-bold italic text-sm">No matches found.</div>
+                                                          <div className="text-center py-10 text-slate-400 font-bold italic text-sm border border-slate-100 rounded-2xl">No matches found.</div>
                                                       ) : (
                                                           deptData.map((itemData: any, idx: number) => {
                                                               const { host, balances, upcoming } = itemData;
@@ -1082,15 +1096,18 @@ export default function Dashboard() {
                                                                   <div 
                                                                       key={host.host_id} 
                                                                       onClick={() => handleHostClick(itemData)}
-                                                                      className="flex flex-col gap-2 md:gap-3 group p-3 md:p-4 rounded-xl md:rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100 cursor-pointer"
+                                                                      className="flex flex-col gap-2 md:gap-3 group p-4 border-b border-slate-100 md:border md:border-transparent md:rounded-2xl hover:bg-slate-50 transition-colors cursor-pointer last:border-0"
                                                                   >
                                                                       
                                                                       <div className="flex justify-between items-start md:items-end gap-2">
                                                                           <div className="min-w-0 flex-1">
                                                                               <div className="font-bold text-sm text-slate-800 flex items-center gap-1.5 md:gap-2 truncate group-hover:text-[#6D2158] transition-colors">
                                                                                   <span className="text-[10px] text-slate-400 font-mono w-4 shrink-0">{idx + 1}.</span> 
-                                                                                  <span className="truncate">{teamConfig.nicknames?.[host.host_id] || host.full_name}</span>
-                                                                                  <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-0.5 rounded-md shrink-0">{host.role}</span>
+                                                                                  <span className="truncate">{host.full_name}</span>
+                                                                                  {teamConfig.nicknames?.[host.host_id] && (
+                                                                                      <span className="text-[9px] bg-purple-50 text-[#6D2158] px-1.5 py-0.5 rounded font-black uppercase tracking-widest shrink-0 ml-1">AKA: {teamConfig.nicknames[host.host_id]}</span>
+                                                                                  )}
+                                                                                  <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-0.5 rounded-md shrink-0 ml-1">{host.role}</span>
                                                                               </div>
                                                                               
                                                                               <div className="pl-5 mt-1.5 flex flex-wrap gap-2">
@@ -1106,12 +1123,12 @@ export default function Dashboard() {
                                                                                   )}
                                                                               </div>
                                                                           </div>
-                                                                          <div className="text-right">
-                                                                              <span className={`font-black text-sm md:text-lg shrink-0 ${parseFloat(balances[teamSortBy]) > (teamSortBy === 'balTotal' ? 15 : 7) ? 'text-rose-600' : 'text-[#6D2158]'}`}>
+                                                                          <div className="text-right shrink-0">
+                                                                              <span className={`font-black text-base md:text-lg ${parseFloat(balances[teamSortBy]) > (teamSortBy === 'balTotal' ? 15 : 7) ? 'text-rose-600' : 'text-[#6D2158]'}`}>
                                                                                   {balances[teamSortBy]}
                                                                               </span>
                                                                               {teamSortBy !== 'balTotal' && (
-                                                                                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">{teamSortBy === 'balOff' ? 'Off Days' : 'Annual'}</div>
+                                                                                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{teamSortBy === 'balOff' ? 'Off Days' : 'Annual'}</div>
                                                                               )}
                                                                           </div>
                                                                       </div>
@@ -1139,7 +1156,7 @@ export default function Dashboard() {
                                       );
                                   })()}
                               </div>
-                         </>
+                          </div>
                       )}
                   </div>
               </div>
