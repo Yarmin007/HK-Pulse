@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Lock, Plus, Minus, Save, CheckCircle2, 
   Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
-  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator, MapPin, Info
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator, MapPin, Info, Search, X
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -87,6 +87,9 @@ export default function MyTasksResponsive() {
   // KEYPAD STATE
   const [keypadTarget, setKeypadTarget] = useState<string | null>(null);
   const [keypadValue, setKeypadValue] = useState<string>('');
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sharedAssignments, setSharedAssignments] = useState<string[]>([]);
 
   // GUIDE STATE
   const [showGuideModal, setShowGuideModal] = useState(false);
@@ -276,7 +279,17 @@ export default function MyTasksResponsive() {
     setActiveTaskType(taskType);
     setActiveScheduleId(scheduleId);
     setIsExpiryMode(false);
-    setActiveLocation('All'); 
+    setActiveLocation('All'); // Reset location filter on start
+    setSearchQuery('');
+
+    const { data: allAssigned } = await supabase.from('hsk_inventory_assignments')
+        .select('host_id')
+        .match({ schedule_id: scheduleId, villa_number: villa })
+        .order('host_id');
+    
+    if (allAssigned) {
+        setSharedAssignments(allAssigned.map(a => a.host_id));
+    }
     
     const initialCounts: Record<string, number> = {};
 
@@ -316,14 +329,14 @@ export default function MyTasksResponsive() {
     setStep(3);
     setIsLoading(false);
 
-    // Trigger the guide modal ONLY ONCE per page load
-    if (!hasSeenGuideThisSession) {
+    // Trigger the guide modal if it's their first time
+    if (!localStorage.getItem('hk_pulse_inv_guide_seen')) {
         setShowGuideModal(true);
-        setHasSeenGuideThisSession(true);
     }
   };
 
   const closeGuide = () => {
+      localStorage.setItem('hk_pulse_inv_guide_seen', 'true');
       setShowGuideModal(false);
   };
 
@@ -587,6 +600,36 @@ export default function MyTasksResponsive() {
       ? masterCatalog.filter(i => i.is_minibar_item) 
       : masterCatalog.filter(i => i.inventory_type === activeTaskType);
       
+  const displayCatalog = useMemo(() => {
+      let list = [...activeCatalog];
+      
+      const isVilla = /^\d+$/.test(selectedVilla) || selectedVilla.includes('-');
+      if (!isVilla && sharedAssignments.length > 1 && currentHost) {
+          const myIndex = sharedAssignments.indexOf(currentHost.host_id);
+          if (myIndex !== -1) {
+              const itemsPerPerson = Math.ceil(list.length / sharedAssignments.length);
+              const start = myIndex * itemsPerPerson;
+              list = list.slice(start, start + itemsPerPerson);
+          }
+      }
+      
+      if (activeLocation !== 'All') {
+          if (activeLocation === 'Unassigned') list = list.filter(i => !i.villa_location);
+          else list = list.filter(i => i.villa_location === activeLocation);
+      }
+      
+      if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          list = list.filter(i => 
+              (i.article_name || '').toLowerCase().includes(q) || 
+              (i.generic_name || '').toLowerCase().includes(q) ||
+              (i.article_number || '').includes(q)
+          );
+      }
+      
+      return list;
+  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery]);
+
   const uniqueLocations = Array.from(new Set(activeCatalog.map(i => i.villa_location).filter(Boolean))) as string[];
   const hasUnassignedLocations = activeCatalog.some(i => !i.villa_location);
   
@@ -923,6 +966,23 @@ export default function MyTasksResponsive() {
                 ) : (
                     // --- STANDARD INVENTORY MODE (UNIVERSAL + KEYPAD) ---
                     <>
+                        {/* SEARCH BAR */}
+                        <div className="relative mb-4">
+                            <Search className="absolute left-4 top-3.5 text-slate-400" size={18}/>
+                            <input 
+                                type="text" 
+                                placeholder="Search items by name or code..." 
+                                className="w-full pl-11 pr-10 py-3.5 bg-white border border-slate-200 rounded-2xl font-bold text-[16px] md:text-sm outline-none focus:border-[#6D2158] shadow-sm"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                            />
+                            {searchQuery && (
+                                <button onClick={() => setSearchQuery('')} className="absolute right-4 top-3.5 text-slate-300 hover:text-slate-500">
+                                    <X size={18}/>
+                                </button>
+                            )}
+                        </div>
+
                         {/* DYNAMIC VILLA LOCATION TABS */}
                         <div className="flex gap-2 overflow-x-auto no-scrollbar pb-4 mb-2 border-b border-slate-100">
                             {locationFilters.map(loc => (
@@ -938,11 +998,9 @@ export default function MyTasksResponsive() {
                         </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 pb-48">
-                            {activeCatalog.filter(i => {
-                                if (activeLocation === 'All') return true;
-                                if (activeLocation === 'Unassigned') return !i.villa_location;
-                                return i.villa_location === activeLocation;
-                            }).map(item => {
+                            {displayCatalog.length === 0 ? (
+                                <div className="col-span-full py-10 text-center text-slate-400 font-bold">No items found.</div>
+                            ) : displayCatalog.map(item => {
                                 const qty = counts[item.article_number] || 0;
                                 const isKeypadActive = keypadTarget === item.article_number;
                                 
@@ -1024,10 +1082,10 @@ export default function MyTasksResponsive() {
                         <div className="border-t border-slate-200 pt-4" dir="rtl">
                             <p className="text-slate-800 mb-3 font-bold" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
                             <div className="space-y-3 text-sm md:text-base leading-loose text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
-                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <b className="font-bold text-slate-800 text-lg">'1'</b>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <b className="font-bold text-slate-800 text-lg">'0'</b> ޖަހާށެވެ.</p>
-                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <b className="font-bold text-slate-800 text-lg">Location Tabs</b> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
-                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <b className="font-bold text-[#6D2158] text-lg">ނަންބަރަށް</b> ފިއްތާލާށެވެ. ނުވަތަ <b className="font-bold text-slate-800 text-lg">+/-</b> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
-                                <p>4. <b className="font-bold text-[#6D2158] text-lg">'ސަބްމިޓް އޮޑިޓް'</b> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
+                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <span className="font-bold text-slate-800 text-lg">'1'</span>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <span className="font-bold text-slate-800 text-lg">'0'</span> ޖަހާށެވެ.</p>
+                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <span className="font-bold text-slate-800 text-lg">Location Tabs</span> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
+                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <span className="font-bold text-[#6D2158] text-lg">ނަންބަރަށް</span> ފިއްތާލާށެވެ. ނުވަތަ <span className="font-bold text-slate-800 text-lg">+/-</span> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
+                                <p>4. <span className="font-bold text-[#6D2158] text-lg">'ސަބްމިޓް އޮޑިޓް'</span> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
                             </div>
                         </div>
                     </div>

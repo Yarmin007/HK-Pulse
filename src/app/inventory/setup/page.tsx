@@ -64,7 +64,7 @@ export default function InventorySettings() {
   // VILLA / MULTI-SELECT STATE
   const [villaInput, setVillaInput] = useState('');
   const [selectedVillas, setSelectedVillas] = useState<string[]>([]);
-  const [selectedCustomLocs, setSelectedCustomLocs] = useState<string[]>([]); // Changed to Array for Multi-Select
+  const [selectedCustomLocs, setSelectedCustomLocs] = useState<string[]>([]);
 
   // NOTIFICATION STATE
   const [customNotifyMsg, setCustomNotifyMsg] = useState('');
@@ -253,16 +253,15 @@ export default function InventorySettings() {
 
   const handleCustomLocSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
       const val = e.target.value;
-      if (val && !selectedCustomLocs.includes(val) && !assignments.some(a => a.villa_number === val)) {
+      if (val && !selectedCustomLocs.includes(val)) {
           setSelectedCustomLocs([...selectedCustomLocs, val]);
       }
-      e.target.value = ''; // reset select
+      e.target.value = '';
   };
 
   const removeCustomLoc = (loc: string) => {
       setSelectedCustomLocs(selectedCustomLocs.filter(item => item !== loc));
   };
-
 
   // --- ASSIGNMENT SUBMIT LOGIC ---
   const handleAssign = async () => {
@@ -321,13 +320,11 @@ export default function InventorySettings() {
               };
           }
           groups[a.host_id].items.push(a);
-          // Keep track of the newest assignment timestamp to sort the groups
           if (a.assigned_at && a.assigned_at > groups[a.host_id].latest_assignment) {
               groups[a.host_id].latest_assignment = a.assigned_at;
           }
       });
 
-      // Sort items within each group
       Object.values(groups).forEach(g => {
           g.items.sort((a, b) => {
               const numA = parseInt(a.villa_number) || 9999;
@@ -336,12 +333,10 @@ export default function InventorySettings() {
           });
       });
 
-      // Sort groups themselves by the latest_assignment date (descending, newest at top)
       return Object.values(groups).sort((a, b) => {
           return new Date(b.latest_assignment).getTime() - new Date(a.latest_assignment).getTime();
       });
   }, [assignments, hosts]);
-
 
   if (isLoading && !invTypes.length) return <div className="flex-1 flex items-center justify-center h-full"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>;
   if (!isAdmin) return <div className="flex-1 flex items-center justify-center h-full"><Shield size={40} className="text-rose-500 animate-pulse"/></div>;
