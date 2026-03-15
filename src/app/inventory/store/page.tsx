@@ -45,8 +45,8 @@ type InventoryRow = {
   category: string;
   unit: string;
   storeName: string;
-  mainStock?: number; // Added for combined view breakdown
-  chemStock?: number; // Added for combined view breakdown
+  mainStock?: number; 
+  chemStock?: number; 
   imageUrl?: string;
   openingStock: number; 
   added: number;
@@ -165,7 +165,7 @@ export default function PerpetualInventory() {
   }, [currentDate]);
 
 
-  // --- CALCULATE INVENTORY (HANDLES MULTIPLE STORES & COMBINED VIEW) ---
+  // --- CALCULATE INVENTORY (HANDLES GHOST ITEMS AND COMBINED VIEW) ---
   const inventoryRows = useMemo(() => {
     const targetMonthKey = getMonthKey(currentDate);
     const rows: InventoryRow[] = [];
@@ -180,10 +180,18 @@ export default function PerpetualInventory() {
       const itemHistory = historyByMaster.get(item.article_number) || [];
       const liveVillaQty = liveVillaCounts[item.article_number] || 0;
 
-      // Single Store filtering check
-      if (activeStore !== 'All Stores' && itemHistory.filter(h => h.store_name === activeStore).length === 0) return; 
-      // All stores filtering check
-      if (activeStore === 'All Stores' && itemHistory.length === 0 && liveVillaQty === 0) return;
+      const storesSet = new Set<string>();
+      itemHistory.forEach(h => storesSet.add(h.store_name));
+
+      // FIX: If the item was counted in a villa but has no store history, default it to HK Main Store 
+      // so it is visible in the list and can be clicked on to initialize/log properly.
+      if (storesSet.size === 0 && liveVillaQty > 0) {
+          storesSet.add('HK Main Store');
+      }
+
+      // Filter out items that don't belong to the currently selected tab
+      if (activeStore !== 'All Stores' && !storesSet.has(activeStore)) return; 
+      if (activeStore === 'All Stores' && storesSet.size === 0) return;
 
       if (activeStore === 'All Stores') {
           // --- COMBINED ROW LOGIC ---
@@ -193,7 +201,6 @@ export default function PerpetualInventory() {
           let chemStock = 0;
           let lastKnownRack = '', lastKnownLevel = '';
 
-          // Calculate for each store independently to get the accurate breakdown, then combine
           ['HK Main Store', 'HK Chemical Store'].forEach(store => {
               const storeRecords = itemHistory.filter(h => h.store_name === store);
               let sOpening = 0, sAdded = 0, sConsumed = 0, sDamaged = 0, sTransferred = 0;
@@ -246,7 +253,7 @@ export default function PerpetualInventory() {
               rack: lastKnownRack,
               level: lastKnownLevel,
               expiry: '',
-              recordId: undefined // Can't edit a combined row directly
+              recordId: undefined 
           });
 
       } else {
@@ -313,8 +320,16 @@ export default function PerpetualInventory() {
     if (!articleSearch) return [];
     const lower = articleSearch.toLowerCase();
     
-    const existingIds = new Set(inventoryRows.map(r => r.articleNumber));
+    // FIX: To prevent items saying "Added" unnecessarily, we check if the item 
+    // actually exists in the SPECIFIC store selected in the dropdown.
+    const existingIdsInSelectedStore = new Set(
+        allHistory
+            .filter(h => h.store_name === transData.store)
+            .map(h => h.article_number)
+    );
     
+    const existingIdsInCurrentView = new Set(inventoryRows.map(r => r.articleNumber));
+
     return masterList.filter(m => {
         const match = (m.hk_no || '').toLowerCase().includes(lower) || 
                       (m.generic_name || '').toLowerCase().includes(lower) || 
@@ -322,14 +337,15 @@ export default function PerpetualInventory() {
                       (m.article_number || '').includes(lower);
         
         if (!match) return false;
-        if (modalMode === 'Log') return existingIds.has(m.article_number);
+        
+        if (modalMode === 'Log') return existingIdsInCurrentView.has(m.article_number);
         return true;
     }).slice(0, 15).map(m => ({ 
         ...m,
-        isAlreadyAdded: modalMode === 'Initialize' ? existingIds.has(m.article_number) : false
+        isAlreadyAdded: modalMode === 'Initialize' ? existingIdsInSelectedStore.has(m.article_number) : false
     }));
 
-  }, [articleSearch, masterList, inventoryRows, modalMode]);
+  }, [articleSearch, masterList, inventoryRows, modalMode, allHistory, transData.store]);
 
   const handleSelectArticle = (item: MasterItem) => {
     setSelectedArticle(item);
@@ -352,16 +368,12 @@ export default function PerpetualInventory() {
       setIsModalOpen(true);
   };
 
-  const openScanner = () => {
-      setIsScannerOpen(true);
-      setTimeout(() => { scanInputRef.current?.focus(); }, 100);
-  };
-
+  // SMART SCANNER LOGIC (Reads Normal and Pipeline '|' QR Codes)
   const handleCodeScanned = (code: string) => {
       let scannedItemCode = code.trim().toLowerCase();
       let scannedStoreName: StoreType | null = null;
 
-      // 1. Check if it's a new "Smart QR Code" (e.g., "HK-1001|HK Main Store")
+      // Check if it's a new "Smart QR Code" (e.g., "HK-1001|HK Main Store")
       if (code.includes('|')) {
           const parts = code.split('|');
           scannedItemCode = parts[0].trim().toLowerCase();
@@ -373,27 +385,25 @@ export default function PerpetualInventory() {
 
       if (!scannedItemCode) return;
 
-      // 2. Auto-Switch the app to the correct store if the QR code knows it!
+      // Auto-Switch the app to the correct store if the QR code knows it!
       if (scannedStoreName) {
           setActiveStore(scannedStoreName);
       } else if (activeStore === 'All Stores') {
           // If it's an old QR code and they are on "All Stores", we have to block it
           toast.error("Old QR scanned. Please select a specific store at the top first.", { icon: '⚠️' });
           setScanInput('');
+          setIsScannerOpen(false);
           return;
       }
 
-      // Determine which store we are officially logging to
       const targetStore = scannedStoreName || activeStore;
 
-      // 3. Find the item in the Master List
       const matchedItem = masterList.find(m => 
           (m.hk_no || '').toLowerCase() === scannedItemCode || 
           (m.article_number || '').toLowerCase() === scannedItemCode
       );
       
       if (matchedItem) {
-          // 4. Verify the item actually exists in the target store's inventory
           const inCurrentStore = inventoryRows.some(r => r.articleNumber === matchedItem.article_number && r.storeName === targetStore);
           
           if (inCurrentStore) {
@@ -512,7 +522,7 @@ export default function PerpetualInventory() {
                 consumed: updatedConsumed,
                 damaged: updatedDamaged,
                 transferred: updatedTransferred,
-                villa_assets: updatedVillaAssets,
+                villa_assets: updatedVillaAssets, // Captures ghost villa assets!
                 rack: existingRow?.rack || '',
                 shelf_level: existingRow?.level || '',
               };
@@ -623,7 +633,6 @@ export default function PerpetualInventory() {
       for (const oldRec of lastMonthRecords) {
           if (!oldRec.villa_assets || oldRec.villa_assets <= 0) continue;
 
-          // Find if this item exists in the current month's store (accounting for multiple store rows if we were fetching them separate)
           const existingThisMonth = allHistory.find(r => r.month_year === currentMonthKey && r.article_number === oldRec.article_number && r.store_name === oldRec.store_name);
           
           if (existingThisMonth) {
@@ -633,7 +642,7 @@ export default function PerpetualInventory() {
               await supabase.from('hsk_monthly_stock').insert({
                   month_year: currentMonthKey,
                   article_number: oldRec.article_number,
-                  store_name: oldRec.store_name, // keep original store alignment
+                  store_name: oldRec.store_name,
                   opening_stock: 0,
                   added_stock: 0, consumed: 0, damaged: 0, transferred: 0,
                   villa_assets: oldRec.villa_assets,
@@ -648,7 +657,6 @@ export default function PerpetualInventory() {
       fetchData(); 
   };
 
-  // EXCELJS EXPORT - Beautifully Designed .xlsx
   const downloadExcel = async () => {
       const targetData = inventoryRows.filter(r => 
           (activeCategory === 'All' || r.category === activeCategory) &&
@@ -664,7 +672,6 @@ export default function PerpetualInventory() {
           const workbook = new ExcelJS.Workbook();
           const worksheet = workbook.addWorksheet('Inventory Report');
 
-          // Headers & Title
           worksheet.mergeCells('A1', 'O1'); 
           worksheet.getCell('A1').value = `Perpetual Inventory Report - ${activeStore}`;
           worksheet.getCell('A1').font = { size: 16, bold: true, color: { argb: 'FF6D2158' } };
@@ -700,7 +707,7 @@ export default function PerpetualInventory() {
                   cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
                   cell.alignment = { vertical: 'middle', horizontal: colNumber >= 9 ? 'right' : 'left' };
                   
-                  if (colNumber >= 9) cell.numFmt = '#,##0'; // Numbers
+                  if (colNumber >= 9) cell.numFmt = '#,##0';
                   if (colNumber === 10) cell.font = { color: { argb: 'FF059669' } }; 
                   if (colNumber === 11) cell.font = { color: { argb: 'FFE11D48' } }; 
                   if (colNumber === 12) cell.font = { color: { argb: 'FFD97706' } }; 
@@ -714,7 +721,7 @@ export default function PerpetualInventory() {
           });
 
           worksheet.columns.forEach((col, i) => {
-              if (i === 1 || i === 2 || i === 3) col.width = 25; // Store, HK No, Names
+              if (i === 1 || i === 2 || i === 3) col.width = 25;
               else if (i === 4 || i === 5 || i === 7) col.width = 15;
               else col.width = 12;
           });
@@ -743,7 +750,6 @@ export default function PerpetualInventory() {
       r.articleNumber.includes(searchQuery))
   );
 
-  // --- INSIGHTS CALCULATIONS ---
   const fastMovers = inventoryRows.sort((a,b) => b.consumed - a.consumed).slice(0, 5).filter(i => i.consumed > 0);
   const maxConsumed = Math.max(...fastMovers.map(i => i.consumed), 1);
   
@@ -758,7 +764,6 @@ export default function PerpetualInventory() {
   }, {} as Record<string, number>);
 
   return (
-    // Natural scroll layout for mobile, Viewport lock for desktop (w-full removes forcing off screen)
     <div className="flex flex-col min-h-screen md:h-screen w-full bg-[#FDFBFD] font-antiqua text-[#6D2158] md:overflow-hidden pb-[80px] md:pb-6">
       
       {/* STATIC/STICKY TOP SECTION */}
@@ -811,7 +816,6 @@ export default function PerpetualInventory() {
                  </div>
              </div>
              
-             {/* Only show Quick Log and Add Item if a specific store is selected, or let Add Item force a store selection */}
              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:flex md:gap-3 w-full xl:w-auto">
                  <button onClick={handleCopyPreviousVillaAssets} className="flex flex-col md:flex-row justify-center items-center gap-1.5 md:gap-2 py-2 md:px-4 bg-white border border-slate-200 text-blue-600 rounded-xl text-[9px] md:text-xs font-bold uppercase tracking-wider hover:bg-blue-50 shadow-sm active:scale-95 transition-all" title="Copy last month's Villa Counts">
                     <Copy size={14} className="md:w-4 md:h-4"/> <span className="text-center">Pull Assets</span>
@@ -1078,7 +1082,16 @@ export default function PerpetualInventory() {
       </div>
 
       {/* --- CAMERA SCANNER FAB (MOBILE ONLY) --- */}
-      <button onClick={() => setIsScannerOpen(true)} className="fixed bottom-24 right-4 md:hidden z-40 bg-[#6D2158] text-white p-3.5 rounded-full shadow-xl shadow-purple-900/30 active:scale-95 transition-all flex items-center justify-center border-[3px] border-white">
+      <button 
+          onClick={() => { 
+              if (activeStore === 'All Stores') {
+                  toast('Please select a specific store at the top before scanning.', {icon: 'ℹ️'});
+              } else {
+                  setIsScannerOpen(true);
+              }
+          }} 
+          className="fixed bottom-24 right-4 md:hidden z-40 bg-[#6D2158] text-white p-3.5 rounded-full shadow-xl shadow-purple-900/30 active:scale-95 transition-all flex items-center justify-center border-[3px] border-white"
+      >
           <Camera size={22} />
       </button>
 
