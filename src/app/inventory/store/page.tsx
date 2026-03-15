@@ -45,6 +45,8 @@ type InventoryRow = {
   category: string;
   unit: string;
   storeName: string;
+  mainStock?: number; // Added for combined view breakdown
+  chemStock?: number; // Added for combined view breakdown
   imageUrl?: string;
   openingStock: number; 
   added: number;
@@ -61,7 +63,7 @@ type InventoryRow = {
   recordId?: string;
 };
 
-type StoreType = 'HK Main Store' | 'HK Chemical Store';
+type StoreType = 'All Stores' | 'HK Main Store' | 'HK Chemical Store';
 
 export default function PerpetualInventory() {
   const [activeView, setActiveView] = useState<'Inventory' | 'Insights'>('Inventory');
@@ -98,7 +100,7 @@ export default function PerpetualInventory() {
   const [keypadValue, setKeypadValue] = useState('');
 
   const [transData, setTransData] = useState({
-    type: 'Count', // 'Count', 'In', 'Consumed', 'Damaged', 'Transferred', 'Villa'
+    type: 'Count', 
     expiry: '',
     rack: '',
     level: '',
@@ -107,12 +109,25 @@ export default function PerpetualInventory() {
 
   const getMonthKey = (d: Date) => format(d, 'yyyy-MM'); 
 
+  // --- GLOBAL ESCAPE KEY LISTENER ---
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+            setIsModalOpen(false);
+            setIsEditModalOpen(false);
+            setIsScannerOpen(false);
+        }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, []);
+
   // --- FETCH DATA ---
   const fetchData = async () => {
     setIsLoading(true);
     const { data: masters, error: masterError } = await supabase.from('hsk_master_catalog')
       .select('article_number, article_name, generic_name, hk_no, category, unit, image_url')
-      .eq('is_minibar_item', false)
+      .neq('is_minibar_item', true) 
       .order('article_name');
       
     if (masterError) toast.error("Error loading master catalog: " + masterError.message);
@@ -150,14 +165,13 @@ export default function PerpetualInventory() {
   }, [currentDate]);
 
 
-  // --- CALCULATE INVENTORY FOR ACTIVE STORE ---
+  // --- CALCULATE INVENTORY (HANDLES MULTIPLE STORES & COMBINED VIEW) ---
   const inventoryRows = useMemo(() => {
     const targetMonthKey = getMonthKey(currentDate);
-    const storeHistory = allHistory.filter(h => h.store_name === activeStore);
     const rows: InventoryRow[] = [];
 
     const historyByMaster = new Map<string, MonthlyRecord[]>();
-    storeHistory.forEach(rec => {
+    allHistory.forEach(rec => {
         if (!historyByMaster.has(rec.article_number)) historyByMaster.set(rec.article_number, []);
         historyByMaster.get(rec.article_number)!.push(rec);
     });
@@ -165,62 +179,124 @@ export default function PerpetualInventory() {
     masterList.forEach(item => {
       const itemHistory = historyByMaster.get(item.article_number) || [];
       const liveVillaQty = liveVillaCounts[item.article_number] || 0;
-      
-      // If it's never been in this store AND nobody counted it in the villas this month, skip it.
-      if (itemHistory.length === 0 && liveVillaQty === 0) return; 
 
-      let opening = 0;
-      let lastKnownRack = '', lastKnownLevel = '', lastKnownExpiry = '';
-      let currentRecord: MonthlyRecord | undefined;
+      // Single Store filtering check
+      if (activeStore !== 'All Stores' && itemHistory.filter(h => h.store_name === activeStore).length === 0) return; 
+      // All stores filtering check
+      if (activeStore === 'All Stores' && itemHistory.length === 0 && liveVillaQty === 0) return;
 
-      itemHistory.forEach(rec => {
-        if (rec.rack) lastKnownRack = rec.rack;
-        if (rec.shelf_level) lastKnownLevel = rec.shelf_level;
-        if (rec.expiry_date) lastKnownExpiry = rec.expiry_date;
+      if (activeStore === 'All Stores') {
+          // --- COMBINED ROW LOGIC ---
+          let opening = 0, added = 0, consumed = 0, damaged = 0, transferred = 0;
+          let villaAssetsManual = 0;
+          let mainStock = 0;
+          let chemStock = 0;
+          let lastKnownRack = '', lastKnownLevel = '';
 
-        if (rec.month_year < targetMonthKey) {
-           const os = Number(rec.opening_stock || 0);
-           const a = Number(rec.added_stock || 0);
-           const c = Number(rec.consumed || 0);
-           const d = Number(rec.damaged || 0);
-           const t = Number(rec.transferred || 0);
-           opening = os + a - c - d - t; 
-        } else if (rec.month_year === targetMonthKey) {
-           currentRecord = rec;
-           if (currentRecord.opening_stock !== undefined && currentRecord.opening_stock !== null) {
-               opening = Number(currentRecord.opening_stock);
-           }
-        }
-      });
+          // Calculate for each store independently to get the accurate breakdown, then combine
+          ['HK Main Store', 'HK Chemical Store'].forEach(store => {
+              const storeRecords = itemHistory.filter(h => h.store_name === store);
+              let sOpening = 0, sAdded = 0, sConsumed = 0, sDamaged = 0, sTransferred = 0;
+              
+              storeRecords.forEach(rec => {
+                  if (rec.rack) lastKnownRack = rec.rack;
+                  if (rec.shelf_level) lastKnownLevel = rec.shelf_level;
 
-      const added = Number(currentRecord?.added_stock || 0);
-      const consumed = Number(currentRecord?.consumed || 0);
-      const damaged = Number(currentRecord?.damaged || 0);
-      const transferred = Number(currentRecord?.transferred || 0);
-      
-      // VILLA ASSET MAGIC: Combine manual saved record with live count data
-      const villaAssets = Math.max(Number(currentRecord?.villa_assets || 0), liveVillaQty);
+                  if (rec.month_year < targetMonthKey) {
+                      sOpening += Number(rec.opening_stock || 0) + Number(rec.added_stock || 0) - Number(rec.consumed || 0) - Number(rec.damaged || 0) - Number(rec.transferred || 0);
+                  } else if (rec.month_year === targetMonthKey) {
+                      if (rec.opening_stock !== undefined && rec.opening_stock !== null) sOpening += Number(rec.opening_stock);
+                      sAdded += Number(rec.added_stock || 0);
+                      sConsumed += Number(rec.consumed || 0);
+                      sDamaged += Number(rec.damaged || 0);
+                      sTransferred += Number(rec.transferred || 0);
+                      villaAssetsManual = Math.max(villaAssetsManual, Number(rec.villa_assets || 0));
+                  }
+              });
+              
+              const sClosing = sOpening + sAdded - sConsumed - sDamaged - sTransferred;
+              if (store === 'HK Main Store') mainStock = sClosing;
+              if (store === 'HK Chemical Store') chemStock = sClosing;
+              
+              opening += sOpening;
+              added += sAdded;
+              consumed += sConsumed;
+              damaged += sDamaged;
+              transferred += sTransferred;
+          });
 
-      const others = damaged + transferred;
-      const closingStock = opening + added - consumed - others;
-      const grandTotal = closingStock + villaAssets;
-      
-      rows.push({
-        articleNumber: item.article_number,
-        articleName: item.article_name,
-        genericName: item.generic_name || '', 
-        hkNo: item.hk_no || '',
-        category: item.category,
-        unit: item.unit,
-        imageUrl: item.image_url,
-        storeName: activeStore,
-        openingStock: opening,
-        added, consumed, damaged, transferred, others, closingStock, villaAssets, grandTotal,
-        rack: currentRecord?.rack || lastKnownRack,
-        level: currentRecord?.shelf_level || lastKnownLevel,
-        expiry: currentRecord?.expiry_date || lastKnownExpiry,
-        recordId: currentRecord?.id
-      });
+          const villaAssets = Math.max(villaAssetsManual, liveVillaQty);
+          const others = damaged + transferred;
+          const closingStock = opening + added - consumed - others;
+          const grandTotal = closingStock + villaAssets;
+
+          rows.push({
+              articleNumber: item.article_number,
+              articleName: item.article_name,
+              genericName: item.generic_name || '', 
+              hkNo: item.hk_no || '',
+              category: item.category,
+              unit: item.unit,
+              imageUrl: item.image_url,
+              storeName: 'Combined',
+              mainStock,
+              chemStock,
+              openingStock: opening,
+              added, consumed, damaged, transferred, others, closingStock, villaAssets, grandTotal,
+              rack: lastKnownRack,
+              level: lastKnownLevel,
+              expiry: '',
+              recordId: undefined // Can't edit a combined row directly
+          });
+
+      } else {
+          // --- SINGLE STORE LOGIC ---
+          const storeRecords = itemHistory.filter(h => h.store_name === activeStore);
+          let opening = 0, added = 0, consumed = 0, damaged = 0, transferred = 0;
+          let lastKnownRack = '', lastKnownLevel = '', lastKnownExpiry = '';
+          let villaAssetsManual = 0;
+          let recordId = undefined;
+
+          storeRecords.forEach(rec => {
+              if (rec.rack) lastKnownRack = rec.rack;
+              if (rec.shelf_level) lastKnownLevel = rec.shelf_level;
+              if (rec.expiry_date) lastKnownExpiry = rec.expiry_date;
+
+              if (rec.month_year < targetMonthKey) {
+                  opening += Number(rec.opening_stock || 0) + Number(rec.added_stock || 0) - Number(rec.consumed || 0) - Number(rec.damaged || 0) - Number(rec.transferred || 0);
+              } else if (rec.month_year === targetMonthKey) {
+                  recordId = rec.id;
+                  if (rec.opening_stock !== undefined && rec.opening_stock !== null) opening += Number(rec.opening_stock);
+                  added += Number(rec.added_stock || 0);
+                  consumed += Number(rec.consumed || 0);
+                  damaged += Number(rec.damaged || 0);
+                  transferred += Number(rec.transferred || 0);
+                  villaAssetsManual = Math.max(villaAssetsManual, Number(rec.villa_assets || 0));
+              }
+          });
+
+          const villaAssets = Math.max(villaAssetsManual, liveVillaQty);
+          const others = damaged + transferred;
+          const closingStock = opening + added - consumed - others;
+          const grandTotal = closingStock + villaAssets;
+
+          rows.push({
+              articleNumber: item.article_number,
+              articleName: item.article_name,
+              genericName: item.generic_name || '', 
+              hkNo: item.hk_no || '',
+              category: item.category,
+              unit: item.unit,
+              imageUrl: item.image_url,
+              storeName: activeStore,
+              openingStock: opening,
+              added, consumed, damaged, transferred, others, closingStock, villaAssets, grandTotal,
+              rack: lastKnownRack,
+              level: lastKnownLevel,
+              expiry: lastKnownExpiry,
+              recordId: recordId
+          });
+      }
     });
     
     return rows.sort((a,b) => {
@@ -248,7 +324,7 @@ export default function PerpetualInventory() {
         if (!match) return false;
         if (modalMode === 'Log') return existingIds.has(m.article_number);
         return true;
-    }).slice(0, 6).map(m => ({
+    }).slice(0, 15).map(m => ({ 
         ...m,
         isAlreadyAdded: modalMode === 'Initialize' ? existingIds.has(m.article_number) : false
     }));
@@ -269,8 +345,10 @@ export default function PerpetualInventory() {
 
   const handleOpenInitialize = () => {
       setModalMode('Initialize');
-      setTransData(prev => ({ ...prev, store: activeStore, rack: '', level: '' }));
+      setTransData(prev => ({ ...prev, store: activeStore === 'All Stores' ? 'HK Main Store' : activeStore, rack: '', level: '' }));
       setKeypadValue('');
+      setArticleSearch('');
+      setSelectedArticle(null);
       setIsModalOpen(true);
   };
 
@@ -280,27 +358,56 @@ export default function PerpetualInventory() {
   };
 
   const handleCodeScanned = (code: string) => {
-      const cleanCode = code.trim().toLowerCase();
-      if (!cleanCode) return;
+      let scannedItemCode = code.trim().toLowerCase();
+      let scannedStoreName: StoreType | null = null;
 
+      // 1. Check if it's a new "Smart QR Code" (e.g., "HK-1001|HK Main Store")
+      if (code.includes('|')) {
+          const parts = code.split('|');
+          scannedItemCode = parts[0].trim().toLowerCase();
+          const rawStore = parts[1].trim();
+          if (rawStore === 'HK Main Store' || rawStore === 'HK Chemical Store') {
+              scannedStoreName = rawStore as StoreType;
+          }
+      }
+
+      if (!scannedItemCode) return;
+
+      // 2. Auto-Switch the app to the correct store if the QR code knows it!
+      if (scannedStoreName) {
+          setActiveStore(scannedStoreName);
+      } else if (activeStore === 'All Stores') {
+          // If it's an old QR code and they are on "All Stores", we have to block it
+          toast.error("Old QR scanned. Please select a specific store at the top first.", { icon: '⚠️' });
+          setScanInput('');
+          return;
+      }
+
+      // Determine which store we are officially logging to
+      const targetStore = scannedStoreName || activeStore;
+
+      // 3. Find the item in the Master List
       const matchedItem = masterList.find(m => 
-          (m.hk_no || '').toLowerCase() === cleanCode || 
-          (m.article_number || '').toLowerCase() === cleanCode
+          (m.hk_no || '').toLowerCase() === scannedItemCode || 
+          (m.article_number || '').toLowerCase() === scannedItemCode
       );
       
       if (matchedItem) {
-          const inCurrentStore = inventoryRows.some(r => r.articleNumber === matchedItem.article_number);
+          // 4. Verify the item actually exists in the target store's inventory
+          const inCurrentStore = inventoryRows.some(r => r.articleNumber === matchedItem.article_number && r.storeName === targetStore);
+          
           if (inCurrentStore) {
               setModalMode('Log');
               handleSelectArticle(matchedItem);
               setIsScannerOpen(false);
               setIsModalOpen(true);
           } else {
-              toast.error(`Found ${matchedItem.generic_name || matchedItem.article_name}, but it is not in ${activeStore} yet.`);
+              toast.error(`Found ${matchedItem.generic_name || matchedItem.article_name}, but it is not in ${targetStore} yet.`);
           }
       } else {
-          toast.error(`Item code "${code}" not found.`);
+          toast.error(`Item code "${scannedItemCode}" not found.`);
       }
+      
       setScanInput('');
   };
 
@@ -348,7 +455,7 @@ export default function PerpetualInventory() {
                 expiry_date: transData.expiry
             });
             if (error) throw error;
-            toast.success(`${selectedArticle.generic_name || selectedArticle.article_name} initialized!`);
+            toast.success(`${selectedArticle.generic_name || selectedArticle.article_name} initialized in ${transData.store}!`);
 
         } else {
             let updatedAdded = Number(existingRow?.added || 0);
@@ -399,7 +506,7 @@ export default function PerpetualInventory() {
               const baseInsert = {
                 month_year: targetMonthKey,
                 article_number: selectedArticle.article_number, 
-                store_name: activeStore,
+                store_name: activeStore === 'All Stores' ? 'HK Main Store' : activeStore,
                 opening_stock: Number(existingRow?.closingStock || 0), 
                 added_stock: updatedAdded,
                 consumed: updatedConsumed,
@@ -415,7 +522,7 @@ export default function PerpetualInventory() {
         }
 
         setIsModalOpen(false);
-        setTransData({ type: 'Count', expiry: '', rack: '', level: '', store: activeStore });
+        setTransData({ type: 'Count', expiry: '', rack: '', level: '', store: activeStore === 'All Stores' ? 'HK Main Store' : activeStore });
         setArticleSearch('');
         setKeypadValue('');
         setSelectedArticle(null);
@@ -454,7 +561,7 @@ export default function PerpetualInventory() {
               const { error } = await supabase.from('hsk_monthly_stock').insert({
                   month_year: getMonthKey(currentDate),
                   article_number: editData.articleNumber,
-                  store_name: activeStore,
+                  store_name: activeStore === 'All Stores' ? 'HK Main Store' : activeStore,
                   opening_stock: Number(editData.openingStock),
                   added_stock: Number(editData.added),
                   consumed: Number(editData.consumed),
@@ -502,7 +609,7 @@ export default function PerpetualInventory() {
       const lastMonthDate = subMonths(currentDate, 1);
       const lastMonthKey = getMonthKey(lastMonthDate);
 
-      const lastMonthRecords = allHistory.filter(h => h.month_year === lastMonthKey && h.store_name === activeStore);
+      const lastMonthRecords = allHistory.filter(h => h.month_year === lastMonthKey && (activeStore === 'All Stores' || h.store_name === activeStore));
       
       if (lastMonthRecords.length === 0) {
           toast.error(`No records found for ${format(lastMonthDate, 'MMMM yyyy')}`);
@@ -516,21 +623,22 @@ export default function PerpetualInventory() {
       for (const oldRec of lastMonthRecords) {
           if (!oldRec.villa_assets || oldRec.villa_assets <= 0) continue;
 
-          const existingThisMonth = inventoryRows.find(r => r.articleNumber === oldRec.article_number);
+          // Find if this item exists in the current month's store (accounting for multiple store rows if we were fetching them separate)
+          const existingThisMonth = allHistory.find(r => r.month_year === currentMonthKey && r.article_number === oldRec.article_number && r.store_name === oldRec.store_name);
           
-          if (existingThisMonth && existingThisMonth.recordId) {
-              await supabase.from('hsk_monthly_stock').update({ villa_assets: oldRec.villa_assets }).eq('id', existingThisMonth.recordId);
+          if (existingThisMonth) {
+              await supabase.from('hsk_monthly_stock').update({ villa_assets: oldRec.villa_assets }).eq('id', existingThisMonth.id);
               updatesCount++;
-          } else if (existingThisMonth) {
+          } else {
               await supabase.from('hsk_monthly_stock').insert({
                   month_year: currentMonthKey,
                   article_number: oldRec.article_number,
-                  store_name: activeStore,
-                  opening_stock: existingThisMonth.closingStock,
+                  store_name: oldRec.store_name, // keep original store alignment
+                  opening_stock: 0,
                   added_stock: 0, consumed: 0, damaged: 0, transferred: 0,
                   villa_assets: oldRec.villa_assets,
-                  rack: existingThisMonth.rack,
-                  shelf_level: existingThisMonth.level
+                  rack: oldRec.rack || '',
+                  shelf_level: oldRec.shelf_level || ''
               });
               insertsCount++;
           }
@@ -540,7 +648,8 @@ export default function PerpetualInventory() {
       fetchData(); 
   };
 
-  const downloadExcel = () => {
+  // EXCELJS EXPORT - Beautifully Designed .xlsx
+  const downloadExcel = async () => {
       const targetData = inventoryRows.filter(r => 
           (activeCategory === 'All' || r.category === activeCategory) &&
           ((r.genericName || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -550,19 +659,80 @@ export default function PerpetualInventory() {
 
       if (targetData.length === 0) return toast.error("No data to export.");
 
-      const headers = ["HK No", "Generic Name", "Article Name", "Article Number", "Category", "Unit", "Location (Rack/Level)", "Opening Stock", "Added In (+)", "Consumed Out (-)", "Spoilage/Transferred (-)", "Closing Store Stock", "Villa / Circulation", "GRAND TOTAL"];
-      const csvRows = targetData.map(r => [
-          `"${r.hkNo || ''}"`, `"${r.genericName || ''}"`, `"${r.articleName || ''}"`, `"${r.articleNumber}"`,
-          `"${r.category}"`, `"${r.unit}"`, `"${(r.rack || '') + '/' + (r.level || '')}"`,
-          r.openingStock, r.added, r.consumed, r.others, r.closingStock, r.villaAssets, r.grandTotal
-      ].join(','));
+      try {
+          const ExcelJS = (await import('exceljs')).default;
+          const workbook = new ExcelJS.Workbook();
+          const worksheet = workbook.addWorksheet('Inventory Report');
 
-      const blob = new Blob([[headers.join(','), ...csvRows].join('\n')], { type: 'text/csv;charset=utf-8;' });
-      const a = document.createElement('a');
-      a.href = window.URL.createObjectURL(blob);
-      a.download = `Inventory_${activeStore.replace(' ', '_')}_${format(currentDate, 'MMM_yyyy')}.csv`;
-      a.click();
-      toast.success("Export Downloaded successfully!");
+          // Headers & Title
+          worksheet.mergeCells('A1', 'O1'); 
+          worksheet.getCell('A1').value = `Perpetual Inventory Report - ${activeStore}`;
+          worksheet.getCell('A1').font = { size: 16, bold: true, color: { argb: 'FF6D2158' } };
+          worksheet.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+
+          worksheet.mergeCells('A2', 'O2');
+          worksheet.getCell('A2').value = `Report Generated for: ${format(currentDate, 'MMMM yyyy')}`;
+          worksheet.getCell('A2').font = { size: 11, italic: true, color: { argb: 'FF666666' } };
+          worksheet.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
+
+          worksheet.addRow([]);
+
+          const headers = ["Store Breakdown", "HK No", "Generic Name", "Article Name", "Item Code", "Category", "Unit", "Location", "Opening", "Added (+)", "Consumed (-)", "Spoilage (-)", "Store Stock", "Villa / Circ.", "GRAND TOTAL"];
+          const headerRow = worksheet.addRow(headers);
+          
+          headerRow.eachCell((cell) => {
+              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6D2158' } };
+              cell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+              cell.alignment = { horizontal: 'center', vertical: 'middle' };
+              cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          });
+
+          targetData.forEach(r => {
+              const storeDisplayStr = activeStore === 'All Stores' ? `Main: ${r.mainStock} | Chem: ${r.chemStock}` : r.storeName;
+
+              const row = worksheet.addRow([
+                  storeDisplayStr, r.hkNo || '', r.genericName || '', r.articleName || '', r.articleNumber || '', 
+                  r.category || '', r.unit || '', `${r.rack || ''}/${r.level || ''}`, 
+                  r.openingStock, r.added, r.consumed, r.others, r.closingStock, r.villaAssets, r.grandTotal
+              ]);
+
+              row.eachCell((cell, colNumber) => {
+                  cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+                  cell.alignment = { vertical: 'middle', horizontal: colNumber >= 9 ? 'right' : 'left' };
+                  
+                  if (colNumber >= 9) cell.numFmt = '#,##0'; // Numbers
+                  if (colNumber === 10) cell.font = { color: { argb: 'FF059669' } }; 
+                  if (colNumber === 11) cell.font = { color: { argb: 'FFE11D48' } }; 
+                  if (colNumber === 12) cell.font = { color: { argb: 'FFD97706' } }; 
+                  if (colNumber === 13) cell.font = { bold: true, color: { argb: 'FF4F46E5' } }; 
+                  if (colNumber === 14) cell.font = { bold: true, color: { argb: 'FF2563EB' } }; 
+                  if (colNumber === 15) { 
+                      cell.font = { bold: true, color: { argb: 'FF6D2158' } };
+                      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDF2F8' } };
+                  }
+              });
+          });
+
+          worksheet.columns.forEach((col, i) => {
+              if (i === 1 || i === 2 || i === 3) col.width = 25; // Store, HK No, Names
+              else if (i === 4 || i === 5 || i === 7) col.width = 15;
+              else col.width = 12;
+          });
+
+          const buffer = await workbook.xlsx.writeBuffer();
+          const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Inventory_${activeStore.replace(/ /g, '_')}_${format(currentDate, 'MMM_yyyy')}.xlsx`;
+          a.click();
+          window.URL.revokeObjectURL(url);
+          
+          toast.success("Excel Report Downloaded successfully!");
+      } catch (error) {
+          console.error(error);
+          toast.error("Failed to export. Please run: npm install exceljs");
+      }
   };
 
   const filteredRows = inventoryRows.filter(r => 
@@ -610,7 +780,7 @@ export default function PerpetualInventory() {
 
           <div className="flex w-full md:w-auto gap-2">
               <button onClick={downloadExcel} className="hidden md:flex px-5 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl text-xs font-bold uppercase tracking-wide items-center gap-2 shadow-sm hover:bg-emerald-100 transition-colors">
-                  <Download size={16}/> Export
+                  <Download size={16}/> Export Excel
               </button>
               <div className="flex bg-white rounded-xl shadow-sm border border-slate-200 p-1 w-full md:w-auto">
                  <button onClick={() => setActiveView('Inventory')} className={`flex-1 md:flex-none justify-center px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wide flex items-center gap-2 transition-colors ${activeView === 'Inventory' ? 'bg-[#6D2158] text-white shadow-md' : 'text-slate-400 hover:text-[#6D2158]'}`}><FileText size={14}/> Log</button>
@@ -622,16 +792,16 @@ export default function PerpetualInventory() {
         {activeView === 'Inventory' && (
         <div>
           {/* CONTROLS */}
-          <div className="mt-3 flex flex-col md:flex-row justify-between items-center gap-3">
-             <div className="flex flex-row gap-2 w-full md:w-auto">
-                 <div className="bg-white p-1 rounded-xl border border-slate-200 flex items-center justify-between flex-1 md:w-64 shadow-sm">
-                    {['HK Main Store', 'HK Chemical Store'].map(s => (
-                        <button key={s} onClick={() => setActiveStore(s as StoreType)} className={`flex-1 py-2 rounded-lg text-[9px] md:text-xs font-bold uppercase transition-colors ${activeStore === s ? 'bg-slate-100 text-[#6D2158] shadow-sm' : 'text-slate-400 hover:bg-slate-50'}`}>
+          <div className="mt-3 flex flex-col xl:flex-row justify-between items-center gap-3">
+             <div className="flex flex-col md:flex-row gap-2 w-full xl:w-auto">
+                 <div className="bg-white p-1 rounded-xl border border-slate-200 flex items-center justify-between flex-1 xl:w-[420px] shadow-sm overflow-x-auto no-scrollbar">
+                    {['All Stores', 'HK Main Store', 'HK Chemical Store'].map(s => (
+                        <button key={s} onClick={() => setActiveStore(s as StoreType)} className={`flex-1 py-2 px-3 whitespace-nowrap rounded-lg text-[9px] md:text-xs font-bold uppercase transition-colors ${activeStore === s ? 'bg-slate-100 text-[#6D2158] shadow-sm' : 'text-slate-400 hover:bg-slate-50'}`}>
                           {s.replace('HK ', '')}
                         </button>
                     ))}
                  </div>
-                 <div className="bg-[#6D2158] text-white p-1.5 rounded-xl flex items-center justify-between shadow-sm flex-1 md:w-64">
+                 <div className="bg-[#6D2158] text-white p-1.5 rounded-xl flex items-center justify-between shadow-sm flex-1 xl:w-64 shrink-0">
                     <button onClick={() => { const d = new Date(currentDate); d.setMonth(d.getMonth()-1); setCurrentDate(d); }} className="p-2 hover:bg-white/10 rounded-lg transition-colors active:scale-95"><ArrowLeft size={16}/></button>
                     <div className="text-center leading-tight">
                        <span className="block text-[8px] md:text-[9px] font-bold uppercase tracking-widest text-white/70">Viewing</span>
@@ -641,16 +811,19 @@ export default function PerpetualInventory() {
                  </div>
              </div>
              
-             <div className="grid grid-cols-3 gap-2 md:flex md:gap-3 w-full md:w-auto">
+             {/* Only show Quick Log and Add Item if a specific store is selected, or let Add Item force a store selection */}
+             <div className="grid grid-cols-2 md:grid-cols-3 gap-2 md:flex md:gap-3 w-full xl:w-auto">
                  <button onClick={handleCopyPreviousVillaAssets} className="flex flex-col md:flex-row justify-center items-center gap-1.5 md:gap-2 py-2 md:px-4 bg-white border border-slate-200 text-blue-600 rounded-xl text-[9px] md:text-xs font-bold uppercase tracking-wider hover:bg-blue-50 shadow-sm active:scale-95 transition-all" title="Copy last month's Villa Counts">
                     <Copy size={14} className="md:w-4 md:h-4"/> <span className="text-center">Pull Assets</span>
                  </button>
                  <button onClick={handleOpenInitialize} className="flex flex-col md:flex-row justify-center items-center gap-1.5 md:gap-2 py-2 md:px-4 bg-white border border-slate-200 text-[#6D2158] rounded-xl text-[9px] md:text-xs font-bold uppercase tracking-wider hover:bg-slate-50 shadow-sm active:scale-95 transition-all">
                     <PackagePlus size={14} className="md:w-4 md:h-4"/> <span className="text-center">Add Item</span>
                  </button>
-                 <button onClick={() => { setModalMode('Log'); setIsModalOpen(true); }} className="flex flex-col md:flex-row justify-center items-center gap-1.5 md:gap-2 py-2 md:px-5 bg-[#6D2158] text-white rounded-xl text-[9px] md:text-xs font-bold uppercase tracking-wider shadow-md active:scale-95 transition-all">
-                    <ArrowDownUp size={14} className="md:w-4 md:h-4"/> <span className="text-center">Quick Log</span>
-                 </button>
+                 {activeStore !== 'All Stores' && (
+                     <button onClick={() => { setModalMode('Log'); setIsModalOpen(true); }} className="col-span-2 md:col-span-1 flex flex-col md:flex-row justify-center items-center gap-1.5 md:gap-2 py-2 md:px-5 bg-[#6D2158] text-white rounded-xl text-[9px] md:text-xs font-bold uppercase tracking-wider shadow-md active:scale-95 transition-all">
+                        <ArrowDownUp size={14} className="md:w-4 md:h-4"/> <span className="text-center">Quick Log</span>
+                     </button>
+                 )}
              </div>
           </div>
 
@@ -690,7 +863,7 @@ export default function PerpetualInventory() {
       <div className="flex-1 px-0 md:px-6 pt-2 overflow-hidden flex flex-col">
         {activeView === 'Inventory' && (
           <>
-            {/* DESKTOP TABLE VIEW (Fits nicely without scrolling out of frame) */}
+            {/* DESKTOP TABLE VIEW */}
             <div className="hidden md:flex flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden relative w-full flex-col">
                <div className="flex-1 overflow-auto custom-scrollbar w-full">
                  <table className="w-full text-left border-collapse relative table-auto">
@@ -698,6 +871,7 @@ export default function PerpetualInventory() {
                        <tr>
                           <th className="px-3 py-4 w-14 text-center border-b border-slate-200">Pic</th>
                           <th className="px-3 py-4 border-b border-slate-200">Article Details</th>
+                          {activeStore === 'All Stores' && <th className="px-3 py-4 border-b border-slate-200 w-32">Store</th>}
                           <th className="px-3 py-4 border-b border-slate-200 w-24">Location</th>
                           <th className="px-3 py-4 text-center border-b border-slate-200 w-20">Opening</th>
                           <th className="px-3 py-4 text-center text-emerald-600 border-b border-slate-200 w-20">Added (+)</th>
@@ -710,9 +884,9 @@ export default function PerpetualInventory() {
                        </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                       {isLoading ? (<tr><td colSpan={11} className="p-10 text-center"><Loader2 className="animate-spin text-[#6D2158] mx-auto" size={28}/></td></tr>) : 
+                       {isLoading ? (<tr><td colSpan={12} className="p-10 text-center"><Loader2 className="animate-spin text-[#6D2158] mx-auto" size={28}/></td></tr>) : 
                        filteredRows.map(row => (
-                         <tr key={row.articleNumber} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); }}>
+                         <tr key={row.articleNumber} className="hover:bg-slate-50 transition-colors group cursor-pointer" onClick={() => { if (activeStore !== 'All Stores') { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); } else { toast('Please select a specific store to log items.', {icon: 'ℹ️'}); } }}>
                             <td className="px-3 py-3 align-middle">
                                 <div className="w-10 h-10 bg-white rounded-xl border border-slate-200 flex items-center justify-center overflow-hidden shrink-0 mx-auto shadow-sm">
                                     {row.imageUrl ? <img src={row.imageUrl} className="w-full h-full object-cover"/> : <ImageIcon size={18} className="text-slate-300"/>}
@@ -727,6 +901,14 @@ export default function PerpetualInventory() {
                                    </div>
                                </div>
                             </td>
+                            {activeStore === 'All Stores' && (
+                                <td className="px-3 py-3 align-middle">
+                                    <div className="flex flex-col gap-1">
+                                        <span className="text-[9px] font-black uppercase text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 whitespace-nowrap w-fit">Main: {row.mainStock}</span>
+                                        <span className="text-[9px] font-black uppercase text-purple-600 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-100 whitespace-nowrap w-fit">Chem: {row.chemStock}</span>
+                                    </div>
+                                </td>
+                            )}
                             <td className="px-3 py-3 align-middle">
                                {(row.rack || row.level) ? (
                                   <div className="flex items-center gap-1 text-[9px] uppercase tracking-widest font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-1 rounded-md w-fit whitespace-nowrap"><MapPin size={10}/> {row.rack || '-'}/{row.level || '-'}</div>
@@ -741,12 +923,12 @@ export default function PerpetualInventory() {
                             <td className="px-3 py-3 text-center align-middle bg-[#6D2158]/5 border-l border-white whitespace-nowrap"><span className="inline-block px-3 py-1 bg-[#6D2158] text-white rounded-xl font-black text-base shadow-sm">{row.grandTotal}</span></td>
                             <td className="px-3 py-3 text-right align-middle">
                                <div className="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                                   <button onClick={(e) => handleOpenEdit(e, row)} className="p-2 text-slate-300 hover:bg-blue-50 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button>
+                                   <button onClick={(e) => { if (activeStore !== 'All Stores') { handleOpenEdit(e, row); } else { e.stopPropagation(); toast('Select a specific store to edit items.'); } }} className="p-2 text-slate-300 hover:bg-blue-50 hover:text-blue-600 rounded-lg"><Edit3 size={16}/></button>
                                </div>
                             </td>
                          </tr>
                        ))}
-                       {!isLoading && filteredRows.length === 0 && (<tr><td colSpan={11} className="p-10 text-center text-slate-400 italic font-bold">No items found.</td></tr>)}
+                       {!isLoading && filteredRows.length === 0 && (<tr><td colSpan={12} className="p-10 text-center text-slate-400 italic font-bold">No items found.</td></tr>)}
                     </tbody>
                  </table>
                </div>
@@ -758,7 +940,7 @@ export default function PerpetualInventory() {
                 filteredRows.map(row => (
                     <div 
                         key={row.articleNumber} 
-                        onClick={() => { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); }}
+                        onClick={() => { if (activeStore !== 'All Stores') { handleSelectArticle(masterList.find(m => m.article_number === row.articleNumber)!); setModalMode('Log'); setIsModalOpen(true); } else { toast('Select a store to log', {icon:'ℹ️'}); } }}
                         className="p-4 border-b border-slate-100 bg-white flex flex-col gap-3 active:bg-slate-50 transition-colors cursor-pointer"
                     >
                         <div className="flex justify-between items-start gap-3">
@@ -775,9 +957,16 @@ export default function PerpetualInventory() {
                                     )}
                                 </div>
                                 <h4 className="text-sm font-black text-slate-800 leading-tight truncate">{row.genericName || row.articleName || 'Unnamed Item'}</h4>
+                                
+                                {activeStore === 'All Stores' && (
+                                    <div className="flex items-center gap-2 mt-1.5">
+                                        <span className="text-[9px] text-indigo-600 font-bold uppercase tracking-widest bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">Main: {row.mainStock}</span>
+                                        <span className="text-[9px] text-purple-600 font-bold uppercase tracking-widest bg-purple-50 px-1.5 py-0.5 rounded border border-purple-100">Chem: {row.chemStock}</span>
+                                    </div>
+                                )}
                             </div>
                             <div className="flex flex-col gap-2 shrink-0">
-                                <button onClick={(e) => handleOpenEdit(e, row)} className="p-1.5 text-slate-400 hover:text-blue-500 bg-slate-50 rounded-full active:scale-95 transition-all border border-slate-100"><Edit3 size={14}/></button>
+                                <button onClick={(e) => { if(activeStore !== 'All Stores') handleOpenEdit(e, row); else { e.stopPropagation(); toast('Select store to edit'); } }} className="p-1.5 text-slate-400 hover:text-blue-500 bg-slate-50 rounded-full active:scale-95 transition-all border border-slate-100"><Edit3 size={14}/></button>
                             </div>
                         </div>
 
@@ -935,10 +1124,11 @@ export default function PerpetualInventory() {
           </div>
       )}
 
-      {/* --- SMART LOGGING MODAL WITH TIGHTER VERTICAL SPACING --- */}
+      {/* --- SMART LOGGING MODAL WITH PADDING FIX FOR DROPDOWNS --- */}
       {isModalOpen && (
         <div className="fixed inset-x-0 bottom-0 md:inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-end md:items-center justify-center md:p-4 animate-in fade-in duration-200">
-           <div className="bg-white w-full max-w-lg rounded-t-[2.5rem] md:rounded-[2.5rem] shadow-2xl p-5 md:p-6 max-h-[90vh] overflow-y-auto relative animate-in slide-in-from-bottom-8 md:zoom-in-95 pb-10 md:pb-6 custom-scrollbar">
+           {/* FIX: Removed overflow-y-auto to stop clipping, replaced with pb-32 to allow dropdown to display over empty space */}
+           <div className="bg-white w-full max-w-lg rounded-t-[2.5rem] md:rounded-[2.5rem] shadow-2xl p-5 md:p-6 relative animate-in slide-in-from-bottom-8 md:zoom-in-95 pb-32 md:pb-12">
               
               <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-4 md:hidden"></div>
               <button onClick={() => setIsModalOpen(false)} className="absolute top-5 right-5 text-slate-400 hover:text-rose-500 bg-slate-100 p-2 rounded-full transition-colors"><X size={18}/></button>
@@ -998,8 +1188,9 @@ export default function PerpetualInventory() {
                         </div>
                     )}
 
+                    {/* FIX: Improved dropdown menu absolute position so it doesn't get cut off */}
                     {showSuggestions && articleSearch.length > 0 && (
-                      <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-2xl shadow-2xl mt-2 max-h-56 overflow-y-auto custom-scrollbar">
+                      <div className="absolute z-50 w-full bg-white border border-slate-200 rounded-2xl shadow-2xl mt-2 max-h-64 overflow-y-auto custom-scrollbar">
                          {filteredSuggestions.map(item => (
                             <div key={item.article_number} onClick={() => !item.isAlreadyAdded && handleSelectArticle(item)} className={`p-3 border-b border-slate-50 last:border-0 transition-colors flex items-center gap-3 ${item.isAlreadyAdded ? 'bg-slate-50 cursor-not-allowed opacity-50' : 'hover:bg-purple-50 cursor-pointer group'}`}>
                                {item.image_url ? <img src={item.image_url} className={`w-10 h-10 rounded-xl object-cover border border-slate-100 ${item.isAlreadyAdded ? 'grayscale' : ''}`}/> : <div className="w-10 h-10 rounded-xl bg-slate-100 flex shrink-0"></div>}
@@ -1096,7 +1287,7 @@ export default function PerpetualInventory() {
                             className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-[13px] md:text-sm shadow-md hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:active:scale-100 disabled:shadow-none"
                         >
                             {isSaving ? <Loader2 size={16} className="animate-spin"/> : <CheckCircle2 size={16}/>}
-                            {modalMode === 'Initialize' ? 'Save to Store' : 'Commit to Ledger'}
+                            {modalMode === 'Initialize' ? `Save to ${transData.store}` : 'Commit to Ledger'}
                         </button>
                      </div>
                  </div>
