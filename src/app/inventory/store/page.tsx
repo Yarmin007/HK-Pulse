@@ -122,27 +122,54 @@ export default function PerpetualInventory() {
     return () => window.removeEventListener('keydown', handleEsc);
   }, []);
 
-  // --- FETCH DATA ---
+  // --- FETCH DATA (UPDATED WITH 1000 ROW BYPASS) ---
   const fetchData = async () => {
     setIsLoading(true);
-    const { data: masters, error: masterError } = await supabase.from('hsk_master_catalog')
-      .select('article_number, article_name, generic_name, hk_no, category, unit, image_url')
-      .neq('is_minibar_item', true) 
-      .order('article_name');
-      
-    if (masterError) toast.error("Error loading master catalog: " + masterError.message);
-    if (masters) setMasterList(masters as MasterItem[]);
+    try {
+        const { data: masters, error: masterError } = await supabase.from('hsk_master_catalog')
+          .select('article_number, article_name, generic_name, hk_no, category, unit, image_url')
+          .neq('is_minibar_item', true) 
+          .order('article_name');
+          
+        if (masterError) toast.error("Error loading master catalog: " + masterError.message);
+        if (masters) setMasterList(masters as MasterItem[]);
 
-    const { data: history, error: historyError } = await supabase.from('hsk_monthly_stock').select('*');
-    if (historyError) toast.error("Error loading history: " + historyError.message);
-    if (history) setAllHistory(history as MonthlyRecord[]);
-    
-    setIsLoading(false);
+        // Pagination loop to bypass 1000 row limit for monthly stock
+        let allStock: MonthlyRecord[] = [];
+        let from = 0;
+        const step = 1000;
+        let hasMore = true;
+        
+        while (hasMore) {
+            const { data: historyChunk, error: historyError } = await supabase
+                .from('hsk_monthly_stock')
+                .select('*')
+                .range(from, from + step - 1);
+                
+            if (historyError) {
+                toast.error("Error loading history: " + historyError.message);
+                break;
+            }
+            
+            if (historyChunk) {
+                allStock.push(...(historyChunk as MonthlyRecord[]));
+                if (historyChunk.length < step) hasMore = false;
+                else from += step;
+            } else {
+                hasMore = false;
+            }
+        }
+        setAllHistory(allStock);
+    } catch (err: any) {
+        console.error(err);
+    } finally {
+        setIsLoading(false);
+    }
   };
 
   useEffect(() => { fetchData(); }, []);
 
-  // --- FETCH LIVE VILLA COUNTS WHENEVER MONTH CHANGES ---
+  // --- FETCH LIVE VILLA COUNTS (UPDATED WITH 1000 ROW BYPASS) ---
   useEffect(() => {
       const fetchLiveCounts = async () => {
           const monthKey = getMonthKey(currentDate);
@@ -151,13 +178,37 @@ export default function PerpetualInventory() {
           let counts: Record<string, number> = {};
           if (schedules && schedules.length > 0) {
               const scheduleIds = schedules.map(s => s.id);
-              const { data: records } = await supabase.from('hsk_inventory_records').select('article_number, counted_qty').in('schedule_id', scheduleIds);
               
-              if (records) {
-                  records.forEach(r => {
-                      counts[r.article_number] = (counts[r.article_number] || 0) + (r.counted_qty || 0);
-                  });
+              // Pagination loop to bypass 1000 row limit for inventory records
+              let allRecords: any[] = [];
+              let from = 0;
+              const step = 1000;
+              let hasMore = true;
+              
+              while (hasMore) {
+                  const { data: recordsChunk, error } = await supabase
+                      .from('hsk_inventory_records')
+                      .select('article_number, counted_qty')
+                      .in('schedule_id', scheduleIds)
+                      .range(from, from + step - 1);
+                      
+                  if (error) {
+                      console.error("Error fetching villa records", error);
+                      break;
+                  }
+                  
+                  if (recordsChunk) {
+                      allRecords.push(...recordsChunk);
+                      if (recordsChunk.length < step) hasMore = false;
+                      else from += step;
+                  } else {
+                      hasMore = false;
+                  }
               }
+              
+              allRecords.forEach(r => {
+                  counts[r.article_number] = (counts[r.article_number] || 0) + (r.counted_qty || 0);
+              });
           }
           setLiveVillaCounts(counts);
       };
@@ -183,13 +234,10 @@ export default function PerpetualInventory() {
       const storesSet = new Set<string>();
       itemHistory.forEach(h => storesSet.add(h.store_name));
 
-      // FIX: If the item was counted in a villa but has no store history, default it to HK Main Store 
-      // so it is visible in the list and can be clicked on to initialize/log properly.
       if (storesSet.size === 0 && liveVillaQty > 0) {
           storesSet.add('HK Main Store');
       }
 
-      // Filter out items that don't belong to the currently selected tab
       if (activeStore !== 'All Stores' && !storesSet.has(activeStore)) return; 
       if (activeStore === 'All Stores' && storesSet.size === 0) return;
 
@@ -320,8 +368,6 @@ export default function PerpetualInventory() {
     if (!articleSearch) return [];
     const lower = articleSearch.toLowerCase();
     
-    // FIX: To prevent items saying "Added" unnecessarily, we check if the item 
-    // actually exists in the SPECIFIC store selected in the dropdown.
     const existingIdsInSelectedStore = new Set(
         allHistory
             .filter(h => h.store_name === transData.store)
@@ -368,12 +414,10 @@ export default function PerpetualInventory() {
       setIsModalOpen(true);
   };
 
-  // SMART SCANNER LOGIC (Reads Normal and Pipeline '|' QR Codes)
   const handleCodeScanned = (code: string) => {
       let scannedItemCode = code.trim().toLowerCase();
       let scannedStoreName: StoreType | null = null;
 
-      // Check if it's a new "Smart QR Code" (e.g., "HK-1001|HK Main Store")
       if (code.includes('|')) {
           const parts = code.split('|');
           scannedItemCode = parts[0].trim().toLowerCase();
@@ -385,11 +429,9 @@ export default function PerpetualInventory() {
 
       if (!scannedItemCode) return;
 
-      // Auto-Switch the app to the correct store if the QR code knows it!
       if (scannedStoreName) {
           setActiveStore(scannedStoreName);
       } else if (activeStore === 'All Stores') {
-          // If it's an old QR code and they are on "All Stores", we have to block it
           toast.error("Old QR scanned. Please select a specific store at the top first.", { icon: '⚠️' });
           setScanInput('');
           setIsScannerOpen(false);
@@ -522,7 +564,7 @@ export default function PerpetualInventory() {
                 consumed: updatedConsumed,
                 damaged: updatedDamaged,
                 transferred: updatedTransferred,
-                villa_assets: updatedVillaAssets, // Captures ghost villa assets!
+                villa_assets: updatedVillaAssets, 
                 rack: existingRow?.rack || '',
                 shelf_level: existingRow?.level || '',
               };
