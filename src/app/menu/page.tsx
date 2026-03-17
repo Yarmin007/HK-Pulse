@@ -6,7 +6,7 @@ import {
   ShoppingCart, ListChecks, Droplets, Calendar, Wine, Box, Zap, 
   UtensilsCrossed, ChevronRight, Briefcase, Contact, UserCheck, Clock, 
   RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, ShieldAlert,
-  User as UserIcon
+  User as UserIcon, Map, Wind
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -59,10 +59,15 @@ export default function MobileMenu() {
     const isAdmin = userRole === 'admin';
 
     // Data mapped directly from your sidebar structure
+    const ALLOCATION_ITEMS = [
+        { name: "Guest List", icon: Users, path: "/guests" },
+        { name: "Allocations", icon: ListChecks, path: "/allocation" },
+        { name: "Allocation Sheet", icon: Map, path: "/allocation/sheet" },
+    ];
     const INVENTORY_ITEMS = [
         { name: "Live Matrix", icon: FileSpreadsheet, path: "/inventory/matrix" },
         { name: "Monthly Setup", icon: ClipboardCheck, path: "/inventory/setup" },
-        { name: "Store Inventory", icon: Warehouse, path: "/inventory/store" },
+        { name: "Housekeeping Store", icon: Warehouse, path: "/inventory/store" },
     ];
     const TEAM_ITEMS = [
         { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, 
@@ -79,9 +84,8 @@ export default function MobileMenu() {
         { name: "Finance P&L", icon: UtensilsCrossed, path: "/minibar/finance" },
     ];
     const OPS_ITEMS = [
-        { name: "Guest List", icon: Users, path: "/guests" },
-        { name: "Allocation", icon: ListChecks, path: "/allocation" },
         { name: "Water Production", icon: Droplets, path: "/water" },
+        { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
         { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
         { name: "Print Hub", icon: Printer, path: "/print" },
     ];
@@ -94,7 +98,8 @@ export default function MobileMenu() {
     const STAFF_OPS = [
         { name: "My Schedule", icon: Calendar, path: "/schedule" },
         { name: "Guest List", icon: Users, path: "/guests" },
-        { name: "Allocation", icon: ListChecks, path: "/allocation" },
+        { name: "Allocations", icon: ListChecks, path: "/allocation" },
+        { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
     ];
 
     return (
@@ -122,6 +127,16 @@ export default function MobileMenu() {
             <div className="px-4 space-y-6">
                 {isAdmin ? (
                     <>
+                        {/* ALLOCATION HUB */}
+                        <div>
+                            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2 mb-2">Allocation Hub</h3>
+                            <div className="bg-white rounded-[1.5rem] overflow-hidden shadow-sm border border-slate-200">
+                                {ALLOCATION_ITEMS.map((item, idx) => (
+                                    <MenuLink key={item.path} item={item} isLast={idx === ALLOCATION_ITEMS.length - 1} bgColor="bg-[#6D2158]/10" iconColor="text-[#6D2158]"/>
+                                ))}
+                            </div>
+                        </div>
+
                         {/* INVENTORY */}
                         <div>
                             <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-2 mb-2">Inventory</h3>

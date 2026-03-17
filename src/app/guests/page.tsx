@@ -2,10 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Edit3, X, ChevronLeft, ChevronRight,
-  FileSpreadsheet, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock
+  FileSpreadsheet, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock,
+  Shirt
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
 
 const TOTAL_VILLAS = 97;
@@ -78,6 +78,17 @@ const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any
   return final;
 };
 
+// --- GUEST TRACKING & ALLOCATION ENGINE ---
+const cleanNameForMatch = (n: string) => n.toLowerCase().replace(/\b(mr|ms|mrs|miss|mstr|alfaalil|alfaalila|kokko|yrs)\b/g, '').replace(/[^a-z]/g, '');
+
+const isSameGuest = (n1: string, n2: string) => {
+    if (!n1 || !n2) return false;
+    const c1 = cleanNameForMatch(n1);
+    const c2 = cleanNameForMatch(n2);
+    if (c1.length < 5 || c2.length < 5) return false;
+    return c1.includes(c2.substring(0, 10)) || c2.includes(c1.substring(0, 10));
+};
+
 type GuestRecord = {
   id?: string;
   report_date: string;
@@ -103,6 +114,7 @@ type ChangeLog = {
     newGuest: string;
     oldStatus: string;
     newStatus: string;
+    isMemoEdit?: boolean;
 };
 
 export default function HousekeepingSummaryPage() {
@@ -125,13 +137,12 @@ export default function HousekeepingSummaryPage() {
   const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
   const [moveData, setMoveData] = useState({ from: '', to: '', type: 'VM/OCC' });
 
-  const updateSyncTime = () => {
-      const dhakaTime = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' });
-      setLastSyncTime(dhakaTime);
-  };
+  const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
+  const [pastedText, setPastedText] = useState('');
+  
+  const [isSarongModalOpen, setIsSarongModalOpen] = useState(false);
 
   useEffect(() => {
-    // Check Auth
     const sessionData = localStorage.getItem('hk_pulse_session');
     if (sessionData) {
         const parsed = JSON.parse(sessionData);
@@ -178,7 +189,22 @@ export default function HousekeepingSummaryPage() {
     }
     fullList.sort((a, b) => parseInt(a.villa_number) - parseInt(b.villa_number));
     setMasterList(fullList);
-    updateSyncTime();
+
+    if (dbRecords && dbRecords.length > 0) {
+        let maxTime = 0;
+        for (const r of dbRecords) {
+            const t = new Date(r.updated_at || r.created_at || 0).getTime();
+            if (t > maxTime) maxTime = t;
+        }
+        if (maxTime > 0) {
+            setLastSyncTime(new Date(maxTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' }));
+        } else {
+            setLastSyncTime('');
+        }
+    } else {
+        setLastSyncTime('');
+    }
+
     if (showLoading) setIsProcessing(false);
   };
 
@@ -221,6 +247,10 @@ export default function HousekeepingSummaryPage() {
       setDiffModalOpen(false);
       setIsProcessing(false);
       toast.success("Summary synchronized successfully.");
+  };
+
+  const updatePendingRecord = (villa: string, field: keyof GuestRecord, value: string) => {
+      setPendingData(prev => prev.map(p => p.villa_number === villa ? { ...p, [field]: value } : p));
   };
 
   const handleManualMove = async () => {
@@ -266,12 +296,24 @@ export default function HousekeepingSummaryPage() {
       toast.success(`Moved Guest from ${moveData.from} to ${moveData.to}`);
   };
 
-  const handleFileProcess = (e: React.ChangeEvent<HTMLInputElement>, type: 'ARRDEP_XML' | 'OPERATIONAL_MEMO' | 'OCC') => {
+  const handlePasteSubmit = () => {
+      if (!pastedText.trim()) {
+          toast.error("Please paste some data first.");
+          return;
+      }
+      setIsProcessing(true);
+      setIsPasteModalOpen(false);
+      
+      const rows = pastedText.split('\n').map(row => row.split('\t'));
+      processOperationalMemo(rows);
+      setPastedText(''); 
+  };
+
+  const handleFileProcess = (e: React.ChangeEvent<HTMLInputElement>, type: 'ARRDEP_XML' | 'OCC') => {
       const file = e.target.files?.[0];
       if (!file) return;
       setIsProcessing(true);
 
-      const fileName = file.name.toLowerCase();
       const reader = new FileReader();
 
       reader.onload = (evt) => {
@@ -282,18 +324,6 @@ export default function HousekeepingSummaryPage() {
                   processOCCXML(data);
               } else if (type === 'ARRDEP_XML') {
                   processArrDepXML(data);
-              } else if (type === 'OPERATIONAL_MEMO') {
-                  if (fileName.endsWith('.xml') && data.includes('<?mso-application progid="Excel.Sheet"?>')) {
-                      const wb = XLSX.read(data, { type: 'string' });
-                      const ws = wb.Sheets[wb.SheetNames[0]];
-                      const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
-                      processOperationalMemo(rows);
-                  } else {
-                      const wb = XLSX.read(data, { type: 'binary' });
-                      const ws = wb.Sheets[wb.SheetNames[0]];
-                      const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
-                      processOperationalMemo(rows);
-                  }
               }
           } catch (err) {
               alert("Error parsing the file. Please ensure it is the correct export format.");
@@ -303,10 +333,8 @@ export default function HousekeepingSummaryPage() {
           setFileInputKey(prev => prev + 1);
       };
 
-      if (type === 'OCC' || type === 'ARRDEP_XML' || (type === 'OPERATIONAL_MEMO' && fileName.endsWith('.xml'))) {
+      if (type === 'OCC' || type === 'ARRDEP_XML') {
           reader.readAsText(file);
-      } else {
-          reader.readAsBinaryString(file);
       }
   };
 
@@ -327,11 +355,12 @@ export default function HousekeepingSummaryPage() {
           }
       });
 
+      const newOccList: any[] = [];
+
       for (const [villa, resList] of Object.entries(resByVilla)) {
           const cleanVilla = normalizeVilla(villa);
           if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
           
-          const record = currentMap.get(cleanVilla)!;
           let totalAdults = 0; let totalKids = 0;
           let names: string[] = []; let mealPlan = 'RO'; let gemName = '';
           let arrDate = ''; let depDate = '';
@@ -354,8 +383,7 @@ export default function HousekeepingSummaryPage() {
               if (!depDate) depDate = res.querySelector('C87')?.textContent || '';
           });
 
-          let stayDates = '';
-          let stayId = '';
+          let stayDates = ''; let stayId = '';
           if (arrDate && depDate) {
               const aParts = arrDate.split('-'); const dParts = depDate.split('-');
               if (aParts.length === 3 && dParts.length === 3) {
@@ -366,35 +394,95 @@ export default function HousekeepingSummaryPage() {
               }
           }
 
-          const oldStatus = record.status;
-          if (!oldStatus.includes('ARR') && !oldStatus.includes('DEP')) {
-              record.status = 'OCC';
-          }
-          
-          record.guest_name = names.join(' & ');
-          record.pax_adults = totalAdults;
-          record.pax_kids = totalKids;
-          record.meal_plan = mealPlan;
-          record.stay_dates = stayDates;
-          record.gem_name = gemName;
-          record.stay_id = stayId;
-
-          diffs.push({
-              villa: cleanVilla, type: 'SYNC',
-              oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-              newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+          newOccList.push({
+              villa: cleanVilla,
+              names: names.join(' & '),
+              adults: totalAdults,
+              kids: totalKids,
+              mealPlan: mealPlan,
+              gemName: gemName,
+              stayDates: stayDates,
+              stayId: stayId
           });
       }
 
-      currentMap.forEach((rec, vNum) => {
-          if (!resByVilla[vNum] && !resByVilla[vNum.padStart(2, '0')] && rec.status === 'OCC') {
+      newOccList.forEach(newOcc => {
+          const record = currentMap.get(newOcc.villa)!;
+          let oldVillaMatch: GuestRecord | null = null;
+
+          if (!isSameGuest(record.guest_name, newOcc.names)) {
+              for (const [vNum, rec] of currentMap.entries()) {
+                  if (vNum !== newOcc.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
+                      if (isSameGuest(rec.guest_name, newOcc.names)) {
+                          oldVillaMatch = rec;
+                          break;
+                      }
+                  }
+              }
+          }
+
+          const oldStatus = record.status;
+          if (!oldStatus.includes('ARR') && !oldStatus.includes('DEP')) record.status = 'OCC';
+          
+          record.guest_name = newOcc.names;
+          record.pax_adults = newOcc.adults;
+          record.pax_kids = newOcc.kids;
+          record.meal_plan = newOcc.mealPlan;
+          record.stay_dates = newOcc.stayDates;
+          record.stay_id = newOcc.stayId;
+
+          if (oldVillaMatch) {
+              if (!newOcc.gemName && oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
+              else record.gem_name = newOcc.gemName;
+              
+              if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
+              if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
+              if (oldVillaMatch.preferences) record.preferences = oldVillaMatch.preferences;
+
               diffs.push({
-                  villa: vNum, type: 'CHANGE', 
-                  oldGuest: rec.guest_name || 'Checked Out', newGuest: 'Vacant', 
-                  oldStatus: 'OCC', newStatus: 'VAC'
+                  villa: newOcc.villa, type: 'ALLOC CHANGE',
+                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                  newGuest: `${newOcc.names} (Moved from V${oldVillaMatch.villa_number})`,
+                  oldStatus: oldStatus, newStatus: record.status
               });
-              rec.status = 'VAC'; rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
-              rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
+          } else {
+              record.gem_name = newOcc.gemName;
+              diffs.push({
+                  villa: newOcc.villa, type: 'SYNC',
+                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                  newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+              });
+          }
+      });
+
+      currentMap.forEach((rec, vNum) => {
+          const inOCC = newOccList.find(n => n.villa === vNum);
+          const isTMA = rec.status.toUpperCase().includes('TMA');
+          const isHouseUse = rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U') || rec.status.toUpperCase().includes('HOUSE');
+
+          if (!inOCC && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
+              if (!isTMA && !isHouseUse) {
+                  const movedTo = newOccList.find(n => isSameGuest(n.names, rec.guest_name));
+                  
+                  if (movedTo) {
+                      diffs.push({
+                          villa: vNum, type: 'MOVED OUT',
+                          oldGuest: rec.guest_name,
+                          newGuest: `Moved to V${movedTo.villa}`,
+                          oldStatus: rec.status, newStatus: 'VAC'
+                      });
+                  } else {
+                      diffs.push({
+                          villa: vNum, type: 'DISCREPANCY',
+                          oldGuest: rec.guest_name || 'Expected Guest',
+                          newGuest: 'Not in OCC List! (No Show / Early C/O?)',
+                          oldStatus: rec.status, newStatus: 'VAC'
+                      });
+                  }
+                  
+                  rec.status = 'VAC'; rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
+                  rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
+              }
           }
       });
 
@@ -413,13 +501,20 @@ export default function HousekeepingSummaryPage() {
       const diffs: ChangeLog[] = [];
       const resByVilla: Record<string, any[]> = {};
       
+      const getText = (node: Element, tag: string) => {
+          let el = node.querySelector(tag) || node.querySelector(tag.toLowerCase());
+          return el ? el.textContent?.trim() || '' : '';
+      };
+
       reservations.forEach((res: any) => {
-          const v = res.querySelector('DISP_ROOM_NO')?.textContent?.trim();
+          const v = getText(res, 'DISP_ROOM_NO');
           if (v) {
               if (!resByVilla[v]) resByVilla[v] = [];
               resByVilla[v].push(res);
           }
       });
+
+      const newArrList: any[] = [];
 
       for (const [villa, resList] of Object.entries(resByVilla)) {
           const cleanVilla = normalizeVilla(villa);
@@ -428,25 +523,48 @@ export default function HousekeepingSummaryPage() {
           const record = currentMap.get(cleanVilla)!;
 
           let isArr = false; let isDep = false;
+          let arrNames: string[] = []; let depNames: string[] = [];
+          let isExtFromCarrier = false;
+
           resList.forEach(res => {
-              const arrDate = res.querySelector('ARRIVAL')?.textContent || '';
-              const depDate = res.querySelector('DEPARTURE')?.textContent || '';
-              const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
-              const dFull = `20${depDate.split('-')[2]}-${monthToNum(depDate.split('-')[1])}-${depDate.split('-')[0].padStart(2, '0')}`;
-              if (aFull === selectedDate) isArr = true;
-              if (dFull === selectedDate) isDep = true;
+              const arrDate = getText(res, 'ARRIVAL');
+              const depDate = getText(res, 'DEPARTURE');
+              const arrCarrier = (getText(res, 'ARRIVAL_CARRIER_CODE') || '').toUpperCase();
+              
+              if (arrCarrier.includes('EXT') || arrCarrier.includes('STAY EXT')) {
+                  isExtFromCarrier = true;
+              }
+
+              if (arrDate && depDate) {
+                  const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
+                  const dFull = `20${depDate.split('-')[2]}-${monthToNum(depDate.split('-')[1])}-${depDate.split('-')[0].padStart(2, '0')}`;
+                  
+                  const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
+                  const formattedName = formatGuestName(rawName);
+
+                  if (aFull === selectedDate) { isArr = true; arrNames.push(formattedName); }
+                  if (dFull === selectedDate) { isDep = true; depNames.push(formattedName); }
+              }
           });
 
+          let isB2BExtension = isExtFromCarrier;
+          if (isArr && isDep) {
+              if (arrNames.some(aName => depNames.some(dName => isSameGuest(aName, dName)))) {
+                  isB2BExtension = true;
+              }
+          }
+
           let finalStatus = 'OCC';
-          if (isArr && isDep) finalStatus = 'DEP/ARR';
+          if (isArr && isDep && !isB2BExtension) finalStatus = 'DEP/ARR';
           else if (isArr) finalStatus = 'ARR';
           else if (isDep) finalStatus = 'DEP';
-          else if (resList.some(r => r.querySelector('SHORT_RESV_STATUS')?.textContent?.includes('CKOT'))) finalStatus = 'VAC';
+          else if (resList.some(r => getText(r, 'SHORT_RESV_STATUS').includes('CKOT'))) finalStatus = 'VAC';
 
           let primaryResList = resList;
-          if (finalStatus === 'DEP/ARR') {
+          if (finalStatus === 'DEP/ARR' || isB2BExtension) {
               primaryResList = resList.filter(res => {
-                  const arrDate = res.querySelector('ARRIVAL')?.textContent || '';
+                  const arrDate = getText(res, 'ARRIVAL');
+                  if (!arrDate) return false;
                   const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
                   return aFull === selectedDate;
               });
@@ -457,14 +575,14 @@ export default function HousekeepingSummaryPage() {
           let mealPlan = 'RO'; let stayDates = ''; let stayId = '';
 
           primaryResList.forEach(res => {
-              const rawName = res.querySelector('FULL_NAME_NO_SHR_IND')?.textContent || res.querySelector('FULL_NAME')?.textContent || '';
+              const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
               if (rawName) names.push(formatGuestName(rawName));
               
-              totalAdults += parseInt(res.querySelector('ADULTS')?.textContent || '0', 10);
-              totalKids += parseInt(res.querySelector('CHILDREN')?.textContent || '0', 10);
+              totalAdults += parseInt(getText(res, 'ADULTS') || '0', 10);
+              totalKids += parseInt(getText(res, 'CHILDREN') || '0', 10);
 
-              const arrDate = res.querySelector('ARRIVAL')?.textContent || '';
-              const depDate = res.querySelector('DEPARTURE')?.textContent || '';
+              const arrDate = getText(res, 'ARRIVAL');
+              const depDate = getText(res, 'DEPARTURE');
               if (arrDate && depDate) {
                   const aParts = arrDate.split('-'); const dParts = depDate.split('-');
                   if (aParts.length === 3 && dParts.length === 3) {
@@ -475,8 +593,8 @@ export default function HousekeepingSummaryPage() {
                   }
               }
 
-              const rateCode = (res.querySelector('RATE_CODE')?.textContent || '').toUpperCase();
-              const products = (res.querySelector('PRODUCTS')?.textContent || '').toUpperCase();
+              const rateCode = (getText(res, 'RATE_CODE') || '').toUpperCase();
+              const products = (getText(res, 'PRODUCTS') || '').toUpperCase();
               if (products.includes('LUN') || rateCode.includes('FB')) mealPlan = 'FB';
               else if ((products.includes('DIN') || rateCode.includes('HB')) && mealPlan !== 'FB') mealPlan = 'HB';
               else if ((products.includes('BFS') || rateCode.includes('BB') || rateCode.includes('PR')) && mealPlan === 'RO') mealPlan = 'BB';
@@ -485,39 +603,113 @@ export default function HousekeepingSummaryPage() {
               comments.forEach((c: any) => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
           });
 
-          const oldStatus = record.status;
-          if (finalStatus === 'ARR' && oldStatus.includes('DEP')) finalStatus = 'DEP/ARR';
-
-          record.guest_name = names.join(' & ');
-          record.pax_adults = totalAdults;
-          record.pax_kids = totalKids;
-          record.meal_plan = mealPlan;
-          record.stay_dates = stayDates;
-          record.status = finalStatus;
-          record.stay_id = stayId;
-          
-          const uniquePrefs = Array.from(new Set(prefs));
-          if (uniquePrefs.length > 0) record.preferences = uniquePrefs.join('\n\n');
-
-          diffs.push({
-              villa: cleanVilla, type: finalStatus.includes('ARR') ? 'ARRIVAL' : 'SYNC',
-              oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-              newGuest: record.guest_name, oldStatus: oldStatus, newStatus: finalStatus
+          newArrList.push({
+              villa: cleanVilla,
+              names: names.join(' & '),
+              adults: totalAdults,
+              kids: totalKids,
+              mealPlan: mealPlan,
+              stayDates: stayDates,
+              stayId: stayId,
+              status: finalStatus,
+              isB2B: isB2BExtension,
+              prefs: Array.from(new Set(prefs)).join('\n\n')
           });
       }
 
+      newArrList.forEach(newArr => {
+          const record = currentMap.get(newArr.villa)!;
+          let oldVillaMatch: GuestRecord | null = null;
+          let isStayExt = newArr.isB2B;
+
+          if (!isSameGuest(record.guest_name, newArr.names)) {
+              for (const [vNum, rec] of currentMap.entries()) {
+                  if (vNum !== newArr.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
+                      if (isSameGuest(rec.guest_name, newArr.names)) {
+                          oldVillaMatch = rec;
+                          break;
+                      }
+                  }
+              }
+          } else {
+              if (['OCC', 'VM/OCC'].includes(record.status) && newArr.status.includes('ARR')) {
+                  isStayExt = true;
+              }
+          }
+
+          const oldStatus = record.status;
+          let newStatus = newArr.status;
+          
+          if (newStatus === 'ARR' && oldStatus.includes('DEP')) newStatus = 'DEP/ARR';
+
+          if (isStayExt) {
+              newStatus = oldStatus.includes('VM/') ? oldStatus : 'OCC'; 
+          }
+
+          record.guest_name = newArr.names;
+          record.pax_adults = newArr.adults;
+          record.pax_kids = newArr.kids;
+          record.meal_plan = newArr.mealPlan;
+          record.stay_dates = newArr.stayDates;
+          record.status = newStatus;
+          record.stay_id = newArr.stayId;
+          
+          if (newArr.prefs) {
+              record.preferences = record.preferences ? `${record.preferences}\n\n${newArr.prefs}` : newArr.prefs;
+          }
+
+          if (oldVillaMatch) {
+              if (oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
+              if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
+              if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
+              if (oldVillaMatch.preferences && !newArr.prefs) record.preferences = oldVillaMatch.preferences;
+
+              diffs.push({
+                  villa: newArr.villa, type: 'ALLOC CHANGE',
+                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                  newGuest: `${newArr.names} (Moved from V${oldVillaMatch.villa_number})`,
+                  oldStatus: oldStatus, newStatus: record.status
+              });
+          } else {
+              let diffType = 'SYNC';
+              if (isStayExt) diffType = 'STAY EXT';
+              else if (newStatus === 'DEP/ARR' && !oldStatus.includes('ARR')) diffType = 'DEP/ARR';
+              else if (newStatus.includes('ARR') && !oldStatus.includes('ARR')) diffType = 'ARRIVAL';
+              else if (newStatus.includes('DEP') && !oldStatus.includes('DEP')) diffType = 'DEPARTURE';
+
+              diffs.push({
+                  villa: newArr.villa, type: diffType,
+                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                  newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+              });
+          }
+      });
+
       currentMap.forEach((rec, vNum) => {
-          if (!resByVilla[vNum] && !resByVilla[vNum.padStart(2, '0')]) {
+          const inARR = newArrList.find(n => n.villa === vNum);
+
+          if (!inARR) {
               const oldStatus = rec.status;
               if (oldStatus === 'ARR' || oldStatus === 'DEP/ARR') {
                   let newStatus = oldStatus === 'DEP/ARR' ? 'DEP' : 'VAC';
                   
-                  diffs.push({
-                      villa: vNum, type: 'CHANGE', 
-                      oldGuest: rec.guest_name || 'Cancelled', newGuest: newStatus === 'VAC' ? 'Vacant' : 'Departing', 
-                      oldStatus: oldStatus, newStatus: newStatus
-                  });
+                  const movedTo = newArrList.find(n => isSameGuest(n.names, rec.guest_name));
                   
+                  if (movedTo) {
+                      diffs.push({
+                          villa: vNum, type: 'MOVED OUT',
+                          oldGuest: rec.guest_name,
+                          newGuest: `Moved to V${movedTo.villa}`,
+                          oldStatus: oldStatus, newStatus: newStatus
+                      });
+                  } else {
+                      diffs.push({
+                          villa: vNum, type: 'CHANGE', 
+                          oldGuest: rec.guest_name || 'Cancelled', newGuest: newStatus === 'VAC' ? 'Vacant' : 'Departing', 
+                          oldStatus: oldStatus, newStatus: newStatus
+                      });
+                  }
+
                   rec.status = newStatus;
                   if (newStatus === 'VAC') {
                       rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
@@ -573,7 +765,7 @@ export default function HousekeepingSummaryPage() {
                   }
 
                   if (madeChange) {
-                      diffs.push({ villa: v, type: 'INFO SYNC', oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
+                      diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
                   }
               }
           }
@@ -597,7 +789,7 @@ export default function HousekeepingSummaryPage() {
                   }
 
                   if (madeChange) {
-                      diffs.push({ villa: v, type: 'INFO SYNC', oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
+                      diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
                   }
               }
           }
@@ -670,6 +862,101 @@ export default function HousekeepingSummaryPage() {
       toast.success("Rollover Complete!");
   };
 
+  // --- SARONG CALCULATOR ---
+  const getSarongCounts = () => {
+      let counts = {
+          jettyA: { villas: 0, male: 0, female: 0, kids: 0 },
+          jettyB: { villas: 0, male: 0, female: 0, kids: 0 },
+          jettyC: { villas: 0, male: 0, female: 0, kids: 0 },
+          beach:  { villas: 0, male: 0, female: 0, kids: 0 },
+          total:  { villas: 0, male: 0, female: 0, kids: 0 }
+      };
+
+      masterList.forEach(rec => {
+          // Ignore Departures completely (unless they are DEP/ARR, which holds the arrival guest info)
+          if (rec.status === 'VAC' || (rec.status.includes('DEP') && !rec.status.includes('ARR'))) return;
+          if (rec.status === 'VM/VAC') return;
+          if (rec.status.includes('TMA')) return;
+          if (rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U')) return;
+
+          const v = parseInt(rec.villa_number, 10);
+          if (isNaN(v)) return;
+
+          let area: 'jettyA' | 'jettyB' | 'jettyC' | 'beach' = 'beach';
+          if (v >= 1 && v <= 35) area = 'jettyA';
+          else if (v >= 37 && v <= 50) area = 'jettyB';
+          else if (v >= 59 && v <= 79) area = 'jettyC';
+
+          let adults = rec.pax_adults || 0;
+          let kids = rec.pax_kids || 0;
+
+          let male = 0;
+          let female = 0;
+
+          // Intelligently guess gender based on titles in the string
+          const nameStr = rec.guest_name.toUpperCase();
+          const mrCount = (nameStr.match(/\bMR\b/g) || []).length;
+          const msCount = (nameStr.match(/\b(MS|MRS|MISS|ALFAALILA)\b/g) || []).length;
+          
+          male += mrCount;
+          female += msCount;
+
+          let remaining = adults - (male + female);
+          if (remaining > 0) {
+              if (male === 0 && female === 0 && remaining === 2) {
+                  male += 1; female += 1;
+              } else if (male > female) {
+                  female += remaining;
+              } else {
+                  male += remaining;
+              }
+          } else if (remaining < 0) {
+              if (male + female > adults && adults > 0) {
+                  male = Math.ceil(adults / 2);
+                  female = Math.floor(adults / 2);
+              }
+          }
+
+          counts[area].villas += 1;
+          counts[area].male += male;
+          counts[area].female += female;
+          counts[area].kids += kids;
+
+          counts.total.villas += 1;
+          counts.total.male += male;
+          counts.total.female += female;
+          counts.total.kids += kids;
+      });
+
+      return counts;
+  };
+
+  const renderSarongArea = (title: string, data: any) => (
+      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col gap-2">
+          <div className="flex justify-between items-center mb-1">
+              <h4 className="font-bold text-sm text-slate-800">{title}</h4>
+              <span className="text-[10px] font-bold bg-white px-2 py-1 rounded-md text-slate-500 border border-slate-200">{data.villas} Villas</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+              <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col items-center justify-center">
+                  <span className="text-xl">⬛</span>
+                  <span className="text-[10px] font-bold text-slate-500 mt-1">Black (Male)</span>
+                  <span className="text-lg font-black text-slate-800">{data.male}</span>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col items-center justify-center">
+                  <span className="text-xl">🟥</span>
+                  <span className="text-[10px] font-bold text-slate-500 mt-1">Maroon (Fem)</span>
+                  <span className="text-lg font-black text-slate-800">{data.female}</span>
+              </div>
+              <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col items-center justify-center">
+                  <span className="text-xl">🟨</span>
+                  <span className="text-[10px] font-bold text-slate-500 mt-1">Kids</span>
+                  <span className="text-lg font-black text-slate-800">{data.kids}</span>
+              </div>
+          </div>
+      </div>
+  );
+
   const getStatusColor = (s: string) => {
       const st = s?.toUpperCase() || 'VAC';
       if(st === 'VM/VAC') return 'text-slate-500 bg-slate-200 border border-slate-300';
@@ -709,7 +996,7 @@ export default function HousekeepingSummaryPage() {
                      <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">
                         {new Date(selectedDate).toLocaleDateString('en-GB', { dateStyle: 'full' })}
                      </p>
-                     {lastSyncTime && <span className="text-[9px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full font-bold flex items-center gap-1"><Clock size={10}/> Sync: {lastSyncTime}</span>}
+                     {lastSyncTime && <span className="text-[9px] bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded-full font-bold flex items-center gap-1"><Clock size={10}/> Last Update: {lastSyncTime}</span>}
                  </div>
                </div>
            </div>
@@ -738,9 +1025,12 @@ export default function HousekeepingSummaryPage() {
                       {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span className="hidden sm:inline">Arrivals</span>
                    </button>
 
-                   <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".xlsm,.xlsx,.xls,.xml" onChange={(e) => handleFileProcess(e, 'OPERATIONAL_MEMO')} />
-                   <button onClick={() => document.getElementById('fileMemo')?.click()} className="flex items-center gap-2 bg-[#6D2158] text-white px-3 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-[#5a1b49] transition-all">
-                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span className="hidden sm:inline">Arr/Dep Memo</span>
+                   <button onClick={() => setIsPasteModalOpen(true)} className="flex items-center gap-2 bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm">
+                      <FileSpreadsheet size={16}/> <span className="hidden sm:inline">Paste Arr/Dep</span>
+                   </button>
+
+                   <button onClick={() => setIsSarongModalOpen(true)} className="flex items-center gap-2 bg-pink-600 text-white px-3 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-pink-700 transition-all">
+                      <Shirt size={16}/> <span className="hidden sm:inline">Sarongs</span>
                    </button>
                </>
            )}
@@ -888,11 +1178,11 @@ export default function HousekeepingSummaryPage() {
       {/* CHANGES MODAL */}
       {diffModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
+           <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
               <div className="bg-slate-50 p-6 border-b border-slate-200 flex justify-between items-center">
                   <div>
                       <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                        {changes.length > 0 ? <AlertTriangle className="text-amber-500"/> : <CheckCircle className="text-emerald-500"/>}
+                        {changes.length > 0 && changes.some(c => c.type === 'DISCREPANCY') ? <AlertTriangle className="text-red-500"/> : changes.length > 0 ? <AlertTriangle className="text-amber-500"/> : <CheckCircle className="text-emerald-500"/>}
                         {changes[0]?.type === 'INFO SYNC' ? 'Data Overlay Sync' : 'Review Updates'}
                       </h3>
                       <p className="text-sm text-slate-500 mt-1">
@@ -909,42 +1199,77 @@ export default function HousekeepingSummaryPage() {
                       </div>
                   ) : (
                       <table className="w-full text-left text-sm">
-                          <thead className="bg-slate-50 text-xs uppercase font-bold text-slate-400 sticky top-0">
+                          <thead className="bg-slate-50 text-xs uppercase font-bold text-slate-400 sticky top-0 shadow-sm z-10">
                               <tr>
                                   <th className="p-4 w-20">Villa</th>
-                                  <th className="p-4 w-24">Type</th>
-                                  <th className="p-4">Current Data</th>
+                                  <th className="p-4 w-32">Type</th>
+                                  <th className="p-4 w-48">Current Data</th>
                                   <th className="p-4 w-8"></th>
-                                  <th className="p-4">New Data</th>
+                                  <th className="p-4">New Data (Editable)</th>
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                              {changes.map((c, i) => (
-                                  <tr key={i} className="hover:bg-slate-50">
-                                      <td className="p-4 font-bold text-slate-700">{c.villa}</td>
-                                      <td className="p-4">
-                                          <span className={`px-2 py-1 rounded text-[10px] font-bold ${
-                                              c.type === 'SYNC' ? 'bg-purple-100 text-purple-700' :
-                                              c.type === 'ARRIVAL' ? 'bg-blue-100 text-blue-700' :
-                                              c.type === 'DEPARTURE' ? 'bg-rose-100 text-rose-700' :
-                                              c.type === 'TMA' ? 'bg-orange-100 text-orange-700' :
-                                              c.type === 'DAY USE' ? 'bg-amber-100 text-amber-700' :
-                                              c.type === 'MOVE' ? 'bg-indigo-100 text-indigo-700' :
-                                              c.type === 'INFO SYNC' ? 'bg-slate-100 text-slate-700' :
-                                              'bg-emerald-100 text-emerald-700'
-                                          }`}>{c.type}</span>
-                                      </td>
-                                      <td className="p-4 text-slate-500">
-                                          <div className="text-xs">{c.oldGuest ? c.oldGuest.substring(0, 15) : 'Vacant'}</div>
-                                          <div className="text-[10px] font-bold uppercase opacity-50">{c.oldStatus}</div>
-                                      </td>
-                                      <td className="p-4 text-slate-300"><ArrowRight size={16}/></td>
-                                      <td className="p-4 text-slate-800 font-medium">
-                                          <div className="text-xs">{c.newGuest ? c.newGuest.substring(0, 30) : 'Vacant'}</div>
-                                          <div className="text-[10px] font-bold uppercase text-[#6D2158]">{c.newStatus}</div>
-                                      </td>
-                                  </tr>
-                              ))}
+                              {changes.map((c, i) => {
+                                  const pendingRec = pendingData.find(p => p.villa_number === c.villa);
+                                  return (
+                                      <tr key={i} className="hover:bg-slate-50">
+                                          <td className="p-4 font-bold text-slate-700">{c.villa}</td>
+                                          <td className="p-4">
+                                              <span className={`px-2 py-1 rounded text-[10px] font-bold ${
+                                                  c.type === 'DISCREPANCY' ? 'bg-red-100 text-red-700 border border-red-300 animate-pulse' :
+                                                  c.type === 'ALLOC CHANGE' ? 'bg-indigo-100 text-indigo-700' :
+                                                  c.type === 'MOVED OUT' ? 'bg-slate-200 text-slate-500' :
+                                                  c.type === 'STAY EXT' ? 'bg-teal-100 text-teal-700' :
+                                                  c.type === 'SYNC' ? 'bg-purple-100 text-purple-700' :
+                                                  c.type === 'ARRIVAL' ? 'bg-blue-100 text-blue-700' :
+                                                  c.type === 'DEPARTURE' ? 'bg-rose-100 text-rose-700' :
+                                                  c.type === 'INFO SYNC' ? 'bg-slate-100 text-slate-700' :
+                                                  'bg-emerald-100 text-emerald-700'
+                                              }`}>{c.type}</span>
+                                          </td>
+                                          <td className="p-4 text-slate-500">
+                                              <div className="text-xs">{c.oldGuest ? c.oldGuest.substring(0, 20) : 'Vacant'}</div>
+                                              <div className="text-[10px] font-bold uppercase opacity-50">{c.oldStatus}</div>
+                                          </td>
+                                          <td className="p-4 text-slate-300"><ArrowRight size={16}/></td>
+                                          <td className="p-4 text-slate-800 font-medium">
+                                              {pendingRec ? (
+                                                  <div className="flex flex-col gap-2">
+                                                      <div className="flex items-center gap-2">
+                                                          <select 
+                                                              className={`p-1 border border-slate-200 rounded text-[10px] font-bold uppercase outline-none focus:border-blue-400`}
+                                                              value={pendingRec.status}
+                                                              onChange={(e) => {
+                                                                  updatePendingRecord(c.villa, 'status', e.target.value);
+                                                                  const newChanges = [...changes];
+                                                                  newChanges[i].newStatus = e.target.value;
+                                                                  setChanges(newChanges);
+                                                              }}
+                                                          >
+                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE'].map(s=><option key={s} value={s}>{s}</option>)}
+                                                          </select>
+                                                          <div className="text-xs leading-tight font-bold text-slate-600">{c.newGuest ? c.newGuest : 'Vacant'}</div>
+                                                      </div>
+                                                      
+                                                      {(c.isMemoEdit || c.type.includes('ARR') || c.type.includes('DEP') || c.type.includes('SYNC') || c.type.includes('EXT') || c.type.includes('ALLOC')) && (
+                                                          <div className="flex flex-wrap gap-2">
+                                                              <input className="w-12 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-blue-400" value={pendingRec.meal_plan} onChange={(e) => updatePendingRecord(c.villa, 'meal_plan', e.target.value)} placeholder="MP" />
+                                                              <input className="w-16 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-purple-400" value={pendingRec.gem_name} onChange={(e) => updatePendingRecord(c.villa, 'gem_name', e.target.value)} placeholder="GEM" />
+                                                              {(pendingRec.status.includes('ARR') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-emerald-200 rounded text-[10px] outline-none" value={pendingRec.arrival_time} onChange={(e) => updatePendingRecord(c.villa, 'arrival_time', e.target.value)} />}
+                                                              {(pendingRec.status.includes('DEP') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-rose-200 rounded text-[10px] outline-none" value={pendingRec.departure_time} onChange={(e) => updatePendingRecord(c.villa, 'departure_time', e.target.value)} />}
+                                                          </div>
+                                                      )}
+                                                  </div>
+                                              ) : (
+                                                  <>
+                                                      <div className="text-xs leading-tight">{c.newGuest ? c.newGuest : 'Vacant'}</div>
+                                                      <div className={`text-[10px] font-bold uppercase mt-1 ${c.type === 'DISCREPANCY' ? 'text-red-600' : 'text-[#6D2158]'}`}>{c.newStatus}</div>
+                                                  </>
+                                              )}
+                                          </td>
+                                      </tr>
+                                  );
+                              })}
                           </tbody>
                       </table>
                   )}
@@ -961,6 +1286,52 @@ export default function HousekeepingSummaryPage() {
               </div>
            </div>
         </div>
+      )}
+
+      {/* SARONG MODAL */}
+      {isSarongModalOpen && (
+          <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+                  <div className="bg-pink-600 p-5 text-white flex justify-between items-center">
+                      <h3 className="text-lg font-bold flex items-center gap-2"><Shirt size={18}/> Tuesday Sarong Allocation</h3>
+                      <button onClick={() => setIsSarongModalOpen(false)} className="bg-white/10 p-1.5 rounded-full hover:bg-white/20"><X size={18}/></button>
+                  </div>
+                  <div className="p-6 space-y-6 bg-slate-100">
+                      
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                          {renderSarongArea("Jetty A (1-35)", getSarongCounts().jettyA)}
+                          {renderSarongArea("Jetty B (37-50)", getSarongCounts().jettyB)}
+                          {renderSarongArea("Jetty C (59-79)", getSarongCounts().jettyC)}
+                          {renderSarongArea("Beach Villas", getSarongCounts().beach)}
+                      </div>
+
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col lg:flex-row justify-between items-center gap-6">
+                          <div>
+                              <h3 className="text-lg font-black text-slate-800">Total Island Distribution</h3>
+                              <p className="text-xs text-slate-400 font-bold mt-1">Excludes Departures, TMA, and House Use</p>
+                          </div>
+                          <div className="flex gap-4">
+                              <div className="flex flex-col items-center justify-center">
+                                  <span className="text-2xl">⬛</span>
+                                  <span className="text-[10px] font-bold text-slate-500 mt-1 uppercase">Adult Males</span>
+                                  <span className="text-2xl font-black text-slate-800">{getSarongCounts().total.male}</span>
+                              </div>
+                              <div className="flex flex-col items-center justify-center">
+                                  <span className="text-2xl">🟥</span>
+                                  <span className="text-[10px] font-bold text-slate-500 mt-1 uppercase">Adult Females</span>
+                                  <span className="text-2xl font-black text-slate-800">{getSarongCounts().total.female}</span>
+                              </div>
+                              <div className="flex flex-col items-center justify-center">
+                                  <span className="text-2xl">🟨</span>
+                                  <span className="text-[10px] font-bold text-slate-500 mt-1 uppercase">Kids</span>
+                                  <span className="text-2xl font-black text-slate-800">{getSarongCounts().total.kids}</span>
+                              </div>
+                          </div>
+                      </div>
+
+                  </div>
+              </div>
+          </div>
       )}
 
       {/* MANUAL MOVE MODAL */}
@@ -992,9 +1363,11 @@ export default function HousekeepingSummaryPage() {
                           </select>
                       </div>
                       <p className="text-[10px] font-bold text-slate-400 leading-tight italic">Guest profile details will be copied to the new villa. The old villa will become VM/VAC but will retain its profile history for today.</p>
+                      
                       <button onClick={handleManualMove} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-[#5a1b49] transition-all flex justify-center items-center gap-2 mt-2">
                           {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <RotateCw size={16}/>} Execute Move
                       </button>
+
                   </div>
               </div>
           </div>
@@ -1064,6 +1437,34 @@ export default function HousekeepingSummaryPage() {
               </div>
            </div>
         </div>
+      )}
+
+      {/* PASTE MODAL */}
+      {isPasteModalOpen && (
+          <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+                  <div className="bg-[#6D2158] p-5 text-white flex justify-between items-center">
+                      <h3 className="text-lg font-bold flex items-center gap-2"><FileSpreadsheet size={18}/> Paste Operational Memo</h3>
+                      <button onClick={() => setIsPasteModalOpen(false)} className="bg-white/10 p-1.5 rounded-full hover:bg-white/20"><X size={18}/></button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                      <p className="text-xs text-slate-500 font-bold">Copy the cells directly from your Excel file and paste them below:</p>
+                      <textarea 
+                          className="w-full h-64 p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-700 outline-none focus:border-[#6D2158] resize-none whitespace-pre" 
+                          placeholder="Paste Excel data here..." 
+                          value={pastedText} 
+                          onChange={(e) => setPastedText(e.target.value)}
+                          autoFocus
+                      />
+                      <div className="flex justify-end gap-3 mt-4">
+                          <button onClick={() => setIsPasteModalOpen(false)} className="px-6 py-3 rounded-xl font-bold text-slate-500 hover:bg-slate-50 hover:shadow-sm transition-all">Cancel</button>
+                          <button onClick={handlePasteSubmit} className="px-6 py-3 rounded-xl font-bold bg-[#6D2158] text-white shadow-lg hover:bg-[#5a1b49] transition-all flex items-center gap-2">
+                              Process Data
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          </div>
       )}
     </div>
   );

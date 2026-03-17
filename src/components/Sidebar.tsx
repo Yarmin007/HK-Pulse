@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -17,6 +17,12 @@ const ADMIN_CORE_TABS = [
   { name: "Requests", icon: ClipboardList, path: "/requests" },
 ];
 
+const ALLOCATION_ITEMS = [
+  { name: "Guest List", icon: Users, path: "/guests" },
+  { name: "Allocations", icon: ListChecks, path: "/allocation" },
+  { name: "Allocation Sheet", icon: Map, path: "/allocation/sheet" },
+];
+
 const INVENTORY_ITEMS = [
   { name: "Live Matrix", icon: FileSpreadsheet, path: "/inventory/matrix" },
   { name: "Monthly Setup", icon: ClipboardCheck, path: "/inventory/setup" },
@@ -24,9 +30,8 @@ const INVENTORY_ITEMS = [
 ];
 
 const MENU_ITEMS = [
-  { name: "Guest List", icon: Users, path: "/guests" },
-  { name: "Allocation", icon: ListChecks, path: "/allocation" },
   { name: "Water Production", icon: Droplets, path: "/water" },
+  { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
   { name: "Print Hub", icon: Printer, path: "/print" },
   { name: "Settings", icon: Settings, path: "/settings" },
@@ -53,8 +58,6 @@ const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
   { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
-  { name: "Guest List", icon: Users, path: "/guests" },
-  { name: "Allocation", icon: ListChecks, path: "/allocation" },
   { name: "My Profile", icon: Contact, path: "/profile" },
 ];
 
@@ -66,8 +69,7 @@ const STAFF_PROFILE_ITEMS = [
 
 const STAFF_MENU_ITEMS = [
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
-  { name: "Guest List", icon: Users, path: "/guests" },
-  { name: "Allocation", icon: ListChecks, path: "/allocation" },
+  { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
 ];
 
 export default function Sidebar() {
@@ -77,11 +79,13 @@ export default function Sidebar() {
   const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart') || pathname?.includes('/team');
   const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart') || pathname?.includes('/team');
   const isInventoryRoute = pathname?.includes('/inventory');
+  const isAllocationRoute = pathname?.includes('/allocation') || pathname?.includes('/guests');
   
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
   const [isProfileOpen, setIsProfileOpen] = useState(isProfileRoute);
   const [isInventoryOpen, setIsInventoryOpen] = useState(isInventoryRoute);
+  const [isAllocationOpen, setIsAllocationOpen] = useState(isAllocationRoute);
 
   const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [isPoolAttendant, setIsPoolAttendant] = useState(false);
@@ -111,7 +115,8 @@ export default function Sidebar() {
       if (isTeamRoute) setIsTeamOpen(true);
       if (isProfileRoute) setIsProfileOpen(true);
       if (isInventoryRoute) setIsInventoryOpen(true);
-  }, [pathname, isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute]);
+      if (isAllocationRoute) setIsAllocationOpen(true);
+  }, [pathname, isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute]);
 
   const handleLogout = () => {
       localStorage.removeItem('hk_pulse_session');
@@ -128,7 +133,6 @@ export default function Sidebar() {
       ];
   }, [isPoolAttendant]);
 
-  // --- ADMIN MOBILE TABS UPDATED ---
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: ClipboardList, path: "/requests" },
@@ -188,10 +192,49 @@ export default function Sidebar() {
             );
           })}
 
+          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
+          
+          {/* ALLOCATION HUB (NEW!) */}
+          <div className="pt-1">
+            <button 
+              onClick={() => setIsAllocationOpen(!isAllocationOpen)}
+              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                isAllocationRoute && !isAllocationOpen
+                  ? "bg-[#6D2158]/10 text-[#6D2158] border border-[#6D2158]/20" 
+                  : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <ListChecks size={18} className={isAllocationRoute ? "text-[#6D2158]" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                <span className="text-xs font-bold tracking-wide">Allocation Hub</span>
+              </div>
+              {isAllocationOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+
+            {isAllocationOpen && (
+              <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                {ALLOCATION_ITEMS.map((item) => {
+                  const isActive = pathname === item.path;
+                  return (
+                    <Link 
+                      key={item.path} href={item.path}
+                      className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                        isActive 
+                          ? "bg-[#6D2158]/5 text-[#6D2158] font-black shadow-sm" 
+                          : "text-slate-500 hover:text-[#6D2158] hover:bg-slate-50"
+                      }`}
+                    >
+                      <item.icon size={14} className={isActive ? "text-[#6D2158]" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                      <span className="text-[11px] tracking-wide">{item.name}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {isAdmin && (
               <>
-                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
-                  
                   {/* INVENTORY HUB */}
                   <div className="pt-1">
                     <button 
@@ -416,7 +459,6 @@ export default function Sidebar() {
             )
          })}
          
-         {/* MENU NOW LINKS TO THE MENU PAGE DIRECTLY */}
          <Link href="/menu" className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform">
             <div className={`p-1.5 rounded-xl transition-all ${pathname === '/menu' ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
                <Menu size={22} strokeWidth={pathname === '/menu' ? 2.5 : 2} />
