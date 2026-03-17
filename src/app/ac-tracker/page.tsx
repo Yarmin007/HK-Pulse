@@ -1,8 +1,8 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Wind, Power, AlertTriangle, CheckCircle, ChevronLeft, ChevronRight, 
-  Loader2, ZapOff, MapPin, User 
+  Loader2, ZapOff, MapPin, User, RefreshCw 
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -13,15 +13,12 @@ const JETTY_B = Array.from({length: 14}, (_, i) => i + 37);
 const JETTY_C = Array.from({length: 21}, (_, i) => i + 59);
 const BEACH = [36, ...Array.from({length: 8}, (_, i) => i + 51), ...Array.from({length: 18}, (_, i) => i + 80)];
 
-const getToday = () => {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+// Strictly enforce Maldives time to match the Mobile app
+const getLocalToday = () => {
+    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 };
 
-// Helper to parse allocated villas from the allocation sheet string
 const parseVillas = (str: string): number[] => {
     if (!str) return [];
     const parts = str.split(',');
@@ -43,14 +40,14 @@ const parseVillas = (str: string): number[] => {
 
 type VillaStatus = {
     villa_number: string;
-    guest_status: string; // VAC, OCC, DEP, etc
+    guest_status: string; 
     ac_status: 'ON' | 'OFF';
     updated_at?: string;
     updated_by_name?: string;
 };
 
 export default function ACTrackerPage() {
-  const [selectedDate, setSelectedDate] = useState(getToday());
+  const [selectedDate, setSelectedDate] = useState(getLocalToday());
   const [isAdmin, setIsAdmin] = useState(false);
   const [currentUser, setCurrentUser] = useState<{ id: string, name: string } | null>(null);
   const [isProcessing, setIsProcessing] = useState(true);
@@ -63,35 +60,24 @@ export default function ACTrackerPage() {
     if (sessionData) {
         const parsed = JSON.parse(sessionData);
         setIsAdmin(parsed.system_role === 'admin');
-        setCurrentUser({ id: parsed.id, name: parsed.full_name || 'Staff' });
+        setCurrentUser({ id: parsed.id || parsed.host_id, name: parsed.full_name || 'Staff' });
     } else if (localStorage.getItem('hk_pulse_admin_auth') === 'true') {
         setIsAdmin(true);
         setCurrentUser({ id: 'admin', name: 'Admin' });
     }
   }, []);
 
-  useEffect(() => {
-    if (currentUser) {
-        fetchData();
-    }
-  }, [selectedDate, currentUser]);
+  const fetchData = useCallback(async (silent = false) => {
+      if (!silent) setIsProcessing(true);
 
-  const fetchData = async () => {
-      setIsProcessing(true);
+      const [summaryRes, acRes] = await Promise.all([
+          supabase.from('hsk_daily_summary').select('villa_number, status').eq('report_date', selectedDate),
+          supabase.from('hsk_ac_tracker').select('*').eq('report_date', selectedDate)
+      ]);
 
-      // 1. Fetch Guest Summary (to know if villa is VAC or OCC)
-      const { data: summaryData } = await supabase
-          .from('hsk_daily_summary')
-          .select('villa_number, status')
-          .eq('report_date', selectedDate);
+      const summaryData = summaryRes.data;
+      const acData = acRes.data;
 
-      // 2. Fetch AC Logs
-      const { data: acData } = await supabase
-          .from('hsk_ac_status')
-          .select('*')
-          .eq('report_date', selectedDate);
-
-      // Combine them into a fast lookup object
       const dataMap: Record<string, VillaStatus> = {};
       
       for (let i = 1; i <= TOTAL_VILLAS; i++) {
@@ -102,22 +88,21 @@ export default function ACTrackerPage() {
           dataMap[vNum] = {
               villa_number: vNum,
               guest_status: guestState,
-              ac_status: acState ? acState.ac_status : 'ON', // Default to ON if no record exists
+              ac_status: acState ? acState.status : 'ON', // Assume ON unless explicitly marked OFF
               updated_at: acState?.updated_at,
-              updated_by_name: acState?.updated_by_name,
+              updated_by_name: acState?.host_name,
           };
       }
       setVillasData(dataMap);
 
-      // 3. If it's a VA, fetch their specific assigned villas from the Allocation Sheet
-      if (!isAdmin && currentUser) {
+      if (!isAdmin && currentUser && currentUser.id !== 'admin') {
           const { data: allocData } = await supabase
               .from('hsk_allocations')
               .select('task_details')
               .eq('report_date', selectedDate)
               .eq('host_id', currentUser.id)
               .eq('area', 'villa')
-              .single();
+              .maybeSingle();
 
           if (allocData && allocData.task_details) {
               setMyAllocatedVillas(parseVillas(allocData.task_details));
@@ -126,32 +111,53 @@ export default function ACTrackerPage() {
           }
       }
 
-      setIsProcessing(false);
-  };
+      if (!silent) setIsProcessing(false);
+  }, [selectedDate, isAdmin, currentUser]);
+
+  useEffect(() => {
+    if (currentUser) fetchData();
+  }, [fetchData, currentUser]);
+
+  // --- LIVE REAL-TIME SYNC ---
+  // This magically updates the Admin board the second a VA changes it on their phone
+  useEffect(() => {
+      const channel = supabase
+          .channel('ac-live-updates')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_ac_tracker' }, (payload: any) => {
+              if (payload.new && payload.new.report_date === selectedDate) {
+                  fetchData(true); // Silently refresh the data without showing a spinner
+              }
+          })
+          .subscribe();
+
+      return () => {
+          supabase.removeChannel(channel);
+      };
+  }, [selectedDate, fetchData]);
 
   const toggleAC = async (villaNum: string, currentAcStatus: string) => {
       const newStatus = currentAcStatus === 'ON' ? 'OFF' : 'ON';
       
-      // Optimistic UI Update
       setVillasData(prev => ({
           ...prev,
           [villaNum]: { ...prev[villaNum], ac_status: newStatus, updated_by_name: currentUser?.name }
       }));
 
-      // Save to Supabase
-      const { error } = await supabase.from('hsk_ac_status').upsert({
+      // No spaces allowed in onConflict! This is strictly checked by Postgres
+      const { error } = await supabase.from('hsk_ac_tracker').upsert({
           report_date: selectedDate,
           villa_number: villaNum,
-          ac_status: newStatus,
-          updated_by_name: currentUser?.name,
+          status: newStatus,
+          host_id: currentUser?.id,
+          host_name: currentUser?.name,
           updated_at: new Date().toISOString()
-      }, { onConflict: 'report_date, villa_number' });
+      }, { onConflict: 'report_date,villa_number' });
 
       if (error) {
           toast.error("Failed to update AC status");
-          fetchData(); // Revert on failure
+          fetchData(true); 
       } else {
-          toast.success(`Villa ${villaNum} AC marked as ${newStatus}`);
+          toast.success(`V${villaNum} AC marked ${newStatus}`);
       }
   };
 
@@ -161,7 +167,6 @@ export default function ACTrackerPage() {
       setSelectedDate(d.toISOString().split('T')[0]);
   };
 
-  // Calculating Stats for the Top Banner
   const totalVacant = Object.values(villasData).filter(v => v.guest_status === 'VAC' || v.guest_status === 'VM/VAC' || v.guest_status === 'DEP').length;
   const vacantWithAcOn = Object.values(villasData).filter(v => (v.guest_status === 'VAC' || v.guest_status === 'VM/VAC' || v.guest_status === 'DEP') && v.ac_status === 'ON').length;
   const totalAcOff = Object.values(villasData).filter(v => v.ac_status === 'OFF').length;
@@ -226,10 +231,15 @@ export default function ACTrackerPage() {
                     </div>
                 </div>
                 
-                <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
-                    <button onClick={() => changeDate(-1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronLeft size={16}/></button>
-                    <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="bg-transparent text-xs font-bold text-slate-700 outline-none px-2 cursor-pointer"/>
-                    <button onClick={() => changeDate(1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronRight size={16}/></button>
+                <div className="flex items-center gap-3">
+                    <button onClick={() => fetchData()} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-500 transition-colors" title="Force Sync">
+                        <RefreshCw size={16} className={isProcessing ? 'animate-spin' : ''}/>
+                    </button>
+                    <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
+                        <button onClick={() => changeDate(-1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronLeft size={16}/></button>
+                        <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="bg-transparent text-xs font-bold text-slate-700 outline-none px-2 cursor-pointer"/>
+                        <button onClick={() => changeDate(1)} className="p-2 hover:bg-white rounded-md text-slate-500 shadow-sm"><ChevronRight size={16}/></button>
+                    </div>
                 </div>
             </div>
 
@@ -243,7 +253,7 @@ export default function ACTrackerPage() {
                     <Wind size={32} className="text-white/20" />
                 </div>
                 
-                <div className={`p-5 rounded-2xl shadow-lg border flex items-center justify-between ${vacantWithAcOn > 0 ? 'bg-rose-500 border-rose-600' : 'bg-emerald-500 border-emerald-600'}`}>
+                <div className={`p-5 rounded-2xl shadow-lg border flex items-center justify-between transition-colors ${vacantWithAcOn > 0 ? 'bg-rose-500 border-rose-600' : 'bg-emerald-500 border-emerald-600'}`}>
                     <div>
                         <p className="text-[10px] font-black uppercase text-white/70 tracking-widest">Vacant & AC Left ON</p>
                         <p className="text-3xl font-black text-white mt-1 flex items-center gap-3">
