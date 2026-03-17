@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -20,6 +20,7 @@ const ADMIN_CORE_TABS = [
 const ALLOCATION_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
+  { name: "Special Villas", icon: Key, path: "/allocation/special" },
   { name: "Allocation Sheet", icon: Map, path: "/allocation/sheet" },
 ];
 
@@ -194,7 +195,7 @@ export default function Sidebar() {
 
           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
           
-          {/* ALLOCATION HUB (NEW!) */}
+          {/* ALLOCATION HUB */}
           <div className="pt-1">
             <button 
               onClick={() => setIsAllocationOpen(!isAllocationOpen)}
