@@ -139,11 +139,10 @@ export default function MyTasksResponsive() {
           .eq('report_date', todayStr);
       if (gData) setGuestData(gData);
 
-      // 4. Fetch AC Tracker Status for Daily Cleaning
+      // 4. Fetch AC Tracker Status (NO DATE FILTER - GRAB LIVE STATUS)
       const { data: aData } = await supabase
           .from('hsk_ac_tracker')
-          .select('villa_number, status')
-          .eq('report_date', todayStr);
+          .select('villa_number, status');
       if (aData) setAcData(aData);
 
       // 5. Fetch UNIVERSAL Inventory Assignments 
@@ -266,7 +265,7 @@ export default function MyTasksResponsive() {
     fetchCatalog();
   }, [loadInitialData, fetchCatalog]);
 
-  // --- AC STATUS UPDATE HANDLER ---
+  // --- AC STATUS UPDATE HANDLER (FIXED TO UPSERT ON VILLA_NUMBER) ---
   const handleAcStatusChange = async (villaNumber: number, newStatus: string) => {
       const todayStr = getLocalToday();
       
@@ -285,11 +284,11 @@ export default function MyTasksResponsive() {
               host_id: currentHost?.host_id,
               host_name: currentHost?.full_name,
               updated_at: new Date().toISOString()
-          }, { onConflict: 'report_date,villa_number' });
+          }, { onConflict: 'villa_number' }); // ONLY conflicts on villa_number
 
       if (error) {
           toast.error(`Error: ${error.message}`);
-          loadInitialData(currentHost!.host_id, false, true); 
+          loadInitialData(currentHost!.host_id, false, true); // Revert on fail
       } else {
           toast.success(`V${villaNumber} AC turned ${newStatus}`);
       }
@@ -665,7 +664,7 @@ export default function MyTasksResponsive() {
       }
 
       const acMatch = acData.find(a => parseInt(a.villa_number) === vNum);
-      const acStatus = acMatch ? acMatch.status.toUpperCase() : 'ON'; // Assumed ON if unlogged
+      const acStatus = acMatch ? acMatch.status.toUpperCase() : 'ON'; // Matches Admin Board default
 
       return { status: shortStatus, headerColor, timeStr, guestName, acStatus };
   };
@@ -792,6 +791,7 @@ export default function MyTasksResponsive() {
                                                         <div className="flex-1"></div>
                                                     )}
 
+                                                    {/* NEW SINGLE-TAP BUTTON FOR AC */}
                                                     <button 
                                                         onClick={() => handleAcStatusChange(v, data.acStatus === 'ON' ? 'OFF' : 'ON')}
                                                         className={`mt-auto w-full py-2.5 rounded-lg flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
@@ -801,7 +801,7 @@ export default function MyTasksResponsive() {
                                                         }`}
                                                     >
                                                         <Wind size={14} className={`shrink-0 ${data.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
-                                                        {data.acStatus === 'ON' ? 'AC IS ON' : 'AC TURNED OFF'}
+                                                        {data.acStatus === 'ON' ? 'AC IS ON' : 'AC IS OFF'}
                                                     </button>
 
                                                 </div>

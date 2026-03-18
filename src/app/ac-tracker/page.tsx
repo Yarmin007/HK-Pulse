@@ -13,7 +13,7 @@ const JETTY_B = Array.from({length: 14}, (_, i) => i + 37);
 const JETTY_C = Array.from({length: 21}, (_, i) => i + 59);
 const BEACH = [36, ...Array.from({length: 8}, (_, i) => i + 51), ...Array.from({length: 18}, (_, i) => i + 80)];
 
-// Strictly enforce Maldives time to match the Mobile app
+// Strictly enforce Maldives time
 const getLocalToday = () => {
     const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
     return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -70,9 +70,10 @@ export default function ACTrackerPage() {
   const fetchData = useCallback(async (silent = false) => {
       if (!silent) setIsProcessing(true);
 
+      // WE NOW FETCH ALL LIVE AC STATUSES (REMOVED THE REPORT_DATE FILTER)
       const [summaryRes, acRes] = await Promise.all([
           supabase.from('hsk_daily_summary').select('villa_number, status').eq('report_date', selectedDate),
-          supabase.from('hsk_ac_tracker').select('*').eq('report_date', selectedDate)
+          supabase.from('hsk_ac_tracker').select('*') 
       ]);
 
       const summaryData = summaryRes.data;
@@ -88,7 +89,7 @@ export default function ACTrackerPage() {
           dataMap[vNum] = {
               villa_number: vNum,
               guest_status: guestState,
-              ac_status: acState ? acState.status : 'ON', // Assume ON unless explicitly marked OFF
+              ac_status: acState ? acState.status : 'ON', 
               updated_at: acState?.updated_at,
               updated_by_name: acState?.host_name,
           };
@@ -119,21 +120,18 @@ export default function ACTrackerPage() {
   }, [fetchData, currentUser]);
 
   // --- LIVE REAL-TIME SYNC ---
-  // This magically updates the Admin board the second a VA changes it on their phone
   useEffect(() => {
       const channel = supabase
           .channel('ac-live-updates')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_ac_tracker' }, (payload: any) => {
-              if (payload.new && payload.new.report_date === selectedDate) {
-                  fetchData(true); // Silently refresh the data without showing a spinner
-              }
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_ac_tracker' }, () => {
+              fetchData(true); 
           })
           .subscribe();
 
       return () => {
           supabase.removeChannel(channel);
       };
-  }, [selectedDate, fetchData]);
+  }, [fetchData]);
 
   const toggleAC = async (villaNum: string, currentAcStatus: string) => {
       const newStatus = currentAcStatus === 'ON' ? 'OFF' : 'ON';
@@ -143,7 +141,7 @@ export default function ACTrackerPage() {
           [villaNum]: { ...prev[villaNum], ac_status: newStatus, updated_by_name: currentUser?.name }
       }));
 
-      // No spaces allowed in onConflict! This is strictly checked by Postgres
+      // SAVES TO THE PERSISTENT UNIQUE VILLA_NUMBER INSTEAD OF DATE
       const { error } = await supabase.from('hsk_ac_tracker').upsert({
           report_date: selectedDate,
           villa_number: villaNum,
@@ -151,7 +149,7 @@ export default function ACTrackerPage() {
           host_id: currentUser?.id,
           host_name: currentUser?.name,
           updated_at: new Date().toISOString()
-      }, { onConflict: 'report_date,villa_number' });
+      }, { onConflict: 'villa_number' });
 
       if (error) {
           toast.error("Failed to update AC status");
