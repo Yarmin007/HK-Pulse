@@ -290,6 +290,15 @@ export default function MyTasksResponsive() {
           toast.error(`Error: ${error.message}`);
           loadInitialData(currentHost!.host_id, false, true); // Revert on fail
       } else {
+          // --- NEW: Record to history log for Insights! ---
+          await supabase.from('hsk_ac_history').insert({
+              villa_number: String(villaNumber),
+              status: newStatus,
+              host_id: currentHost?.host_id,
+              host_name: currentHost?.full_name,
+              logged_at: new Date().toISOString()
+          });
+
           toast.success(`V${villaNumber} AC turned ${newStatus}`);
       }
   };
@@ -797,7 +806,7 @@ export default function MyTasksResponsive() {
                                                         className={`mt-auto w-full py-2.5 rounded-lg flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
                                                             data.acStatus === 'ON' 
                                                                 ? 'bg-rose-50 border-rose-200 text-rose-700' 
-                                                                : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                                                                : 'bg-emerald-500 border-emerald-600 text-white'
                                                         }`}
                                                     >
                                                         <Wind size={14} className={`shrink-0 ${data.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
