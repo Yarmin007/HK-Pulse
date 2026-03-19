@@ -4,7 +4,7 @@ import {
   Users, ShoppingCart, Clock, AlertTriangle, 
   CheckCircle2, BarChart2, Edit3, Loader2, Search,
   Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft,
-  CheckSquare, CalendarDays, RefreshCw
+  CheckSquare, CalendarDays, RefreshCw, Moon, Star
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -654,9 +654,31 @@ export default function Dashboard() {
       {/* Main Content Area (No side padding on mobile for edge-to-edge look) */}
       <div className="p-0 md:p-8 space-y-6 md:space-y-8 pb-32">
           
+          {/* EID MUBARAK BANNER */}
+          <div className="relative overflow-hidden mx-2 md:mx-0 bg-gradient-to-r from-[#6D2158] via-[#8A2B71] to-[#6D2158] rounded-3xl md:rounded-[2rem] p-6 md:p-8 shadow-xl border border-[#902468] text-white flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 mt-4 md:mt-0">
+              <Star className="absolute top-4 left-6 text-yellow-300/40 animate-pulse" size={24} />
+              <Star className="absolute bottom-4 right-12 text-yellow-300/30 animate-pulse delay-75" size={32} />
+              <Star className="absolute top-6 right-1/4 text-yellow-300/50 animate-pulse delay-150" size={16} />
+              <div className="absolute -left-10 -bottom-10 opacity-20"><Moon size={150} /></div>
+              
+              <div className="relative z-10 flex items-center gap-4 text-center md:text-left w-full md:w-auto flex-col md:flex-row">
+                  <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center border border-white/20 shadow-inner backdrop-blur-sm shrink-0">
+                      <Moon className="text-yellow-300 fill-yellow-300/20" size={32} />
+                  </div>
+                  <div>
+                      <h2 className="text-2xl md:text-3xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 to-yellow-500 mb-1 drop-shadow-sm">
+                          Eid Mubarak! ✨
+                      </h2>
+                      <p className="text-xs md:text-sm font-bold text-purple-200 tracking-wide">
+                          Wishing you and your family a blessed and joyous Eid.
+                      </p>
+                  </div>
+              </div>
+          </div>
+
           {/* USER BALANCES STRIP */}
           {userBalances && (
-              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4 px-2 md:px-0 pt-4 md:pt-0">
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4 px-2 md:px-0 pt-2 md:pt-0">
                   <BalanceCard label="Total Owed" value={userBalances.balTotal} isTotal />
                   <BalanceCard label="Off Days" value={userBalances.balOff} color="emerald" />
                   <BalanceCard label="Annual" value={userBalances.balAL} color="cyan" />
@@ -878,7 +900,7 @@ export default function Dashboard() {
               </div>
           ) : (
               /* STAFF ONLY: PAYROLL MONTH ATTENDANCE GRID */
-              <div className="bg-white md:rounded-[2.5rem] shadow-sm border-t border-b md:border border-slate-100 overflow-hidden flex flex-col animate-in fade-in">
+              <div className="bg-white md:rounded-[2.5rem] shadow-sm border-t border-b md:border border-slate-100 overflow-hidden flex flex-col animate-in fade-in mx-2 md:mx-0">
                   <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
                      <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2">
                         <Calendar size={16}/> My Attendance
@@ -1147,7 +1169,7 @@ export default function Dashboard() {
                                                                           <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span> {balances.balPH}</span>
                                                                       </div>
                                                                   </div>
-                                                              )
+                                                              );
                                                           })
                                                       )}
                                                   </div>
