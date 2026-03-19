@@ -12,6 +12,81 @@ import { differenceInDays, parseISO, isAfter, isBefore, format, isSameDay, start
 import toast from 'react-hot-toast';
 
 // =========================================================================
+// ✨ GRAND EID ANIMATION COMPONENT
+// =========================================================================
+const EidConfetti = () => {
+    const [isVisible, setIsVisible] = useState(true);
+    const [items, setItems] = useState<any[]>([]);
+
+    useEffect(() => {
+        const newItems = Array.from({ length: 80 }).map((_, i) => {
+            const size = Math.random() > 0.8 ? 48 : Math.random() > 0.5 ? 32 : 20; // Much larger sizes
+            const duration = Math.random() * 4 + 6; // 6s to 10s fall time
+            const delay = Math.random() * 3; // 0s to 3s stagger
+            return {
+                id: i,
+                left: `${Math.random() * 100}%`,
+                animationDuration: `${duration}s`, 
+                animationDelay: `${delay}s`,
+                swayDuration: `${Math.random() * 2 + 2}s`, // Separate horizontal sway
+                size: size,
+                type: Math.random() > 0.3 ? 'star' : 'moon' // More stars than moons
+            }
+        });
+        setItems(newItems);
+
+        // Auto hide after 12 seconds
+        const timer = setTimeout(() => setIsVisible(false), 12000);
+        return () => clearTimeout(timer);
+    }, []);
+
+    if (!isVisible) return null;
+
+    return (
+        <div className="fixed inset-0 pointer-events-none z-[9999] overflow-hidden">
+            <style dangerouslySetInnerHTML={{__html: `
+                @keyframes eid-fall {
+                    0% { transform: translateY(-100px) rotate(0deg); opacity: 0; }
+                    10% { opacity: 1; }
+                    80% { opacity: 1; }
+                    100% { transform: translateY(110vh) rotate(360deg); opacity: 0; }
+                }
+                @keyframes eid-sway {
+                    0%, 100% { transform: translateX(-20px); }
+                    50% { transform: translateX(20px); }
+                }
+                .animate-eid-fall { animation: eid-fall linear forwards; }
+                .animate-eid-sway { animation: eid-sway ease-in-out infinite; }
+            `}} />
+            
+            {items.map(item => (
+                <div
+                    key={item.id}
+                    className="absolute top-[-100px] animate-eid-fall drop-shadow-[0_0_15px_rgba(250,204,21,0.8)]"
+                    style={{
+                        left: item.left,
+                        animationDuration: item.animationDuration,
+                        animationDelay: item.animationDelay,
+                    }}
+                >
+                    <div 
+                        className="animate-eid-sway"
+                        style={{ animationDuration: item.swayDuration }}
+                    >
+                        {item.type === 'star' ? (
+                            <Star size={item.size} className="fill-yellow-400 text-yellow-200" />
+                        ) : (
+                            <Moon size={item.size} className="fill-yellow-300 text-yellow-100" />
+                        )}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+
+// =========================================================================
 // 🧠 FAST MATH ENGINE
 // =========================================================================
 const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
@@ -573,6 +648,9 @@ export default function Dashboard() {
   return (
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
       
+      {/* RENDER THE EID CONFETTI OVERLAY */}
+      <EidConfetti />
+
       {/* REDESIGNED CENTERED PROFILE HEADER */}
       <div className="relative pt-10 md:pt-16 pb-8 px-4 md:px-8 flex flex-col items-center justify-center text-center bg-white/80 backdrop-blur-xl border-b border-slate-200 shadow-[0_4px_30px_rgba(0,0,0,0.02)] z-30 animate-in fade-in slide-in-from-top-4">
           
