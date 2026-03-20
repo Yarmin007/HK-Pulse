@@ -916,15 +916,14 @@ export default function Dashboard() {
                                 ) : (
                                     <div className="space-y-2">
                                         {adminTasks.slice(0, 4).map(task => {
-                                            const isOverdue = parseISO(task.due_date) < new Date(new Date().setHours(0,0,0,0));
-                                            const isToday = task.due_date === format(new Date(), 'yyyy-MM-dd');
+                                            const isOverdue = task.due_date ? parseISO(task.due_date) < new Date(new Date().setHours(0,0,0,0)) : false;
                                             
                                             return (
                                                 <div key={task.id} className={`p-3 rounded-xl border flex items-center justify-between ${isOverdue ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
                                                     <div className="min-w-0 pr-3">
                                                         <h4 className="font-bold text-xs md:text-sm text-slate-800 line-clamp-1">{task.title}</h4>
                                                         <p className={`text-[9px] font-black uppercase tracking-widest mt-1 flex items-center gap-1 ${isOverdue ? 'text-rose-500' : 'text-slate-400'}`}>
-                                                            {task.frequency !== 'One-Off' && <RefreshCw size={8}/>} Due: {format(parseISO(task.due_date), 'MMM d')}
+                                                            {task.frequency !== 'One-Off' && <RefreshCw size={8}/>} {task.due_date ? `Due: ${format(parseISO(task.due_date), 'MMM d')}` : 'Action Required'}
                                                         </p>
                                                     </div>
                                                     <div className="flex items-center gap-2 shrink-0">
