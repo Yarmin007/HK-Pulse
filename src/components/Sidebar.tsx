@@ -57,7 +57,7 @@ const MINIBAR_ITEMS = [
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
+  { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, // FIXED: Now points to the Mega-Hub
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "My Profile", icon: Contact, path: "/profile" },
 ];
@@ -143,10 +143,10 @@ export default function Sidebar() {
   const STAFF_BOTTOM_TABS = isPoolAttendant ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Water Prod.", icon: Droplets, path: "/water" },
-      { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" }
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" } // FIXED: Mega-Hub Link
   ] : [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "My Tasks", icon: ClipboardList, path: "/minibar/inventory/mobile" },
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, // FIXED: Mega-Hub Link
       { name: "Profile", icon: Contact, path: "/profile" }
   ];
 

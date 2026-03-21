@@ -8,237 +8,33 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
-import { differenceInDays, parseISO, isAfter, isBefore, format, isSameDay, startOfWeek, endOfWeek, addDays } from 'date-fns';
+import { parseISO, format, isSameDay, startOfWeek, endOfWeek, addDays, differenceInDays } from 'date-fns';
 import toast from 'react-hot-toast';
 
-// =========================================================================
-// ✨ GRAND EID ANIMATION COMPONENT
-// =========================================================================
-const EidConfetti = () => {
-    const [isVisible, setIsVisible] = useState(true);
-    const [items, setItems] = useState<any[]>([]);
+// --- IMPORTED LOGIC & COMPONENTS ---
+import OccasionBanner from '@/components/OccasionBanner';
+import { getPayrollPeriod, getUpcomingLeave, computeLeaveBalancesRPC, LEAVE_CODES } from '@/lib/payrollMath';
+import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
 
-    useEffect(() => {
-        const newItems = Array.from({ length: 80 }).map((_, i) => {
-            const size = Math.random() > 0.8 ? 48 : Math.random() > 0.5 ? 32 : 20; // Much larger sizes
-            const duration = Math.random() * 4 + 6; // 6s to 10s fall time
-            const delay = Math.random() * 3; // 0s to 3s stagger
-            return {
-                id: i,
-                left: `${Math.random() * 100}%`,
-                animationDuration: `${duration}s`, 
-                animationDelay: `${delay}s`,
-                swayDuration: `${Math.random() * 2 + 2}s`, // Separate horizontal sway
-                size: size,
-                type: Math.random() > 0.3 ? 'star' : 'moon' // More stars than moons
-            }
-        });
-        setItems(newItems);
-
-        // Auto hide after 12 seconds
-        const timer = setTimeout(() => setIsVisible(false), 12000);
-        return () => clearTimeout(timer);
-    }, []);
-
-    if (!isVisible) return null;
-
-    return (
-        <div className="fixed inset-0 pointer-events-none z-[9999] overflow-hidden">
-            <style dangerouslySetInnerHTML={{__html: `
-                @keyframes eid-fall {
-                    0% { transform: translateY(-100px) rotate(0deg); opacity: 0; }
-                    10% { opacity: 1; }
-                    80% { opacity: 1; }
-                    100% { transform: translateY(110vh) rotate(360deg); opacity: 0; }
-                }
-                @keyframes eid-sway {
-                    0%, 100% { transform: translateX(-20px); }
-                    50% { transform: translateX(20px); }
-                }
-                .animate-eid-fall { animation: eid-fall linear forwards; }
-                .animate-eid-sway { animation: eid-sway ease-in-out infinite; }
-            `}} />
-            
-            {items.map(item => (
-                <div
-                    key={item.id}
-                    className="absolute top-[-100px] animate-eid-fall drop-shadow-[0_0_15px_rgba(250,204,21,0.8)]"
-                    style={{
-                        left: item.left,
-                        animationDuration: item.animationDuration,
-                        animationDelay: item.animationDelay,
-                    }}
-                >
-                    <div 
-                        className="animate-eid-sway"
-                        style={{ animationDuration: item.swayDuration }}
-                    >
-                        {item.type === 'star' ? (
-                            <Star size={item.size} className="fill-yellow-400 text-yellow-200" />
-                        ) : (
-                            <Moon size={item.size} className="fill-yellow-300 text-yellow-100" />
-                        )}
-                    </div>
-                </div>
-            ))}
-        </div>
-    );
-};
-
-
-// =========================================================================
-// 🧠 FAST MATH ENGINE
-// =========================================================================
-const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
-
-const getPayrollPeriod = (date = new Date()) => {
-  const d = new Date(date);
-  let year = d.getFullYear();
-  let month = d.getMonth();
-  if (d.getDate() >= 21) {
-      return { start: new Date(year, month, 21), end: new Date(year, month + 1, 20) };
-  } else {
-      return { start: new Date(year, month - 1, 21), end: new Date(year, month, 20) };
-  }
-};
-
-const getUpcomingLeave = (futureLeaves: any[]) => {
-    if (!futureLeaves || futureLeaves.length === 0) return null;
-    const today = new Date();
-    today.setHours(0,0,0,0); 
-
-    const sorted = [...futureLeaves].sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
-    if (sorted.length === 0) return null;
-
-    let blocks = [];
-    let currentBlock = [sorted[0]];
-
-    for (let i = 1; i < sorted.length; i++) {
-        const prevDate = parseISO(currentBlock[currentBlock.length - 1].date);
-        const currDate = parseISO(sorted[i].date);
-        
-        if (differenceInDays(currDate, prevDate) === 1) {
-            currentBlock.push(sorted[i]);
-        } else {
-            blocks.push([...currentBlock]);
-            currentBlock = [sorted[i]];
-        }
-    }
-    blocks.push([...currentBlock]);
-
-    const nextLeaveBlock = blocks[0];
-    const startDate = parseISO(nextLeaveBlock[0].date);
-    const endDate = parseISO(nextLeaveBlock[nextLeaveBlock.length - 1].date);
-    const returnDate = addDays(endDate, 1);
-    const daysUntilLeave = differenceInDays(startDate, today);
-
-    return {
-        startDate, endDate, returnDate, daysUntilLeave,
-        totalLeaveDays: nextLeaveBlock.length,
-        isOnLeaveNow: daysUntilLeave === 0 || (today >= startDate && today <= endDate)
-    };
-};
-
-const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr: string, publicHolidays: any[], anniversaryLeaves: any[]) => {
-    if (!host || !rpcData) return null;
-    const targetDate = parseISO(targetDateStr);
-    const targetYear = targetDate.getFullYear();
-    const SYSTEM_START_DATE = new Date(2026, 0, 1); 
-    
-    const baseCfOff = host.cf_off || 0;
-    const baseCfAL = host.cf_al || 0;
-    const baseCfPH = host.cf_ph || 0;
-
-    const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
-    const isExec = ['DA', 'DB'].includes(host.host_level);
-    const isIntern = (host.role || '').toLowerCase().includes('intern');
-
-    const hostStats = rpcData.filter(r => String(r.host_id).trim() === String(host.host_id).trim());
-
-    const getStat = (year: number, codes: string[]) => {
-        return hostStats.filter(r => r.att_year === year && codes.includes(r.status_code)).reduce((sum, r) => sum + Number(r.total), 0);
-    };
-
-    let cfOff = baseCfOff; let cfAL = baseCfAL; let cfPH = baseCfPH;
-    
-    if (targetYear > 2026) {
-        const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
-        const endOfPrevYear = new Date(targetYear - 1, 11, 31);
-        if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
-            const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1;
-            const penaltyBefore = getStat(targetYear - 1, ['NP', 'A']);
-            const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
-            
-            cfOff += (eligibleBefore / 7) - getStat(targetYear - 1, ['O', 'OFF']);
-            cfAL += (eligibleBefore / 12) - getStat(targetYear - 1, ['AL', 'VAC']);
-            cfPH -= getStat(targetYear - 1, ['PH']);
-        }
-    } else if (targetYear < 2026) {
-        cfOff = 0; cfAL = 0; cfPH = 0;
-    }
-
-    const startOfTargetYear = new Date(targetYear, 0, 1);
-    const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
-    
-    let earnedOff = 0; let earnedAL = 0; let earnedPH = 0;
-    
-    if (targetDate >= trackingStartThisYear) {
-        const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
-        const penaltyDays = getStat(targetYear, ['NP', 'A']);
-        const eligibleDays = Math.max(0, daysActive - penaltyDays);
-        
-        earnedOff = eligibleDays / 7;
-        earnedAL = eligibleDays / 12;
-    }
-
-    publicHolidays.forEach(ph => {
-        const phDate = parseISO(ph.date);
-        if (phDate >= trackingStartThisYear && phDate <= targetDate) {
-            earnedPH += 1;
-        }
-    });
-
-    const takenOff = getStat(targetYear, ['O', 'OFF']);
-    const takenAL = getStat(targetYear, ['AL', 'VAC']);
-    const takenPH = getStat(targetYear, ['PH']);
-
-    let lastAnniversary = new Date(joinDate);
-    lastAnniversary.setFullYear(targetYear);
-    if (isAfter(lastAnniversary, targetDate)) {
-        lastAnniversary.setFullYear(targetYear - 1);
-    }
-    
-    const myAnniversaryLeaves = anniversaryLeaves.filter(a => String(a.host_id).trim() === String(host.host_id).trim() && parseISO(a.date) >= lastAnniversary && parseISO(a.date) <= targetDate);
-    const takenSL = myAnniversaryLeaves.filter(a => String(a.status_code).toUpperCase().trim() === 'SL').length;
-    const takenEL = myAnniversaryLeaves.filter(a => String(a.status_code).toUpperCase().trim() === 'EL').length;
-    const takenRR = myAnniversaryLeaves.filter(a => String(a.status_code).toUpperCase().trim() === 'RR').length;
-
-    const balOffVal = cfOff + earnedOff - takenOff;
-    const balALVal = isIntern ? 0 : (cfAL + earnedAL - takenAL);
-    const balPHVal = baseCfPH + earnedPH - takenPH;
-    const balRRVal = isExec ? 7 - takenRR : 0;
-    const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
-
-    return {
-        balOff: balOffVal.toFixed(1),
-        balAL: isIntern ? '0.0' : balALVal.toFixed(1),
-        balPH: balPHVal.toFixed(1),
-        balRR: isExec ? balRRVal.toString() : '-',
-        balTotal: totalBal.toFixed(1),
-        balSL: 30 - takenSL,
-        balEL: 10 - takenEL
-    };
-};
-
-// =========================================================================
-// 🖥️ MAIN DASHBOARD COMPONENT
-// =========================================================================
+// --- REUSABLE UI COMPONENTS ---
+const BalanceCard = ({ label, value, color, isTotal = false }: any) => (
+    <div className={`p-3 md:p-4 rounded-2xl border flex flex-col justify-center items-center ${
+        isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform md:scale-105' : `bg-${color}-50 border-${color}-100`
+    }`}>
+        <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-center leading-tight ${isTotal ? 'text-white/80' : `text-${color}-500`}`}>{label}</span>
+        <span className={`text-xl md:text-2xl font-black mt-1 ${isTotal ? 'text-white' : `text-${color}-700`}`}>{value}</span>
+    </div>
+);
 
 type TeamConfig = {
     hostDepartments: Record<string, string>;
     supervisorAccess: Record<string, string[]>;
     nicknames: Record<string, string>;
 };
+
+// =========================================================================
+// 🖥️ MAIN DASHBOARD COMPONENT
+// =========================================================================
 
 export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
@@ -250,6 +46,9 @@ export default function Dashboard() {
   const [criticalItems, setCriticalItems] = useState<any[]>([]);
 
   const [currentUser, setCurrentUser] = useState<any>(null);
+  
+  // LIVE DHAKA CLOCK STATE
+  const [liveTime, setLiveTime] = useState<Date>(getDhakaTime());
   
   // Fast Fetch States
   const [rpcStats, setRpcStats] = useState<any[]>([]);
@@ -269,22 +68,29 @@ export default function Dashboard() {
   const [teamBalances, setTeamBalances] = useState<any[]>([]);
   const [activeDeptTab, setActiveDeptTab] = useState<string>('All');
   const [teamSearch, setTeamSearch] = useState('');
-  const [teamDate, setTeamDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [teamDate, setTeamDate] = useState(getDhakaDateStr());
   const [teamSortBy, setTeamSortBy] = useState<'balTotal' | 'balOff' | 'balAL'>('balTotal');
   
   const [selectedTeamHost, setSelectedTeamHost] = useState<any | null>(null);
   const [selectedTeamHostAtt, setSelectedTeamHostAtt] = useState<any[]>([]);
 
   const [myAttendance, setMyAttendance] = useState<any[]>([]);
-  const [payrollStart, setPayrollStart] = useState<Date>(new Date());
-  const [payrollEnd, setPayrollEnd] = useState<Date>(new Date());
+  const [payrollStart, setPayrollStart] = useState<Date>(getDhakaTime());
+  const [payrollEnd, setPayrollEnd] = useState<Date>(getDhakaTime());
 
-  const [cutoffDate, setCutoffDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [cutoffDate, setCutoffDate] = useState(getDhakaDateStr());
   const [isHolidayModalOpen, setIsHolidayModalOpen] = useState(false);
   const [publicHolidays, setPublicHolidays] = useState<{id: string, date: string, name: string}[]>([]);
 
-  // ADMIN TASKS STATE
   const [adminTasks, setAdminTasks] = useState<any[]>([]);
+
+  // LIVE CLOCK TICKER
+  useEffect(() => {
+      const timer = setInterval(() => {
+          setLiveTime(getDhakaTime());
+      }, 1000);
+      return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => { 
       fetchDashboardData(); 
@@ -323,7 +129,7 @@ export default function Dashboard() {
 
   const fetchDashboardData = async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
-    const todayStr = format(new Date(), 'yyyy-MM-dd');
+    const todayStr = getDhakaDateStr(); // STRICT DHAKA TIME
 
     const [constRes, configRes] = await Promise.all([
         supabase.from('hsk_constants').select('*'),
@@ -446,7 +252,8 @@ export default function Dashboard() {
         const { data: catalog } = await supabase.from('hsk_master_catalog').select('article_number, article_name');
         
         const expiringList = (batches || []).map((b: any) => {
-            const days = differenceInDays(parseISO(String(b.expiry_date)), new Date());
+            // STRICT DHAKA TIME FOR EXPIRY MATH
+            const days = differenceInDays(parseISO(String(b.expiry_date)), getDhakaTime());
             const masterItem = catalog?.find((c: any) => c.article_number === b.article_number);
             return { ...b, item_name: masterItem?.article_name || b.article_number, days };
         }).filter((b: any) => b.days <= 60).sort((a: any, b: any) => a.days - b.days);
@@ -463,7 +270,7 @@ export default function Dashboard() {
     } 
     
     if (loggedHostId) {
-        const { start, end } = getPayrollPeriod(new Date());
+        const { start, end } = getPayrollPeriod(getDhakaTime());
         setPayrollStart(start);
         setPayrollEnd(end);
 
@@ -562,7 +369,9 @@ export default function Dashboard() {
               const dateStr = format(day, 'yyyy-MM-dd');
               const record = attendanceArray.find(a => a.date === dateStr);
               const isCurrentPeriod = day >= startDateObj && day <= endDateObj;
-              const isToday = isSameDay(day, new Date());
+              
+              // Highlight Today properly using Dhaka Time
+              const isToday = isSameDay(day, getDhakaTime());
 
               const status = String(record?.status_code || '').toUpperCase().trim();
               const duty = record?.shift_type || '';
@@ -622,7 +431,7 @@ export default function Dashboard() {
       return <div className="mt-2 w-full pb-4">{rows}</div>;
   };
 
-  const hour = new Date().getHours();
+  const hour = liveTime.getHours();
   const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
 
   if (isLoading) {
@@ -636,21 +445,9 @@ export default function Dashboard() {
       );
   }
 
-  const BalanceCard = ({ label, value, color, isTotal = false }: any) => (
-      <div className={`p-3 md:p-4 rounded-2xl border flex flex-col justify-center items-center ${
-          isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform md:scale-105' : `bg-${color}-50 border-${color}-100`
-      }`}>
-          <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-center leading-tight ${isTotal ? 'text-white/80' : `text-${color}-500`}`}>{label}</span>
-          <span className={`text-xl md:text-2xl font-black mt-1 ${isTotal ? 'text-white' : `text-${color}-700`}`}>{value}</span>
-      </div>
-  );
-
   return (
-    <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
+    <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800 pb-20">
       
-      {/* RENDER THE EID CONFETTI OVERLAY */}
-      <EidConfetti />
-
       {/* REDESIGNED CENTERED PROFILE HEADER */}
       <div className="relative pt-10 md:pt-16 pb-8 px-4 md:px-8 flex flex-col items-center justify-center text-center bg-white/80 backdrop-blur-xl border-b border-slate-200 shadow-[0_4px_30px_rgba(0,0,0,0.02)] z-30 animate-in fade-in slide-in-from-top-4">
           
@@ -686,9 +483,9 @@ export default function Dashboard() {
           ) : (
               <div className="flex flex-col items-center">
                   <h1 className="text-2xl md:text-4xl font-black tracking-tight text-[#6D2158] mb-1.5">
-                      {greeting}, {currentUser?.full_name.split(' ')[0]}
+                      {greeting}, {(currentUser?.full_name || 'Host').split(' ')[0]}
                   </h1>
-                  {displayName && displayName !== currentUser?.full_name.split(' ')[0] && (
+                  {displayName && displayName !== (currentUser?.full_name || 'Host').split(' ')[0] && (
                       <span className="text-[10px] font-black uppercase tracking-widest bg-purple-50 text-[#6D2158] px-3 py-1 rounded-full border border-purple-100 shadow-sm mb-2">
                           AKA: {displayName}
                       </span>
@@ -702,6 +499,13 @@ export default function Dashboard() {
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
               </span>
           </p>
+
+          {/* THE NEW LIVE CLOCK */}
+          <div className="mt-4 inline-flex items-center gap-2 bg-white/50 backdrop-blur-md px-4 py-2 rounded-2xl shadow-sm border border-slate-200 text-[#6D2158]">
+              <Clock size={16} />
+              <span className="font-black tracking-widest">{formatDisplayTime(liveTime)}</span>
+              <span className="text-[10px] font-bold uppercase tracking-widest opacity-50">Resort Time</span>
+          </div>
 
           {/* Quick Actions centered below profile */}
           <div className="flex flex-wrap items-center justify-center gap-3 mt-6 w-full">
@@ -729,30 +533,11 @@ export default function Dashboard() {
           </div>
       </div>
 
-      {/* Main Content Area (No side padding on mobile for edge-to-edge look) */}
+      {/* Main Content Area */}
       <div className="p-0 md:p-8 space-y-6 md:space-y-8 pb-32">
           
-          {/* EID MUBARAK BANNER */}
-          <div className="relative overflow-hidden mx-2 md:mx-0 bg-gradient-to-r from-[#6D2158] via-[#8A2B71] to-[#6D2158] rounded-3xl md:rounded-[2rem] p-6 md:p-8 shadow-xl border border-[#902468] text-white flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 mt-4 md:mt-0">
-              <Star className="absolute top-4 left-6 text-yellow-300/40 animate-pulse" size={24} />
-              <Star className="absolute bottom-4 right-12 text-yellow-300/30 animate-pulse delay-75" size={32} />
-              <Star className="absolute top-6 right-1/4 text-yellow-300/50 animate-pulse delay-150" size={16} />
-              <div className="absolute -left-10 -bottom-10 opacity-20"><Moon size={150} /></div>
-              
-              <div className="relative z-10 flex items-center gap-4 text-center md:text-left w-full md:w-auto flex-col md:flex-row">
-                  <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center border border-white/20 shadow-inner backdrop-blur-sm shrink-0">
-                      <Moon className="text-yellow-300 fill-yellow-300/20" size={32} />
-                  </div>
-                  <div>
-                      <h2 className="text-2xl md:text-3xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-yellow-200 to-yellow-500 mb-1 drop-shadow-sm">
-                          Eid Mubarak! ✨
-                      </h2>
-                      <p className="text-xs md:text-sm font-bold text-purple-200 tracking-wide">
-                          Wishing you and your family a blessed and joyous Eid.
-                      </p>
-                  </div>
-              </div>
-          </div>
+          {/* THE NEW DYNAMIC OCCASION BANNER */}
+          <OccasionBanner />
 
           {/* USER BALANCES STRIP */}
           {userBalances && (
@@ -864,7 +649,7 @@ export default function Dashboard() {
                         <div className="p-2 md:p-4 flex-1">
                            {recentActivity.length === 0 ? (
                                <div className="h-full flex flex-col items-center justify-center text-slate-300 py-10">
-                                   <CheckCircle2 size={48} className="mb-4 opacity-20"/>
+                                   <CheckCircle2 size={48} className="mx-auto mb-4 opacity-20"/>
                                    <p className="text-sm font-bold">No requests logged today.</p>
                                </div>
                            ) : (
@@ -878,7 +663,7 @@ export default function Dashboard() {
                                             <p className="text-xs md:text-sm font-bold text-slate-800 truncate">{log.item_details.replace(/\n/g, ', ')}</p>
                                             <div className="flex gap-2 mt-1">
                                                 <span className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">{log.attendant_name}</span>
-                                                <span className="text-[9px] md:text-[10px] font-bold text-[#6D2158] uppercase tracking-wider shrink-0">• {new Date(log.request_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', timeZone: 'Asia/Dhaka'})}</span>
+                                                <span className="text-[9px] md:text-[10px] font-bold text-[#6D2158] uppercase tracking-wider shrink-0">• {formatDisplayTime(log.request_time)}</span>
                                             </div>
                                          </div>
                                          <div className="shrink-0">
@@ -916,7 +701,7 @@ export default function Dashboard() {
                                 ) : (
                                     <div className="space-y-2">
                                         {adminTasks.slice(0, 4).map(task => {
-                                            const isOverdue = task.due_date ? parseISO(task.due_date) < new Date(new Date().setHours(0,0,0,0)) : false;
+                                            const isOverdue = task.due_date ? parseISO(task.due_date) < new Date(getDhakaTime().setHours(0,0,0,0)) : false;
                                             
                                             return (
                                                 <div key={task.id} className={`p-3 rounded-xl border flex items-center justify-between ${isOverdue ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
@@ -1154,14 +939,14 @@ export default function Dashboard() {
                                                   <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
                                                       <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Liability</div>
                                                       <div className="text-2xl md:text-4xl font-black text-rose-600">{overall.toFixed(1)} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
-                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 h-24 bg-rose-50 rounded-full blur-2xl"></div>
+                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 md:h-24 bg-rose-50 rounded-full blur-2xl"></div>
                                                   </div>
                                                   
                                                   <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
                                                       <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Highest Balance</div>
                                                       <div className="text-2xl md:text-4xl font-black text-amber-600">{deptData[0]?.balances.balTotal || 0} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
                                                       <div className="text-[9px] md:text-xs font-bold text-slate-600 bg-amber-50 px-2 py-1 md:px-3 md:py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100 truncate max-w-[100px] md:max-w-full">{deptData[0]?.host.full_name || 'N/A'}</div>
-                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 h-24 bg-amber-50 rounded-full blur-2xl"></div>
+                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 md:h-24 bg-amber-50 rounded-full blur-2xl"></div>
                                                   </div>
 
                                                   <div className="col-span-2 md:col-span-1 bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex items-center justify-around md:justify-start gap-4 md:gap-6">
@@ -1263,4 +1048,4 @@ export default function Dashboard() {
       )}
     </div>
   );
-}
+} 

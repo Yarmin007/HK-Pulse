@@ -6,7 +6,7 @@
   --primary: #6D2158;
 }
 
-/* --- ADD FARUMA FONT --- */
+/* --- ADD FARUMA FONT (Make sure Faruma.ttf is in public/fonts/) --- */
 @font-face {
   font-family: 'Faruma';
   src: url('/fonts/Faruma.ttf') format('truetype');

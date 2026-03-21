@@ -1,20 +1,33 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   CheckSquare, Plus, Bell, CalendarDays, RefreshCw, 
   Trash2, Loader2, CheckCircle2, Shield, Calendar, Box, X, Users, MapPin, AlertTriangle,
-  PartyPopper, Landmark, Wine, Boxes, Layers, Truck, FileText, Timer, Pencil, BellOff, Eye
+  PartyPopper, Landmark, Wine, Boxes, Layers, Truck, FileText, Timer, Pencil, BellOff, Eye, Info, Image as ImageIcon, UploadCloud, Settings
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
 import toast from 'react-hot-toast';
 import PageHeader from '@/components/PageHeader';
 
+// Safe Dhaka Time Engine
+const getDhakaTime = () => {
+    try {
+        const str = new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" });
+        return new Date(str);
+    } catch(e) {
+        return new Date(); 
+    }
+};
+
+const getDhakaDateStr = () => {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+};
+
 // --- VISUAL ARTWORK ENGINE ---
 const getTaskBlockStyle = (title: string) => {
-    const t = title.toLowerCase();
+    const t = (title || '').toLowerCase(); 
     
-    // Default Clean HK Pulse Style
     const defaults = { 
         icon: CheckSquare, 
         mainBlockClass: 'bg-white border-slate-200 hover:border-[#6D2158]',
@@ -24,21 +37,20 @@ const getTaskBlockStyle = (title: string) => {
         isFeyli: false
     };
 
-    // 🇲🇻 Authentic Maldivian Feyli (Horizontal Sarong Pattern matching Pulse Theme)
-    if (t.includes('cocktail')) {
+    // 🇲🇻 Authentic Maldivian Feyli (Red & Maroon Sarong Pattern)
+    if (t.includes('cocktail') || t.includes('gm')) {
         return { 
             icon: Wine, 
-            mainBlockClass: 'bg-white border-slate-200 hover:border-[#6D2158] shadow-md',
+            mainBlockClass: 'bg-white border-slate-200 hover:border-red-800 shadow-md',
             artPanelClass: 'border-r border-slate-200 relative overflow-hidden',
-            // Authentic horizontal stripes: Black -> White lines -> HK Pulse Maroon -> White lines -> Black
-            artPanelGradient: 'linear-gradient(to bottom, #111111 0%, #111111 30%, #ffffff 30%, #ffffff 32%, #111111 32%, #111111 35%, #ffffff 35%, #ffffff 37%, #6D2158 37%, #6D2158 63%, #ffffff 63%, #ffffff 65%, #111111 65%, #111111 68%, #ffffff 68%, #ffffff 70%, #111111 70%, #111111 100%)',
+            artPanelGradient: 'linear-gradient(to bottom, #7f1d1d 0%, #7f1d1d 20%, #dc2626 20%, #dc2626 24%, #991b1b 24%, #991b1b 28%, #dc2626 28%, #dc2626 32%, #450a0a 32%, #450a0a 68%, #dc2626 68%, #dc2626 72%, #991b1b 72%, #991b1b 76%, #dc2626 76%, #dc2626 80%, #7f1d1d 80%, #7f1d1d 100%)',
             iconClass: 'text-white drop-shadow-md z-10',
             isFeyli: true
         };
     }
 
     if (t.includes('payroll')) return { ...defaults, icon: Landmark, iconClass: 'text-emerald-600', artPanelClass: 'bg-emerald-50/50 border-r border-emerald-100' };
-    if (t.includes('activity')) return { ...defaults, icon: CalendarDays, iconClass: 'text-blue-600', artPanelClass: 'bg-blue-50/50 border-r border-blue-100' };
+    if (t.includes('activit')) return { ...defaults, icon: CalendarDays, iconClass: 'text-blue-600', artPanelClass: 'bg-blue-50/50 border-r border-blue-100' };
     if (t.includes('minibar')) return { ...defaults, icon: Wine, iconClass: 'text-rose-600', artPanelClass: 'bg-rose-50/50 border-r border-rose-100' };
     if (t.includes('store')) return { ...defaults, icon: Boxes, iconClass: 'text-amber-600', artPanelClass: 'bg-amber-50/50 border-r border-amber-100' };
     if (t.includes('linen')) return { ...defaults, icon: Layers, iconClass: 'text-indigo-600', artPanelClass: 'bg-indigo-50/50 border-r border-indigo-100' };
@@ -48,10 +60,6 @@ const getTaskBlockStyle = (title: string) => {
     return defaults;
 };
 
-// Strict Dhaka Time Helper
-const getDhakaDateStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-const getDhakaTimeStr = () => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' }).format(new Date());
-
 export default function AdminTaskHub() {
     const [isAdmin, setIsAdmin] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
@@ -59,21 +67,25 @@ export default function AdminTaskHub() {
     const [tasks, setTasks] = useState<any[]>([]);
     const [inventorySchedules, setInventorySchedules] = useState<any[]>([]);
 
+    const [viewMode, setViewMode] = useState<'active' | 'manage'>('active'); // NEW: View Toggle State
     const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
     const [editingTaskId, setEditingTaskId] = useState<string | null>(null); 
     
-    // Upgraded Task State
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
     const [newTask, setNewTask] = useState({ 
         title: '', 
         description: '', 
+        image_url: '',
         frequency: 'One-Off', 
-        hasDueDate: false, // Default to false (Reminder mode)
+        hasDueDate: false, 
         due_date: getDhakaDateStr(),
         due_time: '18:00',
         reminder_date: getDhakaDateStr(),
         reminder_time: '09:00',
         recurring_day: '1',
-        is_last_day_of_month: false
+        is_last_day_of_month: false,
+        notify_before_days: '0' 
     });
 
     const [selectedScheduleProgress, setSelectedScheduleProgress] = useState<any | null>(null);
@@ -126,9 +138,9 @@ export default function AdminTaskHub() {
     const handleOpenNewTask = () => {
         setEditingTaskId(null);
         setNewTask({ 
-            title: '', description: '', frequency: 'One-Off', hasDueDate: false, 
+            title: '', description: '', image_url: '', frequency: 'One-Off', hasDueDate: false, 
             due_date: getDhakaDateStr(), due_time: '18:00',
-            reminder_date: getDhakaDateStr(), reminder_time: '09:00', recurring_day: '1', is_last_day_of_month: false
+            reminder_date: getDhakaDateStr(), reminder_time: '09:00', recurring_day: '1', is_last_day_of_month: false, notify_before_days: '0'
         });
         setIsTaskModalOpen(true);
     };
@@ -136,26 +148,61 @@ export default function AdminTaskHub() {
     const handleEditClick = (task: any) => {
         setEditingTaskId(task.id);
         setNewTask({
-            title: task.title,
+            title: task.title || '',
             description: task.description || '',
-            frequency: task.frequency,
-            hasDueDate: !!(task.due_date || task.due_time),
+            image_url: task.image_url || '',
+            frequency: task.frequency || 'One-Off',
+            hasDueDate: !!task.due_time,
             due_date: task.due_date || getDhakaDateStr(),
             due_time: task.due_time || '18:00',
             reminder_date: task.reminder_date || getDhakaDateStr(),
             reminder_time: task.reminder_time || '09:00',
             recurring_day: task.recurring_day ? String(task.recurring_day) : '1',
-            is_last_day_of_month: task.is_last_day_of_month || false
+            is_last_day_of_month: task.is_last_day_of_month || false,
+            notify_before_days: task.notify_before_days ? String(task.notify_before_days) : '0'
         });
         setIsTaskModalOpen(true);
     };
 
+    const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const MAX_SIZE = 400; 
+                let width = img.width;
+                let height = img.height;
+
+                if (width > height) {
+                    if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
+                } else {
+                    if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx?.drawImage(img, 0, 0, width, height);
+                
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                setNewTask(prev => ({ ...prev, image_url: dataUrl }));
+            };
+            if (event.target?.result) img.src = event.target.result as string;
+        };
+        reader.readAsDataURL(file);
+    };
+
     const handleSaveTask = async () => {
-        if (!newTask.title.trim()) return toast.error('Task title is required');
+        if (!newTask.title.trim()) return toast.error('Title is required');
         
         const taskPayload = {
             title: newTask.title,
             description: newTask.description,
+            image_url: newTask.image_url,
             frequency: newTask.frequency,
             due_date: newTask.hasDueDate && newTask.frequency === 'One-Off' ? newTask.due_date : null,
             due_time: newTask.hasDueDate ? newTask.due_time : null,
@@ -163,6 +210,7 @@ export default function AdminTaskHub() {
             reminder_time: newTask.reminder_time,
             recurring_day: newTask.frequency !== 'One-Off' ? parseInt(newTask.recurring_day, 10) : null,
             is_last_day_of_month: newTask.is_last_day_of_month,
+            notify_before_days: parseInt(newTask.notify_before_days, 10),
             status: 'Pending'
         };
 
@@ -187,7 +235,6 @@ export default function AdminTaskHub() {
         const task = tasks.find(t => t.id === id);
         if (!task) return;
 
-        // If it's a recurring task or reminder, 'completing' it just dismisses it for the current cycle
         if (!isCurrentlyComplete && task.frequency !== 'One-Off') {
             const { error } = await supabase.from('hsk_admin_tasks').update({ last_completed_at: new Date().toISOString() }).eq('id', id);
             if (!error) {
@@ -224,59 +271,64 @@ export default function AdminTaskHub() {
         const activeList: any[] = [];
         const allScheduledList: any[] = [];
         
-        const dhakaDate = getDhakaDateStr();
-        const dhakaTime = getDhakaTimeStr();
-        const nowDhaka = new Date(`${dhakaDate}T${dhakaTime}:00+06:00`);
+        const nowDhaka = getDhakaTime();
+        const todayStart = new Date(nowDhaka);
+        todayStart.setHours(0,0,0,0);
+        
+        const dhakaDateStr = format(nowDhaka, 'yyyy-MM-dd');
 
         tasks.forEach(task => {
-            const isReminderOnly = !task.due_time; // If no due time, it's just a reminder block
+            const isReminderOnly = !task.due_time; 
             allScheduledList.push({...task, isReminderOnly});
 
             if (task.frequency === 'One-Off') {
                 if (task.status !== 'Completed') {
-                    const rDate = task.reminder_date || dhakaDate;
+                    const rDate = task.reminder_date || dhakaDateStr;
                     const rTime = task.reminder_time || '00:00';
-                    const showDateTime = new Date(`${rDate}T${rTime}:00+06:00`);
+                    const showDateTime = new Date(`${rDate}T${rTime}:00`); 
                     
                     if (nowDhaka >= showDateTime) {
-                        const isOverdue = task.due_date && task.due_date < dhakaDate;
+                        const isOverdue = task.due_date && task.due_date < dhakaDateStr;
                         activeList.push({ ...task, isOverdue, isReminderOnly });
                     }
                 }
             } else {
-                // RECURRING LOGIC
-                let isActiveToday = false;
+                // RECURRING LOGIC - Mathematical Cycle Calculation
+                let targetDate = new Date(todayStart);
 
-                if (task.frequency === 'Daily') isActiveToday = true;
-                else if (task.frequency === 'Weekly') {
-                    const todayDayStr = nowDhaka.getDay().toString(); // 0-6
-                    if (todayDayStr === String(task.recurring_day)) isActiveToday = true;
-                }
+                if (task.frequency === 'Weekly') {
+                    let daysToTarget = task.recurring_day - todayStart.getDay();
+                    if (daysToTarget < 0) daysToTarget += 7; // Find the *next* occurrence
+                    targetDate.setDate(todayStart.getDate() + daysToTarget);
+                } 
                 else if (task.frequency === 'Monthly') {
                     if (task.is_last_day_of_month) {
-                        // Check if today is the last day of the current month
-                        const tomorrow = new Date(nowDhaka);
-                        tomorrow.setDate(tomorrow.getDate() + 1);
-                        if (tomorrow.getDate() === 1) isActiveToday = true;
+                        targetDate.setMonth(targetDate.getMonth() + 1, 0); // Last day of current month
                     } else {
-                        if (nowDhaka.getDate().toString() === String(task.recurring_day)) isActiveToday = true;
+                        targetDate.setDate(task.recurring_day);
+                        if (targetDate < todayStart) {
+                            targetDate.setMonth(targetDate.getMonth() + 1); // Next month
+                        }
                     }
                 }
 
-                if (isActiveToday) {
-                    const rTime = task.reminder_time || '00:00';
-                    const showDateTime = new Date(`${dhakaDate}T${rTime}:00+06:00`);
-                    
-                    if (nowDhaka >= showDateTime) {
-                        let dismissedToday = false;
-                        if (task.last_completed_at) {
-                            const lastDoneStr = task.last_completed_at.substring(0, 10); 
-                            if (lastDoneStr === dhakaDate) dismissedToday = true;
-                        }
+                // Apply appearance window (e.g. 1 day before)
+                const appearanceDate = new Date(targetDate);
+                appearanceDate.setDate(appearanceDate.getDate() - (task.notify_before_days || 0));
+                
+                const [h, m] = (task.reminder_time || '00:00').split(':');
+                appearanceDate.setHours(parseInt(h), parseInt(m), 0, 0);
 
-                        if (!dismissedToday) {
-                            activeList.push({ ...task, isOverdue: false, isReminderOnly });
-                        }
+                if (nowDhaka >= appearanceDate) {
+                    let doneThisCycle = false;
+                    if (task.last_completed_at) {
+                        const lastDoneStr = new Date(task.last_completed_at).toLocaleString("en-US", { timeZone: "Asia/Dhaka" });
+                        const lastDone = new Date(lastDoneStr);
+                        if (lastDone >= appearanceDate) doneThisCycle = true;
+                    }
+
+                    if (!doneThisCycle) {
+                        activeList.push({ ...task, isOverdue: false, isReminderOnly });
                     }
                 }
             }
@@ -288,6 +340,9 @@ export default function AdminTaskHub() {
             if (a.isReminderOnly && !b.isReminderOnly) return 1;
             return 0;
         });
+
+        // Sort all scheduled list by title
+        allScheduledList.sort((a, b) => a.title.localeCompare(b.title));
 
         return { activeList, allScheduledList };
     };
@@ -309,6 +364,99 @@ export default function AdminTaskHub() {
         return task.frequency;
     };
 
+    // --- REUSABLE TASK BLOCK COMPONENT (Only Used for Active Items) ---
+    const TaskBlock = ({ task }: { task: any }) => {
+        const style = getTaskBlockStyle(task.title);
+        const ArtIcon = style.icon;
+
+        return (
+            <div className={`rounded-[1.5rem] bg-white border transition-all flex items-stretch group overflow-hidden ${task.isOverdue ? 'border-rose-300 ring-2 ring-rose-100' : 'border-slate-200 shadow-sm hover:border-[#6D2158]'}`}>
+                
+                {/* --- ARTWORK PANEL (Left Side) --- */}
+                <div 
+                    className={`w-24 md:w-32 shrink-0 relative flex items-center justify-center border-r border-slate-100 overflow-hidden ${style.artPanelClass}`}
+                    style={task.image_url ? {} : (style.artPanelGradient ? { backgroundImage: style.artPanelGradient } : {})}
+                >
+                    {task.image_url ? (
+                        <img src={task.image_url} alt="Task Artwork" className="absolute inset-0 w-full h-full object-cover" />
+                    ) : (
+                        <ArtIcon size={style.isFeyli ? 32 : 28} className={style.iconClass} strokeWidth={style.isFeyli ? 2.5 : 2}/>
+                    )}
+                    
+                    {/* Hover Overlay for Completion */}
+                    {!task.isReminderOnly && (
+                        <div className="absolute inset-0 bg-emerald-500/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer backdrop-blur-[2px]" onClick={() => handleCompleteTask(task.id, false)}>
+                            <CheckCircle2 size={36} className="text-white" strokeWidth={2.5}/>
+                        </div>
+                    )}
+                    {task.isReminderOnly && style.isFeyli && (
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" onClick={() => handleCompleteTask(task.id, false)}>
+                            <BellOff size={28} className="text-white" strokeWidth={2}/>
+                        </div>
+                    )}
+                </div>
+                
+                {/* --- CONTENT PANEL (Right Side) --- */}
+                <div className="flex-1 min-w-0 p-4 md:p-5 flex flex-col justify-center bg-white relative">
+                    
+                    <div className="flex justify-between items-start gap-4">
+                        <div className="flex-1 min-w-0">
+                            <h4 className="font-black text-lg leading-tight mb-1 text-slate-800">{task.title}</h4>
+                            {task.description && <p className="text-xs font-medium text-slate-500 mb-3 line-clamp-2">{task.description}</p>}
+                        </div>
+
+                        {/* Quick Dismiss Button (For Non-Feyli Reminders Only) */}
+                        {task.isReminderOnly && !style.isFeyli && (
+                            <button onClick={() => handleCompleteTask(task.id, false)} className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all border border-slate-200 text-slate-400 hover:bg-slate-200 hover:text-slate-600 shadow-sm" title="Dismiss Reminder">
+                                <BellOff size={18} strokeWidth={2.5}/>
+                            </button>
+                        )}
+                        {!task.isReminderOnly && !task.image_url && (
+                             <button onClick={() => handleCompleteTask(task.id, false)} className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all border border-slate-200 text-slate-400 hover:bg-emerald-500 hover:text-white hover:border-emerald-600 shadow-sm" title="Mark Task Complete">
+                                <CheckCircle2 size={20} strokeWidth={2.5}/>
+                             </button>
+                        )}
+                    </div>
+
+                    {/* BADGES */}
+                    <div className="flex flex-wrap items-center gap-2 mt-auto pt-2">
+                        {task.isReminderOnly ? (
+                            <span className="text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border bg-slate-50 border-slate-200 text-slate-500 shadow-sm">
+                                <Info size={12}/> Reminder Only
+                            </span>
+                        ) : (
+                            task.due_time && (
+                                <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border shadow-sm ${task.isOverdue ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                                    <Timer size={12}/> Due: {task.due_time}
+                                </span>
+                            )
+                        )}
+
+                        <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border bg-slate-50 border-slate-200 text-slate-500 shadow-sm`}>
+                            <RefreshCw size={10}/> {getRecurringLabel(task)}
+                        </span>
+                        
+                        {task.notify_before_days > 0 && (
+                            <span className={`text-[9px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border bg-slate-50 border-slate-200 text-slate-400 shadow-sm`}>
+                                Appears {task.notify_before_days}d early
+                            </span>
+                        )}
+                    </div>
+                </div>
+                
+                {/* --- HOVER QUICK ACTIONS --- */}
+                <div className="flex flex-col gap-2 shrink-0 p-2 bg-slate-50 border-l border-slate-100 opacity-0 group-hover:opacity-100 transition-opacity justify-center">
+                    <button onClick={() => handleEditClick(task)} className="p-2 text-slate-400 bg-white border border-slate-200 rounded-lg hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm" title="Edit">
+                        <Pencil size={14}/>
+                    </button>
+                    <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-slate-400 bg-white border border-slate-200 rounded-lg hover:text-rose-600 hover:border-rose-300 hover:bg-rose-50 transition-colors shadow-sm" title="Delete">
+                        <Trash2 size={14}/>
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
     if (isLoading) return <div className="flex-1 flex items-center justify-center h-full"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>;
 
     if (!isAdmin) return (
@@ -324,18 +472,16 @@ export default function AdminTaskHub() {
 
             <div className="px-4 md:px-8 mt-4 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-6 animate-in fade-in">
                 
-                {/* LEFT: LIVE INVENTORY PROGRESS */}
-                <div className="lg:col-span-1 space-y-6">
-                    <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
-                        <div className="p-6 border-b border-slate-50 bg-emerald-50/50">
-                            <h3 className="font-black text-emerald-700 text-lg flex items-center gap-2"><Box size={20}/> Live Audits</h3>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Active inventory counts</p>
-                        </div>
-                        <div className="p-6 space-y-6">
-                            {inventorySchedules.length === 0 ? (
-                                <p className="text-sm font-bold text-slate-400 text-center py-6">No active inventory schedules.</p>
-                            ) : (
-                                inventorySchedules.map(sched => (
+                {/* CONDITIONAL RENDERING FOR LIVE INVENTORY */}
+                {inventorySchedules.length > 0 && (
+                    <div className="lg:col-span-1 space-y-6">
+                        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden flex flex-col">
+                            <div className="p-6 border-b border-slate-50 bg-emerald-50/50">
+                                <h3 className="font-black text-emerald-700 text-lg flex items-center gap-2"><Box size={20}/> Live Audits</h3>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Active inventory counts</p>
+                            </div>
+                            <div className="p-6 space-y-6">
+                                {inventorySchedules.map(sched => (
                                     <div key={sched.id} onClick={() => setSelectedScheduleProgress(sched)} className="space-y-2 cursor-pointer p-4 rounded-2xl hover:bg-slate-50 border border-transparent hover:border-slate-200 transition-all group">
                                         <div className="flex justify-between items-end">
                                             <div>
@@ -355,133 +501,98 @@ export default function AdminTaskHub() {
                                             <span className="text-[9px] font-black text-[#6D2158] uppercase tracking-widest">Tap to view staff details</span>
                                         </div>
                                     </div>
-                                ))
-                            )}
+                                ))}
+                            </div>
                         </div>
                     </div>
-                </div>
+                )}
 
                 {/* RIGHT: ACTION CENTER TASK MANAGEMENT */}
-                <div className="lg:col-span-2 space-y-6">
+                <div className={`${inventorySchedules.length > 0 ? 'lg:col-span-2' : 'lg:col-span-3'} space-y-6`}>
                     <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 flex flex-col min-h-[500px]">
                         
                         <div className="p-6 md:p-8 border-b border-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
                             <div>
                                 <h3 className="font-black text-xl text-[#6D2158] flex items-center gap-2"><CheckSquare size={24}/> Action Center</h3>
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Manage Tasks & Auto-Reminders</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                                    {viewMode === 'active' ? 'Active Reminders & Tasks' : 'Master Schedule Configuration'}
+                                </p>
                             </div>
-                            <button onClick={handleOpenNewTask} className="px-6 py-3 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-md hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center gap-2 justify-center shrink-0">
-                                <Plus size={16}/> New Block
-                            </button>
+                            
+                            <div className="flex flex-wrap items-center gap-2">
+                                {/* VIEW TOGGLE */}
+                                <div className="flex items-center bg-slate-100 p-1 rounded-xl">
+                                    <button onClick={() => setViewMode('active')} className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${viewMode === 'active' ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Active</button>
+                                    <button onClick={() => setViewMode('manage')} className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${viewMode === 'manage' ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><Settings size={14}/> Manage</button>
+                                </div>
+                                <button onClick={handleOpenNewTask} className="px-4 py-2.5 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-md hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center gap-2">
+                                    <Plus size={16}/> New
+                                </button>
+                            </div>
                         </div>
 
                         <div className="p-4 md:p-8 flex-1 overflow-y-auto">
                             
-                            {/* ACTIVE TASKS & REMINDERS */}
-                            <div className="mb-10">
-                                <h4 className="text-xs font-black text-[#6D2158] uppercase tracking-widest mb-4 flex items-center gap-2">
-                                    <Bell size={16}/> Active Right Now
-                                </h4>
-                                {activeList.length === 0 ? (
-                                    <div className="text-center py-12 border border-dashed border-slate-200 rounded-3xl text-slate-400 bg-slate-50/50">
-                                        <CheckSquare size={48} className="mx-auto mb-4 opacity-20"/>
-                                        <p className="font-bold text-sm">All clear! No pending tasks or reminders right now.</p>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {activeList.map(task => {
-                                            const style = getTaskBlockStyle(task.title);
-                                            const ArtIcon = style.icon;
-
-                                            return (
-                                                <div key={task.id} className={`rounded-2xl border transition-all flex items-stretch group overflow-hidden ${style.mainBlockClass} ${task.isOverdue ? 'border-rose-300 ring-2 ring-rose-100' : ''}`}>
+                            {viewMode === 'active' ? (
+                                // --- ACTIVE VIEW (Clean Dashboard-like) ---
+                                <div>
+                                    <h4 className="text-xs font-black text-[#6D2158] uppercase tracking-widest mb-4 flex items-center gap-2">
+                                        <Bell size={16}/> Active Right Now
+                                    </h4>
+                                    {activeList.length === 0 ? (
+                                        <div className="text-center py-16 border border-dashed border-slate-200 rounded-3xl text-slate-400 bg-slate-50/50">
+                                            <CheckSquare size={48} className="mx-auto mb-4 opacity-20"/>
+                                            <p className="font-bold text-base">All clear! No pending tasks or alarms.</p>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                            {activeList.map(task => <TaskBlock key={task.id} task={task} />)}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                // --- MANAGE VIEW (Configuration Master List) ---
+                                <div>
+                                    <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                        <CalendarDays size={16}/> All Configured Schedules
+                                    </h4>
+                                    <div className="space-y-3">
+                                        {allScheduledList.length === 0 ? (
+                                            <p className="text-sm font-bold text-slate-400 text-center py-10">No tasks configured.</p>
+                                        ) : (
+                                            allScheduledList.map(task => (
+                                                <div key={task.id} className="p-3 md:p-4 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center gap-4 group hover:border-[#6D2158] transition-all">
                                                     
-                                                    {/* --- ARTWORK PANEL --- */}
-                                                    <div style={{background: style.artPanelGradient}} className={`w-20 md:w-24 flex items-center justify-center shrink-0 p-4 ${style.artPanelClass}`}>
-                                                        <ArtIcon size={32} className={style.iconClass} strokeWidth={style.isFeyli ? 2.5 : 2}/>
+                                                    {/* Small Thumbnail Indicator */}
+                                                    <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center shrink-0 overflow-hidden border border-slate-200">
+                                                        {task.image_url ? (
+                                                            <img src={task.image_url} alt="" className="w-full h-full object-cover" />
+                                                        ) : (
+                                                            task.isReminderOnly ? <Bell size={16} className="text-slate-400"/> : <CheckSquare size={16} className="text-slate-400"/>
+                                                        )}
                                                     </div>
                                                     
-                                                    {/* --- CONTENT PANEL --- */}
-                                                    <div className="flex-1 min-w-0 p-4 flex flex-col justify-center">
-                                                        <div className="flex justify-between items-start gap-4">
-                                                            <div className="flex-1 min-w-0">
-                                                                <h4 className="font-black text-base md:text-lg leading-tight mb-1 text-slate-800">{task.title}</h4>
-                                                                {task.description && <p className="text-xs font-bold text-slate-500 mb-3">{task.description}</p>}
-                                                            </div>
-
-                                                            {/* ACTION BUTTON (Complete for Tasks, Dismiss for Reminders) */}
-                                                            {!task.isReminderOnly ? (
-                                                                <button onClick={() => handleCompleteTask(task.id, false)} className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all border border-slate-200 text-slate-400 hover:bg-emerald-500 hover:text-white hover:border-emerald-600 shadow-sm" title="Mark Task Complete">
-                                                                    <CheckCircle2 size={20} strokeWidth={2.5}/>
-                                                                </button>
-                                                            ) : (
-                                                                <button onClick={() => handleCompleteTask(task.id, false)} className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all border border-slate-200 text-slate-400 hover:bg-slate-200 hover:text-slate-600 shadow-sm" title="Dismiss Reminder">
-                                                                    <BellOff size={18} strokeWidth={2.5}/>
-                                                                </button>
-                                                            )}
-                                                        </div>
-
-                                                        {/* BADGES */}
-                                                        <div className="flex flex-wrap items-center gap-2 mt-2">
-                                                            {task.isReminderOnly ? (
-                                                                <span className="text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border bg-slate-100 border-slate-200 text-slate-500 shadow-sm">
-                                                                    <Eye size={12}/> Reminder Only
-                                                                </span>
-                                                            ) : (
-                                                                task.due_time && (
-                                                                    <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border shadow-sm ${task.isOverdue ? 'bg-rose-100 border-rose-200 text-rose-700' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                                                                        <Timer size={12}/> Due: {task.due_time}
-                                                                    </span>
-                                                                )
-                                                            )}
-
-                                                            <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-md flex items-center gap-1 border bg-slate-50 border-slate-200 text-slate-500 shadow-sm`}>
-                                                                <RefreshCw size={10}/> {getRecurringLabel(task)}
+                                                    <div className="flex-1 min-w-0">
+                                                        <h4 className="font-bold text-sm text-slate-800 truncate">{task.title}</h4>
+                                                        <div className="flex items-center gap-2 mt-1">
+                                                            <span className={`text-[9px] font-black uppercase tracking-widest ${task.isReminderOnly ? 'text-blue-500' : 'text-rose-500'}`}>
+                                                                {task.isReminderOnly ? 'Reminder' : 'Task'}
+                                                            </span>
+                                                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                                                • <RefreshCw size={8}/> {getRecurringLabel(task)}
                                                             </span>
                                                         </div>
                                                     </div>
-                                                    
-                                                    {/* --- HOVER QUICK ACTIONS --- */}
-                                                    <div className="flex flex-col gap-2 shrink-0 p-2 bg-slate-50 border-l border-slate-100 opacity-0 group-hover:opacity-100 transition-opacity justify-center">
-                                                        <button onClick={() => handleEditClick(task)} className="p-2 text-slate-400 bg-white border border-slate-200 rounded-lg hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-colors shadow-sm" title="Edit">
-                                                            <Pencil size={14}/>
-                                                        </button>
-                                                        <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-slate-400 bg-white border border-slate-200 rounded-lg hover:text-rose-600 hover:border-rose-300 hover:bg-rose-50 transition-colors shadow-sm" title="Delete">
-                                                            <Trash2 size={14}/>
-                                                        </button>
+                                                    <div className="flex gap-2 shrink-0">
+                                                        <button onClick={() => handleEditClick(task)} className="p-2.5 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 rounded-lg hover:bg-blue-50"><Pencil size={14}/></button>
+                                                        <button onClick={() => handleDeleteTask(task.id)} className="p-2.5 text-slate-400 hover:text-rose-600 transition-colors bg-slate-50 rounded-lg hover:bg-rose-50"><Trash2 size={14}/></button>
                                                     </div>
                                                 </div>
-                                            );
-                                        })}
+                                            ))
+                                        )}
                                     </div>
-                                )}
-                            </div>
-
-                            {/* ALL CONFIGURED TASKS (Database View) */}
-                            <div className="pt-6 border-t border-slate-100">
-                                <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                                    <CalendarDays size={16}/> All Configured Blocks
-                                </h4>
-                                <div className="space-y-3">
-                                    {allScheduledList.map(task => (
-                                        <div key={task.id} className="p-3 md:p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center gap-4 group">
-                                            <div className="w-8 h-8 rounded-lg bg-slate-200 text-slate-500 flex items-center justify-center shrink-0">
-                                                {task.isReminderOnly ? <Bell size={16}/> : <CheckSquare size={16}/>}
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <h4 className="font-bold text-sm text-slate-700 truncate">{task.title}</h4>
-                                                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mt-0.5">
-                                                    {getRecurringLabel(task)}
-                                                </p>
-                                            </div>
-                                            <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                                <button onClick={() => handleEditClick(task)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors bg-white rounded-lg border shadow-sm"><Pencil size={14}/></button>
-                                                <button onClick={() => handleDeleteTask(task.id)} className="p-2 text-slate-400 hover:text-rose-600 transition-colors bg-white rounded-lg border shadow-sm"><Trash2 size={14}/></button>
-                                            </div>
-                                        </div>
-                                    ))}
                                 </div>
-                            </div>
+                            )}
 
                         </div>
                     </div>
@@ -504,6 +615,32 @@ export default function AdminTaskHub() {
                         </div>
                         
                         <div className="p-6 space-y-5 overflow-y-auto custom-scrollbar bg-slate-50/50">
+                            
+                            {/* CUSTOM ARTWORK UPLOAD */}
+                            <div className="flex items-center gap-4">
+                                <div 
+                                    className="w-24 h-24 rounded-2xl bg-white border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden shrink-0 relative hover:border-[#6D2158] transition-colors cursor-pointer shadow-sm"
+                                    onClick={() => fileInputRef.current?.click()}
+                                >
+                                    {newTask.image_url ? (
+                                        <img src={newTask.image_url} alt="Preview" className="w-full h-full object-cover" />
+                                    ) : (
+                                        <div className="flex flex-col items-center text-slate-400">
+                                            <UploadCloud size={24}/>
+                                            <span className="text-[8px] font-black uppercase mt-1">Artwork</span>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <h4 className="font-black text-sm text-slate-800">Block Artwork</h4>
+                                    <p className="text-[10px] font-medium text-slate-500 leading-tight mt-1 mb-2">Upload a custom image to make this block instantly recognizable.</p>
+                                    <button onClick={() => fileInputRef.current?.click()} className="text-[10px] font-black uppercase tracking-widest bg-white border border-slate-200 px-3 py-1.5 rounded-lg text-slate-600 hover:bg-slate-50 shadow-sm">
+                                        Choose Image
+                                    </button>
+                                    <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
+                                </div>
+                            </div>
+
                             <div>
                                 <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-1 block ml-1">Title</label>
                                 <input type="text" placeholder="e.g. GM Cocktail Party" className="w-full p-4 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-[#6D2158] transition-colors shadow-sm" value={newTask.title} onChange={e => setNewTask({...newTask, title: e.target.value})} autoFocus/>
@@ -556,15 +693,32 @@ export default function AdminTaskHub() {
                                 )}
 
                                 <div>
-                                    <label className="text-[10px] font-black uppercase text-[#6D2158] tracking-widest mb-2 block ml-1 border-b border-slate-100 pb-1 mt-4">2. Reminder Time</label>
+                                    <label className="text-[10px] font-black uppercase text-[#6D2158] tracking-widest mb-2 block ml-1 border-b border-slate-100 pb-1 mt-4">2. Alarm Time & Visibility</label>
                                     <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-3">
-                                        <p className="text-[10px] text-slate-500 font-bold leading-tight">When should this appear on your dashboard?</p>
-                                        <div className="grid grid-cols-2 gap-3">
-                                            {newTask.frequency === 'One-Off' && (
+                                        <p className="text-[10px] text-slate-500 font-bold leading-tight">When should this alarm appear on your dashboard?</p>
+                                        
+                                        {newTask.frequency === 'One-Off' ? (
+                                            <div className="grid grid-cols-2 gap-3">
                                                 <input type="date" className="w-full p-3 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={newTask.reminder_date} onChange={e => setNewTask({...newTask, reminder_date: e.target.value})}/>
-                                            )}
-                                            <input type="time" className={`w-full p-3 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158] ${newTask.frequency !== 'One-Off' ? 'col-span-2' : ''}`} value={newTask.reminder_time} onChange={e => setNewTask({...newTask, reminder_time: e.target.value})}/>
-                                        </div>
+                                                <input type="time" className="w-full p-3 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={newTask.reminder_time} onChange={e => setNewTask({...newTask, reminder_time: e.target.value})}/>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                                                    <span className="text-xs font-bold text-slate-500">Show how early?</span>
+                                                    <select className="p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={newTask.notify_before_days} onChange={e => setNewTask({...newTask, notify_before_days: e.target.value})}>
+                                                        <option value="0">On the exact day</option>
+                                                        <option value="1">1 Day Prior</option>
+                                                        <option value="2">2 Days Prior</option>
+                                                        <option value="3">3 Days Prior</option>
+                                                    </select>
+                                                </div>
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs font-bold text-slate-500">Show at time:</span>
+                                                    <input type="time" className="p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158]" value={newTask.reminder_time} onChange={e => setNewTask({...newTask, reminder_time: e.target.value})}/>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
 
@@ -577,7 +731,7 @@ export default function AdminTaskHub() {
                                         </label>
                                         
                                         {!newTask.hasDueDate ? (
-                                            <p className="text-[10px] font-bold text-slate-400 bg-white p-2 rounded-lg border border-slate-100 flex items-center gap-1.5"><Eye size={12}/> Acts as an info reminder. Auto-hides at midnight.</p>
+                                            <p className="text-[10px] font-bold text-slate-400 bg-white p-2 rounded-lg border border-slate-100 flex items-center gap-1.5"><Eye size={12}/> Acts as an info reminder. Dismiss to hide.</p>
                                         ) : (
                                             <div className="grid grid-cols-2 gap-3 border-t border-slate-200 pt-3">
                                                 {newTask.frequency === 'One-Off' && (

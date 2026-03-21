@@ -1,14 +1,17 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Search, Plus, X, Wine, Wrench, Trash2, 
   Calendar, Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
-  CheckCircle2, AlertTriangle, User, Bell, BellRing, MessageCircle
+  CheckCircle2, AlertTriangle, User, MessageCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useConfirm } from '@/components/ConfirmProvider';
 import PageHeader from '@/components/PageHeader';
 import toast from 'react-hot-toast';
+
+// --- THE MASTER TIME ENGINE ---
+import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
 
 // --- TYPES ---
 type RequestRecord = {
@@ -25,6 +28,7 @@ type RequestRecord = {
   guest_name?: string;     
   package_tag?: string;    
   chk_number?: string; 
+  logged_by?: string; 
 };
 
 type MasterItem = {
@@ -33,73 +37,7 @@ type MasterItem = {
   generic_name?: string; 
   category: string;
   is_minibar_item: boolean;
-  micros_name?: string;
   image_url?: string; 
-};
-
-// --- WEB PUSH HELPERS ---
-function urlBase64ToUint8Array(base64String: string) {
-    const padding = '='.repeat((4 - base64String.length % 4) % 4);
-    const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
-    const rawData = window.atob(base64);
-    const outputArray = new Uint8Array(rawData.length);
-    for (let i = 0; i < rawData.length; ++i) {
-        outputArray[i] = rawData.charCodeAt(i);
-    }
-    return outputArray;
-}
-
-const registerAndSubscribePush = async () => {
-    try {
-        if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
-
-        const registration = await navigator.serviceWorker.register('/sw.js');
-        await navigator.serviceWorker.ready;
-        
-        const permission = await Notification.requestPermission();
-        if (permission !== 'granted') return false;
-
-        const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-        if (!vapidPublicKey) return false;
-
-        const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
-        
-        let subscription = await registration.pushManager.getSubscription();
-        if (!subscription) {
-            subscription = await registration.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey: convertedVapidKey
-            });
-        }
-
-        const subData = JSON.parse(JSON.stringify(subscription));
-        await supabase.from('hsk_push_subscriptions').upsert({
-            endpoint: subData.endpoint,
-            auth: subData.keys.auth,
-            p256dh: subData.keys.p256dh
-        }, { onConflict: 'endpoint' });
-
-        return true;
-    } catch (err) {
-        console.error("Push registration failed", err);
-        return false;
-    }
-};
-
-// --- HELPERS ---
-const getTodayStr = (dateObj: Date = new Date()) => {
-  const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
-  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(dateObj);
-};
-
-const formatLocalTime = (dateStr: string) => {
-    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
-    return new Date(dateStr).toLocaleTimeString('en-US', {
-        timeZone: tz,
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-    });
 };
 
 const analyzePackage = (mp: string) => {
@@ -116,6 +54,43 @@ const extractMainGuest = (fullString: string) => {
   return main || parts[0];
 };
 
+// --- BULLETPROOF COMMA PARSER ---
+const parseVillas = (input: string, doubleVillas: string[] = []) => {
+    if (!input) return [];
+    const result = new Set<string>();
+    
+    // Normalize string (turn & into commas, remove spaces)
+    const normalized = input.replace(/&|and/gi, ',').replace(/\s+/g, '');
+    const parts = normalized.split(',');
+
+    for (const p of parts) {
+        if (!p) continue;
+        if (p.includes('-')) {
+            const [startStr, endStr] = p.split('-');
+            const start = parseInt(startStr.replace(/\D/g, ''), 10);
+            const end = parseInt(endStr.replace(/\D/g, ''), 10);
+            if (!isNaN(start) && !isNaN(end) && start <= end && end - start < 200) {
+                for (let i = start; i <= end; i++) result.add(String(i));
+            }
+        } else {
+            // Strip out non-digits just in case, then parse
+            const num = parseInt(p.replace(/\D/g, ''), 10);
+            if (!isNaN(num)) result.add(String(num));
+        }
+    }
+
+    const finalResult = new Set<string>();
+    Array.from(result).forEach(v => {
+        finalResult.add(v); 
+        if (doubleVillas.includes(v)) {
+            finalResult.add(`${v}-1`);
+            finalResult.add(`${v}-2`);
+        }
+    });
+
+    return Array.from(finalResult);
+};
+
 export default function CoordinatorLog() {
   const { confirmAction } = useConfirm();
 
@@ -123,13 +98,22 @@ export default function CoordinatorLog() {
   const [dailyGuests, setDailyGuests] = useState<Record<string, any>>({}); 
   const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
   const [gems, setGems] = useState<string[]>([]);
+  const [dailyAllocations, setDailyAllocations] = useState<any[]>([]);
   
+  // Dictionary to translate UUIDs into Human Names
+  const [hostMap, setHostMap] = useState<Record<string, string>>({});
+  const [allHosts, setAllHosts] = useState<any[]>([]);
+  const [currentUser, setCurrentUser] = useState<any>(null); 
+  
+  // LIVE CLOCK FOR URGENT REMINDERS
+  const [currentTime, setCurrentTime] = useState(getDhakaTime());
+
   // UI State
   const [isMinibarOpen, setIsMinibarOpen] = useState(false);
   const [isOtherOpen, setIsOtherOpen] = useState(false);
   const [otherModalType, setOtherModalType] = useState<'General' | 'GEM'>('General');
   const [isPartialOpen, setIsPartialOpen] = useState(false);
-  const [notifyPerm, setNotifyPerm] = useState<string>('default');
+  const [showOverdue, setShowOverdue] = useState(true); 
 
   // EDIT STATE
   const [isEditing, setIsEditing] = useState(false);
@@ -137,7 +121,9 @@ export default function CoordinatorLog() {
   
   // POST / BILL NUMBER MODAL
   const [postModal, setPostModal] = useState({ isOpen: false, id: '', chk: '' });
-  const [selectedDate, setSelectedDate] = useState(new Date());
+  
+  // SYNCED DATE
+  const [selectedDate, setSelectedDate] = useState(getDhakaTime());
   
   // FILTERS
   const [typeFilter, setTypeFilter] = useState('All');
@@ -165,47 +151,28 @@ export default function CoordinatorLog() {
 
   // INIT & REALTIME SYNC
   useEffect(() => { 
-    if ('Notification' in window) {
-        setNotifyPerm(Notification.permission);
-        if (Notification.permission === 'granted') {
-            registerAndSubscribePush();
-        }
+    const sessionStr = localStorage.getItem('hk_pulse_session');
+    if (sessionStr) {
+        setCurrentUser(JSON.parse(sessionStr));
     }
 
+    fetchHosts(); 
     fetchRecords(); 
     fetchCatalog(); 
     fetchSettings(); 
 
     const channel = supabase.channel('requests_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => {
-          fetchRecords(); 
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => { fetchRecords(); })
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
   }, [selectedDate]);
 
-  const handleEnableNotifications = async () => {
-      const success = await registerAndSubscribePush();
-      if (success) {
-          setNotifyPerm('granted');
-          toast.success('Background Push Notifications Enabled!');
-      } else {
-          setNotifyPerm('denied');
-          toast.error('Notifications blocked or not supported on this device.');
-      }
-  };
-
-  const triggerTestPush = async () => {
-      toast.success('Sending test push...');
-      try {
-          await fetch('/api/notify', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: `Test Notification Works!`, body: `Your background system is successfully connected.` })
-          });
-      } catch (err) { console.error("Test push failed", err); }
-  };
+  // LIVE CLOCK TICKER
+  useEffect(() => {
+      const timer = setInterval(() => setCurrentTime(getDhakaTime()), 60000);
+      return () => clearInterval(timer);
+  }, []);
 
   const getAvailableStatuses = () => {
       if (typeFilter === 'Minibar') return ['All', 'Unsent', 'Unposted', 'Done'];
@@ -218,25 +185,101 @@ export default function CoordinatorLog() {
       if (!validStatuses.includes(statusFilter)) setStatusFilter('All');
   }, [typeFilter]);
 
+  // --- FETCH HOSTS ---
+  const fetchHosts = async () => {
+      const { data, error } = await supabase.from('hsk_hosts').select('*');
+      if (!error && data) {
+          setAllHosts(data);
+          const map: Record<string, string> = {};
+          data.forEach(h => {
+              if (h.id) map[h.id] = h.nicknames || h.nickname || h.full_name || 'Unknown VA';
+          });
+          setHostMap(map);
+      }
+  };
+
+  // --- FLAWLESS AUTO-DETECT VA FROM ALLOCATIONS ---
   useEffect(() => {
-    const fetchGuest = async () => {
-      if (!villaNumber || villaNumber.length < 1) { setGuestInfo(null); return; }
+    const fetchGuestAndVA = async () => {
+      const cleanVilla = villaNumber.trim();
       
-      if (/^\d+$/.test(villaNumber)) {
-          const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getTodayStr(selectedDate)).eq('villa_number', villaNumber).maybeSingle();
+      // If villa is empty, clear the search instantly
+      if (!cleanVilla || cleanVilla.length < 1) { 
+          setGuestInfo(null); 
+          if (!isEditing) setRequesterSearch(''); 
+          return; 
+      }
+      
+      const dateStr = getDhakaDateStr(selectedDate);
+      
+      // 1. Aggressive DB Check for VA
+      let assignedVA = '';
+      if (dailyAllocations.length > 0) {
+          const { data: constData } = await supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle();
+          const dvList = constData?.label ? constData.label.split(',').map((s: string) => s.trim()) : [];
+
+          for (const alloc of dailyAllocations) {
+              const rawVillas = alloc.task_details || '';
+              // Run it through the aggressive extractor
+              const vList = parseVillas(rawVillas, dvList);
+              
+              const extractedDigits = cleanVilla.replace(/\D/g, '');
+              const numericBase = extractedDigits ? String(parseInt(extractedDigits, 10)) : '';
+              
+              let isMatch = false;
+              
+              // Standard checks
+              if (vList.includes(cleanVilla)) isMatch = true;
+              else if (numericBase && vList.includes(numericBase)) isMatch = true;
+              // Ultimate Fallback: Check if the raw string contains the exact standalone number
+              else if (numericBase && new RegExp(`\\b${numericBase}\\b`).test(rawVillas)) isMatch = true;
+              
+              if (isMatch) {
+                  const hostUUID = alloc.host_id; 
+                  
+                  // DIRECT LOOKUP into allHosts array
+                  const host = allHosts.find(h => String(h.id) === String(hostUUID) || String(h.host_id) === String(hostUUID));
+                  if (host) {
+                      // Grab best available name
+                      assignedVA = host.nicknames || host.nickname || host.full_name || host.name || hostUUID;
+                  } else {
+                      assignedVA = hostMap[hostUUID] || hostUUID; 
+                  }
+                  break; 
+              }
+          }
+      }
+
+      // 2. Fetch Guest Info & Force Update Name
+      if (/^\d+$/.test(cleanVilla) || cleanVilla.includes('-')) {
+          const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', dateStr).eq('villa_number', cleanVilla).maybeSingle();
+          
           if (data) {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
-            if(data.gem_name && !requesterSearch && !isMinibarOpen && otherModalType !== 'GEM') {
-                setRequesterSearch(data.gem_name);
+            
+            if (!isEditing) {
+                if (otherModalType === 'GEM') setRequesterSearch(data.gem_name || '');
+                else setRequesterSearch(assignedVA || '');
             }
-          } else { setGuestInfo(null); }
+          } else { 
+            setGuestInfo(null); 
+            if (!isEditing) {
+                if (otherModalType !== 'GEM') setRequesterSearch(assignedVA || '');
+                else setRequesterSearch('');
+            }
+          }
       } else {
           setGuestInfo(null);
+          if (!isEditing) {
+              if (otherModalType !== 'GEM') setRequesterSearch(assignedVA || '');
+              else setRequesterSearch('');
+          }
       }
     };
-    const timer = setTimeout(fetchGuest, 400);
+    
+    const timer = setTimeout(fetchGuestAndVA, 300); // 300ms debounce
     return () => clearTimeout(timer);
-  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen]);
+  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, dailyAllocations, allHosts, hostMap, isEditing]);
 
   const fetchCatalog = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
@@ -248,27 +291,52 @@ export default function CoordinatorLog() {
     if (data) setGems(data.filter(c => c.type === 'gem').map(c => c.label));
   };
 
+  const isOnlyRefills = (details: string) => {
+      const items = (details || '').split(/\n|,/).map(s => s.trim()).filter(Boolean);
+      if(items.length === 0) return false;
+      return items.every(item => item.includes('(Refill)'));
+  };
+
   const fetchRecords = async () => {
-    const dateStr = getTodayStr(selectedDate);
-    const [reqRes, guestRes] = await Promise.all([
-        supabase.from('hsk_daily_requests').select('*').gte('request_time', `${dateStr}T00:00:00+05:00`).lte('request_time', `${dateStr}T23:59:59+05:00`).order('request_time', { ascending: false }),
-        supabase.from('hsk_daily_summary').select('villa_number, meal_plan, stay_dates, status').eq('report_date', dateStr)
+    const dateStr = getDhakaDateStr(selectedDate);
+    const dayStartStr = `${dateStr}T00:00:00+06:00`;
+    const dayEndStr = `${dateStr}T23:59:59+06:00`;
+
+    const [reqRes, overdueRes, guestRes, allocRes] = await Promise.all([
+        supabase.from('hsk_daily_requests').select('*').gte('request_time', dayStartStr).lte('request_time', dayEndStr).order('request_time', { ascending: false }),
+        supabase.from('hsk_daily_requests').select('*').lt('request_time', dayStartStr).order('request_time', { ascending: false }).limit(100),
+        supabase.from('hsk_daily_summary').select('villa_number, meal_plan, stay_dates, status, gem_name').eq('report_date', dateStr),
+        supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', dateStr) 
     ]);
     
-    if (reqRes.data) setRecords(reqRes.data);
+    if (allocRes.data) setDailyAllocations(allocRes.data);
+
+    let allRecords = reqRes.data || [];
+    
+    if (overdueRes.data) {
+        const trueOverdue = overdueRes.data.filter(r => {
+            if (r.request_type === 'Minibar') {
+                if (isOnlyRefills(r.item_details)) return !r.is_sent;
+                return !r.is_sent || !r.is_posted;
+            }
+            return !r.is_done;
+        });
+        allRecords = [...allRecords, ...trueOverdue];
+    }
+
+    setRecords(allRecords);
     
     if (guestRes.data) {
         const gMap: Record<string, any> = {};
-        guestRes.data.forEach(g => {
-            gMap[g.villa_number] = g;
-        });
+        guestRes.data.forEach(g => { gMap[g.villa_number] = g; });
         setDailyGuests(gMap);
     }
   };
 
   const handleOpenModal = (type: 'Minibar' | 'General' | 'GEM') => {
-    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
-    setManualTime(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()));
+    const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
+    setManualTime(dhakaTimeFormatter.format(getDhakaTime()));
+    
     setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch('');
     setOtherCategory('General'); setIsEditing(false); setEditingId(null);
     
@@ -277,12 +345,13 @@ export default function CoordinatorLog() {
   };
 
   const handleEditRecord = (record: RequestRecord) => {
-    setVillaNumber(record.villa_number);
-    const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Asia/Dhaka' : 'Asia/Dhaka';
-    setManualTime(new Date(record.request_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz }));
-    setRequesterSearch(record.attendant_name);
-    setIsEditing(true);
+    setIsEditing(true); 
     setEditingId(record.id);
+
+    setVillaNumber(record.villa_number);
+    const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
+    setManualTime(dhakaTimeFormatter.format(new Date(record.request_time)));
+    setRequesterSearch(record.attendant_name);
     
     if (record.request_type === 'Minibar') {
       const items = (record.item_details || '').split('\n').map(line => {
@@ -373,9 +442,17 @@ export default function CoordinatorLog() {
         reqType = otherModalType === 'GEM' ? 'GEM Request' : otherCategory; 
     }
 
-    const dateStr = getTodayStr(selectedDate);
-    const dbTimeStr = `${dateStr}T${manualTime}:00+05:00`; 
-    const attendantName = requesterSearch || (guestInfo ? guestInfo.gem_name : "Guest");
+    const dateStr = getDhakaDateStr(selectedDate);
+    const dbTimeStr = `${dateStr}T${manualTime}:00+06:00`; 
+    
+    let attendantName = requesterSearch;
+    if (!attendantName) {
+        if (reqType === 'Minibar') attendantName = 'VA';
+        else if (reqType === 'GEM Request') attendantName = guestInfo?.gem_name || 'GEM';
+        else attendantName = 'Staff';
+    }
+
+    const loggedByName = currentUser ? (currentUser.nicknames || currentUser.nickname || currentUser.full_name || currentUser.name || 'Staff') : 'Admin';
 
     const payload = {
        villa_number: villaNumber,
@@ -385,6 +462,7 @@ export default function CoordinatorLog() {
        attendant_name: attendantName,
        guest_name: guestInfo ? guestInfo.mainName : '',
        package_tag: guestInfo?.pkg?.type || '',
+       logged_by: loggedByName
     };
 
     const { error } = isEditing 
@@ -394,17 +472,9 @@ export default function CoordinatorLog() {
     if (!error) { 
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
       toast.success(isEditing ? "Updated" : "Saved"); 
-
-      if (!isEditing) {
-          fetch('/api/notify', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  title: `Villa ${villaNumber} - ${reqType}`,
-                  body: `Requested by: ${attendantName}`
-              })
-          }).catch(console.error);
-      }
+    } else {
+        toast.error("Error saving. Did you add the 'logged_by' text column to hsk_daily_requests?");
+        console.error(error);
     }
   };
 
@@ -487,17 +557,16 @@ export default function CoordinatorLog() {
       setIsPartialOpen(false); fetchRecords();
   };
 
-  const isOnlyRefills = (details: string) => {
-      const items = (details || '').split(/\n|,/).map(s => s.trim()).filter(Boolean);
-      if(items.length === 0) return false;
-      return items.every(item => item.includes('(Refill)'));
-  };
-
   const visibleRecords = records.filter(r => {
       const vNum = parseInt(r.villa_number);
       const isMB = r.request_type === 'Minibar';
       const isGemReq = r.request_type === 'GEM Request';
       const onlyRefills = isOnlyRefills(r.item_details);
+      
+      const dateStr = getDhakaDateStr(selectedDate);
+      const isPreviousDay = r.request_time < `${dateStr}T00:00:00+06:00`;
+
+      if (isPreviousDay && !showOverdue) return false;
 
       if (typeFilter === 'Minibar' && !isMB) return false;
       if (typeFilter === 'GEM' && !isGemReq) return false;
@@ -557,20 +626,7 @@ export default function CoordinatorLog() {
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
       
       <PageHeader 
-        title={
-          <>
-            Request Log
-            {notifyPerm !== 'granted' ? (
-                <button onClick={handleEnableNotifications} className="ml-2 text-rose-500 hover:text-rose-600 active:scale-90 transition-transform bg-rose-50 p-1.5 rounded-full shadow-sm" title="Enable Background Notifications">
-                    <Bell size={14} className="animate-pulse" />
-                </button>
-            ) : (
-                <button onClick={triggerTestPush} className="ml-2 text-emerald-500 hover:text-emerald-600 active:scale-90 transition-transform bg-emerald-50 p-1.5 rounded-full shadow-sm" title="Test Push Notifications">
-                    <BellRing size={14} />
-                </button>
-            )}
-          </>
-        }
+        title="Request Log"
         date={selectedDate}
         onDateChange={setSelectedDate}
         actions={
@@ -587,23 +643,28 @@ export default function CoordinatorLog() {
         </div>
 
         <div className="flex flex-col gap-2.5 mt-2">
-            <div className="flex gap-2 overflow-x-auto no-scrollbar items-center">
+            <div className="flex gap-2 flex-wrap items-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Type</span>
                 {['All', 'Minibar', 'General', 'GEM'].map(t => (
                     <button key={t} onClick={() => setTypeFilter(t)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${typeFilter === t ? 'bg-slate-800 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-500 hover:border-slate-400'}`}>{t}</button>
                 ))}
             </div>
-            <div className="flex gap-2 overflow-x-auto no-scrollbar items-center">
+            <div className="flex gap-2 flex-wrap items-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">State</span>
                 {getAvailableStatuses().map(f => (
                     <button key={f} onClick={() => setStatusFilter(f)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${statusFilter === f ? 'bg-[#6D2158] text-white shadow-md shadow-[#6D2158]/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-[#6D2158]'}`}>{f}</button>
                 ))}
             </div>
-            <div className="flex gap-2 overflow-x-auto no-scrollbar items-center">
+            <div className="flex gap-2 flex-wrap items-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Zone</span>
                 {['All', 'Jetty A', 'Jetty B', 'Jetty C', 'Beach'].map(j => (
                     <button key={j} onClick={() => setJettyFilter(j)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${jettyFilter === j ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-blue-600'}`}>{j}</button>
                 ))}
+                <div className="border-l border-slate-200 pl-3 ml-1 h-6 flex items-center">
+                    <button onClick={() => setShowOverdue(!showOverdue)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${showOverdue ? 'bg-rose-50 text-rose-600 border border-rose-200 shadow-sm' : 'bg-white border border-slate-200 text-slate-400'}`}>
+                        {showOverdue ? 'Hide Overdue' : 'Show Overdue'}
+                    </button>
+                </div>
             </div>
         </div>
       </PageHeader>
@@ -625,69 +686,116 @@ export default function CoordinatorLog() {
              const mealPlan = gInfo?.meal_plan || r.package_tag || '';
              const isCheckout = gInfo?.status?.includes('DEP');
 
+             const reqTimeMs = new Date(r.request_time).getTime();
+             const diffMins = Math.floor((currentTime.getTime() - reqTimeMs) / 60000);
+             let timeStr = '';
+             if (diffMins < 0) {
+                 timeStr = `In ${Math.abs(diffMins)}m`;
+             } else if (diffMins >= 1440) {
+                 const days = Math.floor(diffMins / 1440);
+                 const remainingHours = Math.floor((diffMins % 1440) / 60);
+                 timeStr = `${days}d ${remainingHours}h ago`;
+             } else if (diffMins >= 60) {
+                 timeStr = `${Math.floor(diffMins/60)}h ${diffMins%60}m ago`;
+             } else {
+                 timeStr = `${diffMins}m ago`;
+             }
+             
+             const isPending = r.request_type === 'Minibar' ? (!r.is_sent || (!allRefill && !r.is_posted)) : !r.is_done;
+             const isUrgent = isPending && diffMins > 30;
+             const isCompleted = !isPending;
+             
+             const dateStr = getDhakaDateStr(selectedDate);
+             const isPreviousDay = r.request_time < `${dateStr}T00:00:00+06:00`;
+             
+             let pastDateStr = '';
+             if (isPreviousDay) {
+                 pastDateStr = new Date(r.request_time).toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'short' });
+             }
+
              return (
-             <div key={r.id} className={`card-standard ${r.request_type === 'Minibar' ? 'border-rose-100' : isGemReq ? 'border-amber-200' : 'border-slate-200'} ${isCheckout ? 'bg-rose-50/40' : ''}`}>
-                <div className="flex justify-between items-start mb-3">
-                   <div className="flex flex-col gap-1.5">
-                       <div className="flex items-center gap-2">
-                         <span className="text-2xl font-black text-slate-800 tracking-tight leading-none break-all">{r.villa_number}</span>
-                         <button onClick={() => handleEditRecord(r)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0" title="Edit"><Edit3 size={14}/></button>
-                       </div>
-                       
-                       <div className="flex items-center gap-1.5 flex-wrap">
-                           {mealPlan && <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[9px] font-black uppercase border border-slate-200">{mealPlan}</span>}
-                           {depDate && <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase border ${isCheckout ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>Dep: {depDate}</span>}
-                       </div>
-                   </div>
-
-                   <div className={`px-2.5 py-1 rounded-xl text-[9px] font-black uppercase tracking-wider shrink-0 shadow-sm ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600 border border-rose-100' : isGemReq ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>{r.request_type}</div>
-                </div>
+             <div key={r.id} className={`card-standard p-0 overflow-hidden transition-all ${isCompleted ? 'opacity-80 bg-slate-50 border-slate-300 shadow-none' : isUrgent ? 'border-rose-400 ring-4 ring-rose-50' : r.request_type === 'Minibar' ? 'border-rose-100' : isGemReq ? 'border-amber-200' : 'border-slate-200'}`}>
                 
-                <div className="mb-4 text-sm font-bold text-slate-600 leading-snug space-y-1">
-                    {(r.item_details || '').split(/\n|,/).map((item: string, idx: number) => {
-                        const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
-                        if (!cleanItem) return null;
-                        return (<div key={idx}>• {cleanItem}</div>);
-                    })}
-                </div>
+                {isPreviousDay && !isCompleted && (
+                    <div className="bg-rose-600 text-white text-[10px] font-black px-4 py-1.5 w-full text-center tracking-widest uppercase flex items-center justify-center gap-1.5 shadow-sm">
+                        <AlertTriangle size={12} /> Overdue (From {pastDateStr})
+                    </div>
+                )}
 
-                <div className="mt-auto pt-4 border-t border-slate-50 flex justify-between items-end">
-                   <div className="mr-6">
-                      <div className="text-[10px] text-slate-400 font-black uppercase">{r.attendant_name}</div>
-                      <div className="text-[10px] text-slate-400 font-bold mt-0.5"><Clock size={10} className="inline mr-1 -mt-0.5"/>{formatLocalTime(r.request_time)}</div>
-                      {r.chk_number && <div className="text-[10px] text-[#6D2158] font-black mt-1">CHK: {r.chk_number}</div>}
-                   </div>
-                   <div className="flex gap-2 flex-wrap justify-end">
-                     {r.request_type === 'Minibar' ? (
-                         <>
-                             <button onClick={() => openPartialModal(r)} className="p-2.5 rounded-xl bg-slate-50 text-slate-400 hover:text-slate-600 active:scale-90 transition-transform" title="Split"><Split size={16}/></button>
-                             <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:bg-blue-50 hover:text-blue-600'}`} title="Sent"><Send size={16}/></button>
-                             
-                             {!allRefill && (
-                                 <button onClick={() => handleOpenPost(r)} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_posted ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600'}`} title={r.is_posted ? "Edit Bill" : "Post to Guest"}>
+                <div className="p-5 flex flex-col h-full">
+                    <div className="flex justify-between items-start mb-3">
+                       <div className="flex flex-col gap-1.5">
+                           <div className="flex items-center gap-2">
+                             <span className="text-2xl font-black text-slate-800 tracking-tight leading-none break-all">{r.villa_number}</span>
+                             <button onClick={() => handleEditRecord(r)} className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0" title="Edit"><Edit3 size={14}/></button>
+                           </div>
+                           
+                           <div className="flex items-center gap-1.5 flex-wrap">
+                               {mealPlan && <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[9px] font-black uppercase border border-slate-200">{mealPlan}</span>}
+                               {depDate && <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase border ${isCheckout ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>Dep: {depDate}</span>}
+                           </div>
+                       </div>
+
+                       <div className={`px-2.5 py-1 rounded-xl text-[9px] font-black uppercase tracking-wider shrink-0 shadow-sm ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600 border border-rose-100' : isGemReq ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>{r.request_type}</div>
+                    </div>
+                    
+                    <div className="mb-4 text-sm font-bold text-slate-600 leading-snug space-y-1">
+                        {(r.item_details || '').split(/\n|,/).map((item: string, idx: number) => {
+                            const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
+                            if (!cleanItem) return null;
+                            return (<div key={idx}>• {cleanItem}</div>);
+                        })}
+                    </div>
+
+                    <div className="mt-auto pt-4 border-t border-slate-50 flex justify-between items-end">
+                       <div className="mr-6">
+                          <div className="text-[10px] text-slate-400 font-black uppercase">{r.attendant_name}</div>
+                          
+                          <div className={`text-[10px] font-bold mt-0.5 flex flex-wrap items-center gap-1 ${isUrgent ? 'text-rose-600 animate-pulse' : 'text-slate-400'}`}>
+                              <span className="flex items-center whitespace-nowrap">
+                                  <Clock size={10} className="inline mr-1 -mt-0.5"/>
+                                  {formatDisplayTime(r.request_time)} 
+                              </span>
+                              <span className={`whitespace-nowrap px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest ${isUrgent ? 'bg-rose-100 font-black' : 'bg-slate-100'}`}>
+                                  {timeStr}
+                              </span>
+                          </div>
+
+                          {r.chk_number && <div className="text-[10px] text-[#6D2158] font-black mt-1">CHK: {r.chk_number}</div>}
+                          {r.logged_by && <div className="text-[8px] text-slate-300 font-bold uppercase mt-1">Log: {r.logged_by}</div>}
+                       </div>
+                       <div className="flex gap-2 flex-wrap justify-end">
+                         {r.request_type === 'Minibar' ? (
+                             <>
+                                 <button onClick={() => openPartialModal(r)} className="p-2.5 rounded-xl bg-slate-50 text-slate-400 hover:text-slate-600 active:scale-90 transition-transform" title="Split"><Split size={16}/></button>
+                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:bg-blue-50 hover:text-blue-600'}`} title="Sent"><Send size={16}/></button>
+                                 
+                                 {!allRefill && (
+                                     <button onClick={() => handleOpenPost(r)} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_posted ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600'}`} title={r.is_posted ? "Edit Bill" : "Post to Guest"}>
+                                         <Check size={16}/>
+                                     </button>
+                                 )}
+                             </>
+                         ) : (
+                             <>
+                                 <button onClick={() => handleWhatsApp(r, 'inform')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform" title="WhatsApp Inform">
+                                     <MessageCircle size={16} />
+                                 </button>
+                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title={r.is_sent ? 'Informed' : 'Inform'}>
+                                     <Send size={16}/>
+                                 </button>
+
+                                 <button onClick={() => handleWhatsApp(r, 'done')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform flex items-center gap-0.5" title="WhatsApp Done">
+                                     <MessageCircle size={16}/><Check size={10} strokeWidth={4}/>
+                                 </button>
+                                 <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
                                      <Check size={16}/>
                                  </button>
-                             )}
-                         </>
-                     ) : (
-                         <>
-                             <button onClick={() => handleWhatsApp(r, 'inform')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform" title="WhatsApp Inform">
-                                 <MessageCircle size={16} />
-                             </button>
-                             <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title={r.is_sent ? 'Informed' : 'Inform'}>
-                                 <Send size={16}/>
-                             </button>
-
-                             <button onClick={() => handleWhatsApp(r, 'done')} className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform flex items-center gap-0.5" title="WhatsApp Done">
-                                 <MessageCircle size={16}/><Check size={10} strokeWidth={4}/>
-                             </button>
-                             <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2.5 rounded-xl active:scale-90 transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
-                                 <Check size={16}/>
-                             </button>
-                         </>
-                     )}
-                     <button onClick={() => askDelete(r.id)} className="p-2.5 rounded-xl text-slate-300 hover:bg-rose-50 hover:text-rose-500 active:scale-90 transition-all"><Trash2 size={16}/></button>
-                   </div>
+                             </>
+                         )}
+                         <button onClick={() => askDelete(r.id)} className="p-2.5 rounded-xl text-slate-300 hover:bg-rose-50 hover:text-rose-500 active:scale-90 transition-all"><Trash2 size={16}/></button>
+                       </div>
+                    </div>
                 </div>
              </div>
              )
@@ -729,8 +837,8 @@ export default function CoordinatorLog() {
                </div>
                
                <div className="flex-1 overflow-y-auto p-6 pb-6 custom-scrollbar">
-                  <div className="flex gap-3 mb-4">
-                     <input type="text" placeholder="Villa" autoFocus className="input-field w-24 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+                  <div className="flex gap-3 mb-4 items-center">
+                     <input type="text" placeholder="Villa" autoFocus className="input-field w-20 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
                      <div className="flex-1 relative">
                          <input type="text" placeholder="VA Name (e.g. Ali)" className="input-field w-full text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
                      </div>
@@ -805,8 +913,10 @@ export default function CoordinatorLog() {
                              {gems.map(g => <option key={g} value={g}>{g}</option>)}
                          </select>
                      ) : (
-                         <input type="text" placeholder="Requested By..." className="input-field flex-1 text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
+                         <input type="text" placeholder="VA Name / ID" className="input-field flex-1 text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
                      )}
+                     
+                     <input type="time" className="input-field w-28 text-center text-[16px] md:text-sm" value={manualTime} onChange={e => setManualTime(e.target.value)}/>
                   </div>
                   
                   <GuestCard />
