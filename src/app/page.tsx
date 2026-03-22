@@ -1,10 +1,10 @@
 "use client";
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { 
   Users, ShoppingCart, Clock, AlertTriangle, 
   CheckCircle2, BarChart2, Edit3, Loader2, Search,
   Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft,
-  CheckSquare, CalendarDays, RefreshCw, Moon, Star
+  CheckSquare, RefreshCw, ChevronRight
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -12,19 +12,48 @@ import { parseISO, format, isSameDay, startOfWeek, endOfWeek, addDays, differenc
 import toast from 'react-hot-toast';
 
 // --- IMPORTED LOGIC & COMPONENTS ---
-import OccasionBanner from '@/components/OccasionBanner';
 import { getPayrollPeriod, getUpcomingLeave, computeLeaveBalancesRPC, LEAVE_CODES } from '@/lib/payrollMath';
 import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
 
-// --- REUSABLE UI COMPONENTS ---
-const BalanceCard = ({ label, value, color, isTotal = false }: any) => (
-    <div className={`p-3 md:p-4 rounded-2xl border flex flex-col justify-center items-center ${
-        isTotal ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform md:scale-105' : `bg-${color}-50 border-${color}-100`
-    }`}>
-        <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-center leading-tight ${isTotal ? 'text-white/80' : `text-${color}-500`}`}>{label}</span>
-        <span className={`text-xl md:text-2xl font-black mt-1 ${isTotal ? 'text-white' : `text-${color}-700`}`}>{value}</span>
-    </div>
-);
+// =========================================================================
+// ⚡ PERFORMANCE FIX: ISOLATED LIVE CLOCK
+// =========================================================================
+const LiveClock = () => {
+    const [time, setTime] = useState<Date>(getDhakaTime());
+    useEffect(() => {
+        const timer = setInterval(() => setTime(getDhakaTime()), 1000);
+        return () => clearInterval(timer);
+    }, []);
+    return <span className="font-black tracking-widest">{formatDisplayTime(time)}</span>;
+};
+
+// =========================================================================
+// 🎨 PRODUCTION-SAFE TAILWIND FIX
+// =========================================================================
+const COLOR_MAP: Record<string, string> = {
+    emerald: 'bg-emerald-50 border-emerald-100 text-emerald-500 text-emerald-700',
+    cyan: 'bg-cyan-50 border-cyan-100 text-cyan-500 text-cyan-700',
+    blue: 'bg-blue-50 border-blue-100 text-blue-500 text-blue-700',
+    fuchsia: 'bg-fuchsia-50 border-fuchsia-100 text-fuchsia-500 text-fuchsia-700',
+    rose: 'bg-rose-50 border-rose-100 text-rose-500 text-rose-700',
+    orange: 'bg-orange-50 border-orange-100 text-orange-500 text-orange-700',
+};
+
+const BalanceCard = ({ label, value, color, isTotal = false }: any) => {
+    const themeClasses = isTotal 
+        ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-lg shadow-purple-900/20 transform md:scale-105' 
+        : COLOR_MAP[color] || 'bg-slate-50 border-slate-100 text-slate-500 text-slate-700';
+
+    const labelColor = isTotal ? 'text-white/80' : themeClasses.split(' ')[2];
+    const valueColor = isTotal ? 'text-white' : themeClasses.split(' ')[3];
+
+    return (
+        <div className={`p-3 md:p-4 rounded-2xl border flex flex-col justify-center items-center ${themeClasses.split(' ').slice(0,2).join(' ')} ${isTotal ? themeClasses : ''}`}>
+            <span className={`text-[9px] md:text-[10px] font-bold uppercase tracking-widest text-center leading-tight ${labelColor}`}>{label}</span>
+            <span className={`text-xl md:text-2xl font-black mt-1 ${valueColor}`}>{value}</span>
+        </div>
+    );
+};
 
 type TeamConfig = {
     hostDepartments: Record<string, string>;
@@ -47,10 +76,6 @@ export default function Dashboard() {
 
   const [currentUser, setCurrentUser] = useState<any>(null);
   
-  // LIVE DHAKA CLOCK STATE
-  const [liveTime, setLiveTime] = useState<Date>(getDhakaTime());
-  
-  // Fast Fetch States
   const [rpcStats, setRpcStats] = useState<any[]>([]);
   const [futureLeaves, setFutureLeaves] = useState<any[]>([]);
   const [anniversaryLeaves, setAnniversaryLeaves] = useState<any[]>([]);
@@ -68,7 +93,6 @@ export default function Dashboard() {
   const [teamBalances, setTeamBalances] = useState<any[]>([]);
   const [activeDeptTab, setActiveDeptTab] = useState<string>('All');
   const [teamSearch, setTeamSearch] = useState('');
-  const [teamDate, setTeamDate] = useState(getDhakaDateStr());
   const [teamSortBy, setTeamSortBy] = useState<'balTotal' | 'balOff' | 'balAL'>('balTotal');
   
   const [selectedTeamHost, setSelectedTeamHost] = useState<any | null>(null);
@@ -78,19 +102,18 @@ export default function Dashboard() {
   const [payrollStart, setPayrollStart] = useState<Date>(getDhakaTime());
   const [payrollEnd, setPayrollEnd] = useState<Date>(getDhakaTime());
 
+  // ⚡ FIX: This is the ONLY date state now. It controls everything.
   const [cutoffDate, setCutoffDate] = useState(getDhakaDateStr());
+  const cutoffDateRef = useRef(cutoffDate); 
+
   const [isHolidayModalOpen, setIsHolidayModalOpen] = useState(false);
   const [publicHolidays, setPublicHolidays] = useState<{id: string, date: string, name: string}[]>([]);
 
   const [adminTasks, setAdminTasks] = useState<any[]>([]);
 
-  // LIVE CLOCK TICKER
   useEffect(() => {
-      const timer = setInterval(() => {
-          setLiveTime(getDhakaTime());
-      }, 1000);
-      return () => clearInterval(timer);
-  }, []);
+      cutoffDateRef.current = cutoffDate;
+  }, [cutoffDate]);
 
   useEffect(() => { 
       fetchDashboardData(); 
@@ -98,23 +121,26 @@ export default function Dashboard() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => { fetchDashboardData(false); }).subscribe();
       const orderChannel = supabase.channel('dashboard_orders')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_procurement_orders' }, () => { fetchDashboardData(false); }).subscribe();
+      
       return () => { supabase.removeChannel(reqChannel); supabase.removeChannel(orderChannel); };
   }, []);
 
+  // ⚡ FIX: Any time cutoffDate changes, instantly fetch new data from DB
   useEffect(() => {
       if (!isLoading) {
           const fetchRPC = async () => {
-              const { data } = await supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate });
-              setRpcStats(data || []);
+              const { data } = await supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate });
+              if (data) setRpcStats(data);
           };
           fetchRPC();
       }
-  }, [cutoffDate]);
+  }, [cutoffDate, isLoading]);
 
   const handleHostClick = async (itemData: any) => {
       setSelectedTeamHost(itemData);
       setSelectedTeamHostAtt([]);
-      const period = getPayrollPeriod(parseISO(teamDate));
+      // ⚡ FIX: Math is now correctly wired to the global cutoffDate
+      const period = getPayrollPeriod(parseISO(cutoffDate));
       const { data } = await supabase.from('hsk_attendance')
           .select('*')
           .eq('host_id', itemData.host.host_id)
@@ -125,23 +151,25 @@ export default function Dashboard() {
 
   useEffect(() => {
       if (selectedTeamHost) handleHostClick(selectedTeamHost);
-  }, [teamDate]);
+  }, [cutoffDate]);
 
   const fetchDashboardData = async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
-    const todayStr = getDhakaDateStr(); // STRICT DHAKA TIME
+    const todayStr = getDhakaDateStr(); 
+    const currentCutoff = cutoffDateRef.current;
 
     const [constRes, configRes] = await Promise.all([
         supabase.from('hsk_constants').select('*'),
         supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').maybeSingle()
     ]);
 
+    let loadedHolidays: any[] = [];
     if (constRes.data) {
-        const parsedHolidays = constRes.data.filter((c: any) => c.type === 'public_holiday').map((c: any) => {
+        loadedHolidays = constRes.data.filter((c: any) => c.type === 'public_holiday').map((c: any) => {
             const [d, n] = c.label.split('::');
             return { id: c.id, date: d, name: n };
         }).sort((a: any, b: any) => a.date.localeCompare(b.date));
-        setPublicHolidays(parsedHolidays);
+        setPublicHolidays(loadedHolidays);
 
         const depts = constRes.data.filter((c: any) => c.type === 'sub_department').map((c: any) => c.label).sort();
         setAllSubDepts(depts);
@@ -189,8 +217,8 @@ export default function Dashboard() {
         
         if (superFlag) {
             const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
-                supabase.from('hsk_hosts').select('*').order('full_name'),
-                supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate }),
+                supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'), 
+                supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
                 supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
@@ -209,7 +237,7 @@ export default function Dashboard() {
 
         } else {
             const [rpcRes, futureRes, anniRes] = await Promise.all([
-                supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate }),
+                supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
                 supabase.from('hsk_attendance').select('host_id, date, status_code').eq('host_id', loggedHostId).gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').eq('host_id', loggedHostId).in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
@@ -225,8 +253,8 @@ export default function Dashboard() {
         
         if (adminFlag) {
              const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
-                supabase.from('hsk_hosts').select('*').order('full_name'),
-                supabase.rpc('get_yearly_attendance_stats', { p_target_date: cutoffDate }),
+                supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'), 
+                supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
                 supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
@@ -238,7 +266,7 @@ export default function Dashboard() {
     }
 
     if (adminFlag) {
-        const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true });
+        const { count: hostCount } = await supabase.from('hsk_hosts').select('*', { count: 'exact', head: true }).neq('status', 'Resigned');
         const { count: orderCount } = await supabase.from('hsk_procurement_orders').select('*', { count: 'exact', head: true }).neq('status', 'Completed');
         
         const { data: reqs } = await supabase.from('hsk_daily_requests').select('*')
@@ -252,7 +280,6 @@ export default function Dashboard() {
         const { data: catalog } = await supabase.from('hsk_master_catalog').select('article_number, article_name');
         
         const expiringList = (batches || []).map((b: any) => {
-            // STRICT DHAKA TIME FOR EXPIRY MATH
             const days = differenceInDays(parseISO(String(b.expiry_date)), getDhakaTime());
             const masterItem = catalog?.find((c: any) => c.article_number === b.article_number);
             return { ...b, item_name: masterItem?.article_name || b.article_number, days };
@@ -325,9 +352,9 @@ export default function Dashboard() {
       setIsLoadingTeam(true);
 
       const computed = allHosts.map((h: any) => {
-          const bal = computeLeaveBalancesRPC(h, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
+          const bal = computeLeaveBalancesRPC(h, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
           const myFutureLeaves = futureLeaves.filter(l => String(l.host_id).trim() === String(h.host_id).trim());
-          const upcoming = getUpcomingLeave(myFutureLeaves);
+          const upcoming = getUpcomingLeave(myFutureLeaves, getDhakaDateStr());
           const dept = teamConfig.hostDepartments?.[h.host_id] || 'Unassigned';
           
           return { host: h, department: dept, balances: bal, upcoming };
@@ -339,18 +366,19 @@ export default function Dashboard() {
       setIsLoadingTeam(false);
   }, [allHosts, rpcStats, futureLeaves, anniversaryLeaves, cutoffDate, publicHolidays, teamConfig]);
 
+  // ⚡ FIX: Ensuring loadTeamLeaves reliably fires when cutoffDate or rpcStats update
   useEffect(() => {
       if (isTeamModalOpen) loadTeamLeaves();
-  }, [rpcStats, isTeamModalOpen, loadTeamLeaves]);
+  }, [rpcStats, cutoffDate, isTeamModalOpen, loadTeamLeaves]);
 
   const upcomingLeaveInfo = useMemo(() => {
       if (!currentUser) return null;
       const myFuture = futureLeaves.filter(l => String(l.host_id).trim() === String(currentUser.host_id).trim());
-      return getUpcomingLeave(myFuture);
+      return getUpcomingLeave(myFuture, getDhakaDateStr());
   }, [currentUser, futureLeaves]);
 
   const userBalances = useMemo(() => {
-      return computeLeaveBalancesRPC(currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
+      return computeLeaveBalancesRPC(currentUser, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
   }, [currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves]);
 
   // FULLY RESPONSIVE CALENDAR GRID
@@ -369,8 +397,6 @@ export default function Dashboard() {
               const dateStr = format(day, 'yyyy-MM-dd');
               const record = attendanceArray.find(a => a.date === dateStr);
               const isCurrentPeriod = day >= startDateObj && day <= endDateObj;
-              
-              // Highlight Today properly using Dhaka Time
               const isToday = isSameDay(day, getDhakaTime());
 
               const status = String(record?.status_code || '').toUpperCase().trim();
@@ -431,7 +457,7 @@ export default function Dashboard() {
       return <div className="mt-2 w-full pb-4">{rows}</div>;
   };
 
-  const hour = liveTime.getHours();
+  const hour = getDhakaTime().getHours();
   const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
 
   if (isLoading) {
@@ -500,14 +526,12 @@ export default function Dashboard() {
               </span>
           </p>
 
-          {/* THE NEW LIVE CLOCK */}
           <div className="mt-4 inline-flex items-center gap-2 bg-white/50 backdrop-blur-md px-4 py-2 rounded-2xl shadow-sm border border-slate-200 text-[#6D2158]">
               <Clock size={16} />
-              <span className="font-black tracking-widest">{formatDisplayTime(liveTime)}</span>
+              <LiveClock />
               <span className="text-[10px] font-bold uppercase tracking-widest opacity-50">Resort Time</span>
           </div>
 
-          {/* Quick Actions centered below profile */}
           <div className="flex flex-wrap items-center justify-center gap-3 mt-6 w-full">
               {isSupervisor && (
                   <button onClick={loadTeamLeaves} className="text-[10px] md:text-xs font-black text-purple-600 bg-purple-50 px-4 md:px-5 py-2.5 md:py-3 rounded-xl hover:bg-purple-100 transition-colors uppercase tracking-widest border border-purple-200 flex items-center gap-2 shadow-sm">
@@ -518,17 +542,16 @@ export default function Dashboard() {
                   <Plane size={16}/> Holidays
               </button>
               
-              <div className="relative cursor-pointer group">
+              <div className="flex items-center bg-white px-3 md:px-4 py-2 md:py-2.5 rounded-xl border border-slate-200 shadow-sm hover:border-[#6D2158] transition-colors gap-2">
+                  <Calendar size={16} className="text-[#6D2158] shrink-0" />
                   <input 
                       type="date" 
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30"
+                      className="bg-transparent font-black text-xs md:text-sm text-[#6D2158] uppercase tracking-widest outline-none cursor-pointer"
                       value={cutoffDate}
-                      onChange={e => e.target.value && setCutoffDate(e.target.value)}
+                      onChange={e => {
+                          if (e.target.value) setCutoffDate(e.target.value);
+                      }}
                   />
-                  <div className="flex items-center bg-white px-4 md:px-5 py-2.5 md:py-3 rounded-xl border border-slate-200 shadow-sm group-hover:border-[#6D2158] transition-colors gap-2">
-                      <Calendar size={16} className="text-[#6D2158]"/>
-                      <span className="font-black text-[10px] md:text-xs text-[#6D2158] uppercase tracking-widest">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
-                  </div>
               </div>
           </div>
       </div>
@@ -536,9 +559,6 @@ export default function Dashboard() {
       {/* Main Content Area */}
       <div className="p-0 md:p-8 space-y-6 md:space-y-8 pb-32">
           
-          {/* THE NEW DYNAMIC OCCASION BANNER */}
-          <OccasionBanner />
-
           {/* USER BALANCES STRIP */}
           {userBalances && (
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4 px-2 md:px-0 pt-2 md:pt-0">
@@ -829,15 +849,20 @@ export default function Dashboard() {
                           </div>
                           <button onClick={() => {setIsTeamModalOpen(false); setSelectedTeamHost(null);}} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95 md:hidden"><X size={18}/></button>
                       </div>
+                      
+                      {/* ⚡ FIX: Restored invisible overlay trick for native clicking! */}
                       <div className="flex items-center gap-3 w-full md:w-auto justify-between">
-                          <div className="flex items-center bg-white/10 px-3 md:px-4 py-2 md:py-2.5 rounded-xl border border-white/20 gap-2 w-full md:w-auto">
-                              <Calendar size={14} className="text-white shrink-0"/>
+                          <div className="relative cursor-pointer group w-full md:w-auto">
                               <input 
                                   type="date" 
-                                  className="bg-transparent text-white font-bold text-xs md:text-sm outline-none w-full [&::-webkit-calendar-picker-indicator]:invert"
-                                  value={teamDate}
-                                  onChange={e => setTeamDate(e.target.value)}
+                                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30"
+                                  value={cutoffDate}
+                                  onChange={e => e.target.value && setCutoffDate(e.target.value)}
                               />
+                              <div className="flex items-center bg-white/10 px-3 md:px-4 py-2 md:py-2.5 rounded-xl border border-white/20 gap-2 w-full transition-colors group-hover:bg-white/20">
+                                  <Calendar size={14} className="text-white shrink-0"/>
+                                  <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
+                              </div>
                           </div>
                           <button onClick={() => {setIsTeamModalOpen(false); setSelectedTeamHost(null);}} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95 hidden md:block"><X size={20}/></button>
                       </div>
@@ -879,7 +904,7 @@ export default function Dashboard() {
                                           ))}
                                       </div>
                                       {(() => {
-                                          const teamPeriod = getPayrollPeriod(parseISO(teamDate));
+                                          const teamPeriod = getPayrollPeriod(parseISO(cutoffDate));
                                           return renderPayrollGrid(selectedTeamHostAtt, teamPeriod.start, teamPeriod.end);
                                       })()}
                                   </div>
@@ -1046,6 +1071,7 @@ export default function Dashboard() {
               </div>
           </div>
       )}
+
     </div>
   );
-} 
+}

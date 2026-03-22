@@ -1,12 +1,13 @@
 "use client";
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Search, Wand2, Loader2, UserCheck, 
-  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight
+  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight, BarChart2, HeartPulse, AlertCircle, CalendarDays, Pill
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
 import toast from 'react-hot-toast';
+import { computeLeaveBalancesRPC } from '@/lib/payrollMath'; 
 
 // --- CONFIG ---
 const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT'];
@@ -27,12 +28,10 @@ const STATUS_COLORS: Record<string, string> = {
   'EL': 'bg-orange-100 text-orange-700 font-black',
 };
 
-// Global keystroke buffer for fast Excel-like typing
-let keyBuffer = '';
-let keyTimer: NodeJS.Timeout | null = null;
-
 // --- OPTIMIZED MEMOIZED CELL COMPONENT ---
 type AttendanceCellProps = {
+    hostId: string;
+    hostName: string;
     val: string;
     note: string;
     shiftType: string;
@@ -42,19 +41,20 @@ type AttendanceCellProps = {
     isToday: boolean;
     rIdx: number;
     cIdx: number;
-    onOpenEdit: () => void;
-    onQuickSave: (status: string, rIdx: number, cIdx: number) => void;
+    onOpenEdit: (hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, rIdx: number, cIdx: number) => void;
+    onQuickSave: (hostId: string, dateStr: string, newStatus: string, rIdx: number, cIdx: number) => void;
 };
 
-const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, isPH, isToday, rIdx, cIdx, onOpenEdit, onQuickSave }: AttendanceCellProps) => {
+const AttendanceCell = React.memo(({ hostId, hostName, val, note, shiftType, dateStr, isFriday, isPH, isToday, rIdx, cIdx, onOpenEdit, onQuickSave }: AttendanceCellProps) => {
     const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
     const bgBase = isToday ? 'bg-amber-50/60 border-amber-200' : isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
     
-    // RED DOT: Only shows if there is an actual text note
     const hasNote = !!note && note.trim() !== '';
 
+    const keyBuffer = useRef('');
+    const keyTimer = useRef<NodeJS.Timeout | null>(null);
+
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTableCellElement>) => {
-        // CRITICAL: Stop event from bubbling to the global table handler
         e.stopPropagation();
 
         let nextR = rIdx;
@@ -74,33 +74,33 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
 
         if (e.key === 'Enter') {
             e.preventDefault();
-            onOpenEdit();
+            onOpenEdit(hostId, hostName, dateStr, val, note, shiftType, rIdx, cIdx);
             return;
         }
 
         if (e.key === 'Backspace' || e.key === 'Delete') {
             e.preventDefault();
-            onQuickSave('', rIdx, cIdx);
+            onQuickSave(hostId, dateStr, '', rIdx, cIdx);
             return;
         }
 
         const char = e.key.toUpperCase();
         if (/^[A-Z]$/.test(char)) {
             e.preventDefault();
-            keyBuffer += char;
-            if (keyTimer) clearTimeout(keyTimer);
+            keyBuffer.current += char;
+            if (keyTimer.current) clearTimeout(keyTimer.current);
 
-            keyTimer = setTimeout(() => {
-                const exactMatch = STATUS_CODES.find(c => c === keyBuffer);
+            keyTimer.current = setTimeout(() => {
+                const exactMatch = STATUS_CODES.find(c => c === keyBuffer.current);
                 if (exactMatch) {
-                    onQuickSave(exactMatch, rIdx, cIdx);
+                    onQuickSave(hostId, dateStr, exactMatch, rIdx, cIdx);
                 } else {
                     const fallbackMatch = STATUS_CODES.find(c => c === char);
                     if (fallbackMatch) {
-                        onQuickSave(fallbackMatch, rIdx, cIdx);
+                        onQuickSave(hostId, dateStr, fallbackMatch, rIdx, cIdx);
                     }
                 }
-                keyBuffer = '';
+                keyBuffer.current = '';
             }, 300); 
         }
     };
@@ -112,14 +112,13 @@ const AttendanceCell = React.memo(({ val, note, shiftType, dateStr, isFriday, is
             data-c={cIdx}
             tabIndex={0}
             onClick={(e) => {
-                if (e.detail === 2) onOpenEdit();
+                if (e.detail === 2) onOpenEdit(hostId, hostName, dateStr, val, note, shiftType, rIdx, cIdx);
             }}
             onKeyDown={handleKeyDown}
             className={`border-b border-r p-0 h-10 w-10 min-w-[40px] max-w-[40px] align-middle cursor-cell transition-colors box-border relative select-none [&.cell-selected]:bg-blue-100 [&.cell-selected]:ring-2 [&.cell-selected]:ring-inset [&.cell-selected]:ring-blue-600 [&.cell-selected]:z-20 ${val ? colorClass : bgBase} ${!isToday && !val ? 'border-slate-200' : ''}`}
         >
             <div className="w-full h-full flex flex-col items-center justify-center pointer-events-none">
                 <span className="text-[11px] font-bold leading-none">{val || '-'}</span>
-                {/* DUTY TIME: Shows purely as small text below */}
                 {shiftType && <span className="text-[7px] leading-none font-bold opacity-60 mt-1 truncate w-full text-center px-0.5">{shiftType}</span>}
             </div>
             {hasNote && <div className="absolute top-1 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm pointer-events-none" title={`Note: ${note}`}></div>}
@@ -143,14 +142,18 @@ export default function AttendancePage() {
   // Data
   const [hosts, setHosts] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
+  const [historicalStats, setHistoricalStats] = useState<any[]>([]); 
   const [searchQuery, setSearchQuery] = useState('');
   const [publicHolidays, setPublicHolidays] = useState<{date: string, name: string}[]>([]);
 
   // Cell Edit Modal State
   const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string } | null>(null);
 
-  // Magic Paste State
+  // Modals
   const [isMagicOpen, setIsMagicOpen] = useState(false);
+  const [isInsightsOpen, setIsInsightsOpen] = useState(false);
+
+  // Magic Paste State
   const [magicText, setMagicText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [magicResults, setMagicResults] = useState<any>(null);
@@ -160,9 +163,12 @@ export default function AttendancePage() {
   const [isDragging, setIsDragging] = useState(false);
   const selectionRef = useRef({ r1: -1, c1: -1, r2: -1, c2: -1 });
 
+  // PERFORMANCE REFS FOR STABLE CALLBACKS
+  const filteredHostsRef = useRef<any[]>([]);
+  const daysInYearRef = useRef<string[]>([]);
+
   useEffect(() => { fetchData(); }, [selectedYear]);
 
-  // Seamless Auto-Scroll to Today instantly
   useEffect(() => {
       if (!isLoading && scrollRef.current) {
           requestAnimationFrame(() => {
@@ -187,9 +193,6 @@ export default function AttendancePage() {
       return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
   }, []);
 
-  // ============================================================================
-  // STRICT STRING DATES (PREVENTS ALL TIMEZONE DRIFT)
-  // ============================================================================
   const daysInYear = useMemo(() => {
       const days: string[] = [];
       const isLeap = (selectedYear % 4 === 0 && selectedYear % 100 !== 0) || (selectedYear % 400 === 0);
@@ -203,10 +206,10 @@ export default function AttendancePage() {
       return days;
   }, [selectedYear]);
 
-  // ============================================================================
-  // BULLETPROOF DATABASE SAVE ENGINE
-  // ============================================================================
-  const saveToDatabase = async (hostId: string, dateStr: string, status: string, note?: string, shift?: string) => {
+  // Update refs instantly when data changes
+  useEffect(() => { daysInYearRef.current = daysInYear; }, [daysInYear]);
+
+  const saveToDatabase = useCallback(async (hostId: string, dateStr: string, status: string, note?: string, shift?: string) => {
       const { data: existingArr, error: fetchErr } = await supabase.from('hsk_attendance')
           .select('id, shift_note, shift_type')
           .eq('host_id', hostId)
@@ -216,7 +219,6 @@ export default function AttendancePage() {
       if (fetchErr) throw fetchErr;
       const existing = existingArr?.[0];
 
-      // Clean up accidental duplicates from past bugs
       if (existingArr && existingArr.length > 1) {
           const extraIds = existingArr.slice(1).map(r => r.id);
           await supabase.from('hsk_attendance').delete().in('id', extraIds);
@@ -247,10 +249,9 @@ export default function AttendancePage() {
               if (error) throw error;
           }
       }
-  };
+  }, []);
 
-  const loadAttendanceOnly = async () => {
-      // 🚀 INFINITE PAGINATION LOOP FIX (Never drops data) 🚀
+  const loadCurrentYearAttendance = async () => {
       let allData: any[] = [];
       let from = 0;
       let step = 1000;
@@ -259,7 +260,9 @@ export default function AttendancePage() {
       while (hasMore) {
           const { data, error } = await supabase
               .from('hsk_attendance')
-              .select('*')
+              .select('id, host_id, date, status_code, shift_type, shift_note')
+              .gte('date', `${selectedYear}-01-01`)
+              .lte('date', `${selectedYear}-12-31`)
               .range(from, from + step - 1);
 
           if (error) {
@@ -277,42 +280,49 @@ export default function AttendancePage() {
       }
 
       if (allData.length > 0) {
-          const normalizedAtt = allData.map(a => ({
-              ...a,
-              date: a.date.includes('T') ? a.date.split('T')[0] : a.date 
-          }));
-          setAttendance(normalizedAtt);
-      } else {
-          setAttendance([]);
+          return allData.map(a => {
+              let safeDate = '';
+              if (a.date) {
+                  if (a.date instanceof Date) {
+                      safeDate = a.date.toISOString().split('T')[0];
+                  } else {
+                      safeDate = String(a.date).split('T')[0];
+                  }
+              }
+              return { ...a, date: safeDate };
+          });
       }
+      return [];
   };
 
   const fetchData = async () => {
     setIsLoading(true);
     setIsScrolled(false);
     
-    const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank']);
+    const [constRes, hostRes, rpcRes] = await Promise.all([
+        supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank']),
+        supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
+        supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate }) 
+    ]);
     
     let roleRanks: Record<string, number> = {};
-    if (constData) {
-        const parsedHolidays = constData
-            .filter(c => c.type === 'public_holiday')
+    if (constRes.data) {
+        const parsedHolidays = constRes.data
+            .filter((c: any) => c.type === 'public_holiday')
             .map((c: any) => {
                 const [d, n] = c.label.split('::');
                 return { date: d, name: n };
             });
         setPublicHolidays(parsedHolidays);
 
-        constData.filter(c => c.type === 'role_rank').forEach(c => {
+        constRes.data.filter((c: any) => c.type === 'role_rank').forEach((c: any) => {
             const [role, rank] = c.label.split('::');
             if (role && rank) roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
         });
     }
-
-    const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned');
     
-    if (hostData) {
-        const sortedHosts = hostData.sort((a, b) => {
+    if (hostRes.data) {
+        const sortedHosts = hostRes.data.sort((a, b) => {
             const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
             const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
             if (rankA !== rankB) return rankA - rankB;
@@ -324,99 +334,102 @@ export default function AttendancePage() {
         setHosts(sortedHosts);
     }
 
-    await loadAttendanceOnly();
+    setHistoricalStats(rpcRes.data || []);
+
+    const rawAtt = await loadCurrentYearAttendance();
+    setAttendance(rawAtt);
+    
     setIsLoading(false);
   };
 
+  // PERFORMANCE FIX: Create a Hash Map for O(1) instant cell lookups
+  const attendanceMap = useMemo(() => {
+      const map = new Map<string, any>();
+      attendance.forEach(a => map.set(`${a.host_id}_${a.date}`, a));
+      return map;
+  }, [attendance]);
+
   const hostBalances = useMemo(() => {
-    const targetDate = parseISO(cutoffDate);
-    const SYSTEM_START_DATE = new Date(2026, 0, 1); 
-    
+    if (hosts.length === 0) return hosts;
+
     return hosts.map(host => {
-      const baseCfOff = host.cf_off || 0;
-      const baseCfAL = host.cf_al || 0;
-      const baseCfPH = host.cf_ph || 0;
+      // Passes exactly 6 arguments
+      const mathResult = computeLeaveBalancesRPC(host, attendance, historicalStats, cutoffDate, publicHolidays, []);
+      if (!mathResult) return host;
+      return { ...host, ...mathResult };
+    });
+  }, [hosts, attendance, historicalStats, cutoffDate, publicHolidays]);
 
-      const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
-      const isExec = ['DA', 'DB'].includes(host.host_level);
-      const isIntern = (host.role || '').toLowerCase().includes('intern');
+  const filteredHosts = useMemo(() => {
+    return hostBalances.filter(h => h.full_name.toLowerCase().includes(searchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [hostBalances, searchQuery]);
 
-      const hostRecords = attendance.filter(a => a.host_id === host.host_id);
-      
-      // ONLY pull records that happen ON OR BEFORE the target (cutoff) date
-      const recordsUpToTarget = hostRecords.filter(a => {
-          const d = parseISO(a.date);
-          return d >= SYSTEM_START_DATE && d <= targetDate;
+  // Update ref instantly when filteredHosts changes
+  useEffect(() => { filteredHostsRef.current = filteredHosts; }, [filteredHosts]);
+
+  // =========================================================================
+  // 📊 DATA INSIGHTS ENGINE
+  // =========================================================================
+  const insightsData = useMemo(() => {
+      let totalLiability = 0, totalAL = 0, totalOff = 0, totalPH = 0;
+      let totalLeavesTaken = 0; 
+
+      const monthlyStats = Array.from({length: 12}, () => ({
+          off: 0, al: 0, ph: 0, sl: 0,
+          sickStaff: {} as Record<string, number>,
+          topSickPerson: null as {name: string, count: number} | null
+      }));
+
+      hostBalances.forEach(h => {
+          totalLiability += parseFloat(h.balTotal) || 0;
+          totalAL += parseFloat(h.balAL) || 0;
+          totalOff += parseFloat(h.balOff) || 0;
+          totalPH += parseFloat(h.balPH) || 0;
       });
 
-      // Deductions only happen if the date has arrived
-      const recordsForDeduction = recordsUpToTarget;
+      attendance.forEach(a => {
+          if (!a.date) return;
+          const d = parseISO(a.date);
+          const m = d.getMonth();
 
-      const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
-      
-      let earnedOff = 0;
-      let earnedAL = 0;
-      let earnedPH = 0;
+          if (['O', 'OFF', 'OT'].includes(a.status_code)) {
+              monthlyStats[m].off++;
+              totalLeavesTaken++;
+          }
+          if (['AL', 'VAC'].includes(a.status_code)) {
+              monthlyStats[m].al++;
+              totalLeavesTaken++;
+          }
+          if (a.status_code === 'PH') {
+              monthlyStats[m].ph++;
+              totalLeavesTaken++;
+          }
 
-      if (targetDate >= accrualStart) {
-          const daysActive = differenceInDays(targetDate, accrualStart) + 1;
-          const penaltyDays = recordsUpToTarget.filter(a => ['NP', 'A'].includes(a.status_code)).length;
-          const eligibleDays = Math.max(0, daysActive - penaltyDays);
-          
-          earnedOff = eligibleDays / 7;
-          earnedAL = eligibleDays / 12;
-      }
-
-      publicHolidays.forEach(ph => {
-          const phDate = parseISO(ph.date);
-          if (phDate >= accrualStart && phDate <= targetDate) {
-              earnedPH += 1;
+          if (a.status_code === 'SL') {
+              monthlyStats[m].sl++;
+              const host = hosts.find(h => h.host_id === a.host_id);
+              if (host) {
+                  monthlyStats[m].sickStaff[host.full_name] = (monthlyStats[m].sickStaff[host.full_name] || 0) + 1;
+              }
           }
       });
 
-      const takenOff = recordsForDeduction.filter(a => a.status_code === 'O').length;
-      const takenAL = recordsForDeduction.filter(a => a.status_code === 'AL').length;
-      const takenPH = recordsForDeduction.filter(a => a.status_code === 'PH').length;
-
-      let lastAnniversary = new Date(joinDate);
-      lastAnniversary.setFullYear(targetDate.getFullYear());
-      if (isAfter(lastAnniversary, targetDate)) {
-          lastAnniversary.setFullYear(targetDate.getFullYear() - 1);
-      }
-      
-      const recordsSinceAnniversary = hostRecords.filter(a => {
-          const d = parseISO(a.date);
-          return d >= lastAnniversary && d <= targetDate;
+      monthlyStats.forEach(stat => {
+          const sorted = Object.entries(stat.sickStaff).sort((a, b) => b[1] - a[1]);
+          if (sorted.length > 0) stat.topSickPerson = { name: sorted[0][0], count: sorted[0][1] };
       });
-      
-      const takenSL = recordsSinceAnniversary.filter(a => a.status_code === 'SL').length;
-      const takenEL = recordsSinceAnniversary.filter(a => a.status_code === 'EL').length;
-      const takenRR = recordsSinceAnniversary.filter(a => a.status_code === 'RR').length;
 
-      const balOffVal = baseCfOff + earnedOff - takenOff;
-      const balALVal = isIntern ? 0 : (baseCfAL + earnedAL - takenAL);
-      const balPHVal = baseCfPH + earnedPH - takenPH;
-      const balRRVal = isExec ? 7 - takenRR : 0;
-      const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
+      const topOwed = [...hostBalances]
+          .sort((a, b) => (parseFloat(b.balTotal) || 0) - (parseFloat(a.balTotal) || 0))
+          .slice(0, 5);
 
-      return {
-        ...host,
-        balOff: balOffVal.toFixed(1),
-        balAL: isIntern ? '0.0' : balALVal.toFixed(1),
-        balPH: balPHVal.toFixed(1),
-        balRR: isExec ? balRRVal.toString() : '-',
-        balTotal: totalBal.toFixed(1),
-        balSL: 30 - takenSL,
-        balEL: 10 - takenEL
-      };
-    });
-  }, [hosts, attendance, cutoffDate, publicHolidays]);
+      return { totalLiability, totalAL, totalOff, totalPH, totalLeavesTaken, monthlyStats, topOwed };
+  }, [hostBalances, attendance, hosts]);
 
-  const filteredHosts = hostBalances.filter(h => h.full_name.toLowerCase().includes(searchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  // --- EXCEL ENGINE FUNCTIONS ---
+  // --- EXCEL ENGINE FUNCTIONS (Memoized for Performance) ---
 
-  const updateSelectionVisuals = () => {
+  const updateSelectionVisuals = useCallback(() => {
       document.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
       const { r1, c1, r2, c2 } = selectionRef.current;
       if (r1 === -1) return;
@@ -431,7 +444,7 @@ export default function AttendancePage() {
       }
       
       document.getElementById(`cell-${r2}-${c2}`)?.focus({ preventScroll: true });
-  };
+  }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
       const td = (e.target as HTMLElement).closest('td[data-r]');
@@ -461,23 +474,25 @@ export default function AttendancePage() {
       updateSelectionVisuals();
   };
 
-  const applyBulkStatus = async (status: string) => {
+  const applyBulkStatus = useCallback(async (status: string) => {
       const { r1, c1, r2, c2 } = selectionRef.current;
       if (r1 === -1) return;
 
-      // Keep the focus stable after the bulk update completes
       lastFocusedCell.current = `cell-${r2}-${c2}`;
 
       const minR = Math.min(r1, r2); const maxR = Math.max(r1, r2);
       const minC = Math.min(c1, c2); const maxC = Math.max(c1, c2);
+      
+      const fHosts = filteredHostsRef.current;
+      const dYear = daysInYearRef.current;
 
-      // Instantly Update UI Optimistically 
       setAttendance(prev => {
           const newAtt = [...prev];
           for (let r = minR; r <= maxR; r++) {
               for (let c = minC; c <= maxC; c++) {
-                  const hostId = filteredHosts[r].host_id;
-                  const dateStr = daysInYear[c];
+                  const hostId = fHosts[r]?.host_id;
+                  if (!hostId) continue;
+                  const dateStr = dYear[c];
                   const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
                   
                   if (status === '') {
@@ -501,12 +516,12 @@ export default function AttendancePage() {
           return newAtt;
       });
 
-      // Background DB Sync - safely reuses the robust single cell save logic!
       const dbTask = async () => {
           for (let r = minR; r <= maxR; r++) {
               for (let c = minC; c <= maxC; c++) {
-                  const hostId = filteredHosts[r].host_id;
-                  const dateStr = daysInYear[c];
+                  const hostId = fHosts[r]?.host_id;
+                  if (!hostId) continue;
+                  const dateStr = dYear[c];
                   await saveToDatabase(hostId, dateStr, status);
               }
           }
@@ -518,7 +533,57 @@ export default function AttendancePage() {
           success: status === '' ? 'Cleared' : 'Saved',
           error: 'Save failed'
       });
-  };
+  }, [saveToDatabase]);
+
+  const quickSaveCell = useCallback(async (hostId: string, dateStr: string, status: string, rIdx: number, cIdx: number) => {
+      lastFocusedCell.current = `cell-${rIdx}-${cIdx}`; 
+      
+      setAttendance(prev => {
+          const newAtt = [...prev];
+          const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
+          
+          if (status === '') {
+              if (existingIdx > -1) {
+                  const existing = newAtt[existingIdx];
+                  if (!existing.shift_note && !existing.shift_type) {
+                      newAtt.splice(existingIdx, 1);
+                  } else {
+                      newAtt[existingIdx] = { ...existing, status_code: '' };
+                  }
+              }
+          } else {
+              if (existingIdx > -1) {
+                  newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
+              } else {
+                  newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: '', shift_type: '' });
+              }
+          }
+          return newAtt;
+      });
+
+      toast.promise(saveToDatabase(hostId, dateStr, status), {
+          loading: 'Saving...',
+          success: status === '' ? 'Cleared' : 'Saved',
+          error: 'Save failed'
+      });
+  }, [saveToDatabase]);
+
+  const handleOpenEdit = useCallback((hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, rIdx: number, cIdx: number) => {
+      selectionRef.current = { r1: rIdx, c1: cIdx, r2: rIdx, c2: cIdx };
+      updateSelectionVisuals();
+      setEditCell({ hostId, hostName, dateStr, status, note, shiftType });
+  }, [updateSelectionVisuals]);
+
+  const handleQuickSave = useCallback((hostId: string, dateStr: string, newStatus: string, rIdx: number, cIdx: number) => {
+      const { r1, c1, r2, c2 } = selectionRef.current;
+      const isMultiSelect = r1 !== -1 && (r1 !== r2 || c1 !== c2);
+      
+      if (isMultiSelect) {
+          applyBulkStatus(newStatus);
+      } else {
+          quickSaveCell(hostId, dateStr, newStatus, rIdx, cIdx);
+      }
+  }, [applyBulkStatus, quickSaveCell]);
 
   const handleGlobalKeyDown = (e: React.KeyboardEvent) => {
       const { r1, c1, r2, c2 } = selectionRef.current;
@@ -559,7 +624,7 @@ export default function AttendancePage() {
           e.preventDefault();
           const host = filteredHosts[r1];
           const dateStr = daysInYear[c1];
-          const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
+          const record = attendanceMap.get(`${host.host_id}_${dateStr}`);
           setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: record?.status_code || '', note: record?.shift_note || '', shiftType: record?.shift_type || '' });
           return;
       }
@@ -569,7 +634,6 @@ export default function AttendancePage() {
           applyBulkStatus('');
           return;
       }
-      // No more A-Z processing here, handled in Cell component
   };
 
   const handleCopy = (e: React.ClipboardEvent) => {
@@ -586,7 +650,7 @@ export default function AttendancePage() {
           for(let c = minC; c <= maxC; c++) {
               const hostId = filteredHosts[r].host_id;
               const dateStr = daysInYear[c];
-              const val = attendance.find(a => a.host_id === hostId && a.date === dateStr)?.status_code || '';
+              const val = attendanceMap.get(`${hostId}_${dateStr}`)?.status_code || '';
               row.push(val);
           }
           tsv += row.join('\t') + '\n';
@@ -675,45 +739,10 @@ export default function AttendancePage() {
       }
   };
 
-  const quickSaveCell = async (hostId: string, dateStr: string, status: string, rIdx: number, cIdx: number) => {
-      lastFocusedCell.current = `cell-${rIdx}-${cIdx}`; 
-      
-      // Optimistic UI Update Instantly
-      setAttendance(prev => {
-          const newAtt = [...prev];
-          const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
-          
-          if (status === '') {
-              if (existingIdx > -1) {
-                  const existing = newAtt[existingIdx];
-                  if (!existing.shift_note && !existing.shift_type) {
-                      newAtt.splice(existingIdx, 1);
-                  } else {
-                      newAtt[existingIdx] = { ...existing, status_code: '' };
-                  }
-              }
-          } else {
-              if (existingIdx > -1) {
-                  newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status };
-              } else {
-                  newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: '', shift_type: '' });
-              }
-          }
-          return newAtt;
-      });
-
-      toast.promise(saveToDatabase(hostId, dateStr, status), {
-          loading: 'Saving...',
-          success: status === '' ? 'Cleared' : 'Saved',
-          error: 'Save failed'
-      });
-  };
-
   const handleSaveCell = async () => {
     if (!editCell) return;
     const { hostId, dateStr, status, note, shiftType } = editCell;
     
-    // Optimistic UI Update Instantly
     setAttendance(prev => {
         const newAtt = [...prev];
         const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
@@ -809,9 +838,100 @@ export default function AttendancePage() {
         setMagicText('');
         setMagicResults(null);
         setLinkMappings({});
-        fetchData(); // Trigger full refresh to align UI
+        fetchData(); 
     });
   };
+
+  const memoizedTableBody = useMemo(() => {
+      return filteredHosts.map((host, hostIdx) => (
+          <tr key={host.id} className="hover:bg-slate-50/50 transition-colors group">
+              <td className="max-md:static md:sticky md:left-0 z-50 bg-white border-b border-r border-slate-200 p-2 text-center font-black text-slate-300 w-[40px] min-w-[40px] max-w-[40px] box-border">
+                  {hostIdx + 1}
+              </td>
+
+              <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[240px] min-w-[240px] max-w-[240px] box-border">
+                  <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={host.full_name}>{host.full_name}</div>
+                  <div className="text-[9px] text-slate-400 uppercase mt-0.5 truncate w-[220px]" title={`${host.host_id} • ${host.role}`}>{host.host_id} • {host.role}</div>
+                  {host.joining_date ? (
+                      <div className="text-[8px] text-emerald-600 font-bold mt-0.5 truncate w-[220px]">
+                          Joined: {format(parseISO(host.joining_date), 'dd MMM yyyy')}
+                      </div>
+                  ) : (
+                      <div className="text-[8px] text-slate-300 font-bold mt-0.5 truncate w-[220px]">
+                          Joined: N/A
+                      </div>
+                  )}
+              </td>
+              
+              <td className="max-md:static md:sticky md:left-[280px] z-50 bg-emerald-50 group-hover:bg-emerald-100 border-b border-r border-slate-200 p-2 text-center font-black text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balOff}</td>
+              <td className="max-md:static md:sticky md:left-[320px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
+              <td className="max-md:static md:sticky md:left-[360px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
+              <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
+              <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
+
+              {daysInYear.map((dateStr, dateIdx) => {
+                  const record = attendanceMap.get(`${host.host_id}_${dateStr}`);
+                  const val = record ? record.status_code : '';
+                  const note = record ? record.shift_note : '';
+                  const shift = record ? record.shift_type : '';
+                  const d = parseISO(dateStr);
+                  const isFriday = format(d, 'E') === 'Fri';
+                  const isPH = publicHolidays.some(ph => ph.date === dateStr);
+                  const isToday = dateStr === todayStr;
+
+                  return (
+                      <AttendanceCell 
+                          key={dateStr}
+                          hostId={host.host_id}
+                          hostName={host.full_name}
+                          val={val}
+                          note={note || ''}
+                          shiftType={shift || ''}
+                          dateStr={dateStr}
+                          isFriday={isFriday}
+                          isPH={isPH}
+                          isToday={isToday}
+                          rIdx={hostIdx}
+                          cIdx={dateIdx}
+                          onOpenEdit={handleOpenEdit}
+                          onQuickSave={handleQuickSave}
+                      />
+                  );
+              })}
+
+              <td className={`bg-rose-50/50 group-hover:bg-rose-50 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-700'}`}>{host.balSL}</td>
+              <td className="bg-orange-50/50 group-hover:bg-orange-50 border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balEL}</td>
+
+              <td className="border-b border-r border-l-2 border-slate-300 p-0 relative h-8 w-16 bg-emerald-50/30">
+                  {selectedYear > 2026 ? (
+                      <div className="w-full h-full flex items-center justify-center text-xs font-black text-emerald-700 bg-emerald-100/50" title="Calculated from previous year">
+                          {host.calcCfOff}
+                      </div>
+                  ) : (
+                      <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-emerald-700 focus:bg-emerald-100" value={host.cf_off === 0 ? '0' : host.cf_off || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_off', e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                  )}
+              </td>
+              <td className="border-b border-r border-slate-300 p-0 relative h-8 w-16 bg-cyan-50/30">
+                  {selectedYear > 2026 ? (
+                      <div className="w-full h-full flex items-center justify-center text-xs font-black text-cyan-700 bg-cyan-100/50" title="Calculated from previous year">
+                          {host.calcCfAL}
+                      </div>
+                  ) : (
+                      <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-cyan-700 focus:bg-cyan-100" value={host.cf_al === 0 ? '0' : host.cf_al || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_al', e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                  )}
+              </td>
+              <td className="border-b border-r border-slate-300 p-0 relative h-8 w-16 bg-blue-50/30">
+                  {selectedYear > 2026 ? (
+                      <div className="w-full h-full flex items-center justify-center text-xs font-black text-blue-700 bg-blue-100/50" title="Calculated from previous year">
+                          {host.calcCfPH}
+                      </div>
+                  ) : (
+                      <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-blue-700 focus:bg-blue-100" value={host.cf_ph === 0 ? '0' : host.cf_ph || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_ph', e.target.value === '' ? '' : parseFloat(e.target.value))} />
+                  )}
+              </td>
+          </tr>
+      ));
+  }, [filteredHosts, daysInYear, attendanceMap, publicHolidays, handleOpenEdit, handleQuickSave, selectedYear]);
 
   return (
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-sans text-slate-800 overflow-hidden">
@@ -857,6 +977,11 @@ export default function AttendancePage() {
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={14}/>
                 <input type="text" placeholder="Search Host..." className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl font-bold text-xs bg-slate-50 focus:bg-white focus:border-[#6D2158] outline-none transition-all shadow-inner" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
             </div>
+
+            {/* ⚡ NEW: INSIGHTS BUTTON */}
+            <button onClick={() => setIsInsightsOpen(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-blue-700 transition-all mt-5">
+                <BarChart2 size={14}/> Analytics
+            </button>
 
             <button onClick={() => setIsMagicOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-emerald-700 transition-all mt-5">
                 <Wand2 size={14}/> Magic Paste
@@ -942,88 +1067,7 @@ export default function AttendancePage() {
                           </thead>
                           
                           <tbody onMouseDown={handleMouseDown} onMouseOver={handleMouseOver} className="font-medium">
-                              {filteredHosts.map((host, hostIdx) => (
-                                  <tr key={host.id} className="hover:bg-slate-50/50 transition-colors group">
-                                      <td className="max-md:static md:sticky md:left-0 z-50 bg-white border-b border-r border-slate-200 p-2 text-center font-black text-slate-300 w-[40px] min-w-[40px] max-w-[40px] box-border">
-                                          {hostIdx + 1}
-                                      </td>
-
-                                      <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[240px] min-w-[240px] max-w-[240px] box-border">
-                                          <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={host.full_name}>{host.full_name}</div>
-                                          <div className="text-[9px] text-slate-400 uppercase mt-0.5 truncate w-[220px]" title={`${host.host_id} • ${host.role}`}>{host.host_id} • {host.role}</div>
-                                          {host.joining_date ? (
-                                              <div className="text-[8px] text-emerald-600 font-bold mt-0.5 truncate w-[220px]">
-                                                  Joined: {format(parseISO(host.joining_date), 'dd MMM yyyy')}
-                                              </div>
-                                          ) : (
-                                              <div className="text-[8px] text-slate-300 font-bold mt-0.5 truncate w-[220px]">
-                                                  Joined: N/A
-                                              </div>
-                                          )}
-                                      </td>
-                                      
-                                      <td className="max-md:static md:sticky md:left-[280px] z-50 bg-emerald-50 group-hover:bg-emerald-100 border-b border-r border-slate-200 p-2 text-center font-black text-emerald-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balOff}</td>
-                                      <td className="max-md:static md:sticky md:left-[320px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
-                                      <td className="max-md:static md:sticky md:left-[360px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
-                                      <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
-                                      <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
-
-                                      {daysInYear.map((dateStr, dateIdx) => {
-                                          const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
-                                          const val = record ? record.status_code : '';
-                                          const note = record ? record.shift_note : '';
-                                          const shift = record ? record.shift_type : '';
-                                          const d = parseISO(dateStr);
-                                          const isFriday = format(d, 'E') === 'Fri';
-                                          const isPH = publicHolidays.some(ph => ph.date === dateStr);
-                                          const isToday = dateStr === todayStr;
-
-                                          return (
-                                              <AttendanceCell 
-                                                  key={dateStr}
-                                                  val={val}
-                                                  note={note || ''}
-                                                  shiftType={shift || ''}
-                                                  dateStr={dateStr}
-                                                  isFriday={isFriday}
-                                                  isPH={isPH}
-                                                  isToday={isToday}
-                                                  rIdx={hostIdx}
-                                                  cIdx={dateIdx}
-                                                  onOpenEdit={() => {
-                                                      selectionRef.current = { r1: hostIdx, c1: dateIdx, r2: hostIdx, c2: dateIdx };
-                                                      updateSelectionVisuals();
-                                                      setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr: dateStr, status: val, note: note || '', shiftType: shift || '' })
-                                                  }}
-                                                  onQuickSave={(newStatus, r, c) => {
-                                                      const { r1, c1, r2, c2 } = selectionRef.current;
-                                                      // Detect if the user has dragged and selected multiple cells
-                                                      const isMultiSelect = r1 !== -1 && (r1 !== r2 || c1 !== c2);
-                                                      
-                                                      if (isMultiSelect) {
-                                                          applyBulkStatus(newStatus);
-                                                      } else {
-                                                          quickSaveCell(host.host_id, dateStr, newStatus, r, c);
-                                                      }
-                                                  }}
-                                              />
-                                          );
-                                      })}
-
-                                      <td className={`bg-rose-50/50 group-hover:bg-rose-50 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${host.balSL < 5 ? 'text-rose-600' : 'text-slate-700'}`}>{host.balSL}</td>
-                                      <td className="bg-orange-50/50 group-hover:bg-orange-50 border-b border-r-2 border-slate-300 p-2 text-center font-black text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balEL}</td>
-
-                                      <td className="border-b border-r border-l-2 border-slate-300 p-0 relative h-8 w-16 bg-emerald-50/30">
-                                          <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-emerald-700 focus:bg-emerald-100" value={host.cf_off === 0 ? '0' : host.cf_off || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_off', e.target.value === '' ? '' : parseFloat(e.target.value))} />
-                                      </td>
-                                      <td className="border-b border-r border-slate-300 p-0 relative h-8 w-16 bg-cyan-50/30">
-                                          <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-cyan-700 focus:bg-cyan-100" value={host.cf_al === 0 ? '0' : host.cf_al || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_al', e.target.value === '' ? '' : parseFloat(e.target.value))} />
-                                      </td>
-                                      <td className="border-b border-r border-slate-300 p-0 relative h-8 w-16 bg-blue-50/30">
-                                          <input type="number" step="0.1" className="w-full h-full appearance-none outline-none text-center text-xs font-black bg-transparent text-blue-700 focus:bg-blue-100" value={host.cf_ph === 0 ? '0' : host.cf_ph || ''} onChange={(e) => handleCfChange(host.host_id, 'cf_ph', e.target.value === '' ? '' : parseFloat(e.target.value))} />
-                                      </td>
-                                  </tr>
-                              ))}
+                              {memoizedTableBody}
                           </tbody>
                       </table>
                   </div>
@@ -1046,7 +1090,7 @@ export default function AttendancePage() {
                   </div>
                   
                   <div className="mb-6">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><UserCheck size={14}/> Set Status Code</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><UserCheck size={14}/> Set Status Code</label>
                       <div className="grid grid-cols-4 gap-2">
                           {STATUS_CODES.map(code => {
                               const isSelected = editCell.status === code;
@@ -1071,7 +1115,7 @@ export default function AttendancePage() {
                   </div>
 
                   <div className="mb-4">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><Clock size={14}/> Duty / Shift (Optional)</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><Clock size={14}/> Duty / Shift (Optional)</label>
                       <input 
                           type="text"
                           className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-[#6D2158] shadow-inner"
@@ -1082,7 +1126,7 @@ export default function AttendancePage() {
                   </div>
 
                   <div className="mb-6">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark (Optional)</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark (Optional)</label>
                       <textarea 
                           className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium outline-none focus:border-[#6D2158] resize-none h-24 shadow-inner"
                           placeholder="Type special instructions here... (Adds red dot)"
@@ -1097,6 +1141,127 @@ export default function AttendancePage() {
                   >
                       <Save size={16}/> Save Entry
                   </button>
+              </div>
+          </div>
+      )}
+
+      {/* ⚡ NEW: INSIGHTS MODAL ⚡ */}
+      {isInsightsOpen && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+              <div className="bg-[#FDFBFD] w-full max-w-5xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+                  
+                  {/* Header */}
+                  <div className="p-6 bg-blue-600 text-white flex justify-between items-center shrink-0">
+                      <div>
+                          <h3 className="text-xl font-black flex items-center gap-2 tracking-tight"><BarChart2 size={24}/> Leave Analytics</h3>
+                          <p className="text-[10px] text-blue-200 font-bold uppercase tracking-widest mt-1">Live Department Overview</p>
+                      </div>
+                      <button onClick={() => setIsInsightsOpen(false)} className="bg-black/10 p-2 rounded-full hover:bg-black/20 transition-colors"><X size={18}/></button>
+                  </div>
+
+                  {/* Body */}
+                  <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                      
+                      {/* Top KPIs */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Total Liability</span>
+                              <span className="text-3xl font-black text-rose-600">{insightsData.totalLiability.toFixed(1)}</span>
+                              <span className="text-[8px] font-bold uppercase text-slate-400 mt-1">Total Days Owed</span>
+                          </div>
+                          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-cyan-500 mb-1">Annual Leave</span>
+                              <span className="text-3xl font-black text-cyan-700">{insightsData.totalAL.toFixed(1)}</span>
+                              <span className="text-[8px] font-bold uppercase text-slate-400 mt-1">Days Owed</span>
+                          </div>
+                          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500 mb-1">Off Days</span>
+                              <span className="text-3xl font-black text-emerald-700">{insightsData.totalOff.toFixed(1)}</span>
+                              <span className="text-[8px] font-bold uppercase text-slate-400 mt-1">Days Owed</span>
+                          </div>
+                          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">YTD Consumption</span>
+                              <span className="text-3xl font-black text-slate-800">{insightsData.totalLeavesTaken}</span>
+                              <span className="text-[8px] font-bold uppercase text-slate-400 mt-1">Total Leaves Cleared</span>
+                          </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                          
+                          {/* Monthly Clearance Breakdown */}
+                          <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col">
+                              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-6 flex items-center gap-2">
+                                  <CalendarDays size={14} className="text-blue-500"/> Monthly Clearance & Sick Leaves
+                              </h4>
+                              
+                              <div className="flex-1 overflow-x-auto">
+                                  <table className="w-full text-left">
+                                      <thead>
+                                          <tr className="text-[9px] uppercase tracking-widest text-slate-400 border-b border-slate-100">
+                                              <th className="pb-3 pr-4">Month</th>
+                                              <th className="pb-3 px-2 text-emerald-500">Off</th>
+                                              <th className="pb-3 px-2 text-cyan-500">AL</th>
+                                              <th className="pb-3 px-2 text-blue-500">PH</th>
+                                              <th className="pb-3 pl-4 border-l border-slate-100 text-rose-500">Sick Leaves</th>
+                                          </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-50">
+                                          {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((month, idx) => {
+                                              const data = insightsData.monthlyStats[idx];
+                                              if (data.off === 0 && data.al === 0 && data.ph === 0 && data.sl === 0) return null;
+
+                                              return (
+                                                  <tr key={month} className="hover:bg-slate-50 transition-colors">
+                                                      <td className="py-3 pr-4 font-bold text-slate-700">{month}</td>
+                                                      <td className="py-3 px-2 font-bold text-emerald-700">{data.off || '-'}</td>
+                                                      <td className="py-3 px-2 font-bold text-cyan-700">{data.al || '-'}</td>
+                                                      <td className="py-3 px-2 font-bold text-blue-700">{data.ph || '-'}</td>
+                                                      <td className="py-3 pl-4 border-l border-slate-100">
+                                                          <div className="flex items-center gap-3">
+                                                              <span className="font-bold text-rose-600">{data.sl || '-'}</span>
+                                                              {data.topSickPerson && (
+                                                                  <span className="text-[9px] bg-rose-50 text-rose-600 px-2 py-1 rounded-full font-bold flex items-center gap-1 border border-rose-100">
+                                                                      <Pill size={10}/> {data.topSickPerson.name} ({data.topSickPerson.count})
+                                                                  </span>
+                                                              )}
+                                                          </div>
+                                                      </td>
+                                                  </tr>
+                                              );
+                                          })}
+                                      </tbody>
+                                  </table>
+                              </div>
+                          </div>
+
+                          {/* Top Liability Staff */}
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col">
+                              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-6 flex items-center gap-2">
+                                  <AlertCircle size={14} className="text-amber-500"/> Highest Balances
+                              </h4>
+                              
+                              <div className="space-y-4">
+                                  {insightsData.topOwed.map((host, idx) => (
+                                      <div key={host.id} className="flex items-center justify-between group">
+                                          <div className="flex items-center gap-3 min-w-0 pr-2">
+                                              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${idx === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>
+                                                  {idx + 1}
+                                              </div>
+                                              <div className="truncate">
+                                                  <p className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-[#6D2158] transition-colors">{host.full_name}</p>
+                                                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 truncate leading-tight">{host.role}</p>
+                                              </div>
+                                          </div>
+                                          <div className="text-right shrink-0">
+                                              <span className="text-sm font-black text-[#6D2158]">{host.balTotal}</span>
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                          </div>
+
+                      </div>
+                  </div>
               </div>
           </div>
       )}

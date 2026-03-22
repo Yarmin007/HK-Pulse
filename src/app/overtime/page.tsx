@@ -22,8 +22,8 @@ type Timesheet = {
   shift_out: string;
   shift_in_2: string;
   shift_out_2: string;
-  shift_in_3?: string; // NEW SHIFT 3
-  shift_out_3?: string; // NEW SHIFT 3
+  shift_in_3?: string;
+  shift_out_3?: string;
   worked_hours: number;
   daily_balance: number;
 };
@@ -47,6 +47,7 @@ export default function OvertimeRegistry() {
   const timesheetsRef = useRef<Timesheet[]>([]); 
   const [timesheets, setTimesheets] = useState<Timesheet[]>([]); 
   const [redemptions, setRedemptions] = useState<Redemption[]>([]);
+  const [otAttendance, setOtAttendance] = useState<any[]>([]); // NEW: Tracks OT from attendance sheet
   const [isLoading, setIsLoading] = useState(true);
   
   const [searchQuery, setSearchQuery] = useState('');
@@ -80,13 +81,12 @@ export default function OvertimeRegistry() {
 
   const getMonthLabel = (date: Date) => date.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 
-  // SMART TIME FORMATTER (Allows "0800", "8", "08:00")
   const formatTimeInput = (val: string) => {
     if (!val) return '';
-    if (/^\d{2}:\d{2}$/.test(val)) return val; // Already HH:MM
-    if (/^\d{2}:\d{2}:\d{2}$/.test(val)) return val.substring(0, 5); // Strip seconds from DB
+    if (/^\d{2}:\d{2}$/.test(val)) return val;
+    if (/^\d{2}:\d{2}:\d{2}$/.test(val)) return val.substring(0, 5); 
 
-    const clean = val.replace(/[^\d]/g, ''); // strip colons/letters
+    const clean = val.replace(/[^\d]/g, ''); 
     if (clean.length === 0) return '';
     if (clean.length === 1) return `0${clean}:00`;
     if (clean.length === 2) return `${clean}:00`;
@@ -123,13 +123,20 @@ export default function OvertimeRegistry() {
     setIsLoading(true);
     const { data: h } = await supabase.from('hsk_hosts').select('*').order('full_name');
     if (h) setHosts(h);
+    
     const { data: t } = await supabase.from('hsk_timesheets').select('*');
     if (t) {
        timesheetsRef.current = t; 
        setTimesheets(t);          
     }
+    
     const { data: r } = await supabase.from('hsk_ot_redemptions').select('*');
     if (r) setRedemptions(r);
+    
+    // ⚡ FIX: Load OT codes from the main attendance sheet
+    const { data: ot } = await supabase.from('hsk_attendance').select('host_id, date').eq('status_code', 'OT');
+    if (ot) setOtAttendance(ot);
+
     setIsLoading(false);
   };
 
@@ -138,7 +145,9 @@ export default function OvertimeRegistry() {
   // --- REGISTRY CALCULATIONS ---
   const registryData = useMemo(() => {
     return hosts.map(host => {
-      const hostSheets = timesheets.filter(t => t.host_id === host.id);
+      const hostSheets = timesheets.filter(t => t.host_id === host.id); // timesheets use UUID
+      const hostOtAtt = otAttendance.filter(a => String(a.host_id).trim() === String(host.host_id).trim()); // attendance uses SSL123
+      
       const monthlyBalances: Record<string, number> = {};
       
       hostSheets.forEach(sheet => {
@@ -160,22 +169,38 @@ export default function OvertimeRegistry() {
       });
 
       const hostRedemptions = redemptions.filter(r => r.host_id === host.id);
-      const totalHoursTaken = hostRedemptions.reduce((sum, r) => sum + r.hours_deducted, 0);
+      
+      // ⚡ FIX: Calculate total hours taken including manual redemptions AND attendance OT (8 hrs per day)
+      const manualTaken = hostRedemptions.reduce((sum, r) => sum + r.hours_deducted, 0);
+      const attendanceOtTaken = hostOtAtt.length * 8;
+      const totalHoursTaken = manualTaken + attendanceOtTaken;
       
       const netHoursRemaining = totalEarnedHours - totalHoursTaken;
       const daysAvailable = netHoursRemaining / 8;
-      const hasHistory = hostSheets.length > 0 || hostRedemptions.length > 0;
+      
+      // ⚡ FIX: Host is tracked if they've earned OT, manually redeemed, or taken an OT code on the attendance sheet
+      const hasHistory = hostSheets.length > 0 || hostRedemptions.length > 0 || hostOtAtt.length > 0;
 
-      return { ...host, netHoursRemaining, daysAvailable, totalEarnedHours, totalHoursTaken, monthlyBalances, hasHistory };
+      return { 
+          ...host, 
+          netHoursRemaining, 
+          daysAvailable, 
+          totalEarnedHours, 
+          totalHoursTaken, 
+          manualTaken, // For history modal clarity
+          otDaysTaken: hostOtAtt.length, // For history modal clarity
+          monthlyBalances, 
+          hasHistory 
+      };
     }).filter(h => h.hasHistory); 
-  }, [hosts, timesheets, redemptions]);
+  }, [hosts, timesheets, redemptions, otAttendance]);
 
   // --- SHEET ACTIONS ---
   const handleSheetUpdate = async (dateStr: string, field: string, value: string) => {
     if (!selectedHost) return;
     setSaveStatus('saving');
     
-    const formattedValue = formatTimeInput(value); // Force HH:MM format
+    const formattedValue = formatTimeInput(value); 
     
     const currentList = [...timesheetsRef.current];
     const existingIndex = currentList.findIndex(t => t.host_id === selectedHost.id && t.date === dateStr);
@@ -256,7 +281,7 @@ export default function OvertimeRegistry() {
     setConfirmModal({
       isOpen: true,
       title: 'Wipe All History?',
-      message: `This will permanently delete ALL timesheets and redemption records for ${host.full_name}.`,
+      message: `This will permanently delete ALL timesheets and redemption records for ${host.full_name}. It will NOT delete OT marked on the Attendance Sheet.`,
       onConfirm: () => confirmWipeHistory(host.id)
     });
   };
@@ -318,7 +343,6 @@ export default function OvertimeRegistry() {
             </td>
             {timeFields.map((field) => {
                 let displayVal = (sheet as any)?.[field] || '';
-                // Fix for SS (Seconds) coming from database
                 if (displayVal.length > 5 && displayVal.includes(':')) {
                     displayVal = displayVal.substring(0, 5); 
                 }
@@ -332,7 +356,6 @@ export default function OvertimeRegistry() {
                           className="w-[50px] p-1.5 border border-slate-200 rounded text-xs font-bold text-center bg-white focus:border-[#6D2158] focus:ring-2 focus:ring-[#6D2158]/10 outline-none transition-all placeholder-slate-200"
                           value={displayVal}
                           onChange={(e) => {
-                              // Instant UI update for smooth typing
                               const val = e.target.value;
                               const currentList = [...timesheetsRef.current];
                               const idx = currentList.findIndex(t => t.host_id === selectedHost?.id && t.date === dateStr);
@@ -341,14 +364,12 @@ export default function OvertimeRegistry() {
                               setTimesheets(currentList);
                           }}
                           onBlur={(e) => {
-                              // Only save to DB on blur (when user clicks away or tabs out)
                               handleSheetUpdate(dateStr, field, e.target.value);
                           }}
                           onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                   e.preventDefault();
                                   handleSheetUpdate(dateStr, field, e.currentTarget.value);
-                                  // Auto focus next input
                                   const container = e.currentTarget.closest('.sheet-container');
                                   if (container) {
                                     const inputs = Array.from(container.querySelectorAll('input'));
@@ -444,7 +465,7 @@ export default function OvertimeRegistry() {
                               <span className="text-[10px] font-bold text-slate-400 uppercase">{host.host_id} • {host.role}</span>
                            </td>
                            <td className="p-4 text-center">
-                              <span className="px-3 py-1 bg-[#6D2158]/10 text-[#6D2158] rounded-lg font-bold text-sm">
+                              <span className={`px-3 py-1 rounded-lg font-bold text-sm ${host.daysAvailable < 0 ? 'bg-rose-100 text-rose-700' : 'bg-[#6D2158]/10 text-[#6D2158]'}`}>
                                  {host.daysAvailable.toFixed(2)} Days
                               </span>
                            </td>
@@ -459,7 +480,7 @@ export default function OvertimeRegistry() {
                            </td>
                         </tr>
                        );
-                    })}
+                 })}
               </tbody>
            </table>
         </div>
@@ -527,15 +548,27 @@ export default function OvertimeRegistry() {
                     </div>
                 </div>
                 <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
-                    <h3 className="text-sm font-bold text-slate-600 uppercase tracking-widest mb-4">History</h3>
+                    <h3 className="text-sm font-bold text-slate-600 uppercase tracking-widest mb-4">Deduction Ledger</h3>
                     <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                        {redemptions.filter(r => r.host_id === selectedHost.id).length === 0 && <p className="text-xs italic text-slate-400">No days taken yet.</p>}
+                        
+                        {/* ⚡ FIX: Added Attendance OT to the history modal ledger */}
+                        {historyHost?.otDaysTaken > 0 && (
+                          <div className="flex justify-between items-center p-3 bg-rose-50 rounded-xl border border-rose-100">
+                             <div className="w-full"><p className="text-xs font-bold text-rose-700">App Attendance (OT)</p><p className="text-[10px] font-bold text-rose-500">Auto-detected</p></div>
+                             <span className="text-sm font-bold text-rose-700">-{historyHost.otDaysTaken * 8} Hrs</span>
+                          </div>
+                        )}
+
                         {redemptions.filter(r => r.host_id === selectedHost.id).map(rec => (
                            <div key={rec.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100 group">
                               <div className="w-full"><p className="text-xs font-bold text-slate-700 truncate">{rec.notes || 'Day Off'}</p><p className="text-[10px] font-bold text-rose-500">-{rec.hours_deducted/8} Day(s)</p></div>
                               <button type="button" onClick={() => handleDeleteRedemption(rec.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14}/></button>
                            </div>
                         ))}
+
+                        {redemptions.filter(r => r.host_id === selectedHost.id).length === 0 && historyHost?.otDaysTaken === 0 && (
+                            <p className="text-xs italic text-slate-400">No deductions recorded.</p>
+                        )}
                     </div>
                 </div>
             </div>
@@ -617,7 +650,8 @@ export default function OvertimeRegistry() {
             >
               <X size={20}/>
             </button>
-            <h3 className="text-lg font-bold text-[#6D2158] mb-4">{historyHost.full_name}</h3>
+            <h3 className="text-lg font-bold text-[#6D2158] mb-1">{historyHost.full_name}</h3>
+            <p className="text-[10px] font-bold uppercase text-slate-400 mb-4 tracking-widest">Earned Ledger</p>
             <div className="space-y-2 max-h-80 overflow-y-auto">
               {Object.entries(historyHost.monthlyBalances).map(([month, val]: [string, any]) => (
                 <div key={month} className="flex justify-between p-3 border-b border-slate-50">
@@ -627,6 +661,9 @@ export default function OvertimeRegistry() {
                   </span>
                 </div>
               ))}
+              {Object.keys(historyHost.monthlyBalances).length === 0 && (
+                  <p className="text-xs italic text-slate-400 py-4 text-center">No earned hours recorded.</p>
+              )}
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
-import { differenceInDays, parseISO, isAfter, isBefore, addDays } from 'date-fns';
+import { differenceInDays, parseISO, isAfter, isBefore, addDays, startOfDay } from 'date-fns';
 
-export const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR'];
+export const WORKING_CODES = ['P']; 
+export const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT'];
 
 export const getPayrollPeriod = (date = new Date()) => {
   const d = new Date(date);
@@ -13,10 +14,10 @@ export const getPayrollPeriod = (date = new Date()) => {
   }
 };
 
-export const getUpcomingLeave = (futureLeaves: any[]) => {
+export const getUpcomingLeave = (futureLeaves: any[], todayStr: string) => {
     if (!futureLeaves || futureLeaves.length === 0) return null;
-    const today = new Date();
-    today.setHours(0,0,0,0); 
+    
+    const today = startOfDay(parseISO(todayStr)); 
 
     const sorted = [...futureLeaves].sort((a, b) => parseISO(a.date).getTime() - parseISO(b.date).getTime());
     if (sorted.length === 0) return null;
@@ -46,12 +47,19 @@ export const getUpcomingLeave = (futureLeaves: any[]) => {
     return {
         startDate, endDate, returnDate, daysUntilLeave,
         totalLeaveDays: nextLeaveBlock.length,
-        isOnLeaveNow: daysUntilLeave <= 0 && today <= endDate // Minor bug fix here to catch mid-leave correctly
+        isOnLeaveNow: daysUntilLeave <= 0 && today <= endDate
     };
 };
 
-export const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr: string, publicHolidays: any[], anniversaryLeaves: any[]) => {
-    if (!host || !rpcData) return null;
+export const computeLeaveBalancesRPC = (
+    host: any, 
+    currentYearData: any[], // Raw rows (used by Attendance Page)
+    historicalStats: any[], // Aggregated RPC data (used by Dashboard & History)
+    targetDateStr: string, 
+    publicHolidays: any[], 
+    anniversaryLeaves: any[] // Raw SL/EL/RR
+) => {
+    if (!host || !historicalStats) return null;
     const targetDate = parseISO(targetDateStr);
     const targetYear = targetDate.getFullYear();
     const SYSTEM_START_DATE = new Date(2026, 0, 1); 
@@ -64,29 +72,71 @@ export const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr
     const isExec = ['DA', 'DB'].includes(host.host_level);
     const isIntern = (host.role || '').toLowerCase().includes('intern');
 
-    const hostStats = rpcData.filter((r: any) => String(r.host_id).trim() === String(host.host_id).trim());
+    const hostCurrentStats = (currentYearData || []).filter((r: any) => String(r.host_id).trim() === String(host.host_id).trim());
+    const hostHistStats = historicalStats.filter((r: any) => String(r.host_id).trim() === String(host.host_id).trim());
 
+    const hasRawCurrentData = currentYearData && currentYearData.length > 0;
+
+    // ⚡ SMART FALLBACK: Handles string/number mismatches from Supabase DB payload
     const getStat = (year: number, codes: string[]) => {
-        return hostStats.filter((r: any) => r.att_year === year && codes.includes(r.status_code)).reduce((sum: number, r: any) => sum + Number(r.total), 0);
+        if (hasRawCurrentData) {
+            return hostCurrentStats.filter((r: any) => {
+                if (!r.date) return false;
+                const d = parseISO(r.date.includes('T') ? r.date.split('T')[0] : r.date);
+                const statCode = String(r.status_code).trim().toUpperCase();
+                return d.getFullYear() === year && d <= targetDate && codes.includes(statCode);
+            }).length;
+        } else {
+            return hostHistStats
+                .filter((r: any) => Number(r.att_year) === year && codes.includes(String(r.status_code).trim().toUpperCase()))
+                .reduce((sum: number, r: any) => sum + Number(r.total), 0);
+        }
     };
 
-    let cfOff = baseCfOff; let cfAL = baseCfAL; let cfPH = baseCfPH;
-    
-    if (targetYear > 2026) {
-        const accrualStart = isAfter(joinDate, SYSTEM_START_DATE) ? joinDate : SYSTEM_START_DATE;
-        const endOfPrevYear = new Date(targetYear - 1, 11, 31);
-        if (isBefore(accrualStart, endOfPrevYear) || accrualStart.getTime() === endOfPrevYear.getTime()) {
-            const daysBefore = differenceInDays(endOfPrevYear, accrualStart) + 1;
-            const penaltyBefore = getStat(targetYear - 1, ['NP', 'A']);
-            const eligibleBefore = Math.max(0, daysBefore - penaltyBefore);
-            
-            cfOff += (eligibleBefore / 7) - getStat(targetYear - 1, ['O', 'OFF']);
-            cfAL += (eligibleBefore / 12) - getStat(targetYear - 1, ['AL', 'VAC']);
-            cfPH -= getStat(targetYear - 1, ['PH']);
-        }
-    } else if (targetYear < 2026) {
-        cfOff = 0; cfAL = 0; cfPH = 0;
+    const getHistoricalStat = (year: number, codes: string[]) => {
+        return hostHistStats
+            .filter((r: any) => Number(r.att_year) === year && codes.includes(String(r.status_code).trim().toUpperCase()))
+            .reduce((sum: number, r: any) => sum + Number(r.total), 0);
+    };
+
+    let currentCfOff = baseCfOff; 
+    let currentCfAL = baseCfAL; 
+    let currentCfPH = baseCfPH;
+
+    const startYear = Math.max(2026, joinDate.getFullYear());
+
+    for (let calcYear = startYear; calcYear < targetYear; calcYear++) {
+        const startOfCalcYear = new Date(calcYear, 0, 1);
+        const endOfCalcYear = new Date(calcYear, 11, 31);
+        
+        const trackingStart = isAfter(joinDate, startOfCalcYear) ? joinDate : startOfCalcYear;
+        
+        const daysActive = differenceInDays(endOfCalcYear, trackingStart) + 1;
+        const penaltyDays = getHistoricalStat(calcYear, ['NP', 'A']);
+        const eligibleDays = Math.max(0, daysActive - penaltyDays);
+        
+        const earnedOff = eligibleDays / 7;
+        const earnedAL = isIntern ? 0 : (eligibleDays / 12);
+        
+        let earnedPH = 0;
+        publicHolidays.forEach((ph: any) => {
+            const phDate = parseISO(ph.date);
+            if (phDate >= trackingStart && phDate <= endOfCalcYear) earnedPH += 1;
+        });
+
+        // ⚡ OT IS STRICTLY EXCLUDED FROM NORMAL DEDUCTIONS (Handled in Overtime Module)
+        const takenOff = getHistoricalStat(calcYear, ['O', 'OFF']); 
+        const takenAL = getHistoricalStat(calcYear, ['AL', 'VAC']);
+        const takenPH = getHistoricalStat(calcYear, ['PH']);
+
+        currentCfOff = currentCfOff + earnedOff - takenOff;
+        currentCfAL = currentCfAL + earnedAL - takenAL;
+        currentCfPH = currentCfPH + earnedPH - takenPH;
     }
+
+    const calcCfOff = currentCfOff;
+    const calcCfAL = currentCfAL;
+    const calcCfPH = currentCfPH;
 
     const startOfTargetYear = new Date(targetYear, 0, 1);
     const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
@@ -99,7 +149,7 @@ export const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr
         const eligibleDays = Math.max(0, daysActive - penaltyDays);
         
         earnedOff = eligibleDays / 7;
-        earnedAL = eligibleDays / 12;
+        earnedAL = isIntern ? 0 : (eligibleDays / 12);
     }
 
     publicHolidays.forEach((ph: any) => {
@@ -115,18 +165,29 @@ export const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr
 
     let lastAnniversary = new Date(joinDate);
     lastAnniversary.setFullYear(targetYear);
+    if (joinDate.getMonth() === 1 && joinDate.getDate() === 29 && !isLeapYear(targetYear)) {
+        lastAnniversary = new Date(targetYear, 1, 28);
+    }
     if (isAfter(lastAnniversary, targetDate)) {
         lastAnniversary.setFullYear(targetYear - 1);
     }
     
-    const myAnniversaryLeaves = anniversaryLeaves.filter((a: any) => String(a.host_id).trim() === String(host.host_id).trim() && parseISO(a.date) >= lastAnniversary && parseISO(a.date) <= targetDate);
+    // Uses Anniversary Leaves if provided, else falls back to local year data
+    const rawAnniversaryData = (anniversaryLeaves && anniversaryLeaves.length > 0) ? anniversaryLeaves : hostCurrentStats;
+    const myAnniversaryLeaves = rawAnniversaryData.filter((a: any) => {
+        if (String(a.host_id).trim() !== String(host.host_id).trim()) return false;
+        if (!a.date) return false;
+        const d = parseISO(a.date.includes('T') ? a.date.split('T')[0] : a.date);
+        return d >= lastAnniversary && d <= targetDate;
+    });
+
     const takenSL = myAnniversaryLeaves.filter((a: any) => String(a.status_code).toUpperCase().trim() === 'SL').length;
     const takenEL = myAnniversaryLeaves.filter((a: any) => String(a.status_code).toUpperCase().trim() === 'EL').length;
     const takenRR = myAnniversaryLeaves.filter((a: any) => String(a.status_code).toUpperCase().trim() === 'RR').length;
 
-    const balOffVal = cfOff + earnedOff - takenOff;
-    const balALVal = isIntern ? 0 : (cfAL + earnedAL - takenAL);
-    const balPHVal = baseCfPH + earnedPH - takenPH;
+    const balOffVal = currentCfOff + earnedOff - takenOff;
+    const balALVal = isIntern ? 0 : (currentCfAL + earnedAL - takenAL);
+    const balPHVal = currentCfPH + earnedPH - takenPH;
     const balRRVal = isExec ? 7 - takenRR : 0;
     const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
 
@@ -137,6 +198,13 @@ export const computeLeaveBalancesRPC = (host: any, rpcData: any[], targetDateStr
         balRR: isExec ? balRRVal.toString() : '-',
         balTotal: totalBal.toFixed(1),
         balSL: 30 - takenSL,
-        balEL: 10 - takenEL
+        balEL: 10 - takenEL,
+        calcCfOff: calcCfOff.toFixed(1),
+        calcCfAL: calcCfAL.toFixed(1),  
+        calcCfPH: calcCfPH.toFixed(1)   
     };
 };
+
+function isLeapYear(year: number) {
+    return (year % 4 === 0 && year % 100 !== 0) || (year % 400 === 0);
+}

@@ -59,7 +59,6 @@ const parseVillas = (input: string, doubleVillas: string[] = []) => {
     if (!input) return [];
     const result = new Set<string>();
     
-    // Normalize string (turn & into commas, remove spaces)
     const normalized = input.replace(/&|and/gi, ',').replace(/\s+/g, '');
     const parts = normalized.split(',');
 
@@ -73,7 +72,6 @@ const parseVillas = (input: string, doubleVillas: string[] = []) => {
                 for (let i = start; i <= end; i++) result.add(String(i));
             }
         } else {
-            // Strip out non-digits just in case, then parse
             const num = parseInt(p.replace(/\D/g, ''), 10);
             if (!isNaN(num)) result.add(String(num));
         }
@@ -100,38 +98,30 @@ export default function CoordinatorLog() {
   const [gems, setGems] = useState<string[]>([]);
   const [dailyAllocations, setDailyAllocations] = useState<any[]>([]);
   
-  // Dictionary to translate UUIDs into Human Names
   const [hostMap, setHostMap] = useState<Record<string, string>>({});
   const [allHosts, setAllHosts] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null); 
   
-  // LIVE CLOCK FOR URGENT REMINDERS
   const [currentTime, setCurrentTime] = useState(getDhakaTime());
 
-  // UI State
   const [isMinibarOpen, setIsMinibarOpen] = useState(false);
   const [isOtherOpen, setIsOtherOpen] = useState(false);
   const [otherModalType, setOtherModalType] = useState<'General' | 'GEM'>('General');
   const [isPartialOpen, setIsPartialOpen] = useState(false);
   const [showOverdue, setShowOverdue] = useState(true); 
 
-  // EDIT STATE
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   
-  // POST / BILL NUMBER MODAL
   const [postModal, setPostModal] = useState({ isOpen: false, id: '', chk: '' });
   
-  // SYNCED DATE
   const [selectedDate, setSelectedDate] = useState(getDhakaTime());
   
-  // FILTERS
   const [typeFilter, setTypeFilter] = useState('All');
   const [statusFilter, setStatusFilter] = useState('All');
   const [jettyFilter, setJettyFilter] = useState('All');
   const [villaSearch, setVillaSearch] = useState('');
   
-  // MODAL DATA
   const [mbItemSearch, setMbItemSearch] = useState('');
   const [villaNumber, setVillaNumber] = useState('');
   const [guestInfo, setGuestInfo] = useState<any>(null); 
@@ -149,7 +139,6 @@ export default function CoordinatorLog() {
   const [partialTarget, setPartialTarget] = useState<RequestRecord | null>(null);
   const [partialSelection, setPartialSelection] = useState<string[]>([]);
 
-  // INIT & REALTIME SYNC
   useEffect(() => { 
     const sessionStr = localStorage.getItem('hk_pulse_session');
     if (sessionStr) {
@@ -168,7 +157,6 @@ export default function CoordinatorLog() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedDate]);
 
-  // LIVE CLOCK TICKER
   useEffect(() => {
       const timer = setInterval(() => setCurrentTime(getDhakaTime()), 60000);
       return () => clearInterval(timer);
@@ -185,25 +173,23 @@ export default function CoordinatorLog() {
       if (!validStatuses.includes(statusFilter)) setStatusFilter('All');
   }, [typeFilter]);
 
-  // --- FETCH HOSTS ---
   const fetchHosts = async () => {
-      const { data, error } = await supabase.from('hsk_hosts').select('*');
+      const { data, error } = await supabase.from('hsk_hosts').select('id, full_name, nicknames');
       if (!error && data) {
           setAllHosts(data);
           const map: Record<string, string> = {};
           data.forEach(h => {
-              if (h.id) map[h.id] = h.nicknames || h.nickname || h.full_name || 'Unknown VA';
+              // FIX: Only use nicknames and full_name (no nickname singular)
+              if (h.id) map[h.id] = h.nicknames || h.full_name || 'Unknown VA';
           });
           setHostMap(map);
       }
   };
 
-  // --- FLAWLESS AUTO-DETECT VA FROM ALLOCATIONS ---
   useEffect(() => {
     const fetchGuestAndVA = async () => {
       const cleanVilla = villaNumber.trim();
       
-      // If villa is empty, clear the search instantly
       if (!cleanVilla || cleanVilla.length < 1) { 
           setGuestInfo(null); 
           if (!isEditing) setRequesterSearch(''); 
@@ -212,7 +198,6 @@ export default function CoordinatorLog() {
       
       const dateStr = getDhakaDateStr(selectedDate);
       
-      // 1. Aggressive DB Check for VA
       let assignedVA = '';
       if (dailyAllocations.length > 0) {
           const { data: constData } = await supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle();
@@ -220,7 +205,6 @@ export default function CoordinatorLog() {
 
           for (const alloc of dailyAllocations) {
               const rawVillas = alloc.task_details || '';
-              // Run it through the aggressive extractor
               const vList = parseVillas(rawVillas, dvList);
               
               const extractedDigits = cleanVilla.replace(/\D/g, '');
@@ -228,20 +212,17 @@ export default function CoordinatorLog() {
               
               let isMatch = false;
               
-              // Standard checks
               if (vList.includes(cleanVilla)) isMatch = true;
               else if (numericBase && vList.includes(numericBase)) isMatch = true;
-              // Ultimate Fallback: Check if the raw string contains the exact standalone number
               else if (numericBase && new RegExp(`\\b${numericBase}\\b`).test(rawVillas)) isMatch = true;
               
               if (isMatch) {
                   const hostUUID = alloc.host_id; 
                   
-                  // DIRECT LOOKUP into allHosts array
                   const host = allHosts.find(h => String(h.id) === String(hostUUID) || String(h.host_id) === String(hostUUID));
                   if (host) {
-                      // Grab best available name
-                      assignedVA = host.nicknames || host.nickname || host.full_name || host.name || hostUUID;
+                      // FIX: Removed the singular nickname to match the typescript request
+                      assignedVA = host.nicknames || host.full_name || host.name || hostUUID;
                   } else {
                       assignedVA = hostMap[hostUUID] || hostUUID; 
                   }
@@ -250,7 +231,6 @@ export default function CoordinatorLog() {
           }
       }
 
-      // 2. Fetch Guest Info & Force Update Name
       if (/^\d+$/.test(cleanVilla) || cleanVilla.includes('-')) {
           const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', dateStr).eq('villa_number', cleanVilla).maybeSingle();
           
@@ -277,7 +257,7 @@ export default function CoordinatorLog() {
       }
     };
     
-    const timer = setTimeout(fetchGuestAndVA, 300); // 300ms debounce
+    const timer = setTimeout(fetchGuestAndVA, 300);
     return () => clearTimeout(timer);
   }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, dailyAllocations, allHosts, hostMap, isEditing]);
 
@@ -292,7 +272,7 @@ export default function CoordinatorLog() {
   };
 
   const isOnlyRefills = (details: string) => {
-      const items = (details || '').split(/\n|,/).map(s => s.trim()).filter(Boolean);
+      const items = (details || '').split(/\n/).map(s => s.trim()).filter(Boolean);
       if(items.length === 0) return false;
       return items.every(item => item.includes('(Refill)'));
   };
@@ -355,16 +335,20 @@ export default function CoordinatorLog() {
     
     if (record.request_type === 'Minibar') {
       const items = (record.item_details || '').split('\n').map(line => {
-        const match = line.match(/(\d+)x (.+)/);
-        const isRef = line.includes('(Refill)');
-        let n = match ? match[2] : line;
+        // Strip out the inline SENT tags so they can cleanly edit the items
+        const cleanLine = line.replace(/\s*\(SENT\)$/, '');
+        const match = cleanLine.match(/(\d+)x (.+)/);
+        const isRef = cleanLine.includes('(Refill)');
+        let n = match ? match[2] : cleanLine;
         if(isRef) n = n.replace(' (Refill)', '');
         return { name: n.trim(), qty: match ? parseInt(match[1]) : 1, isRefill: isRef };
       });
       setMbCart(items);
       setIsMinibarOpen(true);
     } else {
-      setCustomNote(record.item_details);
+      // Strip SENT tags from general requests too
+      const cleanNote = (record.item_details || '').split('\n').map(l => l.replace(/\s*\(SENT\)$/, '')).join('\n');
+      setCustomNote(cleanNote);
       setOtherMode('Note');
       setOtherModalType(record.request_type === 'GEM Request' ? 'GEM' : 'General');
       setOtherCategory(record.request_type);
@@ -452,7 +436,8 @@ export default function CoordinatorLog() {
         else attendantName = 'Staff';
     }
 
-    const loggedByName = currentUser ? (currentUser.nicknames || currentUser.nickname || currentUser.full_name || currentUser.name || 'Staff') : 'Admin';
+    // FIX: Removed the singular nickname to match the typescript request
+    const loggedByName = currentUser ? (currentUser.nicknames || currentUser.full_name || currentUser.name || 'Staff') : 'Admin';
 
     const payload = {
        villa_number: villaNumber,
@@ -520,9 +505,16 @@ export default function CoordinatorLog() {
   };
 
   const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
+      // Formats the message cleanly for WhatsApp, swapping inline tags for emojis
       const cleanDetails = (record.item_details || '')
-          .split(/\n|,/)
-          .map(s => s.trim().replace(/^[•\-\*]\s*/, ''))
+          .split(/\n/)
+          .map(s => {
+              let clean = s.trim().replace(/^[•\-\*]\s*/, '');
+              if (clean.endsWith('(SENT)')) {
+                  clean = clean.replace(/\s*\(SENT\)$/, '') + ' ✅';
+              }
+              return clean;
+          })
           .filter(Boolean)
           .join('\n- ');
 
@@ -540,21 +532,40 @@ export default function CoordinatorLog() {
 
   const openPartialModal = (record: RequestRecord) => {
       setPartialTarget(record);
-      const items = (record.item_details || '').split(/\n|,/).map(s => s.trim()).filter(Boolean);
-      setPartialSelection(items);
+      // Extract all items, pulling out the ones that already have the (SENT) tag
+      const allItemsRaw = (record.item_details || '').split(/\n/).map(s => s.trim().replace(/^[•\-\*]\s*/, '')).filter(Boolean);
+      const alreadySent = allItemsRaw.filter(i => i.endsWith('(SENT)')).map(i => i.replace(/\s*\(SENT\)$/, ''));
+      setPartialSelection(alreadySent);
       setIsPartialOpen(true);
   };
 
   const submitPartial = async () => {
       if (!partialTarget) return;
-      const allItems = (partialTarget.item_details || '').split(/\n|,/).map(s => s.trim()).filter(Boolean);
-      const sentItems = partialSelection;
-      const pendingItems = allItems.filter(i => !sentItems.includes(i));
-      await supabase.from('hsk_daily_requests').update({ item_details: sentItems.join('\n'), is_sent: true }).eq('id', partialTarget.id);
-      if (pendingItems.length > 0) {
-          await supabase.from('hsk_daily_requests').insert({ ...partialTarget, id: undefined, item_details: pendingItems.join('\n'), is_sent: false });
-      }
-      setIsPartialOpen(false); fetchRecords();
+      
+      const allItemsRaw = (partialTarget.item_details || '').split(/\n/).map(s => s.trim().replace(/^[•\-\*]\s*/, '')).filter(Boolean);
+      
+      // Inline Tagging: Append (SENT) to the selected items
+      const updatedItems = allItemsRaw.map(item => {
+          const baseItem = item.replace(/\s*\(SENT\)$/, '');
+          if (partialSelection.includes(baseItem)) {
+              return `${baseItem} (SENT)`;
+          }
+          return baseItem;
+      });
+      
+      // If every single item has the (SENT) tag, mark the whole card as is_sent
+      const allSent = updatedItems.length > 0 && updatedItems.every(i => i.endsWith('(SENT)'));
+      const newItemDetails = updatedItems.join('\n');
+      
+      await supabase.from('hsk_daily_requests')
+          .update({ 
+              item_details: newItemDetails, 
+              is_sent: allSent 
+          })
+          .eq('id', partialTarget.id);
+          
+      setIsPartialOpen(false); 
+      fetchRecords();
   };
 
   const visibleRecords = records.filter(r => {
@@ -637,32 +648,31 @@ export default function CoordinatorLog() {
           </div>
         }
       >
-        {/* COMPACT HEADER FOR MOBILE */}
-        <div className="relative mt-1.5">
-            <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-            <input type="text" placeholder="Search Villa or Name..." className="input-field pl-9 py-2 text-xs md:text-sm" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
+        <div className="relative mt-2">
+            <Search size={16} className="absolute left-4 top-4 text-slate-400" />
+            <input type="text" placeholder="Search Villa or Name..." className="input-field pl-12 py-3 text-[16px] md:text-sm" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
         </div>
 
-        <div className="flex flex-col gap-1 mt-1.5">
-            <div className="flex gap-1.5 flex-wrap items-center">
-                <span className="text-[9px] font-bold text-slate-400 uppercase w-8 shrink-0">Type</span>
+        <div className="flex flex-col gap-2.5 mt-2">
+            <div className="flex gap-2 flex-wrap items-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Type</span>
                 {['All', 'Minibar', 'General', 'GEM'].map(t => (
-                    <button key={t} onClick={() => setTypeFilter(t)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${typeFilter === t ? 'bg-slate-800 text-white shadow-sm' : 'bg-white border border-slate-200 text-slate-500 hover:border-slate-400'}`}>{t}</button>
+                    <button key={t} onClick={() => setTypeFilter(t)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${typeFilter === t ? 'bg-slate-800 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-500 hover:border-slate-400'}`}>{t}</button>
                 ))}
             </div>
-            <div className="flex gap-1.5 flex-wrap items-center">
-                <span className="text-[9px] font-bold text-slate-400 uppercase w-8 shrink-0">State</span>
+            <div className="flex gap-2 flex-wrap items-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">State</span>
                 {getAvailableStatuses().map(f => (
-                    <button key={f} onClick={() => setStatusFilter(f)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${statusFilter === f ? 'bg-[#6D2158] text-white shadow-sm shadow-[#6D2158]/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-[#6D2158]'}`}>{f}</button>
+                    <button key={f} onClick={() => setStatusFilter(f)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${statusFilter === f ? 'bg-[#6D2158] text-white shadow-md shadow-[#6D2158]/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-[#6D2158]'}`}>{f}</button>
                 ))}
             </div>
-            <div className="flex gap-1.5 flex-wrap items-center">
-                <span className="text-[9px] font-bold text-slate-400 uppercase w-8 shrink-0">Zone</span>
+            <div className="flex gap-2 flex-wrap items-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Zone</span>
                 {['All', 'Jetty A', 'Jetty B', 'Jetty C', 'Beach'].map(j => (
-                    <button key={j} onClick={() => setJettyFilter(j)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${jettyFilter === j ? 'bg-blue-600 text-white shadow-sm shadow-blue-600/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-blue-600'}`}>{j}</button>
+                    <button key={j} onClick={() => setJettyFilter(j)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${jettyFilter === j ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-blue-600'}`}>{j}</button>
                 ))}
-                <div className="border-l border-slate-200 pl-2 ml-1 h-4 flex items-center">
-                    <button onClick={() => setShowOverdue(!showOverdue)} className={`px-3 py-1 rounded-full text-[9px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${showOverdue ? 'bg-rose-50 text-rose-600 border border-rose-200 shadow-sm' : 'bg-white border border-slate-200 text-slate-400'}`}>
+                <div className="border-l border-slate-200 pl-3 ml-1 h-6 flex items-center">
+                    <button onClick={() => setShowOverdue(!showOverdue)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${showOverdue ? 'bg-rose-50 text-rose-600 border border-rose-200 shadow-sm' : 'bg-white border border-slate-200 text-slate-400'}`}>
                         {showOverdue ? 'Hide Overdue' : 'Show Overdue'}
                     </button>
                 </div>
@@ -670,7 +680,6 @@ export default function CoordinatorLog() {
         </div>
       </PageHeader>
 
-      {/* 2 CARDS PER ROW ON MOBILE */}
       <div className="p-2 sm:p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-4 pb-32">
          {visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
@@ -724,7 +733,6 @@ export default function CoordinatorLog() {
                     </div>
                 )}
 
-                {/* COMPACT INNER PADDING FOR MOBILE */}
                 <div className="p-3 sm:p-5 flex flex-col h-full">
                     <div className="flex justify-between items-start mb-2">
                        <div className="flex flex-col gap-1">
@@ -745,14 +753,22 @@ export default function CoordinatorLog() {
                     </div>
                     
                     <div className="mb-3 text-[11px] sm:text-sm font-bold text-slate-600 leading-tight space-y-0.5">
-                        {(r.item_details || '').split(/\n|,/).map((item: string, idx: number) => {
+                        {(r.item_details || '').split(/\n/).map((item: string, idx: number) => {
                             const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
                             if (!cleanItem) return null;
-                            return (<div key={idx}>• {cleanItem}</div>);
+                            
+                            const isSentItem = cleanItem.endsWith('(SENT)');
+                            const displayText = cleanItem.replace(/\s*\(SENT\)$/, '');
+                            
+                            return (
+                                <div key={idx} className={`flex items-center gap-1.5 ${isSentItem ? 'text-slate-400 line-through' : ''}`}>
+                                    <span>• {displayText}</span>
+                                    {isSentItem && <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />}
+                                </div>
+                            );
                         })}
                     </div>
 
-                    {/* STACKED FOOTER FOR NARROW MOBILE CARDS */}
                     <div className="mt-auto pt-3 border-t border-slate-50 flex flex-col xl:flex-row justify-between items-start xl:items-end gap-2">
                        <div className="w-full xl:w-auto">
                           <div className="text-[9px] sm:text-[10px] text-slate-400 font-black uppercase">{r.attendant_name}</div>
@@ -995,14 +1011,18 @@ export default function CoordinatorLog() {
                   <p className="text-xs font-bold text-slate-400 mb-8 uppercase text-center">Select items to mark as <b>SENT</b>.</p>
                   
                   <div className="space-y-3 mb-8">
-                      {(partialTarget.item_details || '').split(/\n|,/).map((item, i) => {
-                          const itemStr = item.trim();
-                          if(!itemStr) return null;
-                          const isSelected = partialSelection.includes(itemStr);
+                      {/* INLINE TAGGING: Ensure the modal buttons reflect the base item cleanly */}
+                      {(partialTarget.item_details || '').split(/\n/).map((item, i) => {
+                          const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
+                          if (!cleanItem) return null;
+                          
+                          const baseItem = cleanItem.replace(/\s*\(SENT\)$/, '');
+                          const isSelected = partialSelection.includes(baseItem);
+                          
                           return (
-                              <button key={i} onClick={() => isSelected ? setPartialSelection(partialSelection.filter(x => x !== itemStr)) : setPartialSelection([...partialSelection, itemStr])}
+                              <button key={i} onClick={() => isSelected ? setPartialSelection(partialSelection.filter(x => x !== baseItem)) : setPartialSelection([...partialSelection, baseItem])}
                                 className={`w-full p-4 rounded-2xl flex items-center justify-between border-2 font-bold text-sm transition-all active:scale-95 ${isSelected ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-slate-50 border-transparent text-slate-500'}`}>
-                                  {itemStr} 
+                                  {baseItem} 
                                   {isSelected ? <CheckCircle2 size={20} className="text-blue-600"/> : <div className="w-5 h-5 rounded-full border-2 border-slate-300"/>}
                               </button>
                           )})}
