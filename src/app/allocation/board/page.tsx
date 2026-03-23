@@ -17,6 +17,7 @@ type LiveTask = {
     endTime?: string;
     timeSpent?: string;
     timeLogged?: string;
+    sessionHistory?: any[];
 };
 
 // Reusable villa parser
@@ -41,6 +42,28 @@ const parseVillas = (input: string, doubleVillas: string[] = []) => {
         }
     }
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
+};
+
+// Helper for dynamic coloring based on the latest completed service
+const getDoneStyles = (history: any[]) => {
+    const latestSession = history && history.length > 0 ? history[history.length - 1] : null;
+    const reason = latestSession ? latestSession.reason : 'Morning Service';
+    
+    if (reason === 'TD Service') {
+        return { bg: 'bg-indigo-500', border: 'border-indigo-600', text: 'text-indigo-100', badge: 'bg-indigo-700', label: 'TD Done', colorHex: 'text-indigo-600', rowBg: 'bg-indigo-50/50' };
+    } else if (reason === 'Minibar Refill') {
+        return { bg: 'bg-blue-500', border: 'border-blue-600', text: 'text-blue-100', badge: 'bg-blue-700', label: 'MB Done', colorHex: 'text-blue-600', rowBg: 'bg-blue-50/50' };
+    } else if (reason === 'Guest Request') {
+        return { bg: 'bg-fuchsia-500', border: 'border-fuchsia-600', text: 'text-fuchsia-100', badge: 'bg-fuchsia-700', label: 'Req Done', colorHex: 'text-fuchsia-600', rowBg: 'bg-fuchsia-50/50' };
+    } else if (reason === 'Arrival') {
+        return { bg: 'bg-teal-500', border: 'border-teal-600', text: 'text-teal-100', badge: 'bg-teal-700', label: 'Arr Done', colorHex: 'text-teal-600', rowBg: 'bg-teal-50/50' };
+    } else if (reason === 'Dep') {
+        return { bg: 'bg-cyan-500', border: 'border-cyan-600', text: 'text-cyan-100', badge: 'bg-cyan-700', label: 'Dep Done', colorHex: 'text-cyan-600', rowBg: 'bg-cyan-50/50' };
+    } else if (reason === 'Clean Again' || reason === 'Other') {
+        return { bg: 'bg-slate-700', border: 'border-slate-800', text: 'text-slate-300', badge: 'bg-slate-800', label: 'Done', colorHex: 'text-slate-700', rowBg: 'bg-slate-100/50' };
+    } else {
+        return { bg: 'bg-emerald-500', border: 'border-emerald-600', text: 'text-emerald-100', badge: 'bg-emerald-700', label: 'Morn Done', colorHex: 'text-emerald-600', rowBg: 'bg-emerald-50/50' };
+    }
 };
 
 export default function LiveCleaningBoard() {
@@ -127,6 +150,7 @@ export default function LiveCleaningBoard() {
                   timeSpent: log?.time_spent_minutes ? `${log.time_spent_minutes}m` : undefined,
                   // Fallback to updated_at if dnd_time is null (for Refused)
                   timeLogged: log?.dnd_time ? format(parseISO(log.dnd_time), 'hh:mm a') : log?.updated_at ? format(parseISO(log.updated_at), 'hh:mm a') : undefined,
+                  sessionHistory: log?.session_history || [],
               });
           });
       });
@@ -160,6 +184,7 @@ export default function LiveCleaningBoard() {
                                   endTime: newLog.end_time ? format(parseISO(newLog.end_time), 'hh:mm a') : task.endTime,
                                   timeSpent: newLog.time_spent_minutes ? `${newLog.time_spent_minutes}m` : task.timeSpent,
                                   timeLogged: newLog.dnd_time ? format(parseISO(newLog.dnd_time), 'hh:mm a') : newLog.updated_at ? format(parseISO(newLog.updated_at), 'hh:mm a') : task.timeLogged,
+                                  sessionHistory: newLog.session_history || task.sessionHistory,
                               };
                           }
                           return task;
@@ -361,12 +386,14 @@ export default function LiveCleaningBoard() {
                                 const isDND = item.status === 'DND';
                                 const isRefused = item.status === 'Refused';
                                 
+                                const doneStyles = getDoneStyles(item.sessionHistory || []);
+                                
                                 return (
-                                    <tr key={`${item.villa}-${idx}`} className={`hover:bg-slate-50 transition-colors ${isDone ? 'bg-emerald-50/50 opacity-90' : isDND ? 'bg-rose-50/30' : isRefused ? 'bg-orange-50/40' : isCleaning ? 'bg-emerald-50/30' : ''}`}>
+                                    <tr key={`${item.villa}-${idx}`} className={`hover:bg-slate-50 transition-colors ${isDone ? `${doneStyles.rowBg} opacity-90` : isDND ? 'bg-rose-50/30' : isRefused ? 'bg-orange-50/40' : isCleaning ? 'bg-emerald-50/30' : ''}`}>
                                         <td className="p-2 border-r border-slate-100 text-center text-xs font-bold text-slate-400">{idx + 1}</td>
-                                        <td className={`p-2 border-r border-slate-100 font-black text-lg ${isDone ? 'text-emerald-700' : 'text-[#6D2158]'}`}>{item.villa}</td>
-                                        <td className={`p-2 border-r border-slate-100 text-xs font-bold flex items-center gap-2 ${isDone ? 'text-emerald-700' : 'text-slate-700'}`}>
-                                            <User size={12} className={isDone ? 'text-emerald-500' : 'text-slate-400 hidden md:block'}/> {item.attendant}
+                                        <td className={`p-2 border-r border-slate-100 font-black text-lg ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>{item.villa}</td>
+                                        <td className={`p-2 border-r border-slate-100 text-xs font-bold flex items-center gap-2 ${isDone ? doneStyles.colorHex : 'text-slate-700'}`}>
+                                            <User size={12} className={isDone ? doneStyles.colorHex : 'text-slate-400 hidden md:block'}/> {item.attendant}
                                         </td>
                                         <td className="p-2 border-r border-slate-100 text-center">
                                             <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest ${
@@ -380,22 +407,22 @@ export default function LiveCleaningBoard() {
                                         </td>
                                         <td className="p-2 border-r border-slate-100 text-center">
                                             <span className={`flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest ${
-                                                isCleaning ? 'text-emerald-600' : isDone ? 'text-emerald-600' : isDND ? 'text-rose-500' : isRefused ? 'text-orange-600' : 'text-slate-400'
+                                                isCleaning ? 'text-emerald-600' : isDone ? doneStyles.colorHex : isDND ? 'text-rose-500' : isRefused ? 'text-orange-600' : 'text-slate-400'
                                             }`}>
                                                 {isCleaning && <Sparkles size={10} className="animate-pulse hidden md:block"/>}
                                                 {isDone && <CheckCircle2 size={10} className="hidden md:block"/>}
                                                 {isDND && <DoorClosed size={10} className="hidden md:block"/>}
                                                 {isRefused && <X size={10} className="hidden md:block"/>}
                                                 {!isCleaning && !isDone && !isDND && !isRefused && <BedDouble size={10} className="hidden md:block"/>}
-                                                {item.status}
+                                                {isDone ? doneStyles.label : item.status}
                                             </span>
                                         </td>
-                                        <td className={`p-2 border-r border-slate-100 text-[10px] md:text-xs font-mono font-bold ${isDone ? 'text-emerald-700' : 'text-slate-500'}`}>
+                                        <td className={`p-2 border-r border-slate-100 text-[10px] md:text-xs font-mono font-bold ${isDone ? doneStyles.colorHex : 'text-slate-500'}`}>
                                             {isDone ? `${item.startTime || '-'} to ${item.endTime || '-'}` : 
                                              isCleaning ? `Start: ${item.startTime}` : 
                                              (isDND || isRefused) ? `Log: ${item.timeLogged}` : '-'}
                                         </td>
-                                        <td className={`p-2 text-center text-sm font-black ${isDone ? 'text-emerald-700' : 'text-[#6D2158]'}`}>
+                                        <td className={`p-2 text-center text-sm font-black ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
                                             {isDone ? item.timeSpent : isCleaning ? 'Active' : '-'}
                                         </td>
                                     </tr>
@@ -419,6 +446,8 @@ export default function LiveCleaningBoard() {
                 const isRefused = item.status === 'Refused';
                 const isPending = item.status === 'Pending';
 
+                const doneStyles = getDoneStyles(item.sessionHistory || []);
+
                 // Formatters to shrink data for high zooms
                 const typeLabel = isUltraDense ? item.type.substring(0, 3).toUpperCase() : item.type;
                 const attendantLabel = isUltraDense ? item.attendant.split(' ')[0] : item.attendant;
@@ -434,7 +463,7 @@ export default function LiveCleaningBoard() {
                         isDense ? 'p-2 min-h-[85px] border' : 
                         'p-2.5 md:p-3 min-h-[105px] border-2'
                     } ${
-                        isDone ? 'bg-emerald-500 border-emerald-600 text-white shadow-emerald-500/20' :
+                        isDone ? `${doneStyles.bg} ${doneStyles.border} text-white shadow-sm` :
                         isCleaning ? 'border-emerald-400 ring-2 ring-emerald-500/10 bg-emerald-50/20 bg-white' : 
                         isDND ? 'border-rose-300 bg-rose-50/40 bg-white' : 
                         isRefused ? 'border-orange-300 bg-orange-50/40 bg-white' : 
@@ -487,13 +516,13 @@ export default function LiveCleaningBoard() {
                     </div>
 
                     {/* ⚡ Bottom: Attendant & Exact Finish Time Log */}
-                    <div className={`mt-auto border-t flex flex-col ${isDone ? 'border-emerald-400/50' : 'border-slate-100'} ${isExtreme ? 'pt-0.5 gap-0' : isUltraDense ? 'pt-1 gap-0.5' : 'pt-1.5 gap-1'}`}>
+                    <div className={`mt-auto border-t flex flex-col ${isDone ? 'border-white/20' : 'border-slate-100'} ${isExtreme ? 'pt-0.5 gap-0' : isUltraDense ? 'pt-1 gap-0.5' : 'pt-1.5 gap-1'}`}>
                         <span className={`flex items-center gap-1 font-bold truncate leading-none ${
                             isExtreme ? 'text-[5px]' :
                             isUltraDense ? 'text-[6px]' : 
                             isDense ? 'text-[8px]' : 
                             'text-[9px] md:text-[10px]'
-                        } ${isDone ? 'text-emerald-50' : 'text-slate-500'}`}>
+                        } ${isDone ? doneStyles.text : 'text-slate-500'}`}>
                             {!isUltraDense && <User size={isDense ? 8 : 10} className="shrink-0"/>} <span className="truncate">{attendantLabel}</span>
                         </span>
 
@@ -512,16 +541,16 @@ export default function LiveCleaningBoard() {
                         {isDone && (
                             <div className={`flex flex-col ${isExtreme ? 'gap-0 mt-0' : 'gap-0.5 mt-0.5'}`}>
                                 <div className="flex items-center justify-between leading-none">
-                                    {!isExtreme && <span className={`${isUltraDense ? 'text-[5px]' : 'text-[7px]'} font-black uppercase tracking-widest text-emerald-100`}>Finished:</span>}
+                                    {!isExtreme && <span className={`${isUltraDense ? 'text-[5px]' : 'text-[7px]'} font-black uppercase tracking-widest ${doneStyles.text}`}>{doneStyles.label}:</span>}
                                     <span className={`${isExtreme ? 'text-[6px]' : isUltraDense ? 'text-[7px]' : 'text-[9px]'} font-bold text-white`}>
                                         {timeOut}
                                     </span>
                                 </div>
                                 <div className="flex items-center justify-between leading-none mt-0.5">
-                                    <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} text-emerald-100`}>
+                                    <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} ${doneStyles.text}`}>
                                         {isExtreme ? timeIn : `In: ${timeIn}`}
                                     </span>
-                                    <span className={`${isExtreme ? 'text-[5px] px-0.5' : isUltraDense ? 'text-[6px] px-1' : 'text-[8px] px-1'} font-black text-emerald-700 bg-white rounded`}>
+                                    <span className={`${isExtreme ? 'text-[5px] px-0.5' : isUltraDense ? 'text-[6px] px-1' : 'text-[8px] px-1'} font-black ${doneStyles.colorHex} bg-white rounded`}>
                                         {item.timeSpent || '0m'}
                                     </span>
                                 </div>

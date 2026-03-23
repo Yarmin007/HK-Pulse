@@ -1070,12 +1070,12 @@ export default function MyTasksHub() {
                                                         )}
 
                                                         <button 
-                                                          onClick={() => isCompleted ? setReenterModal({ isOpen: true, villa: v }) : handleStartService(v)}
+                                                          onClick={() => setReenterModal({ isOpen: true, villa: v })}
                                                           disabled={!!activeCleaningVilla}
                                                           className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
-                                                            activeCleaningVilla 
-                                                              ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
-                                                              : isCompleted ? 'bg-slate-800 text-white hover:bg-slate-700 active:scale-95' : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
+                                                              activeCleaningVilla 
+                                                                ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
+                                                                : isCompleted ? 'bg-slate-800 text-white hover:bg-slate-700 active:scale-95' : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
                                                           }`}
                                                         >
                                                           <Play size={14}/> {isCompleted ? 'Re-enter Room' : 'Start Service'}
@@ -1510,13 +1510,13 @@ export default function MyTasksHub() {
             <div className="fixed inset-0 z-[115] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
                 <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 text-center">
                     <h3 className="text-xl md:text-2xl font-black mb-2 tracking-tight text-[#6D2158]">
-                        Re-enter Room {reenterModal.villa}
+                        Service Room {reenterModal.villa}
                     </h3>
                     <p className="text-xs md:text-sm text-slate-500 font-medium mb-6 md:mb-8 leading-relaxed">
-                        Please select the reason for re-entering this completed room.
+                        Please select the type of service for this room.
                     </p>
                     <div className="flex flex-col gap-2.5">
-                        {['Refill Minibar', 'Guest Request', 'Clean Again', 'Other'].map(reason => (
+                        {['Morning Service', 'TD Service', 'Arrival', 'Dep', 'Minibar Refill', 'Guest Request', 'Other'].map(reason => (
                             <button 
                                 key={reason}
                                 onClick={() => {
