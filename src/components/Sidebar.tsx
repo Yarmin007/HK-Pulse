@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -18,6 +18,7 @@ const ADMIN_CORE_TABS = [
 ];
 
 const ALLOCATION_ITEMS = [
+  { name: "Live Board", icon: LayoutDashboard, path: "/allocation/board" }, // ⚡ NEW: Live Admin Board added here
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
   { name: "Special Villas", icon: Key, path: "/allocation/special" },
@@ -31,6 +32,7 @@ const INVENTORY_ITEMS = [
 ];
 
 const MENU_ITEMS = [
+  { name: "Over-Water Ops", icon: Waves, path: "/ladders" },
   { name: "Water Production", icon: Droplets, path: "/water" },
   { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
@@ -57,7 +59,7 @@ const MINIBAR_ITEMS = [
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-  { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, // FIXED: Now points to the Mega-Hub
+  { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, 
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "My Profile", icon: Contact, path: "/profile" },
 ];
@@ -90,6 +92,7 @@ export default function Sidebar() {
 
   const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [isPoolAttendant, setIsPoolAttendant] = useState(false);
+  const [isStepCleaner, setIsStepCleaner] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -102,6 +105,9 @@ export default function Sidebar() {
               const roleLower = String(parsed.role || '').toLowerCase();
               if (roleLower.includes('pool')) {
                   setIsPoolAttendant(true);
+              }
+              if (roleLower.includes('step cleaner')) {
+                  setIsStepCleaner(true);
               }
           } catch (e) {
               setUserRole('staff');
@@ -134,6 +140,14 @@ export default function Sidebar() {
       ];
   }, [isPoolAttendant]);
 
+  const dynamicStaffMenuItems = useMemo(() => {
+      const items = [...STAFF_MENU_ITEMS];
+      if (isStepCleaner) {
+          items.unshift({ name: "Over-Water Ops", icon: Waves, path: "/ladders" });
+      }
+      return items;
+  }, [isStepCleaner]);
+
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: ClipboardList, path: "/requests" },
@@ -143,10 +157,14 @@ export default function Sidebar() {
   const STAFF_BOTTOM_TABS = isPoolAttendant ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Water Prod.", icon: Droplets, path: "/water" },
-      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" } // FIXED: Mega-Hub Link
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" } 
+  ] : isStepCleaner ? [
+      { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+      { name: "Over-Water", icon: Waves, path: "/ladders" },
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
   ] : [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, // FIXED: Mega-Hub Link
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, 
       { name: "Profile", icon: Contact, path: "/profile" }
   ];
 
@@ -417,7 +435,7 @@ export default function Sidebar() {
                   </div>
 
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-2 mb-3 px-2">More Options</div>
-                  {STAFF_MENU_ITEMS.map((item) => {
+                  {dynamicStaffMenuItems.map((item) => {
                     const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
                     return (
                       <Link 

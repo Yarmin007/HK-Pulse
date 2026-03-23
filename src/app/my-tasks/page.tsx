@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Lock, Plus, Minus, Save, CheckCircle2, 
   Loader2, ChevronLeft, Wine, Trash2, AlertTriangle, 
-  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator, MapPin, Info, Search, X, Wind, User, Sparkles, BedDouble, ChevronDown
+  Clock, ListChecks, RefreshCw, Edit3, AlertCircle, CheckCircle, PackageSearch, Calculator, MapPin, Info, Search, X, Wind, User, Sparkles, BedDouble, ChevronDown, Play, CheckSquare, DoorClosed, Pause
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -35,6 +35,16 @@ type ACRecord = {
     status: string;
 };
 
+// --- NEW CLEANING TASK TYPE ---
+type CleaningTask = {
+    villa_number: string;
+    status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused';
+    start_time?: string;
+    end_time?: string;
+    time_spent?: string;
+    reenter_reason?: string; 
+};
+
 const parseVillas = (input: string, doubleVillas: string[]) => {
     const result = new Set<string>();
     const parts = input.split(',').map(s => s.trim());
@@ -50,7 +60,6 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
                 }
             }
         } else if (p) {
-            // FIXED LINE BELOW
             const baseV = p.replace('-1', '').replace('-2', '');
             if (!p.includes('-') && doubleVillas.includes(p)) { result.add(`${p}-1`); result.add(`${p}-2`); } 
             else { result.add(p); }
@@ -70,9 +79,15 @@ export default function MyTasksHub() {
   const [dailyTask, setDailyTask] = useState<{shift_type?: string, shift_note?: string} | null>(null);
 
   // --- CLEANING ALLOCATION STATE ---
-  const [myCleaningVillas, setMyCleaningVillas] = useState<number[]>([]);
+  const [myCleaningVillas, setMyCleaningVillas] = useState<string[]>([]);
   const [guestData, setGuestData] = useState<GuestRecord[]>([]);
   const [acData, setAcData] = useState<ACRecord[]>([]);
+  
+  // --- NEW: CLEANING WORKFLOW STATE ---
+  const [cleaningTasks, setCleaningTasks] = useState<Record<string, CleaningTask>>({});
+  const [activeCleaningVilla, setActiveCleaningVilla] = useState<string | null>(null);
+  const [cleaningElapsedSeconds, setCleaningElapsedSeconds] = useState(0);
+  const [reenterModal, setReenterModal] = useState<{isOpen: boolean, villa: string}>({isOpen: false, villa: ''}); 
 
   // --- UNIVERSAL TASK STATE ---
   const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
@@ -102,6 +117,25 @@ export default function MyTasksHub() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
+  // --- LIVE CLEANING TIMER ---
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (activeCleaningVilla) {
+      interval = setInterval(() => {
+        setCleaningElapsedSeconds(prev => prev + 1);
+      }, 1000);
+    } else {
+      setCleaningElapsedSeconds(0);
+    }
+    return () => clearInterval(interval);
+  }, [activeCleaningVilla]);
+
+  const formatTimer = (totalSeconds: number) => {
+    const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+    const s = (totalSeconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   const loadInitialData = useCallback(async (hostId: string, isManualRefresh: boolean, silent = false) => {
       if (!silent) setIsLoading(true);
       const todayStr = getDhakaDateStr();
@@ -120,8 +154,32 @@ export default function MyTasksHub() {
           .single();
 
       if (allocData && allocData.task_details) {
-          const assignedCleanVillas = parseVillas(allocData.task_details, []).map(Number).filter(n => !isNaN(n));
+          const assignedCleanVillas = parseVillas(allocData.task_details, []);
           setMyCleaningVillas(assignedCleanVillas);
+
+          // Initialize Cleaning Task State (Merge with existing DB logs if any)
+          const { data: existingLogs } = await supabase.from('hsk_cleaning_logs')
+              .select('*')
+              .eq('report_date', todayStr)
+              .eq('host_id', hostId);
+
+          setCleaningTasks(prev => {
+              const newState = { ...prev };
+              assignedCleanVillas.forEach(v => {
+                  const dbLog = existingLogs?.find(l => l.villa_number === v);
+                  if (dbLog) {
+                      newState[v] = { 
+                          villa_number: v, 
+                          status: dbLog.status, 
+                          start_time: dbLog.start_time ? format(parseISO(dbLog.start_time), 'hh:mm a') : undefined,
+                          time_spent: dbLog.time_spent_minutes ? `${dbLog.time_spent_minutes}m` : undefined 
+                      };
+                  } else if (!newState[v]) {
+                      newState[v] = { villa_number: v, status: 'Pending' };
+                  }
+              });
+              return newState;
+          });
       } else {
           setMyCleaningVillas([]);
       }
@@ -253,20 +311,174 @@ export default function MyTasksHub() {
     fetchCatalog();
   }, [loadInitialData, fetchCatalog]);
 
+
+  // --- CLEANING TASK HANDLERS (CONNECTED TO SUPABASE) ---
+  const handleStartService = async (villa: string, reason?: string) => {
+    if (activeCleaningVilla) {
+      toast.error("Please finish or pause your current room first!");
+      return;
+    }
+    
+    const now = new Date().toISOString();
+    const todayStr = getDhakaDateStr();
+
+    // 1. Update UI instantly
+    setActiveCleaningVilla(villa);
+    setCleaningTasks(prev => ({
+        ...prev,
+        [villa]: { 
+            ...prev[villa], 
+            status: 'In Progress', 
+            start_time: format(parseISO(now), 'hh:mm a'),
+            reenter_reason: reason // ⚡ Attach reason if re-entering
+        }
+    }));
+    toast.success(`Service Started: Room ${villa}` + (reason ? ` (${reason})` : ''));
+
+    // 2. Send to Supabase
+    await supabase.from('hsk_cleaning_logs').upsert({
+        report_date: todayStr,
+        villa_number: villa,
+        host_id: currentHost?.host_id,
+        host_name: currentHost?.full_name,
+        status: 'In Progress',
+        start_time: now,
+        updated_at: now
+    }, { onConflict: 'report_date,villa_number' });
+  };
+
+  const handleFinishRoom = async (villa: string) => {
+    const minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
+    const now = new Date().toISOString();
+    const todayStr = getDhakaDateStr();
+
+    // ⚡ Logic for Re-Entering a Room: Create Session Log
+    const currentTaskState = cleaningTasks[villa];
+    const sessionReason = currentTaskState?.reenter_reason || 'Initial Cleaning';
+    const sessionStart = currentTaskState?.start_time || format(parseISO(now), 'hh:mm a');
+    const sessionEnd = format(parseISO(now), 'hh:mm a');
+    
+    const previousTimeStr = currentTaskState?.time_spent || '0m';
+    const previousMinutes = parseInt(previousTimeStr) || 0;
+    const totalMinutes = previousMinutes + minutes;
+
+    const newSessionLog = {
+        reason: sessionReason,
+        start: sessionStart,
+        end: sessionEnd,
+        duration: minutes
+    };
+    
+    // 1. Update UI instantly
+    setCleaningTasks(prev => ({
+        ...prev,
+        [villa]: { 
+            ...prev[villa], 
+            status: 'Completed', 
+            end_time: sessionEnd, 
+            time_spent: `${totalMinutes}m`, 
+            reenter_reason: undefined 
+        }
+    }));
+    setActiveCleaningVilla(null);
+    toast.success(`Service Completed: Room ${villa}`);
+
+    // 2. Fetch existing history from Supabase
+    const { data: existingData } = await supabase
+        .from('hsk_cleaning_logs')
+        .select('session_history')
+        .eq('report_date', todayStr)
+        .eq('villa_number', villa)
+        .maybeSingle();
+
+    const existingHistory = Array.isArray(existingData?.session_history) 
+        ? existingData.session_history 
+        : [];
+        
+    const updatedHistory = [...existingHistory, newSessionLog];
+
+    // 3. Send to Supabase
+    await supabase.from('hsk_cleaning_logs').upsert({
+        report_date: todayStr,
+        villa_number: villa,
+        host_id: currentHost?.host_id,
+        host_name: currentHost?.full_name,
+        status: 'Completed',
+        end_time: now,
+        time_spent_minutes: totalMinutes,
+        session_history: updatedHistory, // ⚡ Save detailed array!
+        updated_at: now
+    }, { onConflict: 'report_date,villa_number' });
+  };
+
+  const handleDND = async (villa: string) => {
+    const now = new Date().toISOString();
+    const todayStr = getDhakaDateStr();
+
+    setCleaningTasks(prev => ({
+        ...prev,
+        [villa]: { ...prev[villa], status: 'DND', time_spent: undefined }
+    }));
+    toast.success(`DND Logged: Room ${villa}`);
+
+    await supabase.from('hsk_cleaning_logs').upsert({
+        report_date: todayStr,
+        villa_number: villa,
+        host_id: currentHost?.host_id,
+        host_name: currentHost?.full_name,
+        status: 'DND',
+        dnd_time: now,
+        updated_at: now
+    }, { onConflict: 'report_date,villa_number' });
+  };
+
+  const handleRefused = async (villa: string) => {
+    const now = new Date().toISOString();
+    const todayStr = getDhakaDateStr();
+
+    setCleaningTasks(prev => ({
+        ...prev,
+        [villa]: { ...prev[villa], status: 'Refused', time_spent: undefined }
+    }));
+    toast.success(`Service Refused: Room ${villa}`);
+
+    await supabase.from('hsk_cleaning_logs').upsert({
+        report_date: todayStr,
+        villa_number: villa,
+        host_id: currentHost?.host_id,
+        host_name: currentHost?.full_name,
+        status: 'Refused',
+        updated_at: now
+    }, { onConflict: 'report_date,villa_number' });
+  };
+
+
+  const resetRoomStatus = async (villa: string) => {
+      const todayStr = getDhakaDateStr();
+      setCleaningTasks(prev => ({
+          ...prev,
+          [villa]: { ...prev[villa], status: 'Pending', time_spent: undefined }
+      }));
+      
+      await supabase.from('hsk_cleaning_logs')
+        .update({ status: 'Pending', updated_at: new Date().toISOString() })
+        .match({ report_date: todayStr, villa_number: villa });
+  };
+
   // --- AC STATUS UPDATE HANDLER ---
-  const handleAcStatusChange = async (villaNumber: number, newStatus: string) => {
+  const handleAcStatusChange = async (villaNumber: string, newStatus: string) => {
       const todayStr = getDhakaDateStr();
       
       setAcData(prev => {
-          const filtered = prev.filter(a => parseInt(a.villa_number) !== villaNumber);
-          return [...filtered, { villa_number: String(villaNumber), status: newStatus }];
+          const filtered = prev.filter(a => a.villa_number !== villaNumber);
+          return [...filtered, { villa_number: villaNumber, status: newStatus }];
       });
 
       const { error } = await supabase
           .from('hsk_ac_tracker')
           .upsert({
               report_date: todayStr,
-              villa_number: String(villaNumber),
+              villa_number: villaNumber,
               status: newStatus,
               host_id: currentHost?.host_id,
               host_name: currentHost?.full_name,
@@ -278,13 +490,13 @@ export default function MyTasksHub() {
           loadInitialData(currentHost!.host_id, false, true);
       } else {
           await supabase.from('hsk_ac_history').insert({
-              villa_number: String(villaNumber),
+              villa_number: villaNumber,
               status: newStatus,
               host_id: currentHost?.host_id,
               host_name: currentHost?.full_name,
               logged_at: new Date().toISOString()
           });
-          toast.success(`V${villaNumber} AC turned ${newStatus}`);
+          toast.success(`Room ${villaNumber} AC turned ${newStatus}`);
       }
   };
 
@@ -633,8 +845,8 @@ export default function MyTasksHub() {
   };
 
   // --- CLEANING VILLA CARD COLOR LOGIC ---
-  const getVillaCardData = (vNum: number) => {
-      const match = guestData.find(r => parseInt(r.villa_number) === vNum);
+  const getVillaCardData = (vNum: string) => {
+      const match = guestData.find(r => r.villa_number === vNum);
       const st = match?.status?.toUpperCase() || 'VAC';
       
       let headerColor = 'bg-slate-200 text-slate-700'; 
@@ -657,10 +869,16 @@ export default function MyTasksHub() {
           headerColor = 'bg-[#6D2158] text-white';
       }
 
-      const acMatch = acData.find(a => parseInt(a.villa_number) === vNum);
+      const acMatch = acData.find(a => a.villa_number === vNum);
       const acStatus = acMatch ? acMatch.status.toUpperCase() : 'ON'; // Matches Admin Board default
 
-      return { status: shortStatus, headerColor, timeStr, guestName, acStatus };
+      // Determine explicit cleaning type based on PMS status
+      let cleaningType = 'Occupied';
+      if (st.includes('DEP')) cleaningType = 'Departure';
+      if (st.includes('ARR')) cleaningType = 'Arrival';
+      if (st.includes('VAC')) cleaningType = 'Touch Up';
+
+      return { status: shortStatus, headerColor, timeStr, guestName, acStatus, cleaningType };
   };
 
   // Derive Catalog & Unique Locations
@@ -706,27 +924,27 @@ export default function MyTasksHub() {
   if (!isMounted) return null;
 
   return (
-    <div className="min-h-screen bg-[#FDFBFD] p-4 md:p-8 font-sans text-slate-800 pb-24">
+    <div className="min-h-screen bg-[#FDFBFD] p-2 md:p-4 font-sans text-slate-800 pb-24">
       
-      <div className="max-w-5xl mx-auto w-full flex flex-col animate-in fade-in">
+      <div className="max-w-7xl mx-auto w-full flex flex-col animate-in fade-in">
         
         {/* --- DASHBOARD VIEW (THE HUB) --- */}
         {step === 2 && currentHost && (
             <>
-                <div className="flex items-center justify-between mb-8 bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100">
-                   <div className="flex items-center gap-5">
-                       <div className="w-16 h-16 rounded-2xl bg-[#6D2158] text-white flex items-center justify-center text-2xl font-black shadow-lg shrink-0">
+                <div className="flex items-center justify-between mb-6 bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
+                   <div className="flex items-center gap-4">
+                       <div className="w-14 h-14 rounded-2xl bg-[#6D2158] text-white flex items-center justify-center text-xl font-black shadow-lg shrink-0">
                           {currentHost.full_name.charAt(0)}
                        </div>
                        <div>
-                         <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158]">My Tasks</h1>
-                         <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">
+                         <h1 className="text-xl md:text-2xl font-black tracking-tight text-[#6D2158]">My Tasks</h1>
+                         <p className="text-[10px] md:text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">
                             {format(getDhakaTime(), 'EEEE, d MMMM yyyy')}
                          </p>
                        </div>
                    </div>
                    <button onClick={() => loadInitialData(currentHost.host_id, true)} className="p-3 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-full transition-colors active:scale-95" title="Refresh Tasks">
-                       <RefreshCw size={20} className={isLoading ? 'animate-spin text-[#6D2158]' : ''}/>
+                       <RefreshCw size={18} className={isLoading ? 'animate-spin text-[#6D2158]' : ''}/>
                    </button>
                 </div>
 
@@ -735,70 +953,159 @@ export default function MyTasksHub() {
                 ) : (
                     <div className="space-y-6">
                         
-                        {/* --- DAILY CLEANING ALLOCATION BLOCK --- */}
+                        {/* --- DAILY CLEANING ALLOCATION BLOCK (NOW INTERACTIVE) --- */}
                         {myCleaningVillas.length > 0 && (
-                            <div className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
+                            <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
                                 <div className="flex justify-between items-start mb-6">
                                     <div>
-                                        <h3 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                                            <BedDouble size={20} className="text-[#6D2158]" /> My Cleaning Allocation
+                                        <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                            <BedDouble size={20} className="text-[#6D2158]" /> Room Service
                                         </h3>
                                         <p className="text-xs text-slate-400 font-medium">Your assigned villas for today.</p>
                                     </div>
-                                    <span className="bg-[#6D2158]/10 text-[#6D2158] px-3 py-1 rounded-lg text-xs font-black">
-                                        {myCleaningVillas.length} Villas
-                                    </span>
+                                    <div className="text-right">
+                                        <span className="text-2xl font-black text-[#6D2158]">
+                                            {Object.values(cleaningTasks).filter(t => t.status === 'Completed').length}
+                                        </span>
+                                        <span className="text-sm font-bold text-slate-300">/{myCleaningVillas.length}</span>
+                                    </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                                     {myCleaningVillas.map(v => {
-                                        const data = getVillaCardData(v);
+                                        const cardData = getVillaCardData(v);
+                                        const taskState = cleaningTasks[v] || { status: 'Pending' };
+                                        const isActive = v === activeCleaningVilla;
+                                        const isCompleted = taskState.status === 'Completed';
+                                        const isDND = taskState.status === 'DND';
+                                        const isRefused = taskState.status === 'Refused';
+
+                                        let cardStyle = "bg-white border-slate-200";
+                                        if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
+                                        if (isCompleted) cardStyle = "bg-slate-50 border-slate-200 opacity-60";
+                                        if (isDND || isRefused) cardStyle = "bg-rose-50 border-rose-200";
+
                                         return (
-                                            <div key={v} className="bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden flex flex-col transition-transform hover:scale-[1.02] active:scale-95">
+                                            <div key={v} className={`p-4 md:p-5 rounded-2xl border-2 shadow-sm transition-all duration-300 flex flex-col ${cardStyle}`}>
                                                 
-                                                <div className={`p-2.5 flex justify-between items-center ${data.headerColor}`}>
-                                                    <span className="text-lg font-black tracking-tighter leading-none">V{v}</span>
-                                                    <span className="text-[9px] font-black uppercase tracking-widest bg-white/20 px-1.5 py-0.5 rounded shadow-sm">
-                                                        {data.status}
-                                                    </span>
+                                                <div className="flex justify-between items-start mb-4">
+                                                  <div>
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                      <h3 className={`text-2xl md:text-3xl font-black tracking-tighter ${isCompleted ? 'text-slate-400' : 'text-[#6D2158]'}`}>
+                                                        {v}
+                                                      </h3>
+                                                    </div>
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                                      <User size={10}/> {cardData.guestName || 'No Guest Info'}
+                                                    </p>
+                                                  </div>
+
+                                                  <div className="flex flex-col items-end gap-2">
+                                                      <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm ${cardData.headerColor.replace('bg-', 'bg-').replace('text-', 'text-')}`}>
+                                                        {cardData.cleaningType}
+                                                      </div>
+                                                      {cardData.timeStr && (
+                                                          <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm">
+                                                              <Clock size={10} className="text-slate-400"/>
+                                                              <span>{cardData.timeStr}</span>
+                                                          </div>
+                                                      )}
+                                                  </div>
                                                 </div>
 
-                                                <div className="p-2.5 flex flex-col gap-1.5 flex-1">
-                                                    {(data.timeStr || data.guestName) && (
-                                                        <div className="flex flex-col gap-1 mb-1">
-                                                            {data.timeStr && (
-                                                                <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-600 bg-white p-1.5 rounded border border-slate-100">
-                                                                    <Clock size={10} className="text-slate-400"/>
-                                                                    <span className="truncate">{data.timeStr}</span>
-                                                                </div>
-                                                            )}
-                                                            {data.guestName && (
-                                                                <div className="flex items-center gap-1.5 text-[9px] font-bold text-[#6D2158] bg-[#6D2158]/5 p-1.5 rounded border border-[#6D2158]/10">
-                                                                    <User size={10} className="opacity-70"/>
-                                                                    <span className="truncate">{data.guestName}</span>
-                                                                </div>
-                                                            )}
+                                                {/* ACTION AREA */}
+                                                <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
+                                                  
+                                                  {/* AC Toggle (Always visible) */}
+                                                  <button 
+                                                      onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
+                                                      className={`w-full py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                                          cardData.acStatus === 'ON' 
+                                                              ? 'bg-rose-50 border-rose-200 text-rose-700' 
+                                                              : 'bg-emerald-500 border-emerald-600 text-white'
+                                                      }`}
+                                                  >
+                                                      <Wind size={12} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
+                                                      {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
+                                                  </button>
+
+                                                  {isActive ? (
+                                                     <div className="flex justify-between items-center bg-white border border-emerald-200 rounded-xl p-1.5 shadow-sm flex-wrap gap-2">
+                                                        <div className="flex items-center gap-2 text-[#6D2158] font-black text-sm px-2">
+                                                            <span className="relative flex h-2 w-2 mr-1">
+                                                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                                            </span>
+                                                            {formatTimer(cleaningElapsedSeconds)}
                                                         </div>
-                                                    )}
+                                                        {taskState.reenter_reason && (
+                                                            <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] uppercase font-black tracking-widest shrink-0">
+                                                                {taskState.reenter_reason}
+                                                            </span>
+                                                        )}
+                                                        <button 
+                                                            onClick={() => handleFinishRoom(v)}
+                                                            className="bg-emerald-500 text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm active:scale-95 flex items-center gap-1 ml-auto"
+                                                        >
+                                                            <CheckSquare size={14}/> Finish
+                                                        </button>
+                                                     </div>
+                                                  ) : (
+                                                     <div className="flex flex-col gap-2">
+                                                        {isCompleted && (
+                                                            <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100">
+                                                              <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Cleaned</span>
+                                                              <span>{taskState.time_spent}</span>
+                                                            </div>
+                                                        )}
+                                                        
+                                                        {(isDND || isRefused) && (
+                                                            <div className={`flex items-center justify-between font-black uppercase tracking-widest text-[10px] md:text-xs py-2 px-1 ${isDND ? 'text-rose-600' : 'text-orange-600'}`}>
+                                                              <span className="flex items-center gap-1.5">
+                                                                {isDND ? <DoorClosed size={14}/> : <X size={14}/>} 
+                                                                {isDND ? 'DND Logged' : 'Service Refused'}
+                                                              </span>
+                                                              <button onClick={() => resetRoomStatus(v)} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px]">Undo</button>
+                                                            </div>
+                                                        )}
 
-                                                    {!data.timeStr && !data.guestName && (
-                                                        <div className="flex-1"></div>
-                                                    )}
+                                                        <button 
+                                                          onClick={() => isCompleted ? setReenterModal({ isOpen: true, villa: v }) : handleStartService(v)}
+                                                          disabled={!!activeCleaningVilla}
+                                                          className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
+                                                            activeCleaningVilla 
+                                                              ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
+                                                              : isCompleted ? 'bg-slate-800 text-white hover:bg-slate-700 active:scale-95' : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
+                                                          }`}
+                                                        >
+                                                          <Play size={14}/> {isCompleted ? 'Re-enter Room' : 'Start Service'}
+                                                        </button>
 
-                                                    {/* NEW SINGLE-TAP BUTTON FOR AC */}
-                                                    <button 
-                                                        onClick={() => handleAcStatusChange(v, data.acStatus === 'ON' ? 'OFF' : 'ON')}
-                                                        className={`mt-auto w-full py-2.5 rounded-lg flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
-                                                            data.acStatus === 'ON' 
-                                                                ? 'bg-rose-50 border-rose-200 text-rose-700' 
-                                                                : 'bg-emerald-500 border-emerald-600 text-white'
-                                                        }`}
-                                                    >
-                                                        <Wind size={14} className={`shrink-0 ${data.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
-                                                        {data.acStatus === 'ON' ? 'AC IS ON' : 'AC IS OFF'}
-                                                    </button>
-
+                                                        {!isCompleted && (
+                                                          <div className="flex gap-2">
+                                                            <button 
+                                                              onClick={() => handleDND(v)}
+                                                              disabled={!!activeCleaningVilla}
+                                                              className="flex-1 py-2.5 rounded-xl bg-rose-50 text-rose-600 font-black uppercase tracking-widest text-[9px] md:text-[10px] border border-rose-100 flex items-center justify-center gap-1 hover:bg-rose-100 transition-all active:scale-95 disabled:opacity-50"
+                                                              title="Do Not Disturb"
+                                                            >
+                                                              <DoorClosed size={12}/> DND
+                                                            </button>
+                                                            
+                                                            <button 
+                                                              onClick={() => handleRefused(v)}
+                                                              disabled={!!activeCleaningVilla}
+                                                              className="flex-1 py-2.5 rounded-xl bg-orange-50 text-orange-600 font-black uppercase tracking-widest text-[9px] md:text-[10px] border border-orange-100 flex items-center justify-center gap-1 hover:bg-orange-100 transition-all active:scale-95 disabled:opacity-50"
+                                                              title="Service Refused by Guest"
+                                                            >
+                                                              <X size={12}/> Refused
+                                                            </button>
+                                                          </div>
+                                                        )}
+                                                     </div>
+                                                  )}
                                                 </div>
+
                                             </div>
                                         )
                                     })}
@@ -808,14 +1115,14 @@ export default function MyTasksHub() {
 
                         {/* --- EXPIRY & REFILL AUDIT CARD --- */}
                         {expiryAssignedVillas.length > 0 && (
-                            <div className="bg-rose-50 p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-rose-100 animate-in slide-in-from-bottom-3">
-                                <div className="mb-6 flex justify-between items-center">
+                            <div className="bg-rose-50 p-4 md:p-6 rounded-3xl shadow-sm border border-rose-100 animate-in slide-in-from-bottom-3">
+                                <div className="mb-4 flex justify-between items-center">
                                     <div>
-                                        <h3 className="text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={20}/> Expiry & Refills</h3>
-                                        <p className="text-xs text-rose-600/70 font-medium">Check these villas for targeted missing or expiring items.</p>
+                                        <h3 className="text-lg md:text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={18}/> Expiry & Refills</h3>
+                                        <p className="text-[10px] md:text-xs text-rose-600/70 font-medium">Check these villas for targeted items.</p>
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4">
+                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
                                     {expiryAssignedVillas.map(villa => {
                                         const vData = expiryVillaData[villa];
                                         const status = vData?.status;
@@ -828,16 +1135,16 @@ export default function MyTasksHub() {
                                             <button 
                                                 key={villa}
                                                 onClick={() => startExpiryAudit(villa)}
-                                                className={`aspect-square rounded-3xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${
+                                                className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${
                                                     isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700 hover:bg-emerald-100' : 
                                                     isSent ? 'bg-indigo-100 border-indigo-400 text-indigo-700 animate-pulse' : 
                                                     isNeedsRefill ? 'bg-amber-100 border-amber-400 text-amber-700 animate-pulse' : 
                                                     'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:shadow-md'
                                                 }`}
                                             >
-                                                {isDone && <CheckCircle2 size={16} className="absolute top-3 right-3 text-emerald-500"/>}
-                                                <span className={`font-black ${villa.includes('-') ? 'text-2xl md:text-3xl' : 'text-3xl md:text-4xl'}`}>{villa}</span>
-                                                <span className="text-[10px] md:text-xs font-bold uppercase mt-1 opacity-60">
+                                                {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
+                                                <span className={`font-black ${villa.includes('-') ? 'text-xl' : 'text-2xl md:text-3xl'}`}>{villa}</span>
+                                                <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">
                                                     {isDone ? 'Done' : isSent ? 'Sent' : isNeedsRefill ? 'Refill' : 'Pending'}
                                                 </span>
                                             </button>
@@ -849,27 +1156,27 @@ export default function MyTasksHub() {
 
                         {/* --- DYNAMIC UNIVERSAL INVENTORY CARDS --- */}
                         {Object.entries(universalTasks).map(([taskType, assignments]) => (
-                            <div key={taskType} className="bg-white p-6 md:p-8 rounded-[2.5rem] shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
-                                <div className="flex justify-between items-start mb-6">
+                            <div key={taskType} className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
+                                <div className="flex justify-between items-start mb-4">
                                     <div>
-                                        <h3 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                                            <PackageSearch size={20} className="text-[#6D2158]"/> {taskType} Count
+                                        <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                            <PackageSearch size={18} className="text-[#6D2158]"/> {taskType} Count
                                         </h3>
-                                        <p className="text-xs text-slate-400 font-medium">Tap a location to begin auditing. You can tap 'Done' locations to re-edit.</p>
+                                        <p className="text-[10px] md:text-xs text-slate-400 font-medium">Tap a location to begin auditing.</p>
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 md:gap-4">
+                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
                                     {assignments.map(task => {
                                         const isDone = task.status === 'Submitted';
                                         return (
                                             <button 
                                                 key={task.villa_number}
                                                 onClick={() => startAudit(task.villa_number, taskType, task.schedule_id)}
-                                                className={`aspect-square rounded-3xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
+                                                className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
                                             >
-                                                {isDone && <CheckCircle2 size={16} className="absolute top-3 right-3 text-emerald-500"/>}
-                                                <span className={`font-black ${task.villa_number.includes('-') ? 'text-xl md:text-2xl' : 'text-2xl md:text-3xl'} ${!/^\d+$/.test(task.villa_number) && !task.villa_number.includes('-') ? 'text-lg' : ''}`}>{task.villa_number}</span>
+                                                {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
+                                                <span className={`font-black ${task.villa_number.includes('-') ? 'text-xl' : 'text-2xl md:text-3xl'}`}>{task.villa_number}</span>
                                                 <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
                                             </button>
                                         );
@@ -880,8 +1187,8 @@ export default function MyTasksHub() {
 
                         {/* EMPTY STATE IF LITERALLY NO TASKS OF ANY KIND */}
                         {myCleaningVillas.length === 0 && Object.keys(universalTasks).length === 0 && expiryAssignedVillas.length === 0 && (
-                            <div className="text-center py-20 bg-white rounded-3xl border border-slate-100 shadow-sm">
-                                <CheckCircle size={48} className="mx-auto text-emerald-300 mb-4"/>
+                            <div className="text-center py-16 bg-white rounded-3xl border border-slate-100 shadow-sm max-w-lg mx-auto mt-10">
+                                <CheckCircle size={40} className="mx-auto text-emerald-300 mb-3"/>
                                 <p className="font-bold text-slate-500">You have no active tasks right now.</p>
                             </div>
                         )}
@@ -896,18 +1203,18 @@ export default function MyTasksHub() {
             <div className="flex-1 flex flex-col animate-in slide-in-from-right-8 duration-300">
                 
                 {/* Router Header */}
-                <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-6 rounded-[2.5rem] shadow-sm border mb-6 flex items-center justify-between gap-4`}>
-                    <div className="flex items-center gap-4">
-                        <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={20}/></button>
+                <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-4 md:p-6 rounded-3xl shadow-sm border mb-4 md:mb-6 flex items-center justify-between gap-4`}>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
                         <div>
-                            <h2 className={`text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
-                            <p className={`text-xs font-bold uppercase tracking-widest mt-1 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Targeted Tasks' : `${activeTaskType} Audit`}</p>
+                            <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
+                            <p className={`text-[10px] md:text-xs font-bold uppercase tracking-widest mt-0.5 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Targeted Tasks' : `${activeTaskType} Audit`}</p>
                         </div>
                     </div>
                     
                     {!isExpiryMode && (
-                        <button onClick={() => setShowGuideModal(true)} className="p-3 text-slate-400 hover:text-[#6D2158] hover:bg-purple-50 rounded-xl transition-colors active:scale-95" title="How to Count">
-                            <Info size={24}/>
+                        <button onClick={() => setShowGuideModal(true)} className="p-2 md:p-3 text-slate-400 hover:text-[#6D2158] hover:bg-purple-50 rounded-xl transition-colors active:scale-95" title="How to Count">
+                            <Info size={20}/>
                         </button>
                     )}
                 </div>
@@ -917,23 +1224,23 @@ export default function MyTasksHub() {
                     ['Removed', 'Sent', 'Refilled'].includes(expiryVillaData[selectedVilla]?.status) ? (
                         
                         // --- AWAITING REFILL / REFILLED SCREEN ---
-                        <div className="space-y-4 pb-48 animate-in fade-in">
-                            <div className={`${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-50 border-indigo-200' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'} border p-6 md:p-8 rounded-[2rem] text-center shadow-sm mb-6 relative`}>
-                                <button onClick={handleEditRemovals} className={`absolute top-6 right-6 p-2 bg-white rounded-full shadow-sm transition-colors ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600 hover:bg-indigo-100' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600 hover:bg-blue-100' : 'text-amber-600 hover:bg-amber-100'}`} title="Edit Removals">
-                                    <Edit3 size={16} />
+                        <div className="space-y-4 pb-40 animate-in fade-in">
+                            <div className={`${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-50 border-indigo-200' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'} border p-6 md:p-8 rounded-3xl text-center shadow-sm mb-6 relative`}>
+                                <button onClick={handleEditRemovals} className={`absolute top-4 right-4 p-2 bg-white rounded-full shadow-sm transition-colors ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600 hover:bg-indigo-100' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600 hover:bg-blue-100' : 'text-amber-600 hover:bg-amber-100'}`} title="Edit Removals">
+                                    <Edit3 size={14} />
                                 </button>
-                                <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-100 text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
-                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? <CheckCircle size={32}/> : expiryVillaData[selectedVilla]?.status === 'Refilled' ? <CheckCircle2 size={32}/> : <AlertTriangle size={32}/>}
+                                <div className={`w-12 h-12 md:w-16 md:h-16 rounded-full flex items-center justify-center mx-auto mb-3 ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-100 text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
+                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? <CheckCircle size={24}/> : expiryVillaData[selectedVilla]?.status === 'Refilled' ? <CheckCircle2 size={24}/> : <AlertTriangle size={24}/>}
                                 </div>
-                                <h3 className={`text-2xl font-black tracking-tight ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-700' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-700' : 'text-amber-700'}`}>
+                                <h3 className={`text-xl md:text-2xl font-black tracking-tight ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-700' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-700' : 'text-amber-700'}`}>
                                     {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'Items Dispatched!' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Refill Confirmed' : 'Awaiting Refill'}
                                 </h3>
-                                <p className={`text-sm font-medium mt-2 leading-relaxed ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600' : 'text-amber-600'}`}>
+                                <p className={`text-xs md:text-sm font-medium mt-2 leading-relaxed ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600' : 'text-amber-600'}`}>
                                     {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'The items have been sent to you. Please confirm when placed.' : 'Please adjust the counters below if you could not replace all items.'}
                                 </p>
                             </div>
                                 
-                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                                 {(expiryVillaData[selectedVilla]?.removal_data || []).map((item: any) => {
                                     const masterItem = masterCatalog.find(c => c.article_number === item.article_number);
                                     const currentRefill = refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty;
@@ -941,43 +1248,43 @@ export default function MyTasksHub() {
                                     const isPartial = currentRefill > 0 && currentRefill < item.qty;
 
                                     return (
-                                        <div key={item.article_number} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${isNotRefilled ? 'border-rose-300 bg-rose-50/30' : isPartial ? 'border-amber-300' : 'border-slate-200'}`}>
+                                        <div key={item.article_number} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${isNotRefilled ? 'border-rose-300 bg-rose-50/30' : isPartial ? 'border-amber-300' : 'border-slate-200'}`}>
                                             
-                                            <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
-                                                {masterItem?.image_url ? <img src={masterItem.image_url} className={`w-full h-full object-contain drop-shadow-sm transition-all ${isNotRefilled ? 'grayscale opacity-50' : ''}`} /> : <Wine size={32} className="text-slate-300"/>}
+                                            <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
+                                                {masterItem?.image_url ? <img src={masterItem.image_url} className={`w-full h-full object-contain drop-shadow-sm transition-all ${isNotRefilled ? 'grayscale opacity-50' : ''}`} /> : <Wine size={24} className="text-slate-300"/>}
                                             </div>
                                             
                                             <div className="flex flex-col flex-1 px-1 text-center">
-                                                <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{item.name}</h4>
-                                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Requested: {item.qty}</p>
+                                                <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{item.name}</h4>
+                                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Req: {item.qty}</p>
                                                 
-                                                {isNotRefilled && <span className="text-[10px] font-black text-rose-500 uppercase mt-2">Not Refilled</span>}
-                                                {isPartial && <span className="text-[10px] font-black text-amber-500 uppercase mt-2">Partial Refill</span>}
+                                                {isNotRefilled && <span className="text-[9px] font-black text-rose-500 uppercase mt-1">Not Refilled</span>}
+                                                {isPartial && <span className="text-[9px] font-black text-amber-500 uppercase mt-1">Partial</span>}
                                             </div>
 
-                                            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
-                                                <button onClick={() => updateRefillCount(item.article_number, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
-                                                <span className={`font-black text-lg ${isNotRefilled ? 'text-rose-600' : 'text-emerald-600'}`}>{currentRefill}</span>
-                                                <button onClick={() => updateRefillCount(item.article_number, 1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-600 hover:text-emerald-600 active:scale-95 transition-all"><Plus size={18}/></button>
+                                            <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
+                                                <button onClick={() => updateRefillCount(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
+                                                <span className={`font-black text-base ${isNotRefilled ? 'text-rose-600' : 'text-emerald-600'}`}>{currentRefill}</span>
+                                                <button onClick={() => updateRefillCount(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-600 hover:text-emerald-600 active:scale-95 transition-all"><Plus size={14}/></button>
                                             </div>
                                         </div>
                                     );
                                 })}
                             </div>
                             
-                            <div className="fixed bottom-24 md:bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                            <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
                                 <div className="max-w-5xl mx-auto">
                                     <button 
                                         onClick={confirmExpiryRefill} 
                                         disabled={isSaving || expiryVillaData[selectedVilla]?.status === 'Removed'} 
-                                        className={`w-full py-5 text-white rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 ${
+                                        className={`w-full py-4 text-white rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 ${
                                             expiryVillaData[selectedVilla]?.status === 'Removed' ? 'bg-slate-400 shadow-none cursor-not-allowed' :
                                             expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-600 shadow-blue-600/20' : 
                                             'bg-emerald-500 shadow-emerald-500/20'}`}
                                     >
-                                        {isSaving ? <Loader2 className="animate-spin" size={24}/> : 
-                                         expiryVillaData[selectedVilla]?.status === 'Removed' ? <><Clock size={20}/> Waiting for Dispatch</> :
-                                        <><CheckCircle2 size={20}/> {expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Update Confirmation' : 'Confirm Replacements'}</>}
+                                        {isSaving ? <Loader2 className="animate-spin" size={20}/> : 
+                                         expiryVillaData[selectedVilla]?.status === 'Removed' ? <><Clock size={16}/> Waiting for Dispatch</> :
+                                        <><CheckCircle2 size={16}/> {expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Update Confirmation' : 'Confirm Replacements'}</>}
                                     </button>
                                 </div>
                             </div>
@@ -986,7 +1293,7 @@ export default function MyTasksHub() {
                     ) : (
 
                         // --- RECORD REMOVAL SCREEN (Split Sections) ---
-                        <div className="space-y-8 pb-48 animate-in fade-in">
+                        <div className="space-y-6 pb-40 animate-in fade-in">
                             {groupedTargets.expiry.length === 0 && groupedTargets.refill.length === 0 ? (
                                 <p className="text-center font-bold text-slate-400 italic mt-10">No targets set by admin.</p>
                             ) : (
@@ -994,35 +1301,35 @@ export default function MyTasksHub() {
                                     {/* EXPIRY & MISSING CHECKS */}
                                     {groupedTargets.expiry.length > 0 && (
                                         <div>
-                                            <h3 className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                            <h3 className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3 flex items-center gap-2">
                                                 <AlertTriangle size={14}/> Expiry & Missing Checks
                                             </h3>
-                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                                                 {groupedTargets.expiry.map((t: any) => {
                                                     const key = t.article_number;
                                                     const masterItem = masterCatalog.find(c => c.article_number === t.article_number);
                                                     const qty = expiryCounts[key] || 0;
 
                                                     return (
-                                                        <div key={key} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 ? 'border-rose-400 ring-4 ring-rose-50' : 'border-slate-200'}`}>
+                                                        <div key={key} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 ? 'border-rose-400 ring-4 ring-rose-50' : 'border-slate-200'}`}>
                                                             
-                                                            <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
-                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={32} className="text-slate-300"/>}
+                                                            <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
+                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={24} className="text-slate-300"/>}
                                                             </div>
                                                             
                                                             <div className="flex flex-col flex-1 px-1 text-center">
-                                                                <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
+                                                                <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
                                                                 
                                                                 {t.dates && t.dates.length > 0 ? (
-                                                                    <div className="flex flex-wrap justify-center gap-1 mt-1.5">
+                                                                    <div className="flex flex-wrap justify-center gap-1 mt-1">
                                                                         {t.dates.map((d: string) => (
                                                                             <span key={d} className="text-[8px] font-black text-rose-500 uppercase tracking-widest bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100">
-                                                                                {format(parseISO(d), 'dd MMM yyyy')}
+                                                                                {format(parseISO(d), 'dd MMM')}
                                                                             </span>
                                                                         ))}
                                                                     </div>
                                                                 ) : (
-                                                                    <div className="mt-1.5">
+                                                                    <div className="mt-1">
                                                                         <span className="text-[8px] font-black text-blue-500 uppercase tracking-widest bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
                                                                             Missing Check
                                                                         </span>
@@ -1030,10 +1337,10 @@ export default function MyTasksHub() {
                                                                 )}
                                                             </div>
 
-                                                            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
-                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
-                                                                <span className={`font-black text-lg ${qty > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{qty}</span>
-                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-10 h-10 flex items-center justify-center bg-rose-600 rounded-lg shadow-sm text-white active:scale-95 transition-all"><Plus size={18}/></button>
+                                                            <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
+                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
+                                                                <span className={`font-black text-base ${qty > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{qty}</span>
+                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-8 h-8 flex items-center justify-center bg-rose-600 rounded-md shadow-sm text-white active:scale-95 transition-all"><Plus size={14}/></button>
                                                             </div>
                                                         </div>
                                                     );
@@ -1045,32 +1352,32 @@ export default function MyTasksHub() {
                                     {/* SEPARATE REFILL TASKS */}
                                     {groupedTargets.refill.length > 0 && (
                                         <div className="pt-4 border-t border-slate-200">
-                                            <h3 className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-4 flex items-center gap-2">
-                                                <RefreshCw size={14}/> Pure Refill Tasks
+                                            <h3 className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-3 flex items-center gap-2">
+                                                <RefreshCw size={12}/> Pure Refill Tasks
                                             </h3>
-                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
                                                 {groupedTargets.refill.map((t: any) => {
                                                     const key = t.article_number;
                                                     const masterItem = masterCatalog.find(c => c.article_number === t.article_number);
                                                     const qty = expiryCounts[key] || 0;
 
                                                     return (
-                                                        <div key={key} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 ? 'border-emerald-400 ring-4 ring-emerald-50' : 'border-slate-200'}`}>
-                                                            <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-4">
-                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={32} className="text-slate-300"/>}
+                                                        <div key={key} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 ? 'border-emerald-400 ring-4 ring-emerald-50' : 'border-slate-200'}`}>
+                                                            <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
+                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={24} className="text-slate-300"/>}
                                                             </div>
                                                             <div className="flex flex-col flex-1 px-1 text-center">
-                                                                <h4 className="text-sm font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
-                                                                <div className="mt-1.5">
+                                                                <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
+                                                                <div className="mt-1">
                                                                     <span className="text-[8px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">
                                                                         Refill Needed
                                                                     </span>
                                                                 </div>
                                                             </div>
-                                                            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
-                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-10 h-10 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={18}/></button>
-                                                                <span className={`font-black text-lg ${qty > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{qty}</span>
-                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-10 h-10 flex items-center justify-center bg-emerald-600 rounded-lg shadow-sm text-white active:scale-95 transition-all"><Plus size={18}/></button>
+                                                            <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
+                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
+                                                                <span className={`font-black text-base ${qty > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{qty}</span>
+                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-8 h-8 flex items-center justify-center bg-emerald-600 rounded-md shadow-sm text-white active:scale-95 transition-all"><Plus size={14}/></button>
                                                             </div>
                                                         </div>
                                                     );
@@ -1081,21 +1388,21 @@ export default function MyTasksHub() {
                                 </>
                             )}
                             
-                            <div className="fixed bottom-24 md:bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
-                                <div className="max-w-5xl mx-auto flex gap-3">
+                            <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                                <div className="max-w-5xl mx-auto flex gap-2 md:gap-3">
                                     <button 
                                         onClick={() => submitExpiryRemovals('All OK')} 
                                         disabled={isSaving} 
-                                        className="flex-1 py-5 text-emerald-700 bg-emerald-50 rounded-2xl font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex flex-col items-center justify-center gap-1 leading-none"
+                                        className="flex-1 py-4 text-emerald-700 bg-emerald-50 rounded-xl font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex flex-col items-center justify-center gap-0.5 md:gap-1 leading-none"
                                     >
-                                        {isSaving ? <Loader2 className="animate-spin" size={24}/> : <><span>{expiryVillaData[selectedVilla]?.status === 'All OK' ? 'Confirm OK' : 'None Found'}</span><span className="text-[9px] opacity-70">(All OK)</span></>}
+                                        {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><span className="text-[10px] md:text-xs">{expiryVillaData[selectedVilla]?.status === 'All OK' ? 'Confirm OK' : 'None Found'}</span><span className="text-[8px] opacity-70">(All OK)</span></>}
                                     </button>
                                     <button 
                                         onClick={() => submitExpiryRemovals('Removed')} 
                                         disabled={isSaving || (groupedTargets.expiry.length === 0 && groupedTargets.refill.length === 0) || Object.values(expiryCounts).every(v => v === 0)} 
-                                        className="flex-[1.5] py-5 text-white bg-rose-600 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-rose-600/20 active:scale-95 transition-all flex flex-col items-center justify-center gap-1 leading-none disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="flex-[1.5] py-4 text-white bg-rose-600 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-rose-600/20 active:scale-95 transition-all flex flex-col items-center justify-center gap-0.5 md:gap-1 leading-none disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        {isSaving ? <Loader2 className="animate-spin" size={24}/> : <><span>Record Actions</span><span className="text-[9px] opacity-70">(Needs Refill)</span></>}
+                                        {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><span className="text-[10px] md:text-xs">Record Actions</span><span className="text-[8px] opacity-70">(Needs Refill)</span></>}
                                     </button>
                                 </div>
                             </div>
@@ -1105,39 +1412,39 @@ export default function MyTasksHub() {
                     // --- STANDARD INVENTORY MODE (UNIVERSAL + KEYPAD) ---
                     <>
                         {/* SEARCH BAR */}
-                        <div className="relative mb-4">
-                            <Search className="absolute left-4 top-3.5 text-slate-400" size={18}/>
+                        <div className="relative mb-3 md:mb-4">
+                            <Search className="absolute left-4 top-3 text-slate-400" size={16}/>
                             <input 
                                 type="text" 
-                                placeholder="Search items by name or code..." 
-                                className="w-full pl-11 pr-10 py-3.5 bg-white border border-slate-200 rounded-2xl font-bold text-[16px] md:text-sm outline-none focus:border-[#6D2158] shadow-sm"
+                                placeholder="Search items..." 
+                                className="w-full pl-10 pr-10 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] shadow-sm"
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                             />
                             {searchQuery && (
-                                <button onClick={() => setSearchQuery('')} className="absolute right-4 top-3.5 text-slate-300 hover:text-slate-500">
-                                    <X size={18}/>
+                                <button onClick={() => setSearchQuery('')} className="absolute right-4 top-3 text-slate-300 hover:text-slate-500">
+                                    <X size={16}/>
                                 </button>
                             )}
                         </div>
 
                         {/* DYNAMIC VILLA LOCATION TABS */}
                         {locationFilters.length > 1 && (
-                            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-4 mb-2 border-b border-slate-100">
+                            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-3 mb-2 border-b border-slate-100">
                                 {locationFilters.map(loc => (
                                     <button 
                                         key={loc} 
                                         onClick={() => setActiveLocation(loc)}
-                                        className={`px-5 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest whitespace-nowrap transition-all border shadow-sm flex items-center gap-1.5 ${activeLocation === loc ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:bg-slate-50'}`}
+                                        className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all border shadow-sm flex items-center gap-1.5 ${activeLocation === loc ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:bg-slate-50'}`}
                                     >
-                                        {loc !== 'All' && loc !== 'Unassigned' && <MapPin size={12}/>}
+                                        {loc !== 'All' && loc !== 'Unassigned' && <MapPin size={10}/>}
                                         {loc}
                                     </button>
                                 ))}
                             </div>
                         )}
 
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 pb-48">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 pb-40">
                             {displayCatalog.length === 0 ? (
                                 <div className="col-span-full py-10 text-center text-slate-400 font-bold">No items found.</div>
                             ) : displayCatalog.map(item => {
@@ -1145,36 +1452,36 @@ export default function MyTasksHub() {
                                 const isKeypadActive = keypadTarget === item.article_number;
                                 
                                 return (
-                                <div key={item.article_number} className={`bg-white rounded-3xl p-3 shadow-sm border flex flex-col gap-3 relative transition-all ${qty > 0 || isKeypadActive ? 'border-[#6D2158] ring-4 ring-[#6D2158]/5' : 'border-slate-200'}`}>
+                                <div key={item.article_number} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 || isKeypadActive ? 'border-[#6D2158] ring-2 ring-[#6D2158]/10' : 'border-slate-200'}`}>
                                     
-                                    <div className="w-full aspect-square bg-slate-50 rounded-2xl overflow-hidden flex items-center justify-center p-3 relative">
-                                        {item.image_url ? <img src={item.image_url} className="w-full h-full object-contain drop-shadow-sm"/> : <Wine size={32} className="text-slate-300"/>}
+                                    <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3 relative">
+                                        {item.image_url ? <img src={item.image_url} className="w-full h-full object-contain drop-shadow-sm"/> : <Wine size={24} className="text-slate-300"/>}
                                     </div>
                                     
                                     <div className="flex flex-col flex-1 px-1">
-                                        <h4 className="text-[11px] font-black text-slate-800 leading-tight line-clamp-2">{item.generic_name || item.article_name}</h4>
+                                        <h4 className="text-[10px] font-black text-slate-800 leading-tight line-clamp-2">{item.generic_name || item.article_name}</h4>
                                         <div className="flex items-center justify-between mt-1">
-                                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{item.category}</p>
+                                            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest truncate">{item.category}</p>
                                             {item.villa_location && activeLocation === 'All' && (
-                                                <p className="text-[8px] font-black text-[#6D2158] uppercase tracking-widest bg-purple-50 px-1.5 py-0.5 rounded truncate max-w-[60px]">{item.villa_location}</p>
+                                                <p className="text-[7px] font-black text-[#6D2158] uppercase tracking-widest bg-purple-50 px-1.5 py-0.5 rounded truncate max-w-[60px]">{item.villa_location}</p>
                                             )}
                                         </div>
                                     </div>
 
-                                    <div className="flex items-center justify-between bg-slate-50 rounded-xl p-1 border border-slate-200 mt-auto">
-                                        <button onClick={() => updateCount(item.article_number, -1)} className="w-9 h-9 flex items-center justify-center bg-white rounded-lg shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
-                                            <Minus size={16}/>
+                                    <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
+                                        <button onClick={() => updateCount(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
+                                            <Minus size={14}/>
                                         </button>
                                         
                                         <button 
                                             onClick={() => openKeypad(item.article_number)} 
-                                            className={`w-10 text-center font-black text-xl py-1 rounded-lg transition-colors ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400 hover:bg-slate-200'} ${isKeypadActive ? 'bg-[#6D2158]/10 text-[#6D2158] ring-2 ring-[#6D2158]' : ''}`}
+                                            className={`w-10 text-center font-black text-lg py-1 rounded-md transition-colors ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400 hover:bg-slate-200'} ${isKeypadActive ? 'bg-[#6D2158]/10 text-[#6D2158] ring-1 ring-[#6D2158]' : ''}`}
                                         >
                                             {qty}
                                         </button>
 
-                                        <button onClick={() => updateCount(item.article_number, 1)} className="w-9 h-9 flex items-center justify-center bg-[#6D2158] rounded-lg shadow-sm text-white active:scale-95 transition-all">
-                                            <Plus size={16}/>
+                                        <button onClick={() => updateCount(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-[#6D2158] rounded-md shadow-sm text-white active:scale-95 transition-all">
+                                            <Plus size={14}/>
                                         </button>
                                     </div>
                                 </div>
@@ -1182,14 +1489,14 @@ export default function MyTasksHub() {
                         </div>
 
                         {/* Fixed Bottom Submit Bar */}
-                        <div className="fixed bottom-0 left-0 right-0 md:left-64 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                        <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
                             <div className="max-w-5xl mx-auto">
                                 <button 
                                     onClick={requestSaveInventory} 
                                     disabled={isSaving} 
-                                    className="w-full py-4 md:py-5 text-white bg-[#6D2158] shadow-purple-900/20 rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2"
+                                    className="w-full py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
                                 >
-                                    {isSaving ? <Loader2 className="animate-spin" size={24}/> : <><Save size={20}/> Submit Audit</>}
+                                    {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><Save size={16}/> Submit Audit</>}
                                 </button>
                             </div>
                         </div>
@@ -1198,40 +1505,74 @@ export default function MyTasksHub() {
             </div>
         )}
 
+        {/* --- RE-ENTER REASON MODAL ⚡ --- */}
+        {reenterModal.isOpen && (
+            <div className="fixed inset-0 z-[115] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 text-center">
+                    <h3 className="text-xl md:text-2xl font-black mb-2 tracking-tight text-[#6D2158]">
+                        Re-enter Room {reenterModal.villa}
+                    </h3>
+                    <p className="text-xs md:text-sm text-slate-500 font-medium mb-6 md:mb-8 leading-relaxed">
+                        Please select the reason for re-entering this completed room.
+                    </p>
+                    <div className="flex flex-col gap-2.5">
+                        {['Refill Minibar', 'Guest Request', 'Clean Again', 'Other'].map(reason => (
+                            <button 
+                                key={reason}
+                                onClick={() => {
+                                    handleStartService(reenterModal.villa, reason);
+                                    setReenterModal({isOpen: false, villa: ''});
+                                }}
+                                className="w-full py-3.5 bg-slate-50 text-slate-700 hover:bg-[#6D2158] hover:text-white rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all border border-slate-200 hover:border-[#6D2158]"
+                            >
+                                {reason}
+                            </button>
+                        ))}
+                        <button 
+                            onClick={() => setReenterModal({ isOpen: false, villa: '' })} 
+                            className="w-full mt-2 py-3.5 bg-white text-rose-500 rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
+
         {/* --- BILINGUAL GUIDE MODAL --- */}
         {showGuideModal && (
             <div className="fixed inset-0 z-[130] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
                 <div className="bg-white w-full max-w-md rounded-[2.5rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
-                    <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shrink-0 shadow-inner">
-                        <Info size={32} />
+                    <div className="w-12 h-12 md:w-16 md:h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shrink-0 shadow-inner">
+                        <Info size={24} />
                     </div>
-                    <h3 className="text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0">
+                    <h3 className="text-lg md:text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0">
                         How to count / <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal' }}>ގުނާނެ ގޮތް</span>
                     </h3>
                     
-                    <div className="text-sm text-slate-600 font-medium mb-6 space-y-4 bg-slate-50 p-4 md:p-5 rounded-2xl border border-slate-100 overflow-y-auto custom-scrollbar flex-1">
+                    <div className="text-xs md:text-sm text-slate-600 font-medium mb-6 space-y-4 bg-slate-50 p-4 md:p-5 rounded-2xl border border-slate-100 overflow-y-auto custom-scrollbar flex-1">
                         <div className="text-left">
                             <p className="font-black text-slate-800 mb-2">🇬🇧 English:</p>
-                            <div className="space-y-3 text-xs md:text-sm">
-                                <p>1. This is an inventory count. You must count exactly what is physically present. If there is 1 item, enter <b className="text-slate-800 text-base">'1'</b>. If it is missing or empty, enter <b className="text-slate-800 text-base">'0'</b>.</p>
-                                <p>2. Use the <b className="text-slate-800 text-base">Location Tabs</b> at the top (e.g. Wardrobe, Bathroom) to check items room-by-room so nothing is missed.</p>
-                                <p>3. Tap the <b className="text-[#6D2158] text-base">large number</b> to open the fast keypad, or use the <b className="text-slate-800 text-base">+/-</b> buttons to adjust the count.</p>
-                                <p>4. Make sure you have checked every location before tapping <b className="text-[#6D2158] text-base">Submit Audit</b>.</p>
+                            <div className="space-y-3">
+                                <p>1. This is an inventory count. You must count exactly what is physically present. If there is 1 item, enter <b className="text-slate-800 text-sm">'1'</b>. If it is missing or empty, enter <b className="text-slate-800 text-sm">'0'</b>.</p>
+                                <p>2. Use the <b className="text-slate-800 text-sm">Location Tabs</b> at the top (e.g. Wardrobe, Bathroom) to check items room-by-room so nothing is missed.</p>
+                                <p>3. Tap the <b className="text-[#6D2158] text-sm">large number</b> to open the fast keypad, or use the <b className="text-slate-800 text-sm">+/-</b> buttons to adjust the count.</p>
+                                <p>4. Make sure you have checked every location before tapping <b className="text-[#6D2158] text-sm">Submit Audit</b>.</p>
                             </div>
                         </div>
                         <div className="border-t border-slate-200 pt-4" dir="rtl">
                             <p className="text-slate-800 mb-3 font-bold" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
-                            <div className="space-y-3 text-sm md:text-base leading-loose text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
-                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <span className="font-bold text-slate-800 text-lg">'1'</span>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <span className="font-bold text-slate-800 text-lg">'0'</span> ޖަހާށެވެ.</p>
-                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <span className="font-bold text-slate-800 text-lg">Location Tabs</span> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
-                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <span className="font-bold text-[#6D2158] text-lg">ނަންބަރަށް</span> ފިއްތާލާށެވެ. ނުވަތަ <span className="font-bold text-slate-800 text-lg">+/-</span> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
-                                <p>4. <span className="font-bold text-[#6D2158] text-lg">'ސަބްމިޓް އޮޑިޓް'</span> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
+                            <div className="space-y-3 leading-loose text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
+                                <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <span className="font-bold text-slate-800 text-base">'1'</span>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <span className="font-bold text-slate-800 text-base">'0'</span> ޖަހާށެވެ.</p>
+                                <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <span className="font-bold text-slate-800 text-base">Location Tabs</span> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
+                                <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <span className="font-bold text-[#6D2158] text-base">ނަންބަރަށް</span> ފިއްތާލާށެވެ. ނުވަތަ <span className="font-bold text-slate-800 text-base">+/-</span> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
+                                <p>4. <span className="font-bold text-[#6D2158] text-base">'ސަބްމިޓް އޮޑިޓް'</span> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
                             </div>
                         </div>
                     </div>
 
-                    <button onClick={closeGuide} className="w-full py-4 text-white bg-[#6D2158] rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg shadow-purple-900/20 active:scale-95 transition-all shrink-0 flex items-center justify-center gap-2">
-                        I Understand <span className="opacity-50">/</span> <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal', fontSize: '16px' }} className="mt-1">ވިސްނިއްޖެ</span>
+                    <button onClick={closeGuide} className="w-full py-4 text-white bg-[#6D2158] rounded-xl font-black uppercase tracking-wider text-xs shadow-lg shadow-purple-900/20 active:scale-95 transition-all shrink-0 flex items-center justify-center gap-2">
+                        I Understand <span className="opacity-50">/</span> <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal', fontSize: '14px' }} className="mt-1">ވިސްނިއްޖެ</span>
                     </button>
                 </div>
             </div>
@@ -1241,38 +1582,38 @@ export default function MyTasksHub() {
         {keypadTarget && (
             <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex flex-col justify-end animate-in fade-in duration-200">
                 <div className="absolute inset-0" onClick={saveKeypadValue}></div>
-                <div className="bg-[#FDFBFD] w-full rounded-t-[2.5rem] p-6 pb-safe shadow-2xl animate-in slide-in-from-bottom-8 relative z-10">
+                <div className="bg-[#FDFBFD] w-full rounded-t-[2rem] p-5 md:p-6 pb-safe shadow-2xl animate-in slide-in-from-bottom-8 relative z-10 max-w-md mx-auto">
                     
-                    <div className="flex justify-between items-center mb-6">
+                    <div className="flex justify-between items-center mb-5">
                         <div>
-                            <h4 className="font-black text-slate-800 text-lg">Direct Input</h4>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                            <h4 className="font-black text-slate-800 text-base">Direct Input</h4>
+                            <p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
                                 {activeCatalog.find(c => c.article_number === keypadTarget)?.generic_name || 'Item'}
                             </p>
                         </div>
-                        <div className="text-4xl font-black text-[#6D2158] bg-purple-50 px-6 py-2 rounded-2xl border border-purple-100">
+                        <div className="text-3xl font-black text-[#6D2158] bg-purple-50 px-5 py-1.5 rounded-xl border border-purple-100">
                             {keypadValue}
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-3 mb-6">
+                    <div className="grid grid-cols-3 gap-2 md:gap-3 mb-5">
                         {[1,2,3,4,5,6,7,8,9].map(num => (
-                            <button key={num} onClick={() => handleKeypadPress(String(num))} className="py-4 bg-white rounded-2xl shadow-sm border border-slate-200 text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                            <button key={num} onClick={() => handleKeypadPress(String(num))} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
                                 {num}
                             </button>
                         ))}
-                        <button onClick={() => handleKeypadPress('CLR')} className="py-4 bg-rose-50 rounded-2xl border border-rose-100 text-sm font-black text-rose-600 uppercase tracking-widest active:scale-95 transition-all">
+                        <button onClick={() => handleKeypadPress('CLR')} className="py-3 md:py-4 bg-rose-50 rounded-xl border border-rose-100 text-xs font-black text-rose-600 uppercase tracking-widest active:scale-95 transition-all">
                             Clear
                         </button>
-                        <button onClick={() => handleKeypadPress('0')} className="py-4 bg-white rounded-2xl shadow-sm border border-slate-200 text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                        <button onClick={() => handleKeypadPress('0')} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
                             0
                         </button>
-                        <button onClick={() => handleKeypadPress('DEL')} className="py-4 bg-slate-100 rounded-2xl border border-slate-200 text-sm font-black text-slate-600 uppercase tracking-widest active:scale-95 transition-all">
+                        <button onClick={() => handleKeypadPress('DEL')} className="py-3 md:py-4 bg-slate-100 rounded-xl border border-slate-200 text-xs font-black text-slate-600 uppercase tracking-widest active:scale-95 transition-all">
                             Del
                         </button>
                     </div>
 
-                    <button onClick={saveKeypadValue} className="w-full py-5 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-sm shadow-xl active:scale-95 transition-all">
+                    <button onClick={saveKeypadValue} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">
                         Confirm Amount
                     </button>
                 </div>
@@ -1281,19 +1622,19 @@ export default function MyTasksHub() {
 
         {/* --- CUSTOM CONFIRMATION MODAL --- */}
         {confirmModal.isOpen && (
-            <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
-                <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl animate-in zoom-in-95 text-center">
-                    <h3 className={`text-2xl font-black mb-2 tracking-tight ${confirmModal.isDestructive ? 'text-rose-600' : 'text-[#6D2158]'}`}>
+            <div className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 text-center">
+                    <h3 className={`text-xl md:text-2xl font-black mb-2 tracking-tight ${confirmModal.isDestructive ? 'text-rose-600' : 'text-[#6D2158]'}`}>
                         {confirmModal.title}
                     </h3>
-                    <p className="text-sm text-slate-500 font-medium mb-8 leading-relaxed">
+                    <p className="text-xs md:text-sm text-slate-500 font-medium mb-6 md:mb-8 leading-relaxed">
                         {confirmModal.message}
                     </p>
-                    <div className="flex flex-col gap-3">
-                        <button onClick={confirmModal.onConfirm} className={`w-full py-4 text-white rounded-2xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2 ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}>
+                    <div className="flex flex-col gap-2.5">
+                        <button onClick={confirmModal.onConfirm} className={`w-full py-3.5 text-white rounded-xl font-black uppercase tracking-wider text-xs shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2 ${confirmModal.isDestructive ? 'bg-rose-600 shadow-rose-200' : 'bg-[#6D2158] shadow-purple-200'}`}>
                             <Save size={16}/> {confirmModal.confirmText}
                         </button>
-                        <button onClick={() => setConfirmModal(prev => ({...prev, isOpen: false}))} className="w-full py-4 bg-slate-50 text-slate-500 rounded-2xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all hover:bg-slate-100">
+                        <button onClick={() => setConfirmModal(prev => ({...prev, isOpen: false}))} className="w-full py-3.5 bg-slate-50 text-slate-500 rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all hover:bg-slate-100">
                             Cancel
                         </button>
                     </div>
@@ -1304,13 +1645,13 @@ export default function MyTasksHub() {
         {/* --- SUCCESS OVERLAY --- */}
         {showSuccess && (
             <div className="fixed inset-0 z-[90] bg-emerald-600 flex flex-col items-center justify-center text-white p-8 animate-in fade-in zoom-in-95 duration-300">
-                <div className="w-24 h-24 bg-white/20 rounded-full flex items-center justify-center mb-6">
-                    <CheckCircle2 size={64} className="text-white"/>
+                <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center mb-5">
+                    <CheckCircle2 size={48} className="text-white"/>
                 </div>
-                <h2 className="text-4xl font-black text-center mb-2">Saved!</h2>
-                <p className="text-center font-medium text-emerald-100 mb-12 text-lg">Location {selectedVilla} record has been logged.</p>
+                <h2 className="text-3xl font-black text-center mb-2">Saved!</h2>
+                <p className="text-center font-medium text-emerald-100 mb-10 text-sm md:text-base">Location {selectedVilla} record has been logged.</p>
                 
-                <button onClick={resetFlow} className="px-10 py-5 bg-white text-emerald-700 rounded-2xl font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all hover:scale-105">
+                <button onClick={resetFlow} className="px-8 py-4 bg-white text-emerald-700 rounded-xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all hover:scale-105">
                     Return to Hub
                 </button>
             </div>
