@@ -40,6 +40,7 @@ type CleaningTask = {
     villa_number: string;
     status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused';
     start_time?: string;
+    raw_start_time?: string; 
     end_time?: string;
     time_spent?: string;
     reenter_reason?: string; 
@@ -118,17 +119,29 @@ export default function MyTasksHub() {
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
   // --- LIVE CLEANING TIMER ---
+  const activeStartTime = activeCleaningVilla ? cleaningTasks[activeCleaningVilla]?.raw_start_time : null;
+
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (activeCleaningVilla) {
-      interval = setInterval(() => {
-        setCleaningElapsedSeconds(prev => prev + 1);
-      }, 1000);
+    
+    const updateTimer = () => {
+        if (activeStartTime) {
+            const start = new Date(activeStartTime).getTime();
+            if (!isNaN(start)) {
+                // Trust standard ISO date parsing
+                setCleaningElapsedSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+            }
+        }
+    };
+
+    if (activeCleaningVilla && activeStartTime) {
+      updateTimer();
+      interval = setInterval(updateTimer, 1000);
     } else {
       setCleaningElapsedSeconds(0);
     }
     return () => clearInterval(interval);
-  }, [activeCleaningVilla]);
+  }, [activeCleaningVilla, activeStartTime]);
 
   const formatTimer = (totalSeconds: number) => {
     const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
@@ -163,23 +176,42 @@ export default function MyTasksHub() {
               .eq('report_date', todayStr)
               .eq('host_id', hostId);
 
-          setCleaningTasks(prev => {
-              const newState = { ...prev };
-              assignedCleanVillas.forEach(v => {
-                  const dbLog = existingLogs?.find(l => l.villa_number === v);
-                  if (dbLog) {
-                      newState[v] = { 
-                          villa_number: v, 
-                          status: dbLog.status, 
-                          start_time: dbLog.start_time ? format(parseISO(dbLog.start_time), 'hh:mm a') : undefined,
-                          time_spent: dbLog.time_spent_minutes ? `${dbLog.time_spent_minutes}m` : undefined 
-                      };
-                  } else if (!newState[v]) {
-                      newState[v] = { villa_number: v, status: 'Pending' };
-                  }
-              });
-              return newState;
+          let activeV: string | null = null;
+          const newTasksState: Record<string, CleaningTask> = {};
+
+          assignedCleanVillas.forEach(v => {
+              const dbLog = existingLogs?.find(l => l.villa_number === v);
+              const localTimer = typeof window !== 'undefined' ? localStorage.getItem(`hk_timer_${v}`) : null;
+              
+              // Force 'In Progress' if local storage has a running timer AND the database hasn't permanently closed it
+              const isInProgressLocally = !!localTimer && dbLog?.status !== 'Completed' && dbLog?.status !== 'DND' && dbLog?.status !== 'Refused';
+              const isActuallyInProgress = dbLog?.status === 'In Progress' || isInProgressLocally;
+
+              if (isActuallyInProgress) {
+                  activeV = v;
+              }
+
+              if (localTimer && !isActuallyInProgress) {
+                  // Cleanup stray timers if the room is completed
+                  localStorage.removeItem(`hk_timer_${v}`);
+              }
+
+              if (dbLog || isActuallyInProgress) {
+                  newTasksState[v] = { 
+                      villa_number: v, 
+                      status: isActuallyInProgress ? 'In Progress' : (dbLog?.status || 'Pending'), 
+                      start_time: dbLog?.start_time ? format(parseISO(dbLog.start_time), 'hh:mm a') : (localTimer ? format(parseISO(localTimer), 'hh:mm a') : undefined),
+                      raw_start_time: isActuallyInProgress ? (dbLog?.start_time || localTimer) : dbLog?.start_time,
+                      time_spent: dbLog?.time_spent_minutes ? `${dbLog.time_spent_minutes}m` : undefined 
+                  };
+              } else {
+                  newTasksState[v] = { villa_number: v, status: 'Pending' };
+              }
           });
+          
+          setCleaningTasks(prev => ({ ...prev, ...newTasksState }));
+          if (activeV) setActiveCleaningVilla(activeV);
+
       } else {
           setMyCleaningVillas([]);
       }
@@ -322,7 +354,9 @@ export default function MyTasksHub() {
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
 
-    // 1. Update UI instantly
+    localStorage.setItem(`hk_timer_${villa}`, now);
+
+    // 1. Update UI instantly (Optimistic Update)
     setActiveCleaningVilla(villa);
     setCleaningTasks(prev => ({
         ...prev,
@@ -330,13 +364,14 @@ export default function MyTasksHub() {
             ...prev[villa], 
             status: 'In Progress', 
             start_time: format(parseISO(now), 'hh:mm a'),
-            reenter_reason: reason // ⚡ Attach reason if re-entering
+            raw_start_time: now,
+            reenter_reason: reason 
         }
     }));
     toast.success(`Service Started: Room ${villa}` + (reason ? ` (${reason})` : ''));
 
-    // 2. Send to Supabase
-    await supabase.from('hsk_cleaning_logs').upsert({
+    // 2. Safe Supabase Save (Force update/insert to bypass schema constraints)
+    const payload = {
         report_date: todayStr,
         villa_number: villa,
         host_id: currentHost?.host_id,
@@ -344,17 +379,33 @@ export default function MyTasksHub() {
         status: 'In Progress',
         start_time: now,
         updated_at: now
-    }, { onConflict: 'report_date,villa_number' });
+    };
+
+    const { data, error: updateError } = await supabase.from('hsk_cleaning_logs')
+        .update(payload)
+        .match({ report_date: todayStr, villa_number: villa })
+        .select();
+
+    if (updateError || !data || data.length === 0) {
+        const { error: insertError } = await supabase.from('hsk_cleaning_logs').insert(payload);
+        if (insertError) {
+            // THE SAVE FAILED! Alert the user and revert the timer.
+            console.error("SUPABASE SAVE FAILED:", insertError);
+            toast.error("Database Error: Could not save start time to server.");
+            resetRoomStatus(villa); 
+        }
+    }
   };
 
   const handleFinishRoom = async (villa: string) => {
+    localStorage.removeItem(`hk_timer_${villa}`);
     const minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
 
     // ⚡ Logic for Re-Entering a Room: Create Session Log
     const currentTaskState = cleaningTasks[villa];
-    const sessionReason = currentTaskState?.reenter_reason || 'Initial Cleaning';
+    const sessionReason = currentTaskState?.reenter_reason || 'Morning Service';
     const sessionStart = currentTaskState?.start_time || format(parseISO(now), 'hh:mm a');
     const sessionEnd = format(parseISO(now), 'hh:mm a');
     
@@ -397,8 +448,8 @@ export default function MyTasksHub() {
         
     const updatedHistory = [...existingHistory, newSessionLog];
 
-    // 3. Send to Supabase
-    await supabase.from('hsk_cleaning_logs').upsert({
+    // 3. Safe Supabase Save
+    const payload = {
         report_date: todayStr,
         villa_number: villa,
         host_id: currentHost?.host_id,
@@ -406,12 +457,26 @@ export default function MyTasksHub() {
         status: 'Completed',
         end_time: now,
         time_spent_minutes: totalMinutes,
-        session_history: updatedHistory, // ⚡ Save detailed array!
+        session_history: updatedHistory, 
         updated_at: now
-    }, { onConflict: 'report_date,villa_number' });
+    };
+
+    const { data, error: updateError } = await supabase.from('hsk_cleaning_logs')
+        .update(payload)
+        .match({ report_date: todayStr, villa_number: villa })
+        .select();
+
+    if (updateError || !data || data.length === 0) {
+        const { error: insertError } = await supabase.from('hsk_cleaning_logs').insert(payload);
+        if (insertError) {
+             console.error("SUPABASE SAVE FAILED:", insertError);
+             toast.error("Warning: Service completion might not have saved properly.");
+        }
+    }
   };
 
   const handleDND = async (villa: string) => {
+    localStorage.removeItem(`hk_timer_${villa}`);
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
 
@@ -421,7 +486,7 @@ export default function MyTasksHub() {
     }));
     toast.success(`DND Logged: Room ${villa}`);
 
-    await supabase.from('hsk_cleaning_logs').upsert({
+    const payload = {
         report_date: todayStr,
         villa_number: villa,
         host_id: currentHost?.host_id,
@@ -429,10 +494,20 @@ export default function MyTasksHub() {
         status: 'DND',
         dnd_time: now,
         updated_at: now
-    }, { onConflict: 'report_date,villa_number' });
+    };
+
+    const { data, error: updateError } = await supabase.from('hsk_cleaning_logs')
+        .update(payload)
+        .match({ report_date: todayStr, villa_number: villa })
+        .select();
+
+    if (updateError || !data || data.length === 0) {
+        await supabase.from('hsk_cleaning_logs').insert(payload);
+    }
   };
 
   const handleRefused = async (villa: string) => {
+    localStorage.removeItem(`hk_timer_${villa}`);
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
 
@@ -442,27 +517,55 @@ export default function MyTasksHub() {
     }));
     toast.success(`Service Refused: Room ${villa}`);
 
-    await supabase.from('hsk_cleaning_logs').upsert({
+    const payload = {
         report_date: todayStr,
         villa_number: villa,
         host_id: currentHost?.host_id,
         host_name: currentHost?.full_name,
         status: 'Refused',
         updated_at: now
-    }, { onConflict: 'report_date,villa_number' });
+    };
+
+    const { data, error: updateError } = await supabase.from('hsk_cleaning_logs')
+        .update(payload)
+        .match({ report_date: todayStr, villa_number: villa })
+        .select();
+
+    if (updateError || !data || data.length === 0) {
+        await supabase.from('hsk_cleaning_logs').insert(payload);
+    }
   };
 
 
   const resetRoomStatus = async (villa: string) => {
       const todayStr = getDhakaDateStr();
+      localStorage.removeItem(`hk_timer_${villa}`);
+      
+      if (activeCleaningVilla === villa) {
+          setActiveCleaningVilla(null);
+          setCleaningElapsedSeconds(0);
+      }
+
       setCleaningTasks(prev => ({
           ...prev,
           [villa]: { ...prev[villa], status: 'Pending', time_spent: undefined }
       }));
       
-      await supabase.from('hsk_cleaning_logs')
+      const { data } = await supabase.from('hsk_cleaning_logs')
         .update({ status: 'Pending', updated_at: new Date().toISOString() })
-        .match({ report_date: todayStr, villa_number: villa });
+        .match({ report_date: todayStr, villa_number: villa })
+        .select();
+
+      if (!data || data.length === 0) {
+          await supabase.from('hsk_cleaning_logs').insert({
+              report_date: todayStr,
+              villa_number: villa,
+              host_id: currentHost?.host_id,
+              host_name: currentHost?.full_name,
+              status: 'Pending',
+              updated_at: new Date().toISOString()
+          });
+      }
   };
 
   // --- AC STATUS UPDATE HANDLER ---

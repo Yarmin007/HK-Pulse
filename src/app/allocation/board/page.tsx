@@ -2,11 +2,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   LayoutDashboard, Sparkles, CheckCircle2, DoorClosed, 
-  Clock, User, AlertCircle, BedDouble, Loader2, RefreshCw, Calendar, Search, X, Maximize, Minimize, TableProperties, LayoutGrid, ChevronDown, ZoomIn
+  Clock, User, AlertCircle, BedDouble, Loader2, RefreshCw, Calendar, Search, X, Maximize, Minimize, TableProperties, LayoutGrid, ChevronDown, ZoomIn, Edit, Trash2, Plus, Save
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO, isToday } from 'date-fns';
 import { getDhakaTime, getDhakaDateStr } from '@/lib/dateUtils';
+import toast from 'react-hot-toast';
 
 type LiveTask = {
     villa: string;
@@ -18,6 +19,13 @@ type LiveTask = {
     timeSpent?: string;
     timeLogged?: string;
     sessionHistory?: any[];
+};
+
+type EditState = {
+    villa: string;
+    status: string;
+    timeSpent: number;
+    sessionHistory: any[];
 };
 
 // Reusable villa parser
@@ -44,25 +52,56 @@ const parseVillas = (input: string, doubleVillas: string[] = []) => {
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
 
-// Helper for dynamic coloring based on the latest completed service
-const getDoneStyles = (history: any[]) => {
+// Helper to parse 12-hour time string into timestamp for sorting
+const parseTimeString = (timeStr: string | undefined) => {
+    if (!timeStr) return 0;
+    const today = new Date();
+    const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+    if (!match) return 0;
+    let hours = parseInt(match[1], 10);
+    const mins = parseInt(match[2], 10);
+    const period = match[3] ? match[3].toUpperCase() : '';
+    if (period === 'PM' && hours < 12) hours += 12;
+    if (period === 'AM' && hours === 12) hours = 0;
+    today.setHours(hours, mins, 0, 0);
+    return today.getTime();
+};
+
+// ⚡ Refined Styles with Reset Logic & Unified Colors
+const getDoneStyles = (history: any[], isPastTurndown: boolean = false) => {
     const latestSession = history && history.length > 0 ? history[history.length - 1] : null;
     const reason = latestSession ? latestSession.reason : 'Morning Service';
     
+    let label = 'Done';
+    if (reason === 'TD Service') label = 'TD Done';
+    else if (reason === 'Minibar Refill') label = 'MB Done';
+    else if (reason === 'Guest Request') label = 'Req Done';
+    else if (reason === 'Arrival') label = 'Arr Done';
+    else if (reason === 'Dep') label = 'Dep Done';
+    else label = 'Morn Done';
+
+    // Reset visual background for Daytime tasks after 15:00
+    if (isPastTurndown && reason !== 'TD Service') {
+        return {
+            bg: 'bg-white',
+            border: 'border-slate-200',
+            text: 'text-slate-500',
+            badge: 'bg-slate-100',
+            label: label,
+            colorHex: 'text-slate-500',
+            rowBg: 'bg-white',
+            isReset: true
+        };
+    }
+
     if (reason === 'TD Service') {
-        return { bg: 'bg-indigo-500', border: 'border-indigo-600', text: 'text-indigo-100', badge: 'bg-indigo-700', label: 'TD Done', colorHex: 'text-indigo-600', rowBg: 'bg-indigo-50/50' };
-    } else if (reason === 'Minibar Refill') {
-        return { bg: 'bg-blue-500', border: 'border-blue-600', text: 'text-blue-100', badge: 'bg-blue-700', label: 'MB Done', colorHex: 'text-blue-600', rowBg: 'bg-blue-50/50' };
-    } else if (reason === 'Guest Request') {
-        return { bg: 'bg-fuchsia-500', border: 'border-fuchsia-600', text: 'text-fuchsia-100', badge: 'bg-fuchsia-700', label: 'Req Done', colorHex: 'text-fuchsia-600', rowBg: 'bg-fuchsia-50/50' };
-    } else if (reason === 'Arrival') {
-        return { bg: 'bg-teal-500', border: 'border-teal-600', text: 'text-teal-100', badge: 'bg-teal-700', label: 'Arr Done', colorHex: 'text-teal-600', rowBg: 'bg-teal-50/50' };
-    } else if (reason === 'Dep') {
-        return { bg: 'bg-cyan-500', border: 'border-cyan-600', text: 'text-cyan-100', badge: 'bg-cyan-700', label: 'Dep Done', colorHex: 'text-cyan-600', rowBg: 'bg-cyan-50/50' };
-    } else if (reason === 'Clean Again' || reason === 'Other') {
-        return { bg: 'bg-slate-700', border: 'border-slate-800', text: 'text-slate-300', badge: 'bg-slate-800', label: 'Done', colorHex: 'text-slate-700', rowBg: 'bg-slate-100/50' };
+        return { bg: 'bg-indigo-500', border: 'border-indigo-600', text: 'text-indigo-100', badge: 'bg-indigo-700', label, colorHex: 'text-indigo-600', rowBg: 'bg-indigo-50/50', isReset: false };
+    } else if (['Morning Service', 'Arrival', 'Dep'].includes(reason)) {
+        // Unified Light Green
+        return { bg: 'bg-emerald-500', border: 'border-emerald-600', text: 'text-emerald-100', badge: 'bg-emerald-700', label, colorHex: 'text-emerald-600', rowBg: 'bg-emerald-50/50', isReset: false };
     } else {
-        return { bg: 'bg-emerald-500', border: 'border-emerald-600', text: 'text-emerald-100', badge: 'bg-emerald-700', label: 'Morn Done', colorHex: 'text-emerald-600', rowBg: 'bg-emerald-50/50' };
+        // Other minor tasks (Neutral Slate)
+        return { bg: 'bg-slate-500', border: 'border-slate-600', text: 'text-slate-100', badge: 'bg-slate-700', label, colorHex: 'text-slate-600', rowBg: 'bg-slate-50', isReset: false };
     }
 };
 
@@ -71,18 +110,28 @@ export default function LiveCleaningBoard() {
   const [liveData, setLiveData] = useState<LiveTask[]>([]);
   const [filter, setFilter] = useState<'ALL' | 'IN_PROGRESS' | 'COMPLETED' | 'DND' | 'REFUSED'>('ALL');
   
-  // ⚡ View Modes & Fullscreen & Zoom
+  // View Modes & Fullscreen & Zoom
   const [boardDate, setBoardDate] = useState(getDhakaDateStr());
   const [hostSearch, setHostSearch] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewMode, setViewMode] = useState<'GRID' | 'SHEET'>('GRID');
   const [gridColumns, setGridColumns] = useState(8);
+  
+  // Current time tracker for 15:00 Turndown reset
+  const [currentTime, setCurrentTime] = useState(getDhakaTime());
+
+  // Admin Edit Modal State
+  const [editModal, setEditModal] = useState<EditState | null>(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   useEffect(() => {
       const savedZoom = localStorage.getItem('hk_pulse_board_zoom');
       if (savedZoom) {
           setGridColumns(Number(savedZoom));
       }
+      // Update time every minute
+      const interval = setInterval(() => setCurrentTime(getDhakaTime()), 60000);
+      return () => clearInterval(interval);
   }, []);
 
   const handleZoomChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -117,7 +166,7 @@ export default function LiveCleaningBoard() {
       // Map Guests
       const guestMap: Record<string, string> = {};
       guests.forEach(g => {
-          let type = 'Occupied'; // ⚡ Changed to Occupied
+          let type = 'Occupied';
           const st = g.status?.toUpperCase() || '';
           if (st.includes('DEP')) type = 'Departure';
           if (st.includes('ARR')) type = 'Arrival';
@@ -144,17 +193,17 @@ export default function LiveCleaningBoard() {
                   villa: v,
                   status: log ? log.status : 'Pending', 
                   attendant: attendantName,
-                  type: guestMap[v] || 'Occupied', // ⚡ Changed to Occupied
+                  type: guestMap[v] || 'Occupied',
                   startTime: log?.start_time ? format(parseISO(log.start_time), 'hh:mm a') : undefined,
                   endTime: log?.end_time ? format(parseISO(log.end_time), 'hh:mm a') : undefined,
-                  timeSpent: log?.time_spent_minutes ? `${log.time_spent_minutes}m` : undefined,
-                  // Fallback to updated_at if dnd_time is null (for Refused)
+                  timeSpent: log?.time_spent_minutes ? `${log.time_spent_minutes}` : undefined,
                   timeLogged: log?.dnd_time ? format(parseISO(log.dnd_time), 'hh:mm a') : log?.updated_at ? format(parseISO(log.updated_at), 'hh:mm a') : undefined,
                   sessionHistory: log?.session_history || [],
               });
           });
       });
 
+      // Grid Base Sort is Villa Number
       allTasks.sort((a,b) => parseFloat(a.villa.replace('-', '.')) - parseFloat(b.villa.replace('-', '.')));
       
       setLiveData(allTasks);
@@ -182,7 +231,7 @@ export default function LiveCleaningBoard() {
                                   status: newLog.status,
                                   startTime: newLog.start_time ? format(parseISO(newLog.start_time), 'hh:mm a') : task.startTime,
                                   endTime: newLog.end_time ? format(parseISO(newLog.end_time), 'hh:mm a') : task.endTime,
-                                  timeSpent: newLog.time_spent_minutes ? `${newLog.time_spent_minutes}m` : task.timeSpent,
+                                  timeSpent: newLog.time_spent_minutes ? `${newLog.time_spent_minutes}` : task.timeSpent,
                                   timeLogged: newLog.dnd_time ? format(parseISO(newLog.dnd_time), 'hh:mm a') : newLog.updated_at ? format(parseISO(newLog.updated_at), 'hh:mm a') : task.timeLogged,
                                   sessionHistory: newLog.session_history || task.sessionHistory,
                               };
@@ -199,12 +248,67 @@ export default function LiveCleaningBoard() {
       };
   }, [boardDate]);
 
+  // Admin Edit Functions
+  const openEditModal = (task: LiveTask) => {
+      setEditModal({
+          villa: task.villa,
+          status: task.status,
+          timeSpent: parseInt(task.timeSpent || '0', 10),
+          sessionHistory: JSON.parse(JSON.stringify(task.sessionHistory || []))
+      });
+  };
+
+  const handleSessionChange = (index: number, field: string, value: string | number) => {
+      if (!editModal) return;
+      const newHistory = [...editModal.sessionHistory];
+      newHistory[index] = { ...newHistory[index], [field]: value };
+      setEditModal({ ...editModal, sessionHistory: newHistory });
+  };
+
+  const addSession = () => {
+      if (!editModal) return;
+      const newHistory = [...editModal.sessionHistory, { reason: 'Other', start: '', end: '', duration: 0 }];
+      setEditModal({ ...editModal, sessionHistory: newHistory });
+  };
+
+  const removeSession = (index: number) => {
+      if (!editModal) return;
+      const newHistory = editModal.sessionHistory.filter((_, i) => i !== index);
+      setEditModal({ ...editModal, sessionHistory: newHistory });
+  };
+
+  const saveEditModal = async () => {
+      if (!editModal) return;
+      setIsSavingEdit(true);
+
+      const payload = {
+          status: editModal.status,
+          time_spent_minutes: editModal.timeSpent,
+          session_history: editModal.sessionHistory,
+          updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase.from('hsk_cleaning_logs')
+          .update(payload)
+          .match({ report_date: boardDate, villa_number: editModal.villa });
+
+      setIsSavingEdit(false);
+
+      if (error) {
+          toast.error("Failed to save changes: " + error.message);
+      } else {
+          toast.success(`Room ${editModal.villa} updated successfully.`);
+          setEditModal(null);
+      }
+  };
+
   const uniqueAttendants = useMemo(() => {
       return Array.from(new Set(liveData.map(t => t.attendant))).sort();
   }, [liveData]);
 
+  // Baseline Grid Filter
   const filteredVillas = useMemo(() => {
-    let result = liveData;
+    let result = [...liveData];
 
     if (filter === 'IN_PROGRESS') result = result.filter(v => v.status === 'In Progress');
     if (filter === 'COMPLETED') result = result.filter(v => v.status === 'Completed');
@@ -215,20 +319,74 @@ export default function LiveCleaningBoard() {
         result = result.filter(v => v.attendant === hostSearch);
     }
 
+    result.sort((a,b) => parseFloat(a.villa.replace('-', '.')) - parseFloat(b.villa.replace('-', '.')));
     return result;
   }, [filter, liveData, hostSearch]);
 
+  // ⚡ Flattened & Sorted Sheet Data
+  const sheetRows = useMemo(() => {
+      let rows: any[] = [];
+      filteredVillas.forEach(villa => {
+          // Add historical completed sessions
+          if (villa.sessionHistory && villa.sessionHistory.length > 0) {
+              villa.sessionHistory.forEach((session, sIdx) => {
+                  rows.push({
+                      id: `${villa.villa}-hist-${sIdx}`,
+                      villa: villa.villa,
+                      attendant: villa.attendant,
+                      type: villa.type,
+                      status: 'Completed',
+                      reason: session.reason || 'Service',
+                      startTime: session.start,
+                      endTime: session.end,
+                      duration: session.duration,
+                      rawTime: parseTimeString(session.start) || parseTimeString(session.end),
+                      originalTask: villa
+                  });
+              });
+          }
+          
+          // Add Active, DND, or Refused entries
+          if (villa.status !== 'Completed' && villa.status !== 'Pending') {
+             rows.push({
+                 id: `${villa.villa}-active`,
+                 villa: villa.villa,
+                 attendant: villa.attendant,
+                 type: villa.type,
+                 status: villa.status,
+                 reason: villa.status,
+                 startTime: villa.startTime,
+                 endTime: villa.endTime,
+                 duration: villa.timeSpent,
+                 rawTime: parseTimeString(villa.startTime) || parseTimeString(villa.timeLogged) || 0,
+                 timeLogged: villa.timeLogged,
+                 originalTask: villa
+             });
+          }
+      });
+
+      // Sort strictly by Start Time chronologically
+      rows.sort((a, b) => a.rawTime - b.rawTime);
+      return rows;
+  }, [filteredVillas]);
+
+
   const baseVillas = hostSearch ? liveData.filter(v => v.attendant === hostSearch) : liveData;
-  const total = baseVillas.length;
-  const completed = baseVillas.filter(v => v.status === 'Completed').length;
+  
+  // Progress Logic: Only count Arrival, Departure, Occupied
+  const progressVillas = baseVillas.filter(v => ['Arrival', 'Departure', 'Occupied'].includes(v.type));
+  const total = progressVillas.length;
+  const completed = progressVillas.filter(v => v.status === 'Completed').length;
+  const progressPct = total === 0 ? 0 : (completed / total) * 100;
+  
+  // Sub-counters for UI metric cards
   const inProgress = baseVillas.filter(v => v.status === 'In Progress').length;
   const dnd = baseVillas.filter(v => v.status === 'DND').length;
   const refused = baseVillas.filter(v => v.status === 'Refused').length;
-  const progressPct = total === 0 ? 0 : (completed / total) * 100;
 
   const isViewingHistory = !isToday(parseISO(boardDate));
 
-  // ⚡ DYNAMIC ZOOM THRESHOLDS
+  // DYNAMIC ZOOM THRESHOLDS
   const isExtreme = gridColumns >= 14;
   const isUltraDense = gridColumns >= 11;
   const isDense = gridColumns >= 8;
@@ -297,7 +455,7 @@ export default function LiveCleaningBoard() {
           {/* MASTER PROGRESS */}
           <div className={`w-full ${isFullscreen ? 'md:w-56 p-2.5' : 'md:w-64 p-3 md:p-4'} bg-white/10 rounded-2xl backdrop-blur-sm border border-white/10 shrink-0`}>
             <div className="flex justify-between items-end mb-1.5">
-            <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-white/70">Resort Progress</span>
+            <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-white/70">Cleaning Progress</span>
             <span className={`${isFullscreen ? 'text-base' : 'text-lg md:text-xl'} font-black leading-none`}>{Math.round(progressPct)}%</span>
             </div>
             <div className="h-1.5 md:h-2 w-full bg-black/20 rounded-full overflow-hidden">
@@ -309,10 +467,9 @@ export default function LiveCleaningBoard() {
         {/* METRIC CARDS & FILTERS */}
         <div className={`flex flex-col lg:flex-row gap-3 md:gap-4 justify-between items-end ${isFullscreen ? 'mt-3' : 'mt-6'}`}>
             
-            {/* ⚡ 5 METRIC COLUMNS */}
             <div className="grid grid-cols-5 gap-2 w-full lg:w-auto flex-1 max-w-3xl">
                 <button onClick={() => setFilter('ALL')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'ALL' ? 'bg-white text-[#6D2158] shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
-                    <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{total}</span>
+                    <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{baseVillas.length}</span>
                     <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1">Total</span>
                 </button>
                 <button onClick={() => setFilter('IN_PROGRESS')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'IN_PROGRESS' ? 'bg-emerald-400 text-emerald-950 shadow-md scale-[1.02] ring-2 ring-emerald-300 ring-offset-1 ring-offset-[#6D2158]' : 'bg-white/10 hover:bg-white/20'}`}>
@@ -320,7 +477,7 @@ export default function LiveCleaningBoard() {
                     <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1 flex items-center gap-1"><Sparkles size={8} className="animate-pulse"/> Active</span>
                 </button>
                 <button onClick={() => setFilter('COMPLETED')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'COMPLETED' ? 'bg-blue-400 text-blue-950 shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
-                    <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{completed}</span>
+                    <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{baseVillas.filter(v => v.status === 'Completed').length}</span>
                     <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1 flex items-center gap-1"><CheckCircle2 size={8}/> Done</span>
                 </button>
                 <button onClick={() => setFilter('DND')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'DND' ? 'bg-rose-400 text-rose-950 shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
@@ -333,7 +490,6 @@ export default function LiveCleaningBoard() {
                 </button>
             </div>
 
-            {/* Attendant Dropdown Filter */}
             <div className="relative w-full lg:w-56 shrink-0 group">
                 <User className="absolute left-3 top-2.5 text-white/50" size={14}/>
                 <select 
@@ -364,45 +520,55 @@ export default function LiveCleaningBoard() {
              </div>
         ) : viewMode === 'SHEET' ? (
             
-            // --- EXCEL SHEET VIEW ---
+            // --- EXCEL SHEET VIEW (CHRONOLOGICAL SESSIONS) ---
             <div className={`bg-white border border-slate-200 shadow-sm overflow-hidden flex flex-col ${isFullscreen ? 'rounded-2xl h-full' : 'rounded-3xl'}`}>
                 <div className="overflow-auto custom-scrollbar flex-1">
                     <table className="w-full text-left border-collapse">
                         <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                             <tr>
                                 <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center w-12">#</th>
+                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Start Time</th>
                                 <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Villa</th>
                                 <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Attendant</th>
                                 <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center">Type</th>
-                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center">Status</th>
-                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Time Log (Exact)</th>
-                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Duration</th>
+                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center">Session / Status</th>
+                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Time Log</th>
+                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center border-r border-slate-200">Duration</th>
+                                <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                            {filteredVillas.map((item, idx) => {
-                                const isCleaning = item.status === 'In Progress';
-                                const isDone = item.status === 'Completed';
-                                const isDND = item.status === 'DND';
-                                const isRefused = item.status === 'Refused';
+                            {sheetRows.length === 0 && (
+                                <tr>
+                                    <td colSpan={9} className="p-8 text-center text-slate-400 font-bold">No sessions logged yet.</td>
+                                </tr>
+                            )}
+                            {sheetRows.map((row, idx) => {
+                                const isCleaning = row.status === 'In Progress';
+                                const isDone = row.status === 'Completed';
+                                const isDND = row.status === 'DND';
+                                const isRefused = row.status === 'Refused';
                                 
-                                const doneStyles = getDoneStyles(item.sessionHistory || []);
+                                // Color logic based solely on the specific row's reason
+                                const doneStyles = getDoneStyles([{ reason: row.reason }]);
                                 
                                 return (
-                                    <tr key={`${item.villa}-${idx}`} className={`hover:bg-slate-50 transition-colors ${isDone ? `${doneStyles.rowBg} opacity-90` : isDND ? 'bg-rose-50/30' : isRefused ? 'bg-orange-50/40' : isCleaning ? 'bg-emerald-50/30' : ''}`}>
+                                    <tr key={row.id} className={`hover:bg-slate-50 transition-colors ${isDone ? `${doneStyles.rowBg} opacity-90` : isDND ? 'bg-rose-50/30' : isRefused ? 'bg-orange-50/40' : isCleaning ? 'bg-emerald-50/30' : ''}`}>
                                         <td className="p-2 border-r border-slate-100 text-center text-xs font-bold text-slate-400">{idx + 1}</td>
-                                        <td className={`p-2 border-r border-slate-100 font-black text-lg ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>{item.villa}</td>
+                                        <td className={`p-2 border-r border-slate-100 text-xs font-bold text-slate-500`}>
+                                            {row.startTime || row.timeLogged || '--:--'}
+                                        </td>
+                                        <td className={`p-2 border-r border-slate-100 font-black text-lg ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>{row.villa}</td>
                                         <td className={`p-2 border-r border-slate-100 text-xs font-bold flex items-center gap-2 ${isDone ? doneStyles.colorHex : 'text-slate-700'}`}>
-                                            <User size={12} className={isDone ? doneStyles.colorHex : 'text-slate-400 hidden md:block'}/> {item.attendant}
+                                            <User size={12} className={isDone ? doneStyles.colorHex : 'text-slate-400 hidden md:block'}/> {row.attendant}
                                         </td>
                                         <td className="p-2 border-r border-slate-100 text-center">
                                             <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest ${
-                                                isDone ? 'bg-white/50 text-emerald-800' :
-                                                item.type === 'Departure' ? 'bg-amber-100 text-amber-700' : 
-                                                item.type === 'Arrival' ? 'bg-blue-100 text-blue-700' : 
-                                                item.type === 'Touch Up' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'
+                                                row.type === 'Departure' ? 'bg-amber-100 text-amber-700' : 
+                                                row.type === 'Arrival' ? 'bg-blue-100 text-blue-700' : 
+                                                row.type === 'Touch Up' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'
                                             }`}>
-                                                {item.type}
+                                                {row.type}
                                             </span>
                                         </td>
                                         <td className="p-2 border-r border-slate-100 text-center">
@@ -414,16 +580,21 @@ export default function LiveCleaningBoard() {
                                                 {isDND && <DoorClosed size={10} className="hidden md:block"/>}
                                                 {isRefused && <X size={10} className="hidden md:block"/>}
                                                 {!isCleaning && !isDone && !isDND && !isRefused && <BedDouble size={10} className="hidden md:block"/>}
-                                                {isDone ? doneStyles.label : item.status}
+                                                {isDone ? row.reason : row.status}
                                             </span>
                                         </td>
                                         <td className={`p-2 border-r border-slate-100 text-[10px] md:text-xs font-mono font-bold ${isDone ? doneStyles.colorHex : 'text-slate-500'}`}>
-                                            {isDone ? `${item.startTime || '-'} to ${item.endTime || '-'}` : 
-                                             isCleaning ? `Start: ${item.startTime}` : 
-                                             (isDND || isRefused) ? `Log: ${item.timeLogged}` : '-'}
+                                            {isDone ? `${row.startTime || '--:--'} to ${row.endTime || '--:--'}` : 
+                                             isCleaning ? `Start: ${row.startTime || '--:--'}` : 
+                                             (isDND || isRefused) ? `Log: ${row.timeLogged || '--:--'}` : '-'}
                                         </td>
-                                        <td className={`p-2 text-center text-sm font-black ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
-                                            {isDone ? item.timeSpent : isCleaning ? 'Active' : '-'}
+                                        <td className={`p-2 text-center border-r border-slate-100 text-sm font-black ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
+                                            {isDone ? `${row.duration || '0'}m` : isCleaning ? 'Active' : '-'}
+                                        </td>
+                                        <td className="p-2 text-center">
+                                            <button onClick={() => openEditModal(row.originalTask)} className="p-1.5 bg-white border border-slate-200 shadow-sm text-slate-500 hover:text-blue-600 hover:border-blue-300 rounded-md transition-all active:scale-95 mx-auto flex items-center justify-center" title="Edit Master Record">
+                                                <Edit size={14} />
+                                            </button>
                                         </td>
                                     </tr>
                                 );
@@ -434,21 +605,23 @@ export default function LiveCleaningBoard() {
             </div>
 
         ) : (
-            // --- ⚡ DYNAMIC ZOOM GRID VIEW ---
+            // --- GRID VIEW (VILLA CENTRIC) ---
             <div 
                 className={`grid content-start ${isExtreme ? 'gap-1' : isUltraDense ? 'gap-1.5' : 'gap-2 md:gap-3'}`} 
                 style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
             >
             {filteredVillas.map((item, idx) => {
-                const isCleaning = item.status === 'In Progress';
                 const isDone = item.status === 'Completed';
+                const isPastTurndown = currentTime.getHours() >= 15;
+                const doneStyles = getDoneStyles(item.sessionHistory || [], isPastTurndown);
+                
+                const isResetDone = isDone && doneStyles.isReset;
+
+                const isCleaning = item.status === 'In Progress';
                 const isDND = item.status === 'DND';
                 const isRefused = item.status === 'Refused';
                 const isPending = item.status === 'Pending';
 
-                const doneStyles = getDoneStyles(item.sessionHistory || []);
-
-                // Formatters to shrink data for high zooms
                 const typeLabel = isUltraDense ? item.type.substring(0, 3).toUpperCase() : item.type;
                 const attendantLabel = isUltraDense ? item.attendant.split(' ')[0] : item.attendant;
                 const timeIn = item.startTime?.replace(/ (AM|PM)/, (match) => match.trim().charAt(0).toLowerCase()) || '--:--';
@@ -457,19 +630,29 @@ export default function LiveCleaningBoard() {
                 return (
                 <div 
                     key={`${item.villa}-${idx}`} 
-                    className={`shadow-sm transition-all flex flex-col justify-between rounded-xl overflow-hidden ${
+                    className={`shadow-sm transition-all flex flex-col justify-between rounded-xl overflow-hidden relative group ${
                         isExtreme ? 'p-1 min-h-[45px] border' :
                         isUltraDense ? 'p-1.5 min-h-[60px] border' :
                         isDense ? 'p-2 min-h-[85px] border' : 
                         'p-2.5 md:p-3 min-h-[105px] border-2'
                     } ${
-                        isDone ? `${doneStyles.bg} ${doneStyles.border} text-white shadow-sm` :
+                        isDone && !isResetDone ? `${doneStyles.bg} ${doneStyles.border} text-white shadow-sm` :
+                        isResetDone ? 'bg-white border-slate-200 border-2 hover:border-[#6D2158]/40 hover:shadow-md' :
                         isCleaning ? 'border-emerald-400 ring-2 ring-emerald-500/10 bg-emerald-50/20 bg-white' : 
                         isDND ? 'border-rose-300 bg-rose-50/40 bg-white' : 
                         isRefused ? 'border-orange-300 bg-orange-50/40 bg-white' : 
                         'border-slate-200 hover:border-[#6D2158]/40 hover:shadow-md bg-white'
                     }`}
                 >
+                    {/* EDIT BUTTON (Visible on Hover or always if touch) */}
+                    <button 
+                        onClick={() => openEditModal(item)}
+                        className={`absolute top-1.5 right-1.5 p-1.5 rounded-md bg-white/90 backdrop-blur-sm border border-slate-200 text-slate-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:text-blue-600 ${isExtreme || isUltraDense ? 'hidden' : 'block'}`}
+                        title="Edit Log"
+                    >
+                        <Edit size={12}/>
+                    </button>
+
                     {/* Top Row: Villa Number & Status Icon */}
                     <div className="flex justify-between items-start mb-0.5 md:mb-1">
                         <span className={`font-black tracking-tighter leading-none ${
@@ -477,13 +660,13 @@ export default function LiveCleaningBoard() {
                             isUltraDense ? 'text-sm' : 
                             isDense ? 'text-lg' : 
                             'text-2xl'
-                        } ${isDone ? 'text-white' : 'text-[#6D2158]'}`}>
+                        } ${isDone && !isResetDone ? 'text-white' : 'text-[#6D2158]'}`}>
                             {item.villa}
                         </span>
                         <div>
-                            {/* ⚡ ELEGANT BREATHING SPARKLE */}
                             {isCleaning && <Sparkles size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-emerald-500 animate-pulse drop-shadow-sm" />}
-                            {isDone && <CheckCircle2 size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-white"/>}
+                            {isDone && !isResetDone && <CheckCircle2 size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-white"/>}
+                            {isResetDone && <CheckCircle2 size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-slate-300"/>}
                             {isDND && <DoorClosed size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-rose-500"/>}
                             {isRefused && <X size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-orange-500"/>}
                             {isPending && <BedDouble size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 12 : 14} className="text-slate-300"/>}
@@ -498,7 +681,7 @@ export default function LiveCleaningBoard() {
                             isDense ? 'px-1.5 py-0.5 text-[7px]' : 
                             'px-1.5 py-0.5 text-[8px] md:text-[9px]'
                         } ${
-                            isDone ? 'bg-white/20 text-white' :
+                            isDone && !isResetDone ? 'bg-white/20 text-white' :
                             item.type === 'Departure' ? 'bg-amber-100 text-amber-700' : 
                             item.type === 'Arrival' ? 'bg-blue-100 text-blue-700' : 
                             item.type === 'Touch Up' ? 'bg-sky-100 text-sky-700' :
@@ -515,14 +698,14 @@ export default function LiveCleaningBoard() {
                         )}
                     </div>
 
-                    {/* ⚡ Bottom: Attendant & Exact Finish Time Log */}
-                    <div className={`mt-auto border-t flex flex-col ${isDone ? 'border-white/20' : 'border-slate-100'} ${isExtreme ? 'pt-0.5 gap-0' : isUltraDense ? 'pt-1 gap-0.5' : 'pt-1.5 gap-1'}`}>
+                    {/* Bottom: Attendant & Session History Log */}
+                    <div className={`mt-auto border-t flex flex-col ${isDone && !isResetDone ? 'border-white/20' : 'border-slate-100'} ${isExtreme ? 'pt-0.5 gap-0' : isUltraDense ? 'pt-1 gap-0.5' : 'pt-1.5 gap-1'}`}>
                         <span className={`flex items-center gap-1 font-bold truncate leading-none ${
                             isExtreme ? 'text-[5px]' :
                             isUltraDense ? 'text-[6px]' : 
                             isDense ? 'text-[8px]' : 
                             'text-[9px] md:text-[10px]'
-                        } ${isDone ? doneStyles.text : 'text-slate-500'}`}>
+                        } ${isDone && !isResetDone ? doneStyles.text : 'text-slate-500'}`}>
                             {!isUltraDense && <User size={isDense ? 8 : 10} className="shrink-0"/>} <span className="truncate">{attendantLabel}</span>
                         </span>
 
@@ -537,23 +720,45 @@ export default function LiveCleaningBoard() {
                             </div>
                         )}
 
-                        {/* EXPLICIT FINISH TIME */}
                         {isDone && (
-                            <div className={`flex flex-col ${isExtreme ? 'gap-0 mt-0' : 'gap-0.5 mt-0.5'}`}>
-                                <div className="flex items-center justify-between leading-none">
-                                    {!isExtreme && <span className={`${isUltraDense ? 'text-[5px]' : 'text-[7px]'} font-black uppercase tracking-widest ${doneStyles.text}`}>{doneStyles.label}:</span>}
-                                    <span className={`${isExtreme ? 'text-[6px]' : isUltraDense ? 'text-[7px]' : 'text-[9px]'} font-bold text-white`}>
-                                        {timeOut}
-                                    </span>
-                                </div>
-                                <div className="flex items-center justify-between leading-none mt-0.5">
-                                    <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} ${doneStyles.text}`}>
-                                        {isExtreme ? timeIn : `In: ${timeIn}`}
-                                    </span>
-                                    <span className={`${isExtreme ? 'text-[5px] px-0.5' : isUltraDense ? 'text-[6px] px-1' : 'text-[8px] px-1'} font-black ${doneStyles.colorHex} bg-white rounded`}>
-                                        {item.timeSpent || '0m'}
-                                    </span>
-                                </div>
+                            <div className={`flex flex-col ${isExtreme ? 'gap-0 mt-0' : 'gap-0.5 mt-0.5'} max-h-24 overflow-y-auto custom-scrollbar pr-1 -mr-1`}>
+                                {item.sessionHistory && item.sessionHistory.length > 0 ? (
+                                    item.sessionHistory.map((session, sIdx) => (
+                                        <div key={sIdx} className={`border-b ${isResetDone ? 'border-slate-100' : 'border-white/10'} last:border-0 pb-1 mb-1 last:pb-0 last:mb-0`}>
+                                            <div className="flex items-center justify-between leading-none">
+                                                {!isExtreme && <span className={`${isUltraDense ? 'text-[4px]' : 'text-[6px]'} font-black uppercase tracking-widest ${isResetDone ? 'text-slate-400' : doneStyles.text} truncate mr-1`}>{session.reason || 'Service'}:</span>}
+                                                <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} font-bold ${isResetDone ? 'text-slate-700' : 'text-white'} ml-auto`}>
+                                                    {session.end?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) || '--:--'}
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center justify-between leading-none mt-0.5">
+                                                <span className={`${isExtreme ? 'text-[4px]' : isUltraDense ? 'text-[5px]' : 'text-[7px]'} ${isResetDone ? 'text-slate-400' : doneStyles.text}`}>
+                                                    {isExtreme ? session.start?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) : `In: ${session.start?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) || '--:--'}`}
+                                                </span>
+                                                <span className={`${isExtreme ? 'text-[4px] px-0.5' : isUltraDense ? 'text-[5px] px-1' : 'text-[7px] px-1'} font-black ${doneStyles.colorHex} ${isResetDone ? 'bg-slate-100' : 'bg-white'} rounded`}>
+                                                    {session.duration || '0'}m
+                                                </span>
+                                            </div>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="flex flex-col">
+                                        <div className="flex items-center justify-between leading-none">
+                                            {!isExtreme && <span className={`${isUltraDense ? 'text-[5px]' : 'text-[7px]'} font-black uppercase tracking-widest ${isResetDone ? 'text-slate-400' : doneStyles.text}`}>{doneStyles.label}:</span>}
+                                            <span className={`${isExtreme ? 'text-[6px]' : isUltraDense ? 'text-[7px]' : 'text-[9px]'} font-bold ${isResetDone ? 'text-slate-700' : 'text-white'}`}>
+                                                {timeOut}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center justify-between leading-none mt-0.5">
+                                            <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} ${isResetDone ? 'text-slate-400' : doneStyles.text}`}>
+                                                {isExtreme ? timeIn : `In: ${timeIn}`}
+                                            </span>
+                                            <span className={`${isExtreme ? 'text-[5px] px-0.5' : isUltraDense ? 'text-[6px] px-1' : 'text-[8px] px-1'} font-black ${doneStyles.colorHex} ${isResetDone ? 'bg-slate-100' : 'bg-white'} rounded`}>
+                                                {item.timeSpent || '0'}m
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -572,6 +777,130 @@ export default function LiveCleaningBoard() {
             </div>
         )}
       </div>
+
+      {/* ADMIN EDIT MODAL OVERLAY */}
+      {editModal && (
+          <div className="fixed inset-0 z-[10000] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
+                  <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <div>
+                          <h2 className="text-xl font-black text-[#6D2158]">Edit Room {editModal.villa}</h2>
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Manual Override</p>
+                      </div>
+                      <button onClick={() => setEditModal(null)} className="p-2 bg-white rounded-full text-slate-400 hover:text-rose-500 shadow-sm transition-colors">
+                          <X size={20}/>
+                      </button>
+                  </div>
+                  
+                  <div className="p-5 overflow-y-auto custom-scrollbar flex-1 space-y-6">
+                      
+                      {/* Global Overrides */}
+                      <div className="grid grid-cols-2 gap-4">
+                          <div>
+                              <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Global Status</label>
+                              <select 
+                                  value={editModal.status}
+                                  onChange={(e) => setEditModal({...editModal, status: e.target.value})}
+                                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm text-slate-800 outline-none focus:border-[#6D2158]"
+                              >
+                                  <option value="Pending">Pending</option>
+                                  <option value="In Progress">In Progress</option>
+                                  <option value="Completed">Completed</option>
+                                  <option value="DND">DND</option>
+                                  <option value="Refused">Refused</option>
+                              </select>
+                          </div>
+                          <div>
+                              <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Total Duration (Mins)</label>
+                              <input 
+                                  type="number"
+                                  value={editModal.timeSpent}
+                                  onChange={(e) => setEditModal({...editModal, timeSpent: parseInt(e.target.value || '0', 10)})}
+                                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm text-slate-800 outline-none focus:border-[#6D2158]"
+                              />
+                          </div>
+                      </div>
+
+                      {/* Session Logs Manager */}
+                      <div className="border-t border-slate-100 pt-5">
+                          <div className="flex justify-between items-center mb-3">
+                              <label className="text-xs font-black uppercase tracking-widest text-[#6D2158]">Session Logs</label>
+                              <button onClick={addSession} className="text-[10px] font-black uppercase tracking-widest bg-[#6D2158] text-white px-2 py-1 rounded-md flex items-center gap-1 active:scale-95 transition-transform">
+                                  <Plus size={12}/> Add Session
+                              </button>
+                          </div>
+                          
+                          {editModal.sessionHistory.length === 0 ? (
+                              <p className="text-sm font-bold text-slate-400 text-center py-6 bg-slate-50 rounded-xl border border-dashed border-slate-200">No session logs recorded.</p>
+                          ) : (
+                              <div className="space-y-3">
+                                  {editModal.sessionHistory.map((session, index) => (
+                                      <div key={index} className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col gap-2 relative group">
+                                          <button onClick={() => removeSession(index)} className="absolute -top-2 -right-2 bg-white text-rose-500 p-1.5 rounded-full shadow-md border border-slate-100 hover:bg-rose-50 hover:text-rose-700 transition-colors opacity-0 group-hover:opacity-100">
+                                              <Trash2 size={14}/>
+                                          </button>
+                                          
+                                          <div>
+                                              <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Reason</label>
+                                              <input 
+                                                  type="text" 
+                                                  value={session.reason}
+                                                  onChange={(e) => handleSessionChange(index, 'reason', e.target.value)}
+                                                  className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700"
+                                              />
+                                          </div>
+                                          <div className="grid grid-cols-3 gap-2">
+                                              <div>
+                                                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">In (e.g. 10:30 AM)</label>
+                                                  <input 
+                                                      type="text" 
+                                                      value={session.start}
+                                                      onChange={(e) => handleSessionChange(index, 'start', e.target.value)}
+                                                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center"
+                                                      placeholder="10:00 AM"
+                                                  />
+                                              </div>
+                                              <div>
+                                                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Out</label>
+                                                  <input 
+                                                      type="text" 
+                                                      value={session.end}
+                                                      onChange={(e) => handleSessionChange(index, 'end', e.target.value)}
+                                                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center"
+                                                      placeholder="10:45 AM"
+                                                  />
+                                              </div>
+                                              <div>
+                                                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Mins</label>
+                                                  <input 
+                                                      type="number" 
+                                                      value={session.duration}
+                                                      onChange={(e) => handleSessionChange(index, 'duration', parseInt(e.target.value || '0', 10))}
+                                                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center"
+                                                  />
+                                              </div>
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                          )}
+                      </div>
+                  </div>
+
+                  <div className="p-5 border-t border-slate-100 bg-white">
+                      <button 
+                          onClick={saveEditModal} 
+                          disabled={isSavingEdit}
+                          className="w-full py-3.5 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-70"
+                      >
+                          {isSavingEdit ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>}
+                          Save Overrides
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }
