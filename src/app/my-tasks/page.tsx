@@ -44,6 +44,10 @@ type CleaningTask = {
     end_time?: string;
     time_spent?: string;
     reenter_reason?: string; 
+    morning_time: number;
+    night_time: number;
+    has_morning_completed: boolean;
+    has_night_completed: boolean;
 };
 
 const parseVillas = (input: string, doubleVillas: string[]) => {
@@ -128,7 +132,6 @@ export default function MyTasksHub() {
         if (activeStartTime) {
             const start = new Date(activeStartTime).getTime();
             if (!isNaN(start)) {
-                // Trust standard ISO date parsing
                 setCleaningElapsedSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
             }
         }
@@ -149,41 +152,57 @@ export default function MyTasksHub() {
     return `${m}:${s}`;
   };
 
-  const loadInitialData = useCallback(async (hostId: string, isManualRefresh: boolean, silent = false) => {
+  // ⚡ BULLETPROOF DATA LOADING (NO DATABASE DB TYPE CRASHES)
+  const loadInitialData = useCallback(async (host: Host, isManualRefresh: boolean, silent = false) => {
       if (!silent) setIsLoading(true);
       const todayStr = getDhakaDateStr();
       const currentMonth = todayStr.substring(0, 7);
 
-      // 1. Fetch Shift Info
-      const { data: att } = await supabase.from('hsk_attendance').select('shift_type, shift_note').eq('host_id', hostId).eq('date', todayStr).maybeSingle();
-      if (att) setDailyTask(att);
+      // 1. Fetch Shift Info (Safe Filter)
+      const { data: allAtt } = await supabase.from('hsk_attendance').select('host_id, shift_type, shift_note').eq('date', todayStr);
+      const att = allAtt?.find(a => a.host_id === host.id || a.host_id === host.host_id);
+      if (att) setDailyTask(att as any);
 
-      // 2. Fetch DAILY CLEANING ALLOCATION
-      const { data: allocData } = await supabase
-          .from('hsk_allocations')
-          .select('task_details')
-          .eq('report_date', todayStr)
-          .eq('host_id', hostId)
-          .single();
+      // 2. Fetch DAILY CLEANING ALLOCATION (Safe Filter)
+      const { data: allAllocData } = await supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', todayStr);
+      const allocData = allAllocData?.find(a => a.host_id === host.id || a.host_id === host.host_id);
 
       if (allocData && allocData.task_details) {
           const assignedCleanVillas = parseVillas(allocData.task_details, []);
           setMyCleaningVillas(assignedCleanVillas);
 
-          // Initialize Cleaning Task State (Merge with existing DB logs if any)
-          const { data: existingLogs } = await supabase.from('hsk_cleaning_logs')
-              .select('*')
-              .eq('report_date', todayStr)
-              .eq('host_id', hostId);
+          // Initialize Cleaning Task State
+          const { data: allExistingLogs } = await supabase.from('hsk_cleaning_logs').select('*').eq('report_date', todayStr);
+          const existingLogs = allExistingLogs?.filter(l => l.host_id === host.id || l.host_id === host.host_id);
 
           let activeV: string | null = null;
           const newTasksState: Record<string, CleaningTask> = {};
+          const isNightShift = getDhakaTime().getHours() >= 15;
 
           assignedCleanVillas.forEach(v => {
               const dbLog = existingLogs?.find(l => l.villa_number === v);
               const localTimer = typeof window !== 'undefined' ? localStorage.getItem(`hk_timer_${v}`) : null;
               
-              // Force 'In Progress' if local storage has a running timer AND the database hasn't permanently closed it
+              let morningTime = 0;
+              let nightTime = 0;
+              let hasMorning = false;
+              let hasNight = false;
+
+              if (dbLog?.session_history && dbLog.session_history.length > 0) {
+                  dbLog.session_history.forEach((s: any) => {
+                      if (s.reason === 'TD Service' || s.reason === 'Night Service') {
+                          nightTime += s.duration || 0;
+                          hasNight = true;
+                      } else {
+                          morningTime += s.duration || 0;
+                          hasMorning = true;
+                      }
+                  });
+              } else if (dbLog?.status === 'Completed') {
+                  hasMorning = true;
+                  morningTime = dbLog.time_spent_minutes || 0;
+              }
+
               const isInProgressLocally = !!localTimer && dbLog?.status !== 'Completed' && dbLog?.status !== 'DND' && dbLog?.status !== 'Refused';
               const isActuallyInProgress = dbLog?.status === 'In Progress' || isInProgressLocally;
 
@@ -192,21 +211,30 @@ export default function MyTasksHub() {
               }
 
               if (localTimer && !isActuallyInProgress) {
-                  // Cleanup stray timers if the room is completed
                   localStorage.removeItem(`hk_timer_${v}`);
               }
 
-              if (dbLog || isActuallyInProgress) {
-                  newTasksState[v] = { 
-                      villa_number: v, 
-                      status: isActuallyInProgress ? 'In Progress' : (dbLog?.status || 'Pending'), 
-                      start_time: dbLog?.start_time ? format(parseISO(dbLog.start_time), 'hh:mm a') : (localTimer ? format(parseISO(localTimer), 'hh:mm a') : undefined),
-                      raw_start_time: isActuallyInProgress ? (dbLog?.start_time || localTimer) : dbLog?.start_time,
-                      time_spent: dbLog?.time_spent_minutes ? `${dbLog.time_spent_minutes}m` : undefined 
-                  };
-              } else {
-                  newTasksState[v] = { villa_number: v, status: 'Pending' };
+              // Evaluate effective status based on Day/Night shift
+              let effectiveStatus = dbLog?.status || 'Pending';
+              if (!isActuallyInProgress && dbLog?.status === 'Completed') {
+                  if (isNightShift && !hasNight) {
+                      effectiveStatus = 'Pending';
+                  } else if (!isNightShift && !hasMorning) {
+                      effectiveStatus = 'Pending';
+                  }
               }
+
+              newTasksState[v] = { 
+                  villa_number: v, 
+                  status: isActuallyInProgress ? 'In Progress' : effectiveStatus as any, 
+                  start_time: dbLog?.start_time ? format(parseISO(dbLog.start_time), 'hh:mm a') : (localTimer ? format(parseISO(localTimer), 'hh:mm a') : undefined),
+                  raw_start_time: isActuallyInProgress ? (dbLog?.start_time || localTimer) : dbLog?.start_time,
+                  time_spent: dbLog?.time_spent_minutes ? `${dbLog.time_spent_minutes}m` : undefined,
+                  morning_time: morningTime,
+                  night_time: nightTime,
+                  has_morning_completed: hasMorning,
+                  has_night_completed: hasNight
+              };
           });
           
           setCleaningTasks(prev => ({ ...prev, ...newTasksState }));
@@ -223,7 +251,7 @@ export default function MyTasksHub() {
           .eq('report_date', todayStr);
       if (gData) setGuestData(gData);
 
-      // 4. Fetch AC Tracker Status (NO DATE FILTER - GRAB LIVE STATUS)
+      // 4. Fetch AC Tracker Status
       const { data: aData } = await supabase
           .from('hsk_ac_tracker')
           .select('villa_number, status');
@@ -238,10 +266,8 @@ export default function MyTasksHub() {
 
       if (activeSchedules && activeSchedules.length > 0) {
           const scheduleIds = activeSchedules.map(s => s.id);
-          const { data: assignments } = await supabase.from('hsk_inventory_assignments')
-              .select('*')
-              .in('schedule_id', scheduleIds)
-              .eq('host_id', hostId);
+          const { data: allAssignments } = await supabase.from('hsk_inventory_assignments').select('*').in('schedule_id', scheduleIds);
+          const assignments = allAssignments?.filter(a => a.host_id === host.id || a.host_id === host.host_id);
 
           if (assignments) {
               assignments.forEach(a => {
@@ -273,7 +299,8 @@ export default function MyTasksHub() {
 
       if (mbStatus === 'OPEN' && mbPeriod) {
           const allocDate = `${mbPeriod}-01`;
-          const { data: mbAllocations } = await supabase.from('hsk_minibar_allocations').select('villas').eq('date', allocDate).eq('host_id', hostId).maybeSingle();
+          const { data: allMbAlloc } = await supabase.from('hsk_minibar_allocations').select('host_id, villas').eq('date', allocDate);
+          const mbAllocations = allMbAlloc?.find(a => a.host_id === host.id || a.host_id === host.host_id);
           
           if (mbAllocations && mbAllocations.villas) {
               const mbVillas = parseVillas(mbAllocations.villas, dvList);
@@ -281,7 +308,9 @@ export default function MyTasksHub() {
               const [y, m] = mbPeriod.split('-').map(Number);
               const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
               const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
-              const { data: mbSubmissions } = await supabase.from('hsk_villa_minibar_inventory').select('villa_number').gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC).eq('host_id', hostId);
+              
+              const { data: allMbSubs } = await supabase.from('hsk_villa_minibar_inventory').select('host_id, villa_number').gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC);
+              const mbSubmissions = allMbSubs?.filter(s => s.host_id === host.id || s.host_id === host.host_id);
               
               const completedMbVillas = new Set((mbSubmissions || []).map(s => s.villa_number));
 
@@ -297,24 +326,25 @@ export default function MyTasksHub() {
       setUniversalTasks(taskMap);
 
       // 7. Fetch EXPIRY Targets
-      const [expiryTargetRes, expiryAllocRes, expiryRemRes] = await Promise.all([
-          supabase.from('hsk_expiry_targets').select('*').eq('month_period', currentMonth),
-          supabase.from('hsk_expiry_allocations').select('villas').eq('month_period', currentMonth).eq('host_id', hostId).maybeSingle(),
-          supabase.from('hsk_expiry_removals').select('*').eq('month_period', currentMonth).eq('host_id', hostId)
-      ]);
-
-      if (expiryTargetRes.data) setExpiryTargets(expiryTargetRes.data);
+      const { data: expiryTargetData } = await supabase.from('hsk_expiry_targets').select('*').eq('month_period', currentMonth);
+      if (expiryTargetData) setExpiryTargets(expiryTargetData);
       
-      if (expiryAllocRes.data && expiryAllocRes.data.villas) {
-          const parsedExpiryVillas = parseVillas(expiryAllocRes.data.villas, dvList);
+      const { data: allExpAlloc } = await supabase.from('hsk_expiry_allocations').select('host_id, villas').eq('month_period', currentMonth);
+      const expiryAllocRes = allExpAlloc?.find(a => a.host_id === host.id || a.host_id === host.host_id);
+      
+      if (expiryAllocRes && expiryAllocRes.villas) {
+          const parsedExpiryVillas = parseVillas(expiryAllocRes.villas, dvList);
           setExpiryAssignedVillas(parsedExpiryVillas);
       } else {
           setExpiryAssignedVillas([]);
       }
 
-      if (expiryRemRes.data) {
+      const { data: allExpRem } = await supabase.from('hsk_expiry_removals').select('*').eq('month_period', currentMonth);
+      const expiryRemRes = allExpRem?.filter(r => r.host_id === host.id || r.host_id === host.host_id);
+      
+      if (expiryRemRes) {
           const villaMap: Record<string, any> = {};
-          expiryRemRes.data.forEach((r: any) => { villaMap[r.villa_number] = r; });
+          expiryRemRes.forEach((r: any) => { villaMap[r.villa_number] = r; });
           setExpiryVillaData(villaMap);
       }
 
@@ -332,9 +362,10 @@ export default function MyTasksHub() {
     const sessionData = localStorage.getItem('hk_pulse_session');
     if (sessionData) {
         const parsed = JSON.parse(sessionData);
-        const hostIdToUse = parsed.id || parsed.host_id; 
-        setCurrentHost({ id: parsed.id, full_name: parsed.full_name, host_id: hostIdToUse });
-        loadInitialData(hostIdToUse, false);
+        // Create full host object directly to ensure both IDs are available
+        const hostObj = { id: parsed.id, full_name: parsed.full_name, host_id: parsed.host_id || parsed.id }; 
+        setCurrentHost(hostObj);
+        loadInitialData(hostObj, false);
     } else {
         window.location.href = '/';
     }
@@ -356,6 +387,10 @@ export default function MyTasksHub() {
 
     localStorage.setItem(`hk_timer_${villa}`, now);
 
+    const isNightShift = getDhakaTime().getHours() >= 15;
+    const defaultReason = isNightShift ? 'TD Service' : 'Morning Service';
+    const finalReason = reason || defaultReason;
+
     // 1. Update UI instantly (Optimistic Update)
     setActiveCleaningVilla(villa);
     setCleaningTasks(prev => ({
@@ -365,10 +400,10 @@ export default function MyTasksHub() {
             status: 'In Progress', 
             start_time: format(parseISO(now), 'hh:mm a'),
             raw_start_time: now,
-            reenter_reason: reason 
+            reenter_reason: finalReason 
         }
     }));
-    toast.success(`Service Started: Room ${villa}` + (reason ? ` (${reason})` : ''));
+    toast.success(`Service Started: Room ${villa}` + (finalReason ? ` (${finalReason})` : ''));
 
     // 2. Safe Supabase Save (Force update/insert to bypass schema constraints)
     const payload = {
@@ -389,7 +424,6 @@ export default function MyTasksHub() {
     if (updateError || !data || data.length === 0) {
         const { error: insertError } = await supabase.from('hsk_cleaning_logs').insert(payload);
         if (insertError) {
-            // THE SAVE FAILED! Alert the user and revert the timer.
             console.error("SUPABASE SAVE FAILED:", insertError);
             toast.error("Database Error: Could not save start time to server.");
             resetRoomStatus(villa); 
@@ -405,7 +439,8 @@ export default function MyTasksHub() {
 
     // ⚡ Logic for Re-Entering a Room: Create Session Log
     const currentTaskState = cleaningTasks[villa];
-    const sessionReason = currentTaskState?.reenter_reason || 'Morning Service';
+    const isNightShift = getDhakaTime().getHours() >= 15;
+    const sessionReason = currentTaskState?.reenter_reason || (isNightShift ? 'TD Service' : 'Morning Service');
     const sessionStart = currentTaskState?.start_time || format(parseISO(now), 'hh:mm a');
     const sessionEnd = format(parseISO(now), 'hh:mm a');
     
@@ -420,6 +455,20 @@ export default function MyTasksHub() {
         duration: minutes
     };
     
+    // Day vs Night duration logic
+    let newMorningTime = currentTaskState?.morning_time || 0;
+    let newNightTime = currentTaskState?.night_time || 0;
+    let hasMorning = currentTaskState?.has_morning_completed || false;
+    let hasNight = currentTaskState?.has_night_completed || false;
+
+    if (sessionReason === 'TD Service' || sessionReason === 'Night Service') {
+        newNightTime += minutes;
+        hasNight = true;
+    } else {
+        newMorningTime += minutes;
+        hasMorning = true;
+    }
+
     // 1. Update UI instantly
     setCleaningTasks(prev => ({
         ...prev,
@@ -428,6 +477,10 @@ export default function MyTasksHub() {
             status: 'Completed', 
             end_time: sessionEnd, 
             time_spent: `${totalMinutes}m`, 
+            morning_time: newMorningTime,
+            night_time: newNightTime,
+            has_morning_completed: hasMorning,
+            has_night_completed: hasNight,
             reenter_reason: undefined 
         }
     }));
@@ -590,7 +643,7 @@ export default function MyTasksHub() {
 
       if (error) {
           toast.error(`Error: ${error.message}`);
-          loadInitialData(currentHost!.host_id, false, true);
+          loadInitialData(currentHost!, false, true);
       } else {
           await supabase.from('hsk_ac_history').insert({
               villa_number: villaNumber,
@@ -847,7 +900,11 @@ export default function MyTasksHub() {
 
   const requestSaveInventory = () => {
       setConfirmModal({
-          isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this inventory record?", confirmText: "Submit Record", isDestructive: false,
+          isOpen: true, 
+          title: `Submit Location ${selectedVilla}?`, 
+          message: "Are you sure you want to save this inventory record?", 
+          confirmText: activeTaskType === 'Legacy Minibar' ? "Confirm Minibar Inventory" : "Submit Record", 
+          isDestructive: false,
           onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); }
       });
   };
@@ -1025,6 +1082,7 @@ export default function MyTasksHub() {
   if (hasUnassignedLocations) locationFilters.push('Unassigned');
 
   if (!isMounted) return null;
+  const isNightShift = getDhakaTime().getHours() >= 15;
 
   return (
     <div className="min-h-screen bg-[#FDFBFD] p-2 md:p-4 font-sans text-slate-800 pb-24">
@@ -1046,7 +1104,7 @@ export default function MyTasksHub() {
                          </p>
                        </div>
                    </div>
-                   <button onClick={() => loadInitialData(currentHost.host_id, true)} className="p-3 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-full transition-colors active:scale-95" title="Refresh Tasks">
+                   <button onClick={() => loadInitialData(currentHost!, true)} className="p-3 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-full transition-colors active:scale-95" title="Refresh Tasks">
                        <RefreshCw size={18} className={isLoading ? 'animate-spin text-[#6D2158]' : ''}/>
                    </button>
                 </div>
@@ -1056,32 +1114,37 @@ export default function MyTasksHub() {
                 ) : (
                     <div className="space-y-6">
                         
-                        {/* --- DAILY CLEANING ALLOCATION BLOCK (NOW INTERACTIVE) --- */}
-                        {myCleaningVillas.length > 0 && (
-                            <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
-                                <div className="flex justify-between items-start mb-6">
-                                    <div>
-                                        <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                                            <BedDouble size={20} className="text-[#6D2158]" /> Room Service
-                                        </h3>
-                                        <p className="text-xs text-slate-400 font-medium">Your assigned villas for today.</p>
-                                    </div>
+                        {/* --- DAILY CLEANING ALLOCATION BLOCK (ALWAYS VISIBLE) --- */}
+                        <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
+                            <div className="flex justify-between items-start mb-6">
+                                <div>
+                                    <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                        <BedDouble size={20} className="text-[#6D2158]" /> Room Service
+                                    </h3>
+                                    <p className="text-xs text-slate-400 font-medium">Your assigned villas for today.</p>
+                                </div>
+                                {myCleaningVillas.length > 0 && (
                                     <div className="text-right">
                                         <span className="text-2xl font-black text-[#6D2158]">
                                             {Object.values(cleaningTasks).filter(t => t.status === 'Completed').length}
                                         </span>
                                         <span className="text-sm font-bold text-slate-300">/{myCleaningVillas.length}</span>
                                     </div>
-                                </div>
+                                )}
+                            </div>
 
+                            {myCleaningVillas.length > 0 ? (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                                     {myCleaningVillas.map(v => {
                                         const cardData = getVillaCardData(v);
-                                        const taskState = cleaningTasks[v] || { status: 'Pending' };
+                                        const taskState = cleaningTasks[v] || { status: 'Pending', morning_time: 0, night_time: 0, has_morning_completed: false, has_night_completed: false };
                                         const isActive = v === activeCleaningVilla;
                                         const isCompleted = taskState.status === 'Completed';
                                         const isDND = taskState.status === 'DND';
                                         const isRefused = taskState.status === 'Refused';
+                                        
+                                        const minibarTask = universalTasks['Legacy Minibar']?.find(t => t.villa_number === v);
+                                        const isMinibarDone = minibarTask?.status === 'Submitted';
 
                                         let cardStyle = "bg-white border-slate-200";
                                         if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
@@ -1119,21 +1182,33 @@ export default function MyTasksHub() {
                                                 {/* ACTION AREA */}
                                                 <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
                                                   
-                                                  {/* AC Toggle (Always visible) */}
-                                                  <button 
-                                                      onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
-                                                      className={`w-full py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
-                                                          cardData.acStatus === 'ON' 
-                                                              ? 'bg-rose-50 border-rose-200 text-rose-700' 
-                                                              : 'bg-emerald-500 border-emerald-600 text-white'
-                                                      }`}
-                                                  >
-                                                      <Wind size={12} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
-                                                      {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
-                                                  </button>
+                                                  {/* Utilities Row: AC & Minibar */}
+                                                  <div className="flex gap-2">
+                                                      <button 
+                                                          onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
+                                                          className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                                              cardData.acStatus === 'ON' ? 'bg-rose-50 border-rose-200 text-rose-700' : 'bg-emerald-500 border-emerald-600 text-white'
+                                                          }`}
+                                                      >
+                                                          <Wind size={12} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
+                                                          {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
+                                                      </button>
+
+                                                      {minibarTask && (
+                                                          <button 
+                                                              onClick={() => startAudit(v, 'Legacy Minibar', 'legacy_minibar')}
+                                                              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                                                  isMinibarDone ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-purple-50 border-purple-200 text-[#6D2158]'
+                                                              }`}
+                                                          >
+                                                              <Wine size={12} />
+                                                              {isMinibarDone ? 'Minibar Done' : 'Count Minibar'}
+                                                          </button>
+                                                      )}
+                                                  </div>
 
                                                   {isActive ? (
-                                                     <div className="flex justify-between items-center bg-white border border-emerald-200 rounded-xl p-1.5 shadow-sm flex-wrap gap-2">
+                                                      <div className="flex justify-between items-center bg-white border border-emerald-200 rounded-xl p-1.5 shadow-sm flex-wrap gap-2">
                                                         <div className="flex items-center gap-2 text-[#6D2158] font-black text-sm px-2">
                                                             <span className="relative flex h-2 w-2 mr-1">
                                                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -1152,13 +1227,19 @@ export default function MyTasksHub() {
                                                         >
                                                             <CheckSquare size={14}/> Finish
                                                         </button>
-                                                     </div>
+                                                      </div>
                                                   ) : (
-                                                     <div className="flex flex-col gap-2">
-                                                        {isCompleted && (
+                                                      <div className="flex flex-col gap-2">
+                                                        {taskState.has_morning_completed && (
                                                             <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100">
-                                                              <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Cleaned</span>
-                                                              <span>{taskState.time_spent}</span>
+                                                              <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Morning Cleaned</span>
+                                                              <span>{taskState.morning_time}m</span>
+                                                            </div>
+                                                        )}
+                                                        {taskState.has_night_completed && (
+                                                            <div className="flex items-center justify-between text-indigo-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-indigo-50 px-3 rounded-xl border border-indigo-100">
+                                                              <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Evening Cleaned</span>
+                                                              <span>{taskState.night_time}m</span>
                                                             </div>
                                                         )}
                                                         
@@ -1172,17 +1253,20 @@ export default function MyTasksHub() {
                                                             </div>
                                                         )}
 
-                                                        <button 
-                                                          onClick={() => setReenterModal({ isOpen: true, villa: v })}
-                                                          disabled={!!activeCleaningVilla}
-                                                          className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
-                                                              activeCleaningVilla 
-                                                                ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
-                                                                : isCompleted ? 'bg-slate-800 text-white hover:bg-slate-700 active:scale-95' : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
-                                                          }`}
-                                                        >
-                                                          <Play size={14}/> {isCompleted ? 'Re-enter Room' : 'Start Service'}
-                                                        </button>
+                                                        {/* Hide start button only if CURRENT shift is completed */}
+                                                        {!isCompleted && (
+                                                            <button 
+                                                              onClick={() => setReenterModal({ isOpen: true, villa: v })}
+                                                              disabled={!!activeCleaningVilla}
+                                                              className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
+                                                                  activeCleaningVilla 
+                                                                    ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
+                                                                    : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
+                                                              }`}
+                                                            >
+                                                              <Play size={14}/> {isNightShift ? 'Start Evening Service' : 'Start Morning Service'}
+                                                            </button>
+                                                        )}
 
                                                         {!isCompleted && (
                                                           <div className="flex gap-2">
@@ -1205,7 +1289,7 @@ export default function MyTasksHub() {
                                                             </button>
                                                           </div>
                                                         )}
-                                                     </div>
+                                                      </div>
                                                   )}
                                                 </div>
 
@@ -1213,8 +1297,12 @@ export default function MyTasksHub() {
                                         )
                                     })}
                                 </div>
-                            </div>
-                        )}
+                            ) : (
+                                <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                                    <p className="text-slate-400 font-bold text-sm">No rooms assigned for cleaning today.</p>
+                                </div>
+                            )}
+                        </div>
 
                         {/* --- EXPIRY & REFILL AUDIT CARD --- */}
                         {expiryAssignedVillas.length > 0 && (
@@ -1258,35 +1346,39 @@ export default function MyTasksHub() {
                         )}
 
                         {/* --- DYNAMIC UNIVERSAL INVENTORY CARDS --- */}
-                        {Object.entries(universalTasks).map(([taskType, assignments]) => (
-                            <div key={taskType} className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
-                                <div className="flex justify-between items-start mb-4">
-                                    <div>
-                                        <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                                            <PackageSearch size={18} className="text-[#6D2158]"/> {taskType} Count
-                                        </h3>
-                                        <p className="text-[10px] md:text-xs text-slate-400 font-medium">Tap a location to begin auditing.</p>
+                        {Object.entries(universalTasks)
+                            .filter(([taskType]) => taskType !== 'Legacy Minibar') // HIDE MINIBAR FROM BOTTOM GRID
+                            .map(([taskType, assignments]) => {
+                            return (
+                                <div key={taskType} className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div>
+                                            <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                                <PackageSearch size={18} className="text-[#6D2158]"/> {taskType} Count
+                                            </h3>
+                                            <p className="text-[10px] md:text-xs text-slate-400 font-medium">Tap a location to begin auditing.</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+                                        {assignments.map(task => {
+                                            const isDone = task.status === 'Submitted';
+                                            return (
+                                                <button 
+                                                    key={task.villa_number}
+                                                    onClick={() => startAudit(task.villa_number, taskType, task.schedule_id)}
+                                                    className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
+                                                >
+                                                    {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
+                                                    <span className={`font-black ${task.villa_number.includes('-') ? 'text-xl' : 'text-2xl md:text-3xl'}`}>{task.villa_number}</span>
+                                                    <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 </div>
-
-                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
-                                    {assignments.map(task => {
-                                        const isDone = task.status === 'Submitted';
-                                        return (
-                                            <button 
-                                                key={task.villa_number}
-                                                onClick={() => startAudit(task.villa_number, taskType, task.schedule_id)}
-                                                className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
-                                            >
-                                                {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
-                                                <span className={`font-black ${task.villa_number.includes('-') ? 'text-xl' : 'text-2xl md:text-3xl'}`}>{task.villa_number}</span>
-                                                <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        ))}
+                            )
+                        })}
 
                         {/* EMPTY STATE IF LITERALLY NO TASKS OF ANY KIND */}
                         {myCleaningVillas.length === 0 && Object.keys(universalTasks).length === 0 && expiryAssignedVillas.length === 0 && (
@@ -1306,20 +1398,86 @@ export default function MyTasksHub() {
             <div className="flex-1 flex flex-col animate-in slide-in-from-right-8 duration-300">
                 
                 {/* Router Header */}
-                <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-4 md:p-6 rounded-3xl shadow-sm border mb-4 md:mb-6 flex items-center justify-between gap-4`}>
-                    <div className="flex items-center gap-3">
-                        <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
-                        <div>
-                            <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
-                            <p className={`text-[10px] md:text-xs font-bold uppercase tracking-widest mt-0.5 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>{isExpiryMode ? 'Targeted Tasks' : `${activeTaskType} Audit`}</p>
+                <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-4 md:p-6 rounded-3xl shadow-sm border mb-4 md:mb-6 flex flex-col gap-4`}>
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                            <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
+                            <div>
+                                <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
+                                <p className={`text-[10px] md:text-xs font-bold uppercase tracking-widest mt-0.5 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>
+                                    {isExpiryMode 
+                                        ? 'Targeted Tasks' 
+                                        : (activeTaskType === 'Legacy Minibar' ? `${format(getDhakaTime(), 'MMMM')} Minibar Inventory` : `${activeTaskType} Audit`)
+                                    }
+                                </p>
+                            </div>
                         </div>
+                        
+                        {!isExpiryMode && (
+                            <button onClick={() => setShowGuideModal(true)} className="p-2 md:p-3 text-slate-400 hover:text-[#6D2158] hover:bg-purple-50 rounded-xl transition-colors active:scale-95" title="How to Count">
+                                <Info size={20}/>
+                            </button>
+                        )}
                     </div>
-                    
-                    {!isExpiryMode && (
-                        <button onClick={() => setShowGuideModal(true)} className="p-2 md:p-3 text-slate-400 hover:text-[#6D2158] hover:bg-purple-50 rounded-xl transition-colors active:scale-95" title="How to Count">
-                            <Info size={20}/>
-                        </button>
-                    )}
+
+                    {/* ALWAYS VISIBLE CLEANING & AC CONTROLS FOR THIS VILLA */}
+                    {(() => {
+                        const v = selectedVilla.replace('-1', '').replace('-2', '');
+                        const isVilla = /^\d+$/.test(v); 
+                        
+                        if (!isVilla) return null;
+
+                        const cardData = getVillaCardData(v);
+                        const taskState = cleaningTasks[v] || { status: 'Pending', morning_time: 0, night_time: 0, has_morning_completed: false, has_night_completed: false };
+                        const isActive = v === activeCleaningVilla;
+                        const isCompleted = taskState.status === 'Completed';
+
+                        return (
+                            <div className="flex flex-col md:flex-row items-center gap-2 pt-3 border-t border-slate-200/60 mt-1">
+                                <button 
+                                    onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
+                                    className={`w-full md:flex-1 py-3 md:py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                        cardData.acStatus === 'ON' 
+                                            ? 'bg-rose-50 border-rose-200 text-rose-700' 
+                                            : 'bg-emerald-500 border-emerald-600 text-white'
+                                    }`}
+                                >
+                                    <Wind size={14} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
+                                    {cardData.acStatus === 'ON' ? 'AC is ON (Tap to Turn OFF)' : 'AC is OFF (Tap to Turn ON)'}
+                                </button>
+
+                                {isActive ? (
+                                    <div className="w-full md:flex-1 flex justify-between items-center bg-emerald-50 border border-emerald-200 rounded-xl p-1.5 shadow-sm">
+                                        <div className="flex items-center gap-2 text-emerald-700 font-black text-[10px] px-3 uppercase tracking-widest">
+                                            <span className="relative flex h-2 w-2 mr-1">
+                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                            </span>
+                                            {formatTimer(cleaningElapsedSeconds)}
+                                        </div>
+                                        <button 
+                                            onClick={() => handleFinishRoom(v)}
+                                            className="bg-emerald-500 text-white px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm active:scale-95 flex items-center gap-1"
+                                        >
+                                            <CheckSquare size={14}/> Finish
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={() => setReenterModal({ isOpen: true, villa: v })}
+                                        disabled={!!activeCleaningVilla}
+                                        className={`w-full md:flex-1 py-3 md:py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 transition-all shadow-md ${
+                                            activeCleaningVilla 
+                                            ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
+                                            : isCompleted ? 'bg-slate-800 text-white hover:bg-slate-700 active:scale-95' : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
+                                        }`}
+                                    >
+                                        <Play size={14}/> {isCompleted ? 'Re-enter Room' : (isNightShift ? 'Start Evening Service' : 'Start Morning Service')}
+                                    </button>
+                                )}
+                            </div>
+                        );
+                    })()}
                 </div>
 
                 {/* UI Content based on Mode */}
@@ -1599,7 +1757,7 @@ export default function MyTasksHub() {
                                     disabled={isSaving} 
                                     className="w-full py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
                                 >
-                                    {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><Save size={16}/> Submit Audit</>}
+                                    {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><Save size={16}/> {activeTaskType === 'Legacy Minibar' ? 'Confirm Minibar Inventory' : 'Submit Audit'}</>}
                                 </button>
                             </div>
                         </div>

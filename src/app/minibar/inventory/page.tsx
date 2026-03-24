@@ -2,10 +2,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, CheckCircle2, User, Save, Lock, Unlock,
-  RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, X, Wine, EyeOff, Eye, Search, Home
+  RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, EyeOff, Eye, Search, Home, Wine, X, Download
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import { getDhakaDateStr } from '@/lib/dateUtils';
 
 const TOTAL_VILLAS = 97;
 
@@ -74,7 +75,7 @@ const VillaTagInput = ({ value, onChange }: { value: string, onChange: (val: str
         <div className="flex flex-wrap gap-2 items-center bg-slate-50 border border-slate-200 p-2 rounded-xl focus-within:border-[#6D2158] focus-within:ring-2 focus-within:ring-[#6D2158]/10 transition-all cursor-text min-h-[50px]">
             {tags.map(t => (
                 <span key={t} className="flex items-center gap-1 bg-white border border-slate-300 px-3 py-1.5 rounded-lg text-sm font-black text-[#6D2158] shadow-sm animate-in zoom-in-95 duration-200">
-                    {t} <X size={14} className="cursor-pointer text-slate-300 hover:text-rose-500 ml-1" onClick={() => removeTag(t)} />
+                    {t} <X size={14} className="cursor-pointer text-slate-300 hover:text-rose-50 ml-1" onClick={() => removeTag(t)} />
                 </span>
             ))}
             <input 
@@ -131,6 +132,10 @@ export default function MinibarInventoryAdmin() {
   // Search State for Hosts
   const [hostSearch, setHostSearch] = useState('');
   const [showHostDropdown, setShowHostDropdown] = useState(false);
+
+  // Extraction State
+  const [extractDate, setExtractDate] = useState(getDhakaDateStr());
+  const [isExtracting, setIsExtracting] = useState(false);
 
   // --- DYNAMIC VILLA LIST (Splits double villas) ---
   const activeVillaList = useMemo(() => {
@@ -284,7 +289,7 @@ export default function MinibarInventoryAdmin() {
         const period = constRes.data.find(h => h.type === 'mb_active_period')?.label;
         if (period) {
             setActivePeriod(period);
-            setSelectedMonth(period);
+            // PERFECT FIX: Removed setSelectedMonth(period) entirely so it stays on the live month!
         }
     }
   };
@@ -305,6 +310,41 @@ export default function MinibarInventoryAdmin() {
 
       setIsSaving(false);
       toast.success(`Inventory is now ${newStatus}`);
+  };
+
+  const handleExtractAllocations = async () => {
+      setIsExtracting(true);
+      const { data, error } = await supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', extractDate);
+      
+      if (error) {
+          toast.error("Extraction Error: " + error.message);
+      } else if (data && data.length > 0) {
+          const newAlloc: Record<string, string> = { ...allocations };
+          let matchCount = 0;
+          
+          data.forEach(d => {
+              const taskDetails = d.task_details || '';
+              // Skip extraction for this attendant if they don't have any villas assigned
+              if (taskDetails.trim() === '') return;
+
+              // Cross-reference with the hosts array to safely map either UUID or SSL number
+              const matchedHost = hosts.find(h => h.id === d.host_id || h.host_id === d.host_id);
+              if (matchedHost) {
+                  newAlloc[matchedHost.host_id] = taskDetails;
+                  matchCount++;
+              }
+          });
+          
+          setAllocations(newAlloc);
+          if (matchCount > 0) {
+              toast.success(`${matchCount} allocations imported from ${extractDate}! (Remember to save)`);
+          } else {
+              toast.error("Data extracted, but couldn't find any staff with valid villa assignments.");
+          }
+      } else {
+          toast.error(`No daily allocations found for ${extractDate}.`);
+      }
+      setIsExtracting(false);
   };
 
   const handleSaveAllocations = async () => {
@@ -446,7 +486,6 @@ export default function MinibarInventoryAdmin() {
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
 
   return (
-    // Use absolute inset to kill the overall page scrolling, ensuring only the table scrolls!
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-antiqua text-[#6D2158] overflow-hidden">
       
       {/* HEADER SECTION (STATIC) */}
@@ -684,6 +723,25 @@ export default function MinibarInventoryAdmin() {
                     <div>
                         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Monthly Attendant Allocations</h3>
                         <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
+                        
+                        {/* NEW EXTRACTION TOOL */}
+                        <div className="flex items-center gap-2 mt-3 bg-white p-1.5 rounded-lg border border-slate-200 shadow-sm w-max">
+                            <Calendar size={14} className="text-slate-400 ml-1"/>
+                            <input 
+                                type="date" 
+                                className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer"
+                                value={extractDate}
+                                onChange={(e) => setExtractDate(e.target.value)}
+                            />
+                            <button 
+                                onClick={handleExtractAllocations} 
+                                disabled={isExtracting}
+                                className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-3 py-1.5 rounded text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1"
+                            >
+                                {isExtracting ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>}
+                                Extract Daily
+                            </button>
+                        </div>
                     </div>
                     
                     {/* SMART SEARCHABLE HOST INPUT */}
