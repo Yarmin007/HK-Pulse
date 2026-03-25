@@ -1143,8 +1143,7 @@ export default function MyTasksHub() {
                                         const isDND = taskState.status === 'DND';
                                         const isRefused = taskState.status === 'Refused';
                                         
-                                        const minibarTask = universalTasks['Legacy Minibar']?.find(t => t.villa_number === v);
-                                        const isMinibarDone = minibarTask?.status === 'Submitted';
+                                        const minibarTasksForVilla = universalTasks['Legacy Minibar']?.filter(t => t.villa_number === v || t.villa_number === `${v}-1` || t.villa_number === `${v}-2`) || [];
 
                                         let cardStyle = "bg-white border-slate-200";
                                         if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
@@ -1194,17 +1193,22 @@ export default function MyTasksHub() {
                                                           {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
                                                       </button>
 
-                                                      {minibarTask && (
+                                                  {minibarTasksForVilla.map(mbTask => {
+                                                      const isMbDone = mbTask.status === 'Submitted';
+                                                      const mbLabel = mbTask.villa_number.includes('-') ? `MB ${mbTask.villa_number.split('-')[1]}` : 'Minibar';
+                                                      return (
                                                           <button 
-                                                              onClick={() => startAudit(v, 'Legacy Minibar', 'legacy_minibar')}
-                                                              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
-                                                                  isMinibarDone ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-purple-50 border-purple-200 text-[#6D2158]'
+                                                              key={`mb-${mbTask.villa_number}`}
+                                                              onClick={() => startAudit(mbTask.villa_number, 'Legacy Minibar', 'legacy_minibar')}
+                                                              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-1.5 md:gap-2 text-[9px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                                                  isMbDone ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-purple-50 border-purple-200 text-[#6D2158]'
                                                               }`}
                                                           >
-                                                              <Wine size={12} />
-                                                              {isMinibarDone ? 'Minibar Done' : 'Count Minibar'}
+                                                              <Wine size={12} className="shrink-0" />
+                                                              <span className="truncate">{isMbDone ? `${mbLabel} Done` : `Count ${mbLabel}`}</span>
                                                           </button>
-                                                      )}
+                                                      );
+                                                  })}
                                                   </div>
 
                                                   {isActive ? (
