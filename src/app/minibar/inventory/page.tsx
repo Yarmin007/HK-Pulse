@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, CheckCircle2, User, Save, Lock, Unlock,
-  RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, EyeOff, Eye, Search, Home, Wine, X, Download
+  RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, EyeOff, Eye, Search, Home, Wine, X, Download,
+  PackageSearch, Minus, Plus, ChevronLeft
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -136,6 +137,13 @@ export default function MinibarInventoryAdmin() {
   // Extraction State
   const [extractDate, setExtractDate] = useState(getDhakaDateStr());
   const [isExtracting, setIsExtracting] = useState(false);
+
+  // --- STORE AUDIT STATE ---
+  const [isStoreAuditOpen, setIsStoreAuditOpen] = useState(false);
+  const [storeCounts, setStoreCounts] = useState<Record<string, number>>({});
+  const [storeKeypadTarget, setStoreKeypadTarget] = useState<string | null>(null);
+  const [storeKeypadValue, setStoreKeypadValue] = useState<string>('');
+  const [storeSearchQuery, setStoreSearchQuery] = useState('');
 
   // --- DYNAMIC VILLA LIST (Splits double villas) ---
   const activeVillaList = useMemo(() => {
@@ -289,7 +297,6 @@ export default function MinibarInventoryAdmin() {
         const period = constRes.data.find(h => h.type === 'mb_active_period')?.label;
         if (period) {
             setActivePeriod(period);
-            // PERFECT FIX: Removed setSelectedMonth(period) entirely so it stays on the live month!
         }
     }
   };
@@ -324,10 +331,8 @@ export default function MinibarInventoryAdmin() {
           
           data.forEach(d => {
               const taskDetails = d.task_details || '';
-              // Skip extraction for this attendant if they don't have any villas assigned
               if (taskDetails.trim() === '') return;
 
-              // Cross-reference with the hosts array to safely map either UUID or SSL number
               const matchedHost = hosts.find(h => h.id === d.host_id || h.host_id === d.host_id);
               if (matchedHost) {
                   newAlloc[matchedHost.host_id] = taskDetails;
@@ -479,9 +484,101 @@ export default function MinibarInventoryAdmin() {
       return dict;
   }, [submissions, activeVillaList]);
 
+  // --- MB STORE AUDIT LOGIC (WITH CALCULATOR) ---
+  const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
+  
+  const startStoreAudit = () => {
+      const initialCounts: Record<string, number> = {};
+      visibleCatalogItems.forEach(item => {
+          initialCounts[item.article_number] = financials[item.article_number]?.minibar_store || 0;
+      });
+      setStoreCounts(initialCounts);
+      setStoreSearchQuery('');
+      setIsStoreAuditOpen(true);
+  };
+
+  const updateStoreCount = (article_number: string, delta: number) => {
+      setStoreCounts(prev => {
+          const next = (prev[article_number] || 0) + delta;
+          return { ...prev, [article_number]: next < 0 ? 0 : next };
+      });
+  };
+
+  const handleStoreKeypadPress = (val: string) => {
+      if (val === 'DEL') {
+          setStoreKeypadValue(prev => prev.length > 1 ? prev.slice(0, -1) : '0');
+      } else if (val === 'CLR') {
+          setStoreKeypadValue('0');
+      } else if (val === '=') {
+          try {
+              const sanitized = storeKeypadValue.replace(/[^-()\d/*+.]/g, '');
+              if (sanitized) {
+                  const result = new Function('return ' + sanitized)();
+                  setStoreKeypadValue(String(Math.max(0, Math.floor(result))));
+              }
+          } catch(e) {
+              toast.error("Invalid calculation");
+          }
+      } else {
+          setStoreKeypadValue(prev => {
+              const isOp = ['+', '-', '*'].includes(val);
+              const lastChar = prev.slice(-1);
+              const isLastOp = ['+', '-', '*'].includes(lastChar);
+              
+              if (isOp && isLastOp) {
+                  return prev.slice(0, -1) + val;
+              }
+              if (prev === '0' && !isOp) return val;
+              return prev + val;
+          });
+      }
+  };
+
+  const saveStoreKeypadValue = () => {
+      if (storeKeypadTarget) {
+          try {
+              const sanitized = storeKeypadValue.replace(/[^-()\d/*+.]/g, '');
+              const result = sanitized ? new Function('return ' + sanitized)() : 0;
+              const num = Math.max(0, Math.floor(result));
+              setStoreCounts(prev => ({ ...prev, [storeKeypadTarget]: isNaN(num) ? 0 : num }));
+          } catch(e) {
+              setStoreCounts(prev => ({ ...prev, [storeKeypadTarget]: 0 }));
+          }
+      }
+      setStoreKeypadTarget(null);
+  };
+
+  const confirmStoreAudit = () => {
+      setFinancials(prev => {
+          const updated = { ...prev };
+          Object.entries(storeCounts).forEach(([artNo, count]) => {
+              if (!updated[artNo]) {
+                  updated[artNo] = { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
+              }
+              updated[artNo].minibar_store = count;
+          });
+          return updated;
+      });
+      setIsStoreAuditOpen(false);
+      toast.success("MB Store counts updated in Matrix! Don't forget to save the report.");
+  };
+
+  const displayStoreCatalog = useMemo(() => {
+      let list = visibleCatalogItems;
+      if (storeSearchQuery.trim()) {
+          const q = storeSearchQuery.toLowerCase();
+          list = list.filter(i => 
+              (i.article_name || '').toLowerCase().includes(q) || 
+              (i.generic_name || '').toLowerCase().includes(q) ||
+              (i.article_number || '').includes(q)
+          );
+      }
+      return list;
+  }, [visibleCatalogItems, storeSearchQuery]);
+
+
   if (!isMounted) return null;
 
-  const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
   const activeHostsForBoard = hosts.filter(h => allocations[h.host_id] !== undefined);
   const availableHostsToAdd = hosts.filter(h => allocations[h.host_id] === undefined);
 
@@ -490,58 +587,65 @@ export default function MinibarInventoryAdmin() {
       
       {/* HEADER SECTION (STATIC) */}
       <div className="flex-none flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 p-4 md:p-6 pb-4 gap-4 bg-[#FDFBFD] z-10">
-        <div>
-           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Minibar Inventory</h1>
-           <div className="flex items-center gap-3 mt-2">
-               <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Monthly Tracking Period</p>
-               {selectedMonth === activePeriod && invStatus === 'OPEN' && (
-                   <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full animate-pulse text-[9px] font-black shadow-sm flex items-center gap-1"><Unlock size={10}/> OPEN & LIVE</span>
-               )}
-               {(selectedMonth !== activePeriod || invStatus === 'CLOSED') && (
-                   <span className="bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full text-[9px] font-black shadow-sm flex items-center gap-1"><Lock size={10}/> CLOSED</span>
-               )}
+        <div className="w-full md:w-auto flex justify-between items-start">
+           <div>
+               <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Minibar Inventory</h1>
+               <div className="flex items-center gap-3 mt-2">
+                   <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Monthly Tracking Period</p>
+                   {selectedMonth === activePeriod && invStatus === 'OPEN' && (
+                       <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full animate-pulse text-[9px] font-black shadow-sm flex items-center gap-1"><Unlock size={10}/> OPEN & LIVE</span>
+                   )}
+                   {(selectedMonth !== activePeriod || invStatus === 'CLOSED') && (
+                       <span className="bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full text-[9px] font-black shadow-sm flex items-center gap-1"><Lock size={10}/> CLOSED</span>
+                   )}
+               </div>
            </div>
         </div>
         
-        <div className="flex flex-wrap items-center gap-3">
-           <div className="flex items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm gap-2">
+        <div className="flex flex-row flex-wrap md:flex-nowrap items-center gap-2 md:gap-3 w-full md:w-auto">
+           <div className="flex items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm gap-2 w-full md:w-auto flex-1 min-w-[140px]">
               <Calendar size={16} className="text-slate-400 ml-2"/>
               <input 
                   type="month" 
-                  className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer p-1"
+                  className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer p-1 w-full"
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
               />
            </div>
            
-           <button onClick={toggleInventoryStatus} disabled={isSaving} className={`flex items-center gap-2 px-4 md:px-6 py-2 md:py-3 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg transition-all ${invStatus === 'OPEN' && selectedMonth === activePeriod ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
+           <button onClick={toggleInventoryStatus} disabled={isSaving} className={`flex-1 md:flex-none justify-center flex items-center gap-2 px-3 md:px-6 py-2.5 md:py-3 text-white rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-lg transition-all whitespace-nowrap ${invStatus === 'OPEN' && selectedMonth === activePeriod ? 'bg-rose-600 hover:bg-rose-700' : 'bg-emerald-600 hover:bg-emerald-700'}`}>
               {isSaving ? <Loader2 size={16} className="animate-spin"/> : (invStatus === 'OPEN' && selectedMonth === activePeriod ? <Lock size={16}/> : <Unlock size={16}/>)}
-              <span className="hidden md:inline">{invStatus === 'OPEN' && selectedMonth === activePeriod ? 'Lock Inventory' : 'Open This Month'}</span>
+              <span>{invStatus === 'OPEN' && selectedMonth === activePeriod ? 'Lock' : 'Open'}</span>
            </button>
            
-           <button onClick={copyMobileLink} className="flex items-center gap-2 px-4 md:px-6 py-2 md:py-3 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-[#5a1b49] transition-all">
-              <Smartphone size={16}/> <span className="hidden md:inline">App Link</span>
+           <button onClick={copyMobileLink} className="flex-1 md:flex-none justify-center flex items-center gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-[#6D2158] text-white rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-[#5a1b49] transition-all whitespace-nowrap">
+              <Smartphone size={16}/> <span>App Link</span>
            </button>
         </div>
       </div>
 
       {/* TABS SECTION (STATIC) */}
-      <div className="flex-none flex justify-between items-center px-4 md:px-6 py-4 bg-[#FDFBFD] z-10">
+      <div className="flex-none flex flex-col md:flex-row justify-between items-start md:items-center px-4 md:px-6 py-4 gap-3 bg-[#FDFBFD] z-10 w-full">
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 w-full md:w-auto">
-              <button onClick={() => setActiveTab('MATRIX')} className={`px-4 md:px-6 py-2 md:py-3 rounded-xl font-bold text-[10px] md:text-xs uppercase tracking-wider flex items-center gap-2 transition-all whitespace-nowrap ${activeTab === 'MATRIX' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
-                  <LayoutGrid size={16}/> Matrix View
+              <button onClick={() => setActiveTab('MATRIX')} className={`flex-1 md:flex-none px-4 md:px-6 py-2 md:py-3 rounded-xl font-bold text-[10px] md:text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all whitespace-nowrap ${activeTab === 'MATRIX' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
+                  <LayoutGrid size={16}/> Matrix
               </button>
-              <button onClick={() => setActiveTab('ASSIGNMENTS')} className={`px-4 md:px-6 py-2 md:py-3 rounded-xl font-bold text-[10px] md:text-xs uppercase tracking-wider flex items-center gap-2 transition-all whitespace-nowrap ${activeTab === 'ASSIGNMENTS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
+              <button onClick={() => setActiveTab('ASSIGNMENTS')} className={`flex-1 md:flex-none px-4 md:px-6 py-2 md:py-3 rounded-xl font-bold text-[10px] md:text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all whitespace-nowrap ${activeTab === 'ASSIGNMENTS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
                   <Users size={16}/> Allocations
               </button>
-              <button onClick={() => setActiveTab('SETUP')} className={`px-4 md:px-6 py-2 md:py-3 rounded-xl font-bold text-[10px] md:text-xs uppercase tracking-wider flex items-center gap-2 transition-all whitespace-nowrap ${activeTab === 'SETUP' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
+              <button onClick={() => setActiveTab('SETUP')} className={`flex-1 md:flex-none px-4 md:px-6 py-2 md:py-3 rounded-xl font-bold text-[10px] md:text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-all whitespace-nowrap ${activeTab === 'SETUP' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}>
                   <Settings size={16}/> Setup
               </button>
           </div>
           {activeTab === 'MATRIX' && (
-              <button onClick={handleSaveMatrix} disabled={isSavingMatrix} className="hidden md:flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-emerald-500 transition-all">
-                  {isSavingMatrix ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save P&L Report
-              </button>
+              <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1">
+                <button onClick={startStoreAudit} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-purple-100 text-purple-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-purple-200 transition-all whitespace-nowrap">
+                    <PackageSearch size={16}/> Count MB Store
+                </button>
+                <button onClick={handleSaveMatrix} disabled={isSavingMatrix} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-emerald-600 text-white rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-emerald-500 transition-all whitespace-nowrap">
+                    {isSavingMatrix ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save P&L
+                </button>
+              </div>
           )}
       </div>
 
@@ -559,15 +663,13 @@ export default function MinibarInventoryAdmin() {
                     <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200 shadow-sm">{submissions.length} / {activeVillaList.length} Villas Logged</span>
                 </div>
                 
-                {/* STRICTLY CONSTRAINED TABLE WRAPPER */}
+                {/* MODIFIED: UNLOCKED LEFT COLUMN ON MOBILE */}
                 <div className="overflow-auto flex-1 relative w-full custom-scrollbar">
                     <table className="w-max min-w-full border-collapse text-[10px] whitespace-nowrap bg-white">
                         
-                        {/* --- THEAD --- */}
                         <thead className="sticky top-0 z-40 bg-white">
-                            {/* ROW 1: MASTER GROUPS */}
                             <tr>
-                                <th rowSpan={2} className="sticky left-0 z-50 bg-slate-200 border-r-2 border-b-2 border-slate-300 p-0 shadow-[2px_0_5px_rgba(0,0,0,0.05)] align-top" style={{ width: TOTAL_MASTER_WIDTH, minWidth: TOTAL_MASTER_WIDTH, maxWidth: TOTAL_MASTER_WIDTH }}>
+                                <th rowSpan={2} className="bg-slate-200 border-r-2 border-b-2 border-slate-300 p-0 align-top md:sticky md:left-0 md:z-50 md:shadow-[2px_0_5px_rgba(0,0,0,0.05)]" style={{ width: TOTAL_MASTER_WIDTH, minWidth: TOTAL_MASTER_WIDTH, maxWidth: TOTAL_MASTER_WIDTH }}>
                                     <div className="flex w-full h-full items-stretch text-center font-black text-slate-600 uppercase tracking-widest divide-x divide-slate-300">
                                         <div className={`${MASTER_WIDTHS.microsName} p-2 flex items-center justify-center break-words whitespace-normal leading-tight`}>Micros Name</div>
                                         <div className={`${MASTER_WIDTHS.artNo} p-2 flex items-center justify-center break-words whitespace-normal leading-tight`}>Art #</div>
@@ -583,9 +685,7 @@ export default function MinibarInventoryAdmin() {
                                 <th colSpan={3} className="bg-rose-50 text-rose-800 border-r border-slate-300 p-2 text-center text-xs uppercase tracking-widest font-black">Variance & Audit</th>
                             </tr>
                             
-                            {/* ROW 2: SUB COLUMNS (Note: Left sticky column is excluded here because it uses rowSpan=2) */}
                             <tr className="bg-slate-100 text-[9px] uppercase text-slate-500 font-bold border-b-2 border-slate-300">
-                                {/* System & Financials */}
                                 <th className="w-16 min-w-[64px] p-2 border-r border-slate-200 text-center text-blue-600 bg-blue-50/80">Open Stk</th>
                                 <th className="w-[70px] min-w-[70px] p-2 border-r border-slate-200 text-center">Open Val</th>
                                 <th className="w-16 min-w-[64px] p-2 border-r border-slate-200 text-center text-emerald-600 bg-emerald-50/80">Trans IN</th>
@@ -597,27 +697,22 @@ export default function MinibarInventoryAdmin() {
                                 <th className="w-[70px] min-w-[70px] p-2 border-r border-slate-200 text-center text-[#6D2158] font-black bg-[#6D2158]/10">SOH Clos</th>
                                 <th className="w-20 min-w-[80px] p-2 border-r-2 border-slate-300 text-center font-black">Close Val</th>
                                 
-                                {/* Villas */}
                                 {activeVillaList.map(v => <th key={v} className="w-10 min-w-[40px] p-2 border-r border-slate-200 text-center">{v}</th>)}
                                 
-                                {/* Store & Totals */}
                                 <th className="w-20 min-w-[80px] p-2 border-r border-slate-200 text-center bg-purple-50/80">Villa Total</th>
                                 <th className="w-20 min-w-[80px] p-2 border-r border-slate-200 text-center text-purple-700 bg-purple-100/80">MB Store</th>
                                 <th className="w-20 min-w-[80px] p-2 border-r-2 border-slate-300 text-center font-black text-[#6D2158] bg-[#6D2158]/10">Total Phys</th>
                                 
-                                {/* Variance */}
                                 <th className="w-20 min-w-[80px] p-2 border-r border-slate-200 text-center font-black text-rose-600 bg-rose-50/80">Var Qty</th>
                                 <th className="w-20 min-w-[80px] p-2 border-r border-slate-200 text-center font-black">Var Val</th>
                                 <th className="w-48 min-w-[192px] p-2 border-r border-slate-200 text-left pl-4">Comments</th>
                             </tr>
                         </thead>
 
-                        {/* --- TBODY --- */}
                         <tbody className="divide-y divide-slate-100 font-medium">
                             {visibleCatalogItems.map(item => {
                                 const artNo = item.article_number;
                                 
-                                // Auto Fill Opening Stock from Previous Month!
                                 const fin = financials[artNo] || { 
                                     opening_stock: previousClosing[artNo] || 0, 
                                     transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' 
@@ -626,7 +721,6 @@ export default function MinibarInventoryAdmin() {
                                 const avgCost = parseFloat(item.avg_cost) || 0;
                                 const salePrice = parseFloat(item.sales_price) || 0;
                                 
-                                // Math
                                 const opVal = fin.opening_stock * avgCost;
                                 const salesVal = fin.sales * salePrice;
                                 const cos = fin.sales * avgCost;
@@ -644,8 +738,7 @@ export default function MinibarInventoryAdmin() {
                                 return (
                                     <tr key={artNo} className="hover:bg-slate-50 transition-colors group">
                                         
-                                        {/* FROZEN MASTER COLUMNS */}
-                                        <td className="sticky left-0 z-30 bg-white p-0 border-r-2 border-slate-300 shadow-[2px_0_5px_rgba(0,0,0,0.05)] group-hover:bg-slate-50 transition-colors" style={{ width: TOTAL_MASTER_WIDTH, minWidth: TOTAL_MASTER_WIDTH, maxWidth: TOTAL_MASTER_WIDTH }}>
+                                        <td className="bg-white p-0 border-r-2 border-slate-300 group-hover:bg-slate-50 transition-colors md:sticky md:left-0 md:z-30 md:shadow-[2px_0_5px_rgba(0,0,0,0.05)]" style={{ width: TOTAL_MASTER_WIDTH, minWidth: TOTAL_MASTER_WIDTH, maxWidth: TOTAL_MASTER_WIDTH }}>
                                             <div className="flex w-full h-full items-stretch text-left divide-x divide-slate-100">
                                                 <div className={`${MASTER_WIDTHS.microsName} p-2 flex items-center truncate`} title={item.micros_name}>{item.micros_name || '-'}</div>
                                                 <div className={`${MASTER_WIDTHS.artNo} p-2 flex items-center justify-center text-slate-400 font-mono`}>{artNo}</div>
@@ -660,7 +753,6 @@ export default function MinibarInventoryAdmin() {
                                             </div>
                                         </td>
 
-                                        {/* SYSTEM & FINANCIALS */}
                                         <td className="p-0 border-r border-slate-200 bg-blue-50/20">
                                             <input type="number" className="w-full h-full min-w-0 p-2 bg-transparent outline-none text-center font-bold text-blue-700 focus:bg-blue-100" value={fin.opening_stock === 0 ? '' : fin.opening_stock} onChange={e => updateFin(artNo, 'opening_stock', Number(e.target.value))} placeholder="0" />
                                         </td>
@@ -680,7 +772,6 @@ export default function MinibarInventoryAdmin() {
                                         <td className="p-2 border-r border-slate-200 text-center font-black text-[#6D2158] bg-[#6D2158]/5">{soh}</td>
                                         <td className="p-2 border-r-2 border-slate-300 text-center font-black">${closingVal.toFixed(2)}</td>
 
-                                        {/* VILLA COUNTS (READ ONLY) */}
                                         {activeVillaList.map(v => {
                                             const qty = matrixDict[v]?.[artNo] || 0;
                                             return (
@@ -690,14 +781,12 @@ export default function MinibarInventoryAdmin() {
                                             );
                                         })}
 
-                                        {/* STORE & TOTALS */}
                                         <td className="p-2 border-x border-slate-200 text-center bg-purple-50/30 font-bold text-purple-800">{villaTotal}</td>
                                         <td className="p-0 border-r border-slate-200 bg-purple-100/30">
                                             <input type="number" className="w-full h-full min-w-0 p-2 bg-transparent outline-none text-center font-bold text-purple-700 focus:bg-purple-200" value={fin.minibar_store === 0 ? '' : fin.minibar_store} onChange={e => updateFin(artNo, 'minibar_store', Number(e.target.value))} placeholder="0" />
                                         </td>
                                         <td className="p-2 border-r-2 border-slate-300 text-center font-black text-[#6D2158] bg-[#6D2158]/5">{physTotal}</td>
 
-                                        {/* VARIANCE & AUDIT */}
                                         <td className={`p-2 border-r border-slate-200 text-center font-black ${varQty < 0 ? 'text-rose-600 bg-rose-50' : varQty > 0 ? 'text-amber-600 bg-amber-50' : 'text-emerald-500'}`}>
                                             {varQty > 0 ? `+${varQty}` : varQty === 0 ? '-' : varQty}
                                         </td>
@@ -717,26 +806,24 @@ export default function MinibarInventoryAdmin() {
 
         ) : activeTab === 'ASSIGNMENTS' ? (
 
-            /* --- ASSIGNMENTS VIEW --- */
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-[75vh] animate-in fade-in">
                 <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 sticky top-0 z-50">
                     <div>
                         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Monthly Attendant Allocations</h3>
                         <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
                         
-                        {/* NEW EXTRACTION TOOL */}
-                        <div className="flex items-center gap-2 mt-3 bg-white p-1.5 rounded-lg border border-slate-200 shadow-sm w-max">
-                            <Calendar size={14} className="text-slate-400 ml-1"/>
+                        <div className="flex items-center gap-2 mt-3 bg-white p-1.5 rounded-lg border border-slate-200 shadow-sm w-full md:w-max overflow-x-auto">
+                            <Calendar size={14} className="text-slate-400 ml-1 shrink-0"/>
                             <input 
                                 type="date" 
-                                className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer"
+                                className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer flex-1"
                                 value={extractDate}
                                 onChange={(e) => setExtractDate(e.target.value)}
                             />
                             <button 
                                 onClick={handleExtractAllocations} 
                                 disabled={isExtracting}
-                                className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-3 py-1.5 rounded text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1"
+                                className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-3 py-1.5 rounded text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
                             >
                                 {isExtracting ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>}
                                 Extract Daily
@@ -744,7 +831,6 @@ export default function MinibarInventoryAdmin() {
                         </div>
                     </div>
                     
-                    {/* SMART SEARCHABLE HOST INPUT */}
                     <div className="relative w-full sm:w-80">
                         <Search className="absolute left-3 top-3.5 text-slate-400" size={16}/>
                         <input 
@@ -825,10 +911,8 @@ export default function MinibarInventoryAdmin() {
 
         ) : (
 
-            /* --- SETUP VIEW --- */
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in flex-1 overflow-y-auto">
                 
-                {/* DOUBLE MINIBAR SETUP */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-fit">
                     <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
                         <div>
@@ -851,7 +935,6 @@ export default function MinibarInventoryAdmin() {
                     </div>
                 </div>
 
-                {/* ITEMS VISIBILITY */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-[70vh]">
                     <div className="p-5 border-b border-slate-100 bg-slate-50 shrink-0">
                         <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Wine size={16}/> Active Items</h3>
@@ -883,6 +966,149 @@ export default function MinibarInventoryAdmin() {
 
         )}
       </div>
+
+      {/* --- MB STORE AUDIT MODAL --- */}
+      {isStoreAuditOpen && (
+          <div className="fixed inset-0 z-[100] bg-[#FDFBFD] flex flex-col animate-in fade-in zoom-in-95 duration-200 overflow-hidden">
+              <div className="bg-white p-4 md:p-6 border-b border-slate-200 flex flex-col gap-4 shrink-0 shadow-sm">
+                  <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                          <button onClick={() => setIsStoreAuditOpen(false)} className="p-2.5 md:p-3 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-full transition-colors">
+                              <ChevronLeft size={18}/>
+                          </button>
+                          <div>
+                              <h2 className="text-xl md:text-2xl font-black text-[#6D2158]">MB Store Inventory</h2>
+                              <p className="text-[10px] md:text-xs font-bold uppercase tracking-widest text-slate-400 mt-0.5">Physical Count</p>
+                          </div>
+                      </div>
+                  </div>
+                  
+                  <div className="relative">
+                      <Search className="absolute left-4 top-3 text-slate-400" size={16}/>
+                      <input 
+                          type="text" 
+                          placeholder="Search items..." 
+                          className="w-full pl-10 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] focus:bg-white transition-all shadow-sm"
+                          value={storeSearchQuery}
+                          onChange={(e) => setStoreSearchQuery(e.target.value)}
+                      />
+                      {storeSearchQuery && (
+                          <button onClick={() => setStoreSearchQuery('')} className="absolute right-4 top-3 text-slate-300 hover:text-slate-500">
+                              <X size={16}/>
+                          </button>
+                      )}
+                  </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-40 custom-scrollbar">
+                  <div className="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
+                      {displayStoreCatalog.length === 0 ? (
+                          <div className="col-span-full py-10 text-center text-slate-400 font-bold">No items found.</div>
+                      ) : displayStoreCatalog.map(item => {
+                          const qty = storeCounts[item.article_number] || 0;
+                          const isKeypadActive = storeKeypadTarget === item.article_number;
+                          
+                          return (
+                          <div key={item.article_number} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 || isKeypadActive ? 'border-[#6D2158] ring-2 ring-[#6D2158]/10' : 'border-slate-200'}`}>
+                              <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3 relative">
+                                  {item.image_url ? <img src={item.image_url} className="w-full h-full object-contain drop-shadow-sm"/> : <Wine size={24} className="text-slate-300"/>}
+                              </div>
+                              <div className="flex flex-col flex-1 px-1">
+                                  <h4 className="text-[10px] font-black text-slate-800 leading-tight line-clamp-2">{item.generic_name || item.article_name}</h4>
+                                  <div className="flex items-center justify-between mt-1">
+                                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest truncate">{item.category}</p>
+                                  </div>
+                              </div>
+                              <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
+                                  <button onClick={() => updateStoreCount(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
+                                      <Minus size={14}/>
+                                  </button>
+                                  <button 
+                                      onClick={() => { setStoreKeypadTarget(item.article_number); setStoreKeypadValue(String(qty)); }} 
+                                      className={`w-10 text-center font-black text-lg py-1 rounded-md transition-colors ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400 hover:bg-slate-200'} ${isKeypadActive ? 'bg-[#6D2158]/10 text-[#6D2158] ring-1 ring-[#6D2158]' : ''}`}
+                                  >
+                                      {qty}
+                                  </button>
+                                  <button onClick={() => updateStoreCount(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-[#6D2158] rounded-md shadow-sm text-white active:scale-95 transition-all">
+                                      <Plus size={14}/>
+                                  </button>
+                              </div>
+                          </div>
+                      )})}
+                  </div>
+              </div>
+
+              <div className="fixed bottom-0 left-0 right-0 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+                  <div className="max-w-5xl mx-auto flex gap-3">
+                      <button 
+                          onClick={() => setIsStoreAuditOpen(false)} 
+                          className="py-4 px-6 bg-slate-100 text-slate-600 rounded-xl font-black uppercase tracking-widest text-xs shadow-sm active:scale-95 transition-all"
+                      >
+                          Cancel
+                      </button>
+                      <button 
+                          onClick={confirmStoreAudit} 
+                          className="flex-1 py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                      >
+                          <Save size={16}/> Confirm Store Count
+                      </button>
+                  </div>
+              </div>
+
+              {storeKeypadTarget && (
+                  <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex flex-col justify-end animate-in fade-in duration-200">
+                      <div className="absolute inset-0" onClick={saveStoreKeypadValue}></div>
+                      <div className="bg-[#FDFBFD] w-full rounded-t-[2rem] p-5 md:p-6 pb-safe shadow-2xl animate-in slide-in-from-bottom-8 relative z-10 max-w-md mx-auto">
+                          <div className="flex justify-between items-center mb-5">
+                              <div>
+                                  <h4 className="font-black text-slate-800 text-base">Direct Input</h4>
+                                  <p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
+                                      {visibleCatalogItems.find(c => c.article_number === storeKeypadTarget)?.generic_name || 'Item'}
+                                  </p>
+                              </div>
+                              <div className="text-3xl font-black text-[#6D2158] bg-purple-50 px-5 py-1.5 rounded-xl border border-purple-100">
+                                  {storeKeypadValue}
+                              </div>
+                          </div>
+
+                          <div className="grid grid-cols-4 gap-2 md:gap-3 mb-5">
+                              {[1,2,3,'+'].map(num => (
+                                  <button key={num} onClick={() => handleStoreKeypadPress(String(num))} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                                      {num}
+                                  </button>
+                              ))}
+                              {[4,5,6,'-'].map(num => (
+                                  <button key={num} onClick={() => handleStoreKeypadPress(String(num))} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                                      {num}
+                                  </button>
+                              ))}
+                              {[7,8,9,'*'].map(num => (
+                                  <button key={num} onClick={() => handleStoreKeypadPress(String(num))} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                                      {num}
+                                  </button>
+                              ))}
+                              <button onClick={() => handleStoreKeypadPress('CLR')} className="py-3 md:py-4 bg-rose-50 rounded-xl border border-rose-100 text-xs font-black text-rose-600 uppercase tracking-widest active:scale-95 transition-all">
+                                  CLR
+                              </button>
+                              <button onClick={() => handleStoreKeypadPress('0')} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                                  0
+                              </button>
+                              <button onClick={() => handleStoreKeypadPress('DEL')} className="py-3 md:py-4 bg-slate-100 rounded-xl border border-slate-200 text-xs font-black text-slate-600 uppercase tracking-widest active:scale-95 transition-all">
+                                  DEL
+                              </button>
+                              <button onClick={() => handleStoreKeypadPress('=')} className="py-3 md:py-4 bg-emerald-50 rounded-xl border border-emerald-200 text-xl md:text-2xl font-black text-emerald-700 active:scale-95 transition-all">
+                                  =
+                              </button>
+                          </div>
+
+                          <button onClick={saveStoreKeypadValue} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">
+                              Confirm Amount
+                          </button>
+                      </div>
+                  </div>
+              )}
+          </div>
+      )}
     </div>
   );
 }
