@@ -2,10 +2,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Plus, X, CreditCard, Briefcase, 
-  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag, Camera, Loader2, Building
+  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag, Camera, Loader2, Building, EyeOff, Users
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import Image from 'next/image';
 
 // --- TYPES ---
 type Host = {
@@ -30,9 +31,12 @@ export default function HostsProfilePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   
-  // DYNAMIC CONFIG STATE (For Dashboard Display Name and Sub-Departments)
+  // Tab State for Active vs Resigned
+  const [activeTab, setActiveTab] = useState<'Active' | 'Resigned'>('Active');
+
+  // DYNAMIC CONFIG STATE
   const [configId, setConfigId] = useState<string | null>(null);
-  const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {} });
+  const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {}, excludeAttendance: {} });
 
   // Modal State
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
@@ -56,6 +60,7 @@ export default function HostsProfilePage() {
   });
   const [tempSubDept, setTempSubDept] = useState('');
   const [tempDisplayName, setTempDisplayName] = useState('');
+  const [tempExcludeAtt, setTempExcludeAtt] = useState(false);
 
   // --- FETCH DATA ---
   const fetchHosts = async () => {
@@ -109,11 +114,12 @@ export default function HostsProfilePage() {
 
   useEffect(() => { fetchHosts(); }, []);
 
-  // When a host is selected for editing, prepopulate the temporary config values
+  // Prepopulate temp config values when a host is selected
   useEffect(() => {
       if (selectedHost) {
           setTempDisplayName(teamConfig.nicknames?.[selectedHost.host_id] || '');
           setTempSubDept(teamConfig.hostDepartments?.[selectedHost.host_id] || '');
+          setTempExcludeAtt(!!teamConfig.excludeAttendance?.[selectedHost.host_id]);
       }
   }, [selectedHost, teamConfig]);
 
@@ -152,24 +158,22 @@ export default function HostsProfilePage() {
       }
   };
 
-  // --- SAVE DYNAMIC CONFIG (Sub-Dept & Display Name) ---
-  const saveHostConfig = async (hostId: string, displayName: string, subDept: string) => {
+  // --- SAVE DYNAMIC CONFIG ---
+  const saveHostConfig = async (hostId: string, displayName: string, subDept: string, excludeAtt: boolean) => {
       const updatedConfig = { ...teamConfig };
       
       updatedConfig.nicknames = updatedConfig.nicknames || {};
       updatedConfig.hostDepartments = updatedConfig.hostDepartments || {};
+      updatedConfig.excludeAttendance = updatedConfig.excludeAttendance || {};
       
-      if (displayName) {
-          updatedConfig.nicknames[hostId] = displayName;
-      } else {
-          delete updatedConfig.nicknames[hostId];
-      }
+      if (displayName) updatedConfig.nicknames[hostId] = displayName;
+      else delete updatedConfig.nicknames[hostId];
 
-      if (subDept) {
-          updatedConfig.hostDepartments[hostId] = subDept;
-      } else {
-          delete updatedConfig.hostDepartments[hostId];
-      }
+      if (subDept) updatedConfig.hostDepartments[hostId] = subDept;
+      else delete updatedConfig.hostDepartments[hostId];
+
+      if (excludeAtt) updatedConfig.excludeAttendance[hostId] = true;
+      else delete updatedConfig.excludeAttendance[hostId];
 
       const payload = JSON.stringify(updatedConfig);
       
@@ -197,15 +201,15 @@ export default function HostsProfilePage() {
     if (error) {
         toast.error(error.message);
     } else {
-      // Save Config Settings
-      if (tempDisplayName || tempSubDept) {
-          await saveHostConfig(newHost.host_id as string, tempDisplayName, tempSubDept);
+      if (tempDisplayName || tempSubDept || tempExcludeAtt) {
+          await saveHostConfig(newHost.host_id as string, tempDisplayName, tempSubDept, tempExcludeAtt);
       }
 
       setIsCreateModalOpen(false);
       setNewHost({ role: '', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: new Date().toISOString().split('T')[0] });
       setTempDisplayName('');
       setTempSubDept('');
+      setTempExcludeAtt(false);
       fetchHosts();
       toast.success("Host Profile Created");
     }
@@ -235,9 +239,7 @@ export default function HostsProfilePage() {
     if (error) {
         toast.error(error.message);
     } else {
-      // Save Config Settings
-      await saveHostConfig(selectedHost.host_id, tempDisplayName, tempSubDept);
-
+      await saveHostConfig(selectedHost.host_id, tempDisplayName, tempSubDept, tempExcludeAtt);
       setIsEditing(false);
       fetchHosts();
       toast.success("Profile Updated");
@@ -260,6 +262,9 @@ export default function HostsProfilePage() {
 
   // --- FILTERING ---
   const filteredHosts = hostList.filter(host => {
+    if (activeTab === 'Active' && host.status === 'Resigned') return false;
+    if (activeTab === 'Resigned' && host.status !== 'Resigned') return false;
+
     const query = searchQuery.toLowerCase();
     const activeNick = teamConfig.nicknames?.[host.host_id] || '';
     const activeDept = teamConfig.hostDepartments?.[host.host_id] || '';
@@ -283,7 +288,6 @@ export default function HostsProfilePage() {
     atm: activeHosts.filter(s => s.host_level === 'ATM').length
   };
 
-  // --- HELPER: LEVEL BADGE ---
   const LevelBadge = ({ level }: { level: string }) => {
     if (level === 'DA') return <span className="flex items-center gap-1 px-2 py-1 rounded bg-amber-100 text-amber-700 text-[10px] font-bold border border-amber-200"><Crown size={10}/> DA</span>;
     if (level === 'DB') return <span className="flex items-center gap-1 px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px] font-bold border border-slate-200"><Shield size={10}/> DB</span>;
@@ -293,7 +297,6 @@ export default function HostsProfilePage() {
   return (
     <div className="min-h-screen p-4 md:p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
       
-      {/* HIDDEN INPUT FOR IMAGE UPLOADS */}
       <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
 
       {/* --- HEADER --- */}
@@ -323,45 +326,69 @@ export default function HostsProfilePage() {
         </div>
       </div>
 
-      {/* --- CONTROLS --- */}
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mt-6 flex flex-col sm:flex-row justify-between items-center gap-4">
-        <div className="relative w-full md:w-96">
-          <Search className="absolute left-3 top-2.5 text-slate-300" size={16} />
-          <input 
-            type="text" 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search Name, Level, Host No, or Nickname..." 
-            className="w-full pl-10 pr-4 py-2 text-xs font-bold border border-slate-200 rounded-xl focus:outline-none focus:border-[#6D2158] text-[#6D2158] placeholder-slate-300 transition-all shadow-inner"
-          />
+      {/* --- CONTROLS & TABS --- */}
+      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mt-6 flex flex-col lg:flex-row justify-between items-center gap-4">
+        
+        <div className="flex bg-slate-100 p-1.5 rounded-xl w-full lg:w-auto">
+            <button 
+                onClick={() => setActiveTab('Active')}
+                className={`flex-1 lg:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'Active' ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+                <Users size={16}/> Active
+            </button>
+            <button 
+                onClick={() => setActiveTab('Resigned')}
+                className={`flex-1 lg:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'Resigned' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+                <User size={16}/> Inactive
+            </button>
         </div>
-        <button onClick={() => { 
-            setTempDisplayName(''); 
-            setTempSubDept(''); 
-            setIsCreateModalOpen(true); 
-        }} className="flex items-center gap-2 px-6 py-2 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40 transition-all w-full sm:w-auto justify-center">
-             <Plus size={16} /> New Profile
-        </button>
+
+        <div className="flex flex-col sm:flex-row items-center gap-4 w-full lg:w-auto">
+            <div className="relative w-full sm:w-80">
+              <Search className="absolute left-3 top-3 text-slate-300" size={16} />
+              <input 
+                type="text" 
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search Name, Role, or ID..." 
+                className="w-full pl-10 pr-4 py-2.5 text-xs font-bold border border-slate-200 rounded-xl focus:outline-none focus:border-[#6D2158] text-[#6D2158] placeholder-slate-300 transition-all shadow-inner"
+              />
+            </div>
+            <button onClick={() => { 
+                setTempDisplayName(''); 
+                setTempSubDept(''); 
+                setTempExcludeAtt(false);
+                setIsCreateModalOpen(true); 
+            }} className="flex items-center gap-2 px-6 py-2.5 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40 transition-all w-full sm:w-auto justify-center shrink-0">
+                 <Plus size={16} /> New Profile
+            </button>
+        </div>
       </div>
 
       {/* --- GRID --- */}
       {isLoading ? (
          <div className="text-center py-20 opacity-50 italic">Loading Profiles...</div>
       ) : (
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-6">
         {filteredHosts.map((host) => {
           const configNick = teamConfig.nicknames?.[host.host_id];
           const configDept = teamConfig.hostDepartments?.[host.host_id];
+          const isExcluded = teamConfig.excludeAttendance?.[host.host_id];
 
           return (
           <div key={host.id} onClick={() => { setSelectedHost(host); setIsEditing(false); }}
                className={`group relative rounded-2xl p-0 shadow-sm hover:shadow-xl transition-all duration-300 cursor-pointer overflow-hidden flex flex-col border-2 ${host.status === 'Resigned' ? 'border-rose-100 bg-rose-50/30 grayscale-[50%]' : 'bg-white border-slate-100 hover:border-[#6D2158]/30'}`}>
              
-             {/* Header */}
              <div className={`h-20 relative ${host.status === 'Resigned' ? 'bg-slate-400' : 'bg-gradient-to-r from-[#6D2158] to-[#902468]'}`}>
                 <div className="absolute -bottom-8 left-5">
-                   <div className="w-16 h-16 rounded-2xl border-4 border-white shadow-md overflow-hidden bg-white">
-                      <img src={host.image_url || `https://ui-avatars.com/api/?name=${host.full_name}&background=random`} className="w-full h-full object-cover"/>
+                   <div className="relative w-16 h-16 rounded-2xl border-4 border-white shadow-md overflow-hidden bg-white">
+                      <Image 
+                          src={host.image_url || `https://ui-avatars.com/api/?name=${host.full_name}&background=random`} 
+                          width={64} height={64} 
+                          className="object-cover"
+                          alt="Avatar"
+                      />
                    </div>
                 </div>
                 <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
@@ -370,7 +397,6 @@ export default function HostsProfilePage() {
                 </div>
              </div>
 
-             {/* Content */}
              <div className="pt-10 px-5 pb-5 flex-1 flex flex-col">
                 <div className="flex justify-between items-start mb-1">
                     <h3 className="text-lg font-bold text-slate-800 leading-tight group-hover:text-[#6D2158] transition-colors line-clamp-1">
@@ -383,9 +409,14 @@ export default function HostsProfilePage() {
                     {configDept && <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">{configDept}</span>}
                 </div>
                 
-                {/* AI Known As Badge */}
                 {host.nicknames && <p className="text-[10px] font-bold text-emerald-600 mb-2 italic">AI Knows as: "{host.nicknames}"</p>}
                 
+                {isExcluded && host.status !== 'Resigned' && (
+                    <div className="flex items-center gap-1 text-[9px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-md w-fit mb-2 border border-amber-100">
+                        <EyeOff size={10}/> Excluded from Roster
+                    </div>
+                )}
+
                 {host.status === 'Resigned' && <span className="text-[10px] font-black uppercase text-rose-500 tracking-widest mb-2">Resigned</span>}
                 <div className="mt-auto pt-3 flex items-center justify-between">
                     <LevelBadge level={host.host_level || 'ATM'} />
@@ -394,6 +425,10 @@ export default function HostsProfilePage() {
              </div>
           </div>
         )})}
+        
+        {filteredHosts.length === 0 && (
+            <div className="col-span-full py-12 text-center text-slate-400 font-bold italic">No profiles found.</div>
+        )}
       </div>
       )}
 
@@ -401,19 +436,23 @@ export default function HostsProfilePage() {
       {selectedHost && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
-            <div className="h-32 bg-[#6D2158] relative shrink-0">
+            <div className={`h-32 relative shrink-0 ${selectedHost.status === 'Resigned' ? 'bg-slate-500' : 'bg-[#6D2158]'}`}>
                <button onClick={() => setSelectedHost(null)} className="absolute top-6 right-6 p-2 bg-black/20 text-white rounded-full hover:bg-black/40 transition-colors"><X size={20}/></button>
                <div className="absolute -bottom-10 left-8 flex items-end gap-6">
                  
-                 {/* EDIT AVATAR WITH UPLOAD */}
                  <div 
                      onClick={() => isEditing && !isUploadingImage && fileInputRef.current?.click()}
-                     className={`w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden relative group ${isEditing ? 'cursor-pointer' : ''}`}
+                     className={`relative w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden group ${isEditing ? 'cursor-pointer' : ''}`}
                  >
                      {isUploadingImage ? (
                          <div className="w-full h-full flex items-center justify-center bg-slate-100"><Loader2 className="animate-spin text-[#6D2158]" size={24}/></div>
                      ) : (
-                         <img src={selectedHost.image_url || `https://ui-avatars.com/api/?name=${selectedHost.full_name}`} className="w-full h-full object-cover"/>
+                         <Image 
+                            src={selectedHost.image_url || `https://ui-avatars.com/api/?name=${selectedHost.full_name}`} 
+                            width={112} height={112} 
+                            className="object-cover"
+                            alt="Profile"
+                         />
                      )}
                      {isEditing && !isUploadingImage && (
                          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
@@ -501,6 +540,32 @@ export default function HostsProfilePage() {
                                  )}
                              </div>
                          </div>
+                         
+                         {/* SYSTEM ACCESS ONLY TOGGLE */}
+                         <div className="border-t border-emerald-200 pt-4">
+                             <label className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${tempExcludeAtt ? 'bg-amber-100 border-amber-300' : 'bg-white border-emerald-200'}`}>
+                                <div>
+                                    <div className={`text-xs font-bold flex items-center gap-2 ${tempExcludeAtt ? 'text-amber-800' : 'text-emerald-800'}`}>
+                                        <EyeOff size={14}/> Exclude from Attendance
+                                    </div>
+                                    <div className={`text-[9px] mt-0.5 ${tempExcludeAtt ? 'text-amber-700' : 'text-emerald-600'}`}>
+                                        Hide this user from the daily roster.
+                                    </div>
+                                </div>
+                                {isEditing ? (
+                                    <div className={`w-10 h-6 rounded-full p-1 transition-colors ${tempExcludeAtt ? 'bg-amber-500' : 'bg-slate-300'}`}>
+                                        <div className={`w-4 h-4 rounded-full bg-white transition-transform ${tempExcludeAtt ? 'translate-x-4' : ''}`}></div>
+                                    </div>
+                                ) : (
+                                    <span className={`text-[10px] font-black uppercase ${tempExcludeAtt ? 'text-amber-600' : 'text-slate-400'}`}>
+                                        {tempExcludeAtt ? 'EXCLUDED' : 'INCLUDED'}
+                                    </span>
+                                )}
+                                {isEditing && (
+                                    <input type="checkbox" className="hidden" checked={tempExcludeAtt} onChange={(e) => setTempExcludeAtt(e.target.checked)}/>
+                                )}
+                             </label>
+                         </div>
                      </div>
 
                      <div className="grid grid-cols-2 gap-4">
@@ -577,12 +642,12 @@ export default function HostsProfilePage() {
                 <div className="flex justify-center mb-6">
                     <div 
                         onClick={() => !isUploadingImage && fileInputRef.current?.click()}
-                        className="w-24 h-24 rounded-full border-4 border-slate-200 bg-slate-100 flex flex-col items-center justify-center overflow-hidden cursor-pointer relative group transition-all hover:border-[#6D2158]"
+                        className="relative w-24 h-24 rounded-full border-4 border-slate-200 bg-slate-100 flex flex-col items-center justify-center overflow-hidden cursor-pointer group transition-all hover:border-[#6D2158]"
                     >
                         {isUploadingImage ? (
                             <Loader2 className="animate-spin text-[#6D2158]" size={24}/>
                         ) : newHost.image_url ? (
-                            <img src={newHost.image_url} className="w-full h-full object-cover"/>
+                            <Image src={newHost.image_url} width={96} height={96} className="object-cover" alt="Upload" />
                         ) : (
                             <Camera size={24} className="text-slate-400 group-hover:text-[#6D2158]"/>
                         )}
@@ -643,6 +708,22 @@ export default function HostsProfilePage() {
                                     {availableSubDepts.map(d => <option key={d} value={d}>{d}</option>)}
                                 </select>
                             </div>
+                        </div>
+                        <div className="border-t border-emerald-200 pt-4">
+                             <label className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${tempExcludeAtt ? 'bg-amber-100 border-amber-300' : 'bg-white border-emerald-200'}`}>
+                                <div>
+                                    <div className={`text-xs font-bold flex items-center gap-2 ${tempExcludeAtt ? 'text-amber-800' : 'text-emerald-800'}`}>
+                                        <EyeOff size={14}/> Exclude from Attendance
+                                    </div>
+                                    <div className={`text-[9px] mt-0.5 ${tempExcludeAtt ? 'text-amber-700' : 'text-emerald-600'}`}>
+                                        Hide this user from the daily roster.
+                                    </div>
+                                </div>
+                                <div className={`w-10 h-6 rounded-full p-1 transition-colors ${tempExcludeAtt ? 'bg-amber-500' : 'bg-slate-300'}`}>
+                                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${tempExcludeAtt ? 'translate-x-4' : ''}`}></div>
+                                </div>
+                                <input type="checkbox" className="hidden" checked={tempExcludeAtt} onChange={(e) => setTempExcludeAtt(e.target.checked)}/>
+                             </label>
                         </div>
                     </div>
                 </div>

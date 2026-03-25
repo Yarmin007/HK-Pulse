@@ -4,6 +4,7 @@ import { Loader2, Maximize, ZoomIn, ZoomOut, Phone, Hash, Building2, Download, S
 import { supabase } from '@/lib/supabase';
 import PageHeader from '@/components/PageHeader';
 import { format } from 'date-fns';
+import Image from 'next/image';
 
 type Host = {
   id: string;
@@ -237,7 +238,7 @@ export default function OrgChartPage() {
     return (
       <div className={`relative flex flex-col items-center p-4 w-48 min-h-[190px] rounded-2xl shadow-sm border-t-4 bg-white transition-all print:shadow-none print:border-slate-300 print:border-2 ${borderColor} ${isTBA ? 'opacity-60 grayscale' : ''} ${isMe ? 'ring-4 ring-amber-400 bg-amber-50 scale-105 z-20 shadow-xl' : ''}`}>
         {isMe && <div className="absolute -top-3 -right-3 bg-amber-400 text-white p-1.5 rounded-full shadow-md print:hidden"><Star size={16} fill="currentColor"/></div>}
-        <img src={getAvatar(host)} className="w-16 h-16 rounded-full border-4 border-white shadow-sm -mt-10 bg-slate-100 object-cover shrink-0 print:border-2 print:border-slate-300" alt="Profile"/>
+        <Image src={getAvatar(host)} width={64} height={64} className="w-16 h-16 rounded-full border-4 border-white shadow-sm -mt-10 bg-slate-100 object-cover shrink-0 print:border-2 print:border-slate-300" alt="Profile"/>
         <h3 className={`font-black text-[13px] mt-2 text-center leading-tight line-clamp-2 ${isMe ? 'text-[#6D2158]' : 'text-slate-800'}`}>{host.full_name}</h3>
         <p className="text-[9px] font-bold text-slate-400 uppercase text-center mt-1 h-6 line-clamp-2 leading-tight">{host.role}</p>
         
@@ -265,7 +266,7 @@ export default function OrgChartPage() {
                const isMe = h.host_id === loggedInId;
                return (
                <div key={h.id} className={`flex items-center gap-3 p-2 rounded-xl border shadow-sm transition-colors print:shadow-none print:border-slate-200 ${isMe ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200' : 'bg-slate-50 border-slate-100'}`}>
-                  <img src={getAvatar(h)} className="w-10 h-10 rounded-full object-cover shadow-sm border-2 border-white shrink-0 print:border-slate-200" alt="Avatar" />
+                  <Image src={getAvatar(h)} width={40} height={40} className="w-10 h-10 rounded-full object-cover shadow-sm border-2 border-white shrink-0 print:border-slate-200" alt="Avatar" />
                   <div className="flex-1 min-w-0 text-left">
                      <p className={`text-[11px] font-black truncate leading-tight flex items-center gap-1 ${isMe ? 'text-[#6D2158]' : 'text-slate-700'}`}>
                          {h.full_name} {isMe && <Star size={10} className="text-amber-500 print:hidden" fill="currentColor"/>}

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Search, Wand2, Loader2, UserCheck, 
-  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight, BarChart2, HeartPulse, AlertCircle, CalendarDays, Pill
+  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight, BarChart2, HeartPulse, AlertCircle, CalendarDays, Pill, AlertTriangle, ShieldCheck
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 import { computeLeaveBalancesRPC } from '@/lib/payrollMath'; 
 
 // --- CONFIG ---
-const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT'];
+const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT', 'RO'];
 
 const STATUS_COLORS: Record<string, string> = {
   'P': 'bg-slate-50 text-slate-700',
@@ -26,6 +26,7 @@ const STATUS_COLORS: Record<string, string> = {
   'PA': 'bg-teal-100 text-teal-700 font-black',
   'MA': 'bg-pink-100 text-pink-700 font-black',
   'EL': 'bg-orange-100 text-orange-700 font-black',
+  'RO': 'bg-yellow-300 text-yellow-900 font-black shadow-sm ring-1 ring-yellow-400', // Replacement Off
 };
 
 // --- OPTIMIZED MEMOIZED CELL COMPONENT ---
@@ -145,13 +146,14 @@ export default function AttendancePage() {
   const [historicalStats, setHistoricalStats] = useState<any[]>([]); 
   const [searchQuery, setSearchQuery] = useState('');
   const [publicHolidays, setPublicHolidays] = useState<{date: string, name: string}[]>([]);
+  
+  const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {}, excludeAttendance: {} });
 
-  // Cell Edit Modal State
   const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string } | null>(null);
 
-  // Modals
   const [isMagicOpen, setIsMagicOpen] = useState(false);
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
+  const [isROModalOpen, setIsROModalOpen] = useState(false); // NEW MODAL STATE
 
   // Magic Paste State
   const [magicText, setMagicText] = useState('');
@@ -159,11 +161,9 @@ export default function AttendancePage() {
   const [magicResults, setMagicResults] = useState<any>(null);
   const [linkMappings, setLinkMappings] = useState<Record<string, string>>({});
 
-  // EXCEL ENGINE STATE
   const [isDragging, setIsDragging] = useState(false);
   const selectionRef = useRef({ r1: -1, c1: -1, r2: -1, c2: -1 });
 
-  // PERFORMANCE REFS FOR STABLE CALLBACKS
   const filteredHostsRef = useRef<any[]>([]);
   const daysInYearRef = useRef<string[]>([]);
 
@@ -206,7 +206,6 @@ export default function AttendancePage() {
       return days;
   }, [selectedYear]);
 
-  // Update refs instantly when data changes
   useEffect(() => { daysInYearRef.current = daysInYear; }, [daysInYear]);
 
   const saveToDatabase = useCallback(async (hostId: string, dateStr: string, status: string, note?: string, shift?: string) => {
@@ -300,7 +299,7 @@ export default function AttendancePage() {
     setIsScrolled(false);
     
     const [constRes, hostRes, rpcRes] = await Promise.all([
-        supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank']),
+        supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank', 'team_viewer_config']),
         supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
         supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate }) 
     ]);
@@ -318,6 +317,10 @@ export default function AttendancePage() {
         constRes.data.filter((c: any) => c.type === 'role_rank').forEach((c: any) => {
             const [role, rank] = c.label.split('::');
             if (role && rank) roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
+        });
+
+        constRes.data.filter((c: any) => c.type === 'team_viewer_config').forEach((c: any) => {
+            try { setTeamConfig(JSON.parse(c.label)); } catch(e) {}
         });
     }
     
@@ -342,7 +345,6 @@ export default function AttendancePage() {
     setIsLoading(false);
   };
 
-  // PERFORMANCE FIX: Create a Hash Map for O(1) instant cell lookups
   const attendanceMap = useMemo(() => {
       const map = new Map<string, any>();
       attendance.forEach(a => map.set(`${a.host_id}_${a.date}`, a));
@@ -353,7 +355,6 @@ export default function AttendancePage() {
     if (hosts.length === 0) return hosts;
 
     return hosts.map(host => {
-      // Passes exactly 6 arguments
       const mathResult = computeLeaveBalancesRPC(host, attendance, historicalStats, cutoffDate, publicHolidays, []);
       if (!mathResult) return host;
       return { ...host, ...mathResult };
@@ -361,11 +362,65 @@ export default function AttendancePage() {
   }, [hosts, attendance, historicalStats, cutoffDate, publicHolidays]);
 
   const filteredHosts = useMemo(() => {
-    return hostBalances.filter(h => h.full_name.toLowerCase().includes(searchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [hostBalances, searchQuery]);
+    return hostBalances.filter(h => {
+        if (teamConfig.excludeAttendance?.[h.host_id]) return false;
 
-  // Update ref instantly when filteredHosts changes
+        const query = searchQuery.toLowerCase();
+        const configNick = (teamConfig.nicknames?.[h.host_id] || '').toLowerCase();
+        
+        return h.full_name.toLowerCase().includes(query) || 
+               h.host_id.toLowerCase().includes(query) ||
+               configNick.includes(query) ||
+               (h.nicknames && h.nicknames.toLowerCase().includes(query));
+    });
+  }, [hostBalances, searchQuery, teamConfig]);
+
   useEffect(() => { filteredHostsRef.current = filteredHosts; }, [filteredHosts]);
+
+  // =========================================================================
+  // ⚡ CUSTOM RO (REPLACEMENT OFF) CALCULATOR ENGINE
+  // =========================================================================
+  const roLedger = useMemo(() => {
+      const ledger: Record<string, any> = {};
+      
+      hostBalances.forEach(h => {
+          ledger[h.host_id] = { 
+              host: h, 
+              earned: 0, 
+              taken: 0, 
+              balance: 0, 
+              earnedDates: [] as string[], 
+              takenDates: [] as string[] 
+          };
+      });
+
+      attendance.forEach(a => {
+          if (!a.date || !ledger[a.host_id]) return;
+          const noteUpper = (a.shift_note || '').toUpperCase();
+          
+          // Earning an RO: They physically worked, but the comment notes it as a Pending Leave
+          if (noteUpper.includes('WORKING DAY')) {
+              ledger[a.host_id].earned += 1;
+              ledger[a.host_id].earnedDates.push(a.date);
+          }
+          
+          // Taking an RO: They are physically off today (Status RO)
+          if (a.status_code === 'RO') {
+              ledger[a.host_id].taken += 1;
+              ledger[a.host_id].takenDates.push(a.date);
+          }
+      });
+
+      Object.values(ledger).forEach(l => {
+          l.balance = l.earned - l.taken;
+      });
+
+      // Filter to only show people who have some sort of RO history or balance
+      return Object.values(ledger)
+          .filter(l => l.balance > 0 || l.earned > 0)
+          .sort((a, b) => b.balance - a.balance);
+  }, [attendance, hostBalances]);
+
 
   // =========================================================================
   // 📊 DATA INSIGHTS ENGINE
@@ -373,6 +428,7 @@ export default function AttendancePage() {
   const insightsData = useMemo(() => {
       let totalLiability = 0, totalAL = 0, totalOff = 0, totalPH = 0;
       let totalLeavesTaken = 0; 
+      let totalRO_Owed = 0; 
 
       const monthlyStats = Array.from({length: 12}, () => ({
           off: 0, al: 0, ph: 0, sl: 0,
@@ -387,12 +443,17 @@ export default function AttendancePage() {
           totalPH += parseFloat(h.balPH) || 0;
       });
 
+      // Add the total RO balance to the liability
+      roLedger.forEach(l => {
+          if (l.balance > 0) totalRO_Owed += l.balance;
+      });
+
       attendance.forEach(a => {
           if (!a.date) return;
           const d = parseISO(a.date);
           const m = d.getMonth();
 
-          if (['O', 'OFF', 'OT'].includes(a.status_code)) {
+          if (['O', 'OFF', 'OT', 'RO'].includes(a.status_code)) {
               monthlyStats[m].off++;
               totalLeavesTaken++;
           }
@@ -423,12 +484,11 @@ export default function AttendancePage() {
           .sort((a, b) => (parseFloat(b.balTotal) || 0) - (parseFloat(a.balTotal) || 0))
           .slice(0, 5);
 
-      return { totalLiability, totalAL, totalOff, totalPH, totalLeavesTaken, monthlyStats, topOwed };
-  }, [hostBalances, attendance, hosts]);
+      return { totalLiability, totalAL, totalOff, totalPH, totalLeavesTaken, totalRO_Owed, monthlyStats, topOwed };
+  }, [hostBalances, attendance, hosts, roLedger]);
 
 
   // --- EXCEL ENGINE FUNCTIONS (Memoized for Performance) ---
-
   const updateSelectionVisuals = useCallback(() => {
       document.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
       const { r1, c1, r2, c2 } = selectionRef.current;
@@ -843,14 +903,18 @@ export default function AttendancePage() {
   };
 
   const memoizedTableBody = useMemo(() => {
-      return filteredHosts.map((host, hostIdx) => (
+      return filteredHosts.map((host, hostIdx) => {
+          const configNick = teamConfig.nicknames?.[host.host_id];
+          const displayName = configNick ? `${host.full_name} (${configNick})` : host.full_name;
+
+          return (
           <tr key={host.id} className="hover:bg-slate-50/50 transition-colors group">
               <td className="max-md:static md:sticky md:left-0 z-50 bg-white border-b border-r border-slate-200 p-2 text-center font-black text-slate-300 w-[40px] min-w-[40px] max-w-[40px] box-border">
                   {hostIdx + 1}
               </td>
 
               <td className="max-md:static md:sticky md:left-[40px] z-50 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 p-2 pl-3 w-[240px] min-w-[240px] max-w-[240px] box-border">
-                  <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={host.full_name}>{host.full_name}</div>
+                  <div className="font-bold text-slate-800 text-xs truncate w-[220px]" title={displayName}>{displayName}</div>
                   <div className="text-[9px] text-slate-400 uppercase mt-0.5 truncate w-[220px]" title={`${host.host_id} • ${host.role}`}>{host.host_id} • {host.role}</div>
                   {host.joining_date ? (
                       <div className="text-[8px] text-emerald-600 font-bold mt-0.5 truncate w-[220px]">
@@ -930,8 +994,8 @@ export default function AttendancePage() {
                   )}
               </td>
           </tr>
-      ));
-  }, [filteredHosts, daysInYear, attendanceMap, publicHolidays, handleOpenEdit, handleQuickSave, selectedYear]);
+      )});
+  }, [filteredHosts, daysInYear, attendanceMap, publicHolidays, handleOpenEdit, handleQuickSave, selectedYear, teamConfig]);
 
   return (
     <div className="absolute inset-0 md:left-64 pt-16 md:pt-0 flex flex-col bg-[#FDFBFD] font-sans text-slate-800 overflow-hidden">
@@ -975,10 +1039,14 @@ export default function AttendancePage() {
 
             <div className="relative flex-1 sm:w-48 mt-5">
                 <Search className="absolute left-3 top-2.5 text-slate-400" size={14}/>
-                <input type="text" placeholder="Search Host..." className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl font-bold text-xs bg-slate-50 focus:bg-white focus:border-[#6D2158] outline-none transition-all shadow-inner" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                <input type="text" placeholder="Search Host or Nickname..." className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl font-bold text-xs bg-slate-50 focus:bg-white focus:border-[#6D2158] outline-none transition-all shadow-inner" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
             </div>
 
-            {/* ⚡ NEW: INSIGHTS BUTTON */}
+            {/* NEW TOP RO BUTTON */}
+            <button onClick={() => setIsROModalOpen(true)} className="bg-yellow-400 text-yellow-900 px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-yellow-500 transition-all mt-5">
+                <AlertTriangle size={14}/> Pending Leaves
+            </button>
+
             <button onClick={() => setIsInsightsOpen(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-blue-700 transition-all mt-5">
                 <BarChart2 size={14}/> Analytics
             </button>
@@ -1093,6 +1161,7 @@ export default function AttendancePage() {
                       <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><UserCheck size={14}/> Set Status Code</label>
                       <div className="grid grid-cols-4 gap-2">
                           {STATUS_CODES.map(code => {
+                              if (code === 'RO') return null; // Kept separate
                               const isSelected = editCell.status === code;
                               return (
                                   <button 
@@ -1111,6 +1180,27 @@ export default function AttendancePage() {
                           >
                               CLR
                           </button>
+                      </div>
+
+                      {/* --- REBUILT RO WORKFLOW BUTTONS --- */}
+                      <div className="mt-4 pt-4 border-t border-slate-100">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-1">
+                              <AlertTriangle size={12} className="text-amber-500"/> Pending Leave (RO) Actions
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                              <button 
+                                  onClick={() => setEditCell({...editCell, note: 'WORKING DAY - PENDING LEAVE'})}
+                                  className="py-3 bg-amber-50 text-amber-700 border border-amber-300 rounded-xl text-[10px] font-black uppercase hover:bg-amber-100 transition-colors shadow-sm"
+                              >
+                                  Bank Working Day
+                              </button>
+                              <button 
+                                  onClick={() => setEditCell({...editCell, status: 'RO'})}
+                                  className="py-3 bg-yellow-300 text-yellow-900 border border-yellow-400 rounded-xl text-[10px] font-black uppercase hover:bg-yellow-400 transition-colors shadow-sm"
+                              >
+                                  Grant RO (Off)
+                              </button>
+                          </div>
                       </div>
                   </div>
 
@@ -1145,7 +1235,56 @@ export default function AttendancePage() {
           </div>
       )}
 
-      {/* ⚡ NEW: INSIGHTS MODAL ⚡ */}
+      {/* ⚡ NEW PENDING LEAVE MODAL ⚡ */}
+      {isROModalOpen && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+              <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden animate-in zoom-in-95">
+                  <div className="p-6 bg-yellow-400 text-yellow-900 flex justify-between items-center shrink-0">
+                      <div>
+                          <h3 className="text-xl font-black flex items-center gap-2 tracking-tight"><AlertTriangle size={24}/> Pending Leaves Ledger</h3>
+                          <p className="text-[10px] text-yellow-800 font-bold uppercase tracking-widest mt-1">Staff owed replacement days</p>
+                      </div>
+                      <button onClick={() => setIsROModalOpen(false)} className="bg-black/10 p-2 rounded-full hover:bg-black/20 transition-colors text-yellow-900"><X size={18}/></button>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+                      {roLedger.length === 0 ? (
+                          <div className="text-center py-10 text-slate-400 font-bold italic">No pending leaves to track.</div>
+                      ) : (
+                          roLedger.map(l => (
+                              <div key={l.host.id} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+                                  <div className="flex justify-between items-start mb-3">
+                                      <div>
+                                          <p className="font-black text-slate-800 text-sm">{l.host.full_name}</p>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.role}</p>
+                                      </div>
+                                      <div className="text-right">
+                                          <span className={`text-xl font-black ${l.balance > 0 ? 'text-amber-600' : 'text-slate-400'}`}>{l.balance}</span>
+                                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Days Owed</span>
+                                      </div>
+                                  </div>
+                                  
+                                  {l.earnedDates.length > 0 && (
+                                      <div className="mt-2 pt-2 border-t border-slate-200">
+                                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Dates Banked:</p>
+                                          <div className="flex flex-wrap gap-1.5">
+                                              {l.earnedDates.map((dateStr: string, idx: number) => (
+                                                  <span key={idx} className="bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded text-[10px] font-bold">
+                                                      {format(parseISO(dateStr), 'dd MMM')}
+                                                  </span>
+                                              ))}
+                                          </div>
+                                      </div>
+                                  )}
+                              </div>
+                          ))
+                      )}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* ⚡ INSIGHTS MODAL ⚡ */}
       {isInsightsOpen && (
           <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
               <div className="bg-[#FDFBFD] w-full max-w-5xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
@@ -1163,11 +1302,16 @@ export default function AttendancePage() {
                   <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
                       
                       {/* Top KPIs */}
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center">
                               <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Total Liability</span>
                               <span className="text-3xl font-black text-rose-600">{insightsData.totalLiability.toFixed(1)}</span>
                               <span className="text-[8px] font-bold uppercase text-slate-400 mt-1">Total Days Owed</span>
+                          </div>
+                          <div className="bg-yellow-50 p-4 rounded-2xl border border-yellow-200 shadow-sm flex flex-col justify-center items-center">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-yellow-600 mb-1">Pending Leaves</span>
+                              <span className="text-3xl font-black text-yellow-700">{insightsData.totalRO_Owed}</span>
+                              <span className="text-[8px] font-bold uppercase text-yellow-700/60 mt-1">Days Owed (RO)</span>
                           </div>
                           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center">
                               <span className="text-[10px] font-black uppercase tracking-widest text-cyan-500 mb-1">Annual Leave</span>
@@ -1186,10 +1330,10 @@ export default function AttendancePage() {
                           </div>
                       </div>
 
-                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                           
                           {/* Monthly Clearance Breakdown */}
-                          <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col">
+                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col">
                               <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-6 flex items-center gap-2">
                                   <CalendarDays size={14} className="text-blue-500"/> Monthly Clearance & Sick Leaves
                               </h4>
@@ -1234,29 +1378,47 @@ export default function AttendancePage() {
                               </div>
                           </div>
 
-                          {/* Top Liability Staff */}
-                          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col">
-                              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-6 flex items-center gap-2">
-                                  <AlertCircle size={14} className="text-amber-500"/> Highest Balances
-                              </h4>
-                              
-                              <div className="space-y-4">
-                                  {insightsData.topOwed.map((host, idx) => (
-                                      <div key={host.id} className="flex items-center justify-between group">
-                                          <div className="flex items-center gap-3 min-w-0 pr-2">
-                                              <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${idx === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>
-                                                  {idx + 1}
+                          <div className="space-y-6 flex flex-col">
+                              {/* Top Liability Staff */}
+                              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col flex-1">
+                                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-6 flex items-center gap-2">
+                                      <AlertCircle size={14} className="text-amber-500"/> Highest Overall Balances
+                                  </h4>
+                                  
+                                  <div className="space-y-4">
+                                      {insightsData.topOwed.map((host, idx) => (
+                                          <div key={host.id} className="flex items-center justify-between group">
+                                              <div className="flex items-center gap-3 min-w-0 pr-2">
+                                                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black shrink-0 ${idx === 0 ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>
+                                                      {idx + 1}
+                                                  </div>
+                                                  <div className="truncate">
+                                                      <p className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-[#6D2158] transition-colors">{host.full_name}</p>
+                                                      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 truncate leading-tight">{host.role}</p>
+                                                  </div>
                                               </div>
-                                              <div className="truncate">
-                                                  <p className="text-sm font-bold text-slate-800 truncate leading-tight group-hover:text-[#6D2158] transition-colors">{host.full_name}</p>
-                                                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 truncate leading-tight">{host.role}</p>
+                                              <div className="text-right shrink-0">
+                                                  <span className="text-sm font-black text-[#6D2158]">{host.balTotal}</span>
                                               </div>
                                           </div>
-                                          <div className="text-right shrink-0">
-                                              <span className="text-sm font-black text-[#6D2158]">{host.balTotal}</span>
+                                      ))}
+                                  </div>
+                              </div>
+
+                              {/* NEW: Top RO Liability Staff */}
+                              <div className="bg-yellow-50 rounded-2xl border border-yellow-200 shadow-sm p-6 flex flex-col flex-1">
+                                  <h4 className="text-[10px] font-black uppercase tracking-widest text-yellow-700 mb-6 flex items-center gap-2">
+                                      <AlertTriangle size={14} className="text-yellow-600"/> Highest Pending Leaves (RO)
+                                  </h4>
+                                  <div className="space-y-4">
+                                      {roLedger.slice(0, 5).map((l, idx) => (
+                                          <div key={l.host.id} className="flex items-center justify-between">
+                                              <span className="text-sm font-bold text-yellow-900">{l.host.full_name}</span>
+                                              <span className="text-sm font-black text-yellow-700">{l.balance} Days</span>
                                           </div>
-                                      </div>
-                                  ))}
+                                      ))}
+                                      {roLedger.length === 0 && <p className="text-xs italic text-yellow-700/50">No pending leaves (RO) tracked currently.</p>}
+                                  </div>
                               </div>
                           </div>
 

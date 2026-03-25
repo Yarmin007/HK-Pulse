@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import Image from 'next/image';
 
 type Host = {
   id: string;
@@ -138,11 +139,11 @@ export default function ContactList() {
                             <button 
                                 onClick={() => host.image_url && setSelectedImage({url: host.image_url, name: host.full_name})}
                                 disabled={!host.image_url}
-                                className={`w-12 h-12 md:w-14 md:h-14 rounded-xl md:rounded-[1.25rem] bg-purple-50 text-[#6D2158] flex items-center justify-center font-black text-lg md:text-xl shrink-0 shadow-sm border border-slate-100 md:border-slate-200 overflow-hidden ${host.image_url ? 'cursor-pointer active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[#6D2158]/30' : 'cursor-default'}`}
+                                className={`relative w-12 h-12 md:w-14 md:h-14 rounded-xl md:rounded-[1.25rem] bg-purple-50 text-[#6D2158] flex items-center justify-center font-black text-lg md:text-xl shrink-0 shadow-sm border border-slate-100 md:border-slate-200 overflow-hidden ${host.image_url ? 'cursor-pointer active:scale-95 transition-transform ring-2 ring-transparent hover:ring-[#6D2158]/30' : 'cursor-default'}`}
                                 title={host.image_url ? "View Picture" : "No picture available"}
                             >
                                 {host.image_url ? (
-                                    <img src={host.image_url} alt={host.full_name} className="w-full h-full object-cover" />
+                                    <Image src={host.image_url} alt={host.full_name} fill sizes="(max-width: 768px) 48px, 56px" className="object-cover" />
                                 ) : (
                                     (host.full_name || 'U').charAt(0)
                                 )}
@@ -254,13 +255,16 @@ export default function ContactList() {
               </div>
 
               {/* Image Container */}
-              <div className="w-full h-full flex items-center justify-center p-4 md:p-12" onClick={() => setSelectedImage(null)}>
-                  <img 
-                      src={selectedImage.url} 
-                      alt={selectedImage.name} 
-                      className="max-w-full max-h-[85vh] rounded-3xl object-contain shadow-2xl animate-in zoom-in-95 duration-300"
-                      onClick={(e) => e.stopPropagation()} // Prevent click from closing when tapping the image itself
-                  />
+              <div className="w-full h-full flex items-center justify-center p-4 md:p-12 relative" onClick={() => setSelectedImage(null)}>
+                  <div className="relative w-full h-full max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
+                      <Image 
+                          src={selectedImage.url} 
+                          alt={selectedImage.name} 
+                          fill
+                          sizes="100vw"
+                          className="object-contain drop-shadow-2xl animate-in zoom-in-95 duration-300"
+                      />
+                  </div>
               </div>
           </div>
       )}

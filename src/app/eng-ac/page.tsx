@@ -58,6 +58,9 @@ export default function EngineeringACBoard() {
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
+  // NEW: Holds the all-time saved milliseconds from the database trigger
+  const [baseAllTimeMs, setBaseAllTimeMs] = useState(0);
+
   // Live Clock (Ticks every 60 seconds)
   useEffect(() => {
       const timer = setInterval(() => setCurrentTime(new Date()), 60000); 
@@ -69,15 +72,21 @@ export default function EngineeringACBoard() {
       const sevenDaysAgo = new Date();
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-      const [summaryRes, acRes, historyRes] = await Promise.all([
+      const [summaryRes, acRes, historyRes, constRes] = await Promise.all([
           supabase.from('hsk_daily_summary').select('villa_number, status').eq('report_date', todayStr),
           supabase.from('hsk_ac_tracker').select('*'),
-          supabase.from('hsk_ac_history').select('*').gte('logged_at', sevenDaysAgo.toISOString()).order('logged_at', { ascending: false })
+          supabase.from('hsk_ac_history').select('*').gte('logged_at', sevenDaysAgo.toISOString()).order('logged_at', { ascending: false }),
+          supabase.from('hsk_constants').select('label').eq('type', 'ac_energy_saved_ms').maybeSingle()
       ]);
 
       const summaryData = summaryRes.data || [];
       const acData = acRes.data || [];
       const hData = historyRes.data || [];
+
+      // Set the all-time base MS from database trigger
+      if (constRes.data && constRes.data.label) {
+          setBaseAllTimeMs(parseInt(constRes.data.label, 10) || 0);
+      }
 
       const dataMap: Record<string, VillaStatus> = {};
       
@@ -109,15 +118,31 @@ export default function EngineeringACBoard() {
   useEffect(() => {
       const channel = supabase
           .channel('eng-ac-live-updates')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_ac_tracker' }, () => {
-              fetchData(); 
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_ac_tracker' }, (payload) => {
+              const newRecord = payload.new as any;
+              if (newRecord && newRecord.villa_number) {
+                  setVillasData(prev => {
+                      const existing = prev[newRecord.villa_number];
+                      if (!existing) return prev;
+                      return {
+                          ...prev,
+                          [newRecord.villa_number]: {
+                              ...existing,
+                              ac_status: newRecord.status,
+                              updated_at: newRecord.updated_at,
+                              updated_by_name: newRecord.host_name
+                          }
+                      };
+                  });
+                  setLastUpdated(new Date()); // Update the dashboard sync clock
+              }
           })
           .subscribe();
 
       return () => {
           supabase.removeChannel(channel);
       };
-  }, [fetchData]);
+  }, []);
 
   const vacantWithAcOn = Object.values(villasData).filter(v => (v.guest_status === 'VAC' || v.guest_status === 'VM/VAC' || v.guest_status === 'DEP') && v.ac_status === 'ON').length;
   const totalAcOff = Object.values(villasData).filter(v => v.ac_status === 'OFF').length;
@@ -143,7 +168,7 @@ export default function EngineeringACBoard() {
   const chartData = generateChartData();
 
   // --- DEEP INSIGHTS CALCULATION (Total Time & Top 5) ---
-  let totalOffMs = 0;
+  let totalOffMs = baseAllTimeMs; // Start with the all-time database amount
   const villaOffStats: Record<string, number> = {};
 
   for (let i = 1; i <= TOTAL_VILLAS; i++) {
@@ -154,12 +179,12 @@ export default function EngineeringACBoard() {
       const vLogs = historyData.filter(log => log.villa_number === vNum).sort((a, b) => new Date(a.logged_at).getTime() - new Date(b.logged_at).getTime());
       let currentOffTime: number | null = null;
 
+      // 7-Day loop ONLY for the leaderboard (not added to totalOffMs)
       vLogs.forEach(log => {
           if (log.status === 'OFF') {
               currentOffTime = new Date(log.logged_at).getTime();
           } else if (log.status === 'ON' && currentOffTime !== null) {
               const duration = new Date(log.logged_at).getTime() - currentOffTime;
-              totalOffMs += duration;
               villaOffStats[vNum] += duration;
               currentOffTime = null;
           }
@@ -176,8 +201,8 @@ export default function EngineeringACBoard() {
            
            if (offStart !== null) {
                const duration = Math.max(0, currentTime.getTime() - offStart);
-               totalOffMs += duration;
-               villaOffStats[vNum] += duration;
+               totalOffMs += duration; // Add live actively-running time to All-Time Total
+               villaOffStats[vNum] += duration; // Add live actively-running time to 7-Day Leaderboard
            }
       }
   }
@@ -359,7 +384,7 @@ export default function EngineeringACBoard() {
                             </div>
                             <div>
                                 <h3 className="text-sm font-black uppercase tracking-widest text-emerald-100 mb-2 flex items-center gap-2">
-                                    <Zap size={18}/> Energy Hours Saved
+                                    <Zap size={18}/> All-Time Hours Saved
                                 </h3>
                                 <p className="text-7xl font-black mt-2 tracking-tighter">{totalHoursSaved}<span className="text-3xl text-emerald-200">h</span></p>
                                 <p className="text-sm font-medium text-emerald-100 mt-4 max-w-[90%]">Total runtime saved across all properties by proactively powering down AC units.</p>
@@ -376,7 +401,7 @@ export default function EngineeringACBoard() {
                         {/* Top 5 Leaderboard */}
                         <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 col-span-1 lg:col-span-1">
                             <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-6 flex items-center gap-2">
-                                <Trophy size={18} className="text-[#6D2158]"/> Top 5 Energy Savers
+                                <Trophy size={18} className="text-[#6D2158]"/> Top 5 Savers (7 Days)
                             </h3>
                             <div className="space-y-4">
                                 {topSavers.map((saver, idx) => (
