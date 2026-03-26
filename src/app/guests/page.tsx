@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Edit3, X, ChevronLeft, ChevronRight,
   FileSpreadsheet, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock,
-  Shirt
+  Shirt, Trash2, Info
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -142,6 +142,16 @@ export default function HousekeepingSummaryPage() {
   
   const [isSarongModalOpen, setIsSarongModalOpen] = useState(false);
 
+  // --- NEW: Custom Confirm Dialog State ---
+  const [confirmDialog, setConfirmDialog] = useState<{
+      isOpen: boolean;
+      title: string;
+      message: string;
+      confirmText?: string;
+      confirmColor?: string;
+      onConfirm: () => void;
+  } | null>(null);
+
   useEffect(() => {
     const sessionData = localStorage.getItem('hk_pulse_session');
     if (sessionData) {
@@ -156,8 +166,17 @@ export default function HousekeepingSummaryPage() {
     const channel = supabase
         .channel('daily_summary_changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_summary' }, (payload) => {
-            fetchDailyData(false); 
-            toast.success("Summary updated by another user");
+            const newRec = payload.new as any;
+            
+            if (newRec && newRec.report_date === selectedDate) {
+                setMasterList(prev => prev.map(v => {
+                    if (normalizeVilla(v.villa_number) === normalizeVilla(newRec.villa_number)) {
+                        return { ...v, ...newRec, villa_number: v.villa_number };
+                    }
+                    return v;
+                }));
+                setLastSyncTime(new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' }));
+            }
         })
         .subscribe();
 
@@ -235,6 +254,34 @@ export default function HousekeepingSummaryPage() {
     setIsProcessing(false);
   };
 
+  const handleCloneToConnected = (baseVilla: string) => {
+      if (!editingRecord) return;
+      const targetVillas = baseVilla === '87' ? ['88'] : ['56', '58'];
+      
+      setConfirmDialog({
+          isOpen: true,
+          title: "Clone Guest Profile",
+          message: `Clone this guest profile to connected Villa(s) ${targetVillas.join(', ')}?`,
+          confirmText: "Clone",
+          confirmColor: "bg-indigo-600 hover:bg-indigo-700",
+          onConfirm: async () => {
+              setConfirmDialog(null);
+              setIsProcessing(true);
+              for (const v of targetVillas) {
+                  const targetRec = masterList.find(r => r.villa_number === v);
+                  if (targetRec) {
+                      const payload = { ...editingRecord, id: targetRec.id, villa_number: v };
+                      if (targetRec.id) await supabase.from('hsk_daily_summary').update(payload).eq('id', targetRec.id);
+                      else await supabase.from('hsk_daily_summary').insert(payload);
+                  }
+              }
+              setIsProcessing(false);
+              fetchDailyData();
+              toast.success(`Guest cloned to ${targetVillas.join(', ')}`);
+          }
+      });
+  };
+
   const handleApproveUpdate = async () => {
       setIsProcessing(true);
       await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
@@ -249,17 +296,29 @@ export default function HousekeepingSummaryPage() {
       toast.success("Summary synchronized successfully.");
   };
 
+  const removeChange = (index: number) => {
+      const changeToRemove = changes[index];
+      const newChanges = [...changes];
+      newChanges.splice(index, 1);
+      setChanges(newChanges);
+
+      const originalRec = masterList.find(r => r.villa_number === changeToRemove.villa);
+      if (originalRec) {
+          setPendingData(prev => prev.map(p => p.villa_number === changeToRemove.villa ? { ...originalRec } : p));
+      }
+  };
+
   const updatePendingRecord = (villa: string, field: keyof GuestRecord, value: string) => {
       setPendingData(prev => prev.map(p => p.villa_number === villa ? { ...p, [field]: value } : p));
   };
 
   const handleManualMove = async () => {
-      if (!moveData.from || !moveData.to) return alert("Please specify both villas.");
+      if (!moveData.from || !moveData.to) return toast.error("Please specify both villas.");
       
       const fromRec = masterList.find(r => r.villa_number === moveData.from);
       const toRec = masterList.find(r => r.villa_number === moveData.to);
       
-      if (!fromRec || !toRec) return alert("Invalid villa numbers.");
+      if (!fromRec || !toRec) return toast.error("Invalid villa numbers.");
 
       setIsProcessing(true);
 
@@ -294,6 +353,47 @@ export default function HousekeepingSummaryPage() {
       fetchDailyData();
       setIsProcessing(false);
       toast.success(`Moved Guest from ${moveData.from} to ${moveData.to}`);
+
+      // RETROSPECTIVE MOVE PROMPT
+      if (selectedDate < getToday()) {
+          setConfirmDialog({
+              isOpen: true,
+              title: "Apply Move to Today?",
+              message: `This move was recorded for a past date (${selectedDate}). Do you want to apply this move to TODAY (${getToday()}) as well?`,
+              confirmText: "Apply to Today",
+              confirmColor: "bg-[#6D2158] hover:bg-[#5a1b49]",
+              onConfirm: async () => {
+                  setConfirmDialog(null);
+                  const { data: todayData } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getToday()).in('villa_number', [moveData.from, moveData.to]);
+                  const todayFrom = todayData?.find(r => r.villa_number === moveData.from);
+                  const todayTo = todayData?.find(r => r.villa_number === moveData.to);
+                  
+                  // For today, the destination is just OCC. The source is entirely VAC.
+                  const todayToPayload = { 
+                      ...toPayload, 
+                      report_date: getToday(),
+                      status: 'OCC'
+                  };
+                  delete todayToPayload.id;
+                  
+                  const todayFromPayload = { 
+                      ...fromPayload, 
+                      report_date: getToday(),
+                      status: 'VAC',
+                      guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '', preferences: '', gem_name: '', stay_id: '', arrival_time: '', departure_time: ''
+                  };
+                  delete todayFromPayload.id;
+
+                  if (todayTo) await supabase.from('hsk_daily_summary').update(todayToPayload).eq('id', todayTo.id);
+                  else await supabase.from('hsk_daily_summary').insert(todayToPayload);
+
+                  if (todayFrom) await supabase.from('hsk_daily_summary').update(todayFromPayload).eq('id', todayFrom.id);
+                  else await supabase.from('hsk_daily_summary').insert(todayFromPayload);
+                  
+                  toast.success("Applied to today's list as well.");
+              }
+          });
+      }
   };
 
   const handlePasteSubmit = () => {
@@ -326,7 +426,7 @@ export default function HousekeepingSummaryPage() {
                   processArrDepXML(data);
               }
           } catch (err) {
-              alert("Error parsing the file. Please ensure it is the correct export format.");
+              toast.error("Error parsing the file. Please ensure it is the correct export format.");
               setIsProcessing(false);
           }
           e.target.value = '';
@@ -572,7 +672,7 @@ export default function HousekeepingSummaryPage() {
 
           let totalAdults = 0; let totalKids = 0;
           let names: string[] = []; let prefs: string[] = [];
-          let mealPlan = 'RO'; let stayDates = ''; let stayId = '';
+          let mealPlan = ''; let stayDates = ''; let stayId = '';
 
           primaryResList.forEach(res => {
               const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
@@ -593,11 +693,7 @@ export default function HousekeepingSummaryPage() {
                   }
               }
 
-              const rateCode = (getText(res, 'RATE_CODE') || '').toUpperCase();
-              const products = (getText(res, 'PRODUCTS') || '').toUpperCase();
-              if (products.includes('LUN') || rateCode.includes('FB')) mealPlan = 'FB';
-              else if ((products.includes('DIN') || rateCode.includes('HB')) && mealPlan !== 'FB') mealPlan = 'HB';
-              else if ((products.includes('BFS') || rateCode.includes('BB') || rateCode.includes('PR')) && mealPlan === 'RO') mealPlan = 'BB';
+              mealPlan = '';
 
               const comments = Array.from(res.querySelectorAll('RES_COMMENT'));
               comments.forEach((c: any) => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
@@ -642,13 +738,25 @@ export default function HousekeepingSummaryPage() {
           
           if (newStatus === 'ARR' && oldStatus.includes('DEP')) newStatus = 'DEP/ARR';
 
+          let finalNames = newArr.names;
+          let finalAdults = newArr.adults;
+          let finalKids = newArr.kids;
+          let isJoiner = false;
+
           if (isStayExt) {
               newStatus = oldStatus.includes('VM/') ? oldStatus : 'OCC'; 
+          } else if (['OCC', 'VM/OCC'].includes(oldStatus) && newStatus.includes('ARR')) {
+              if (record.guest_name && !isSameGuest(record.guest_name, newArr.names)) {
+                  finalNames = `${record.guest_name} & ${newArr.names}`;
+                  finalAdults = record.pax_adults + newArr.adults;
+                  finalKids = record.pax_kids + newArr.kids;
+                  isJoiner = true;
+              }
           }
 
-          record.guest_name = newArr.names;
-          record.pax_adults = newArr.adults;
-          record.pax_kids = newArr.kids;
+          record.guest_name = finalNames;
+          record.pax_adults = finalAdults;
+          record.pax_kids = finalKids;
           record.meal_plan = newArr.mealPlan;
           record.stay_dates = newArr.stayDates;
           record.status = newStatus;
@@ -667,20 +775,21 @@ export default function HousekeepingSummaryPage() {
               diffs.push({
                   villa: newArr.villa, type: 'ALLOC CHANGE',
                   oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-                  newGuest: `${newArr.names} (Moved from V${oldVillaMatch.villa_number})`,
+                  newGuest: `${finalNames} (Moved from V${oldVillaMatch.villa_number})`,
                   oldStatus: oldStatus, newStatus: record.status
               });
           } else {
               let diffType = 'SYNC';
               if (isStayExt) diffType = 'STAY EXT';
+              else if (isJoiner) diffType = 'JOINER (ARR)';
               else if (newStatus === 'DEP/ARR' && !oldStatus.includes('ARR')) diffType = 'DEP/ARR';
               else if (newStatus.includes('ARR') && !oldStatus.includes('ARR')) diffType = 'ARRIVAL';
               else if (newStatus.includes('DEP') && !oldStatus.includes('DEP')) diffType = 'DEPARTURE';
 
               diffs.push({
                   villa: newArr.villa, type: diffType,
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-                  newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : (isJoiner ? record.guest_name : record.guest_name),
+                  newGuest: finalNames, oldStatus: oldStatus, newStatus: record.status
               });
           }
       });
@@ -807,59 +916,68 @@ export default function HousekeepingSummaryPage() {
       setIsProcessing(false);
   };
 
-  const handleRollOver = async () => {
-      if(!confirm(`Overwrite ${selectedDate} with previous day's data?`)) return;
-      setIsRollingOver(true);
-      const { data: recentRecords } = await supabase.from('hsk_daily_summary').select('*').lt('report_date', selectedDate).order('report_date', { ascending: false }).limit(200);
-      if (!recentRecords || recentRecords.length === 0) { alert("No history found."); setIsRollingOver(false); return; }
-      const lastDate = recentRecords[0].report_date;
-      const sourceData = recentRecords.filter(r => r.report_date === lastDate);
-      
-      const newDayData = sourceData.map(r => {
-          let newStatus = 'VAC';
-          let keepDetails = false;
-          
-          if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(r.status)) {
-              let departingToday = false;
-              if (r.stay_dates) {
-                  const parts = r.stay_dates.split('-');
-                  if (parts.length === 2) {
-                      const depDateStr = parts[1].trim(); 
-                      const [selYear, selMonth, selDay] = selectedDate.split('-');
-                      if (depDateStr === `${selDay}/${selMonth}`) {
-                          departingToday = true;
+  const handleRollOver = () => {
+      setConfirmDialog({
+          isOpen: true,
+          title: "Confirm Rollover",
+          message: `Overwrite ${selectedDate} with previous day's data?`,
+          confirmText: "Yes, Roll Over",
+          confirmColor: "bg-amber-500 hover:bg-amber-600",
+          onConfirm: async () => {
+              setConfirmDialog(null);
+              setIsRollingOver(true);
+              const { data: recentRecords } = await supabase.from('hsk_daily_summary').select('*').lt('report_date', selectedDate).order('report_date', { ascending: false }).limit(200);
+              if (!recentRecords || recentRecords.length === 0) { toast.error("No history found."); setIsRollingOver(false); return; }
+              const lastDate = recentRecords[0].report_date;
+              const sourceData = recentRecords.filter(r => r.report_date === lastDate);
+              
+              const newDayData = sourceData.map(r => {
+                  let newStatus = 'VAC';
+                  let keepDetails = false;
+                  
+                  if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(r.status)) {
+                      let departingToday = false;
+                      if (r.stay_dates) {
+                          const parts = r.stay_dates.split('-');
+                          if (parts.length === 2) {
+                              const depDateStr = parts[1].trim(); 
+                              const [selYear, selMonth, selDay] = selectedDate.split('-');
+                              if (depDateStr === `${selDay}/${selMonth}`) {
+                                  departingToday = true;
+                              }
+                          }
                       }
+                      newStatus = departingToday ? 'DEP' : 'OCC';
+                      keepDetails = true;
+                  } 
+                  else if (['DEP', 'DAY USE', 'VM/VAC'].includes(r.status) || r.status.includes('TMA')) {
+                      newStatus = 'VAC';
+                      keepDetails = false;
                   }
-              }
-              newStatus = departingToday ? 'DEP' : 'OCC';
-              keepDetails = true;
-          } 
-          else if (['DEP', 'DAY USE', 'VM/VAC'].includes(r.status) || r.status.includes('TMA')) {
-              newStatus = 'VAC';
-              keepDetails = false;
+
+                  return {
+                      report_date: selectedDate, villa_number: r.villa_number, status: newStatus, 
+                      guest_name: keepDetails ? r.guest_name : '',
+                      pax_adults: keepDetails ? r.pax_adults : 0, 
+                      pax_kids: keepDetails ? r.pax_kids : 0, 
+                      gem_name: keepDetails ? r.gem_name : '', 
+                      meal_plan: keepDetails ? r.meal_plan : '', 
+                      stay_dates: keepDetails ? r.stay_dates : '',
+                      remarks: '', 
+                      preferences: keepDetails ? r.preferences : '', 
+                      arrival_time: '', 
+                      departure_time: '', 
+                      stay_id: keepDetails ? r.stay_id : ''
+                  };
+              });
+
+              await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
+              await supabase.from('hsk_daily_summary').insert(newDayData);
+              fetchDailyData();
+              setIsRollingOver(false);
+              toast.success("Rollover Complete!");
           }
-
-          return {
-              report_date: selectedDate, villa_number: r.villa_number, status: newStatus, 
-              guest_name: keepDetails ? r.guest_name : '',
-              pax_adults: keepDetails ? r.pax_adults : 0, 
-              pax_kids: keepDetails ? r.pax_kids : 0, 
-              gem_name: keepDetails ? r.gem_name : '', 
-              meal_plan: keepDetails ? r.meal_plan : '', 
-              stay_dates: keepDetails ? r.stay_dates : '',
-              remarks: '', 
-              preferences: keepDetails ? r.preferences : '', 
-              arrival_time: '', 
-              departure_time: '', 
-              stay_id: keepDetails ? r.stay_id : ''
-          };
       });
-
-      await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
-      await supabase.from('hsk_daily_summary').insert(newDayData);
-      fetchDailyData();
-      setIsRollingOver(false);
-      toast.success("Rollover Complete!");
   };
 
   // --- SARONG CALCULATOR ---
@@ -877,7 +995,7 @@ export default function HousekeepingSummaryPage() {
           if (rec.status === 'VAC' || (rec.status.includes('DEP') && !rec.status.includes('ARR'))) return;
           if (rec.status === 'VM/VAC') return;
           if (rec.status.includes('TMA')) return;
-          if (rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U')) return;
+          if (rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U') || rec.status === 'HOUSE USE') return;
 
           const v = parseInt(rec.villa_number, 10);
           if (isNaN(v)) return;
@@ -959,6 +1077,7 @@ export default function HousekeepingSummaryPage() {
 
   const getStatusColor = (s: string) => {
       const st = s?.toUpperCase() || 'VAC';
+      if(st === 'HOUSE USE' || st === 'SHOW VILLA') return 'text-fuchsia-700 bg-fuchsia-100 border border-fuchsia-200';
       if(st === 'VM/VAC') return 'text-slate-500 bg-slate-200 border border-slate-300';
       if(st === 'VM/OCC') return 'text-indigo-700 bg-indigo-100 border border-indigo-200';
       if(st === 'VM/ARR') return 'text-blue-700 bg-blue-100 border border-blue-200';
@@ -1039,8 +1158,10 @@ export default function HousekeepingSummaryPage() {
 
       {/* MOBILE LIST VIEW */}
       <div className="md:hidden grid grid-cols-1 gap-4">
-        {masterList.map((row) => (
-          <div key={row.villa_number} onClick={() => { if(isAdmin){ setEditingRecord(row); setIsEditOpen(true); } }} className={`bg-white rounded-2xl p-4 shadow-sm border flex flex-col gap-3 relative ${row.status === 'VAC' ? 'border-slate-100 bg-slate-50/50' : 'border-slate-200 active:scale-[0.98] transition-transform cursor-pointer'}`}>
+        {masterList.map((row) => {
+            const isHouseUse = row.status === 'HOUSE USE' || row.guest_name.toUpperCase().includes('HOUSE USE');
+            return (
+          <div key={row.villa_number} onClick={() => { if(isAdmin){ setEditingRecord(row); setIsEditOpen(true); } }} className={`bg-white rounded-2xl p-4 shadow-sm border flex flex-col gap-3 relative ${row.status === 'VAC' ? 'border-slate-100 bg-slate-50/30' : 'border-slate-200 active:scale-[0.98] transition-transform cursor-pointer'} ${isHouseUse ? 'bg-fuchsia-50/30 border-fuchsia-100' : ''}`}>
               
               <div className="flex justify-between items-start">
                   <div className="flex items-center gap-2">
@@ -1090,7 +1211,7 @@ export default function HousekeepingSummaryPage() {
                   </div>
               )}
           </div>
-        ))}
+        )})}
       </div>
 
       {/* DESKTOP TABLE VIEW */}
@@ -1111,8 +1232,10 @@ export default function HousekeepingSummaryPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {masterList.map((row) => (
-                <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''}`}>
+              {masterList.map((row) => {
+                  const isHouseUse = row.status === 'HOUSE USE' || row.guest_name.toUpperCase().includes('HOUSE USE');
+                  return (
+                <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''} ${isHouseUse ? 'bg-fuchsia-50/30' : ''}`}>
                   
                   <td className="py-2 px-4 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-50">
                       <div className="flex items-center gap-2">
@@ -1169,7 +1292,7 @@ export default function HousekeepingSummaryPage() {
                     )}
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -1206,6 +1329,7 @@ export default function HousekeepingSummaryPage() {
                                   <th className="p-4 w-48">Current Data</th>
                                   <th className="p-4 w-8"></th>
                                   <th className="p-4">New Data (Editable)</th>
+                                  <th className="p-4 w-12 text-right">Action</th>
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -1222,6 +1346,7 @@ export default function HousekeepingSummaryPage() {
                                                   c.type === 'STAY EXT' ? 'bg-teal-100 text-teal-700' :
                                                   c.type === 'SYNC' ? 'bg-purple-100 text-purple-700' :
                                                   c.type === 'ARRIVAL' ? 'bg-blue-100 text-blue-700' :
+                                                  c.type === 'JOINER (ARR)' ? 'bg-fuchsia-100 text-fuchsia-700' :
                                                   c.type === 'DEPARTURE' ? 'bg-rose-100 text-rose-700' :
                                                   c.type === 'INFO SYNC' ? 'bg-slate-100 text-slate-700' :
                                                   'bg-emerald-100 text-emerald-700'
@@ -1246,14 +1371,22 @@ export default function HousekeepingSummaryPage() {
                                                                   setChanges(newChanges);
                                                               }}
                                                           >
-                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE'].map(s=><option key={s} value={s}>{s}</option>)}
+                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA'].map(s=><option key={s} value={s}>{s}</option>)}
                                                           </select>
                                                           <div className="text-xs leading-tight font-bold text-slate-600">{c.newGuest ? c.newGuest : 'Vacant'}</div>
                                                       </div>
                                                       
                                                       {(c.isMemoEdit || c.type.includes('ARR') || c.type.includes('DEP') || c.type.includes('SYNC') || c.type.includes('EXT') || c.type.includes('ALLOC')) && (
                                                           <div className="flex flex-wrap gap-2">
-                                                              <input className="w-12 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-blue-400" value={pendingRec.meal_plan} onChange={(e) => updatePendingRecord(c.villa, 'meal_plan', e.target.value)} placeholder="MP" />
+                                                              {/* MANUALLY SELECTABLE MEAL PLAN */}
+                                                              <select className="w-14 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-blue-400" value={pendingRec.meal_plan} onChange={(e) => updatePendingRecord(c.villa, 'meal_plan', e.target.value)}>
+                                                                  <option value="">MP</option>
+                                                                  <option value="BB">BB</option>
+                                                                  <option value="HB">HB</option>
+                                                                  <option value="FB">FB</option>
+                                                                  <option value="RO">RO</option>
+                                                                  <option value="AI">AI</option>
+                                                              </select>
                                                               <input className="w-16 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-purple-400" value={pendingRec.gem_name} onChange={(e) => updatePendingRecord(c.villa, 'gem_name', e.target.value)} placeholder="GEM" />
                                                               {(pendingRec.status.includes('ARR') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-emerald-200 rounded text-[10px] outline-none" value={pendingRec.arrival_time} onChange={(e) => updatePendingRecord(c.villa, 'arrival_time', e.target.value)} />}
                                                               {(pendingRec.status.includes('DEP') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-rose-200 rounded text-[10px] outline-none" value={pendingRec.departure_time} onChange={(e) => updatePendingRecord(c.villa, 'departure_time', e.target.value)} />}
@@ -1266,6 +1399,11 @@ export default function HousekeepingSummaryPage() {
                                                       <div className={`text-[10px] font-bold uppercase mt-1 ${c.type === 'DISCREPANCY' ? 'text-red-600' : 'text-[#6D2158]'}`}>{c.newStatus}</div>
                                                   </>
                                               )}
+                                          </td>
+                                          <td className="p-4 text-right">
+                                             <button onClick={() => removeChange(i)} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors" title="Discard this change">
+                                                 <Trash2 size={16}/>
+                                             </button>
                                           </td>
                                       </tr>
                                   );
@@ -1379,7 +1517,10 @@ export default function HousekeepingSummaryPage() {
            <div className="bg-white w-full max-w-md rounded-3xl shadow-xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
               <div className="bg-[#6D2158] p-6 text-white">
                   <div className="flex justify-between items-start">
-                     <div><h3 className="text-2xl font-bold">Villa {editingRecord.villa_number}</h3><p className="text-white/80 text-xs font-bold uppercase mt-1">Guest Profile</p></div>
+                     <div>
+                         <h3 className="text-2xl font-bold">Villa {editingRecord.villa_number}</h3>
+                         <p className="text-white/80 text-[10px] font-bold uppercase mt-1 tracking-widest">Guest ID: {editingRecord.stay_id || 'Not Generated'}</p>
+                     </div>
                      <button onClick={() => setIsEditOpen(false)} className="bg-white/10 p-1.5 rounded-full hover:bg-white/20"><X size={18}/></button>
                   </div>
                   <div className="flex gap-4 mt-6 text-xs font-bold uppercase tracking-wider">
@@ -1394,7 +1535,7 @@ export default function HousekeepingSummaryPage() {
                             <div>
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Status</label>
                                 <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700" value={editingRecord.status} onChange={e => setEditingRecord({...editingRecord, status: e.target.value})}>
-                                    {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE'].map(s=><option key={s} value={s}>{s}</option>)}
+                                    {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA'].map(s=><option key={s} value={s}>{s}</option>)}
                                 </select>
                             </div>
                             <div>
@@ -1421,6 +1562,15 @@ export default function HousekeepingSummaryPage() {
                             <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Kids</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.pax_kids} onChange={e => setEditingRecord({...editingRecord, pax_kids: parseInt(e.target.value) || 0})}/></div>
                             <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Dates</label><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.stay_dates} onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}/></div>
                         </div>
+
+                        {/* CLONE TO CONNECTED VILLA BUTTON */}
+                        {['87', '57'].includes(editingRecord.villa_number) && (
+                            <div className="pt-2">
+                                <button onClick={() => handleCloneToConnected(editingRecord.villa_number)} className="w-full py-3 bg-indigo-50 text-indigo-700 rounded-xl text-[10px] font-bold uppercase tracking-widest border border-indigo-200 hover:bg-indigo-100 transition-colors">
+                                    Clone Guest to V{editingRecord.villa_number === '87' ? '88' : '56 & 58'}
+                                </button>
+                            </div>
+                        )}
                      </div>
                  ) : (
                      <div className="h-full">
@@ -1466,6 +1616,28 @@ export default function HousekeepingSummaryPage() {
               </div>
           </div>
       )}
+
+      {/* CUSTOM GLOBAL CONFIRM DIALOG */}
+      {confirmDialog && confirmDialog.isOpen && (
+          <div className="fixed inset-0 z-[200] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+                  <div className="p-6">
+                      <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mb-4">
+                          <AlertTriangle size={24}/>
+                      </div>
+                      <h3 className="text-xl font-black text-slate-800 mb-2">{confirmDialog.title}</h3>
+                      <p className="text-sm font-bold text-slate-500 leading-relaxed">{confirmDialog.message}</p>
+                  </div>
+                  <div className="p-4 bg-slate-50 border-t border-slate-100 flex gap-3 justify-end">
+                      <button onClick={() => setConfirmDialog(null)} className="px-5 py-2.5 rounded-xl font-bold text-slate-500 hover:bg-slate-200 transition-colors">Cancel</button>
+                      <button onClick={confirmDialog.onConfirm} className={`px-5 py-2.5 rounded-xl font-bold text-white shadow-md transition-all ${confirmDialog.confirmColor || 'bg-[#6D2158] hover:bg-[#5a1b49]'}`}>
+                          {confirmDialog.confirmText || 'Confirm'}
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }

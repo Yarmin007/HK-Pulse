@@ -19,6 +19,7 @@ const ADMIN_CORE_TABS = [
 
 const ALLOCATION_ITEMS = [
   { name: "Live Board", icon: LayoutDashboard, path: "/allocation/board" }, // ⚡ NEW: Live Admin Board added here
+  { name: "Forecast", icon: Plane, path: "/forecast" },
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
   { name: "Special Villas", icon: Key, path: "/allocation/special" },
@@ -83,7 +84,7 @@ export default function Sidebar() {
   const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart') || pathname?.includes('/team') || pathname?.includes('/leave-planner');
   const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart') || pathname?.includes('/team');
   const isInventoryRoute = pathname?.includes('/inventory');
-  const isAllocationRoute = pathname?.includes('/allocation') || pathname?.includes('/guests');
+  const isAllocationRoute = pathname?.includes('/allocation') || pathname?.includes('/guests') || pathname?.includes('/forecast');
   
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
