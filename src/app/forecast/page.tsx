@@ -61,6 +61,19 @@ export default function ArrivalsForecastPage() {
   const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [graphView, setGraphView] = useState<'daily' | 'weekly'>('daily');
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Check user role on load
+  useEffect(() => {
+    const checkUserRole = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      // Adjust this condition if your admin role is stored differently (e.g., in a separate profiles table)
+      if (session?.user?.user_metadata?.role === 'admin') {
+        setIsAdmin(true);
+      }
+    };
+    checkUserRole();
+  }, []);
 
   // Fetch the last saved forecast on load
   useEffect(() => {
@@ -288,7 +301,15 @@ export default function ArrivalsForecastPage() {
 
   let chartData: any[] = [];
   if (graphView === 'daily') {
-    chartData = forecastData.slice(0, 14);
+    // Map daily data to uniform format for the chart
+    chartData = forecastData.slice(0, 14).map(d => ({
+      label: d.dateLabel,
+      a: d.jettyCounts.a,
+      b: d.jettyCounts.b,
+      c: d.jettyCounts.c,
+      beach: d.jettyCounts.beach,
+      date: d.date
+    }));
   } else {
     let currentWeek = { label: 'Week 1', a: 0, b: 0, c: 0, beach: 0, date: '' };
     forecastData.forEach((d, i) => {
@@ -307,14 +328,14 @@ export default function ArrivalsForecastPage() {
   const maxGraphVal = Math.max(...chartData.map(d => (d.a + d.b + d.c + d.beach) || 1));
 
   return (
-    <div className="min-h-screen bg-[#FDFBFD] p-4 md:p-6 pb-32 font-sans text-slate-800">
+    <div className="min-h-screen bg-[#FDFBFD] p-3 md:p-6 pb-32 font-sans text-slate-800">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-6 mb-6 gap-4">
         <div>
-          <h1 className="text-3xl font-black tracking-tight text-[#6D2158] flex items-center gap-3">
+          <h1 className="text-2xl md:text-3xl font-black tracking-tight text-[#6D2158] flex items-center gap-3">
             <PlaneLanding size={28}/> Arrivals Forecast
           </h1>
           <div className="flex items-center gap-3 mt-1">
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+            <p className="text-[10px] md:text-xs font-bold text-slate-400 uppercase tracking-widest">
               Upload & Publish Future Arrivals
             </p>
             {lastSaved && (
@@ -324,62 +345,68 @@ export default function ArrivalsForecastPage() {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <input type="file" id="forecastXml" className="hidden" accept=".xml" onChange={handleFileProcess} />
-          
-          <button
-            onClick={() => document.getElementById('forecastXml')?.click()}
-            disabled={isProcessing || isSaving}
-            className="flex-1 md:flex-none bg-slate-100 text-slate-600 px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-slate-200 transition-all disabled:opacity-50"
-          >
-            {isProcessing ? <Loader2 size={18} className="animate-spin"/> : <UploadCloud size={18}/>}
-            Upload Upcoming Arrivals (XML)
-          </button>
+        {isAdmin && (
+          <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
+            <input type="file" id="forecastXml" className="hidden" accept=".xml" onChange={handleFileProcess} />
+            
+            <button
+              onClick={() => document.getElementById('forecastXml')?.click()}
+              disabled={isProcessing || isSaving}
+              className="w-full sm:w-auto flex-1 md:flex-none bg-slate-100 text-slate-600 px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-slate-200 transition-all disabled:opacity-50"
+            >
+              {isProcessing ? <Loader2 size={18} className="animate-spin"/> : <UploadCloud size={18}/>}
+              Upload Upcoming Arrivals (XML)
+            </button>
 
-          <button
-            onClick={handleSaveForecast}
-            disabled={forecastData.length === 0 || isSaving || isProcessing}
-            className="flex-1 md:flex-none bg-[#6D2158] text-white px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-[#6D2158]/20 hover:bg-[#5a1b49] transition-all disabled:opacity-50 disabled:shadow-none"
-          >
-            {isSaving ? <Loader2 size={18} className="animate-spin"/> : <Save size={18}/>}
-            Save
-          </button>
-        </div>
+            <button
+              onClick={handleSaveForecast}
+              disabled={forecastData.length === 0 || isSaving || isProcessing}
+              className="w-full sm:w-auto flex-1 md:flex-none bg-[#6D2158] text-white px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-[#6D2158]/20 hover:bg-[#5a1b49] transition-all disabled:opacity-50 disabled:shadow-none"
+            >
+              {isSaving ? <Loader2 size={18} className="animate-spin"/> : <Save size={18}/>}
+              Save
+            </button>
+          </div>
+        )}
       </div>
 
       {forecastData.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 bg-white rounded-3xl border border-slate-200 border-dashed text-slate-400">
           <FileSpreadsheet size={64} className="mb-4 opacity-20"/>
           <p className="text-lg font-black text-slate-500">Awaiting Data File</p>
-          <p className="text-sm font-medium mt-2 max-w-sm text-center">Upload your Opera Arrivals XML. Review the parsed forecast, then click Save so it can be used in the Duty Planner.</p>
+          {isAdmin ? (
+            <p className="text-sm font-medium mt-2 max-w-sm text-center">Upload your Opera Arrivals XML. Review the parsed forecast, then click Save so it can be used in the Duty Planner.</p>
+          ) : (
+            <p className="text-sm font-medium mt-2 max-w-sm text-center">Awaiting an admin to upload and publish the arrivals forecast.</p>
+          )}
         </div>
       ) : (
         <div className="space-y-6 animate-in fade-in zoom-in-95 duration-300">
           {/* Top KPI Banner */}
-          <div className="bg-gradient-to-r from-[#6D2158] to-[#902468] p-6 rounded-3xl shadow-lg text-white flex flex-wrap gap-8 items-center">
+          <div className="bg-gradient-to-r from-[#6D2158] to-[#902468] p-5 md:p-6 rounded-3xl shadow-lg text-white grid grid-cols-2 md:grid-cols-4 lg:flex lg:flex-wrap gap-6 md:gap-8 items-center">
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Forecast Scope</p>
-              <p className="text-2xl font-black">{forecastData.length} Days Detected</p>
+              <p className="text-xl md:text-2xl font-black">{forecastData.length} Days Detected</p>
             </div>
-            <div className="w-px h-12 bg-white/20 hidden md:block"></div>
+            <div className="w-px h-12 bg-white/20 hidden lg:block"></div>
             <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Total Incoming Villas</p>
-              <p className="text-2xl font-black">{forecastData.reduce((acc, curr) => acc + curr.totalVillas, 0)}</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Incoming Villas</p>
+              <p className="text-xl md:text-2xl font-black">{forecastData.reduce((acc, curr) => acc + curr.totalVillas, 0)}</p>
             </div>
-            <div className="w-px h-12 bg-white/20 hidden md:block"></div>
+            <div className="w-px h-12 bg-white/20 hidden lg:block"></div>
             <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Total Incoming Pax</p>
-              <p className="text-2xl font-black flex items-center gap-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Incoming Pax</p>
+              <p className="text-xl md:text-2xl font-black flex items-center gap-2">
                 {forecastData.reduce((acc, curr) => acc + curr.totalAdults + curr.totalKids, 0)}
-                <span className="text-xs font-bold bg-white/20 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] font-bold bg-white/20 px-2 py-0.5 rounded-full whitespace-nowrap">
                   {forecastData.reduce((acc, curr) => acc + curr.totalKids, 0)} Kids
                 </span>
               </p>
             </div>
             <div className="w-px h-12 bg-white/20 hidden lg:block"></div>
-            <div className="hidden lg:block">
+            <div className="col-span-2 md:col-span-1">
               <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Location Breakdown</p>
-              <div className="flex gap-2 text-sm font-bold mt-1">
+              <div className="flex flex-wrap gap-2 text-xs md:text-sm font-bold mt-1">
                 <span className="bg-white/20 px-2 py-0.5 rounded">A: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.a, 0)}</span>
                 <span className="bg-white/20 px-2 py-0.5 rounded">B: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.b, 0)}</span>
                 <span className="bg-white/20 px-2 py-0.5 rounded">C: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.c, 0)}</span>
@@ -392,16 +419,16 @@ export default function ArrivalsForecastPage() {
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6 mb-6">
             
             {/* Timeline View */}
-            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
+            <div className="bg-white p-4 md:p-6 rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
               <h2 className="text-lg font-black text-[#6D2158] mb-4 flex items-center gap-2">
                 <GanttChart size={20}/> Occupancy Timeline
               </h2>
-              <div className="overflow-x-auto flex-1">
-                <div className="min-w-[600px]">
+              <div className="overflow-x-auto flex-1 custom-scrollbar pb-2">
+                <div style={{ minWidth: `${Math.max(600, timelineDates.length * 45)}px` }}>
                   <div className="flex border-b border-slate-200 pb-2 mb-2">
                     <div className="w-16 shrink-0 font-bold text-slate-400 text-[10px] uppercase">Villa</div>
                     {timelineDates.map(d => (
-                      <div key={d} className="flex-1 text-center font-bold text-[10px] text-slate-500">
+                      <div key={d} className="flex-1 text-center font-bold text-[10px] text-slate-500 truncate px-1">
                         {format(parseISO(d), 'dd MMM')}
                       </div>
                     ))}
@@ -410,7 +437,7 @@ export default function ArrivalsForecastPage() {
                     {allVillas.map(villa => {
                       const vArrivals = forecastData.flatMap(d => d.arrivals).filter(a => a.villa === villa);
                       return (
-                        <div key={villa} className="flex items-center mb-1.5 relative h-7 bg-slate-50/50 rounded hover:bg-slate-100 transition-colors">
+                        <div key={villa} className="flex items-center mb-1.5 relative h-8 bg-slate-50/50 rounded hover:bg-slate-100 transition-colors">
                           <div className="w-16 shrink-0 font-black text-sm text-slate-700 pl-1">V{villa}</div>
                           <div className="flex-1 relative h-full flex">
                             {timelineDates.map(d => (
@@ -429,7 +456,7 @@ export default function ArrivalsForecastPage() {
                               return (
                                 <div
                                   key={i}
-                                  className="absolute top-0.5 bottom-0.5 bg-[#6D2158] text-white rounded-[4px] text-[9px] font-bold flex items-center px-1.5 truncate shadow-sm overflow-hidden z-10"
+                                  className="absolute top-1 bottom-1 bg-[#6D2158] text-white rounded-[4px] text-[9px] font-bold flex items-center px-1.5 truncate shadow-sm overflow-hidden z-10"
                                   style={{
                                     left: `${(start / timelineDates.length) * 100}%`,
                                     width: `${(span / timelineDates.length) * 100}%`
@@ -449,18 +476,18 @@ export default function ArrivalsForecastPage() {
             </div>
 
             {/* Jetty-Wise Graph View */}
-            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
+            <div className="bg-white p-4 md:p-6 rounded-3xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-lg font-black text-[#6D2158] flex items-center gap-2">
                   <BarChart3 size={20}/> Jetty-Wise Arrivals
                 </h2>
-                <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                  <button onClick={() => setGraphView('daily')} className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${graphView === 'daily' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>Daily</button>
-                  <button onClick={() => setGraphView('weekly')} className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${graphView === 'weekly' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>Weekly</button>
+                <div className="flex gap-1 bg-slate-100 p-1 rounded-lg shrink-0 ml-2">
+                  <button onClick={() => setGraphView('daily')} className={`px-2 md:px-3 py-1 text-[9px] md:text-[10px] font-bold uppercase tracking-wider rounded transition-all ${graphView === 'daily' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>Daily</button>
+                  <button onClick={() => setGraphView('weekly')} className={`px-2 md:px-3 py-1 text-[9px] md:text-[10px] font-bold uppercase tracking-wider rounded transition-all ${graphView === 'weekly' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>Weekly</button>
                 </div>
               </div>
               
-              <div className="flex items-end justify-between gap-2 h-48 mt-2 overflow-x-auto pb-6 px-2 flex-1">
+              <div className="flex items-end justify-between gap-2 h-48 mt-2 overflow-x-auto pb-6 px-2 flex-1 custom-scrollbar">
                 {chartData.map((d, i) => (
                   <div key={i} className="flex flex-col items-center justify-end h-full gap-2 flex-1 min-w-[32px] group relative">
                     <div className="w-full max-w-[40px] h-full flex flex-col justify-end bg-slate-50 rounded-t-lg overflow-hidden relative">
@@ -481,7 +508,7 @@ export default function ArrivalsForecastPage() {
                 ))}
               </div>
               
-              <div className="flex flex-wrap gap-4 mt-8 justify-center text-[10px] font-bold text-slate-600 uppercase tracking-widest">
+              <div className="flex flex-wrap gap-2 md:gap-4 mt-8 justify-center text-[9px] md:text-[10px] font-bold text-slate-600 uppercase tracking-widest">
                 <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-blue-500 rounded-sm"></div> Jetty A</span>
                 <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-indigo-500 rounded-sm"></div> Jetty B</span>
                 <span className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 bg-violet-500 rounded-sm"></div> Jetty C</span>
@@ -500,28 +527,28 @@ export default function ArrivalsForecastPage() {
                 <div key={day.date} className={`bg-white rounded-2xl border transition-all shadow-sm overflow-hidden ${isTdy ? 'border-amber-300 ring-2 ring-amber-100' : 'border-slate-200'}`}>
                   {/* Header Row (Clickable) */}
                   <div
-                    className={`p-4 flex items-center justify-between cursor-pointer select-none transition-colors ${isTdy ? 'bg-amber-50/50 hover:bg-amber-100/50' : 'hover:bg-slate-50'}`}
+                    className={`p-3 md:p-4 flex flex-col sm:flex-row sm:items-center justify-between cursor-pointer select-none transition-colors gap-3 ${isTdy ? 'bg-amber-50/50 hover:bg-amber-100/50' : 'hover:bg-slate-50'}`}
                     onClick={() => toggleDay(day.date)}
                   >
-                    <div className="flex items-center gap-4">
-                      <button className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${isExpanded ? 'bg-slate-200 text-slate-700' : 'bg-slate-100 text-slate-400'}`}>
+                    <div className="flex items-center gap-3 md:gap-4">
+                      <button className={`w-8 h-8 rounded-full flex shrink-0 items-center justify-center transition-colors ${isExpanded ? 'bg-slate-200 text-slate-700' : 'bg-slate-100 text-slate-400'}`}>
                         {isExpanded ? <ChevronDown size={18}/> : <ChevronRight size={18}/>}
                       </button>
                       <div>
-                        <h3 className={`text-lg font-black tracking-tight ${isTdy ? 'text-amber-800' : 'text-slate-800'}`}>{day.dateLabel}</h3>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center flex-wrap gap-2">
-                          <span>{day.totalVillas} Villas Expected</span>
+                        <h3 className={`text-base md:text-lg font-black tracking-tight ${isTdy ? 'text-amber-800' : 'text-slate-800'}`}>{day.dateLabel}</h3>
+                        <p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 flex items-center flex-wrap gap-1.5 md:gap-2">
+                          <span>{day.totalVillas} Villas</span>
                           <span className="text-slate-200 hidden sm:inline">|</span>
-                          <span className="text-blue-500">A: {day.jettyCounts.a}</span>
-                          <span className="text-indigo-500">B: {day.jettyCounts.b}</span>
-                          <span className="text-violet-500">C: {day.jettyCounts.c}</span>
-                          <span className="text-amber-600">Beach: {day.jettyCounts.beach}</span>
+                          <span className="text-blue-500">A:{day.jettyCounts.a}</span>
+                          <span className="text-indigo-500">B:{day.jettyCounts.b}</span>
+                          <span className="text-violet-500">C:{day.jettyCounts.c}</span>
+                          <span className="text-amber-600">Beach:{day.jettyCounts.beach}</span>
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="hidden sm:flex items-center gap-4 mr-4 text-xs font-bold text-slate-500 uppercase tracking-widest border-r border-slate-200 pr-6">
+                    <div className="flex items-center justify-between sm:justify-end gap-3 pl-11 sm:pl-0">
+                      <div className="flex items-center gap-3 md:gap-4 text-xs font-bold text-slate-500 uppercase tracking-widest sm:border-r border-slate-200 sm:pr-6">
                         <span className="flex items-center gap-1"><Users size={14}/> {day.totalAdults}</span>
                         <span className="flex items-center gap-1 text-amber-500"><Baby size={14}/> {day.totalKids}</span>
                       </div>
@@ -531,7 +558,7 @@ export default function ArrivalsForecastPage() {
 
                   {/* Expanded Detail View */}
                   {isExpanded && (
-                    <div className="border-t border-slate-100 bg-slate-50/30 p-4">
+                    <div className="border-t border-slate-100 bg-slate-50/30 p-3 md:p-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                         {day.arrivals.map((arr, idx) => (
                           <div key={idx} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm hover:border-[#6D2158]/30 transition-colors">
@@ -540,7 +567,7 @@ export default function ArrivalsForecastPage() {
                                 <span className="text-xl font-black text-slate-800 tracking-tighter">V{arr.villa}</span>
                                 {arr.vipLevel && <span className="text-[9px] bg-rose-50 text-rose-600 font-black uppercase px-1.5 py-0.5 rounded border border-rose-100">{arr.vipLevel}</span>}
                               </div>
-                              <div className="flex gap-1.5">
+                              <div className="flex flex-wrap gap-1.5 justify-end">
                                 {arr.mealPlan && <span className="text-[9px] font-black uppercase text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">{arr.mealPlan}</span>}
                                 <span className="text-[9px] font-black uppercase text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
                                   {arr.adults}A {arr.kids > 0 ? `+ ${arr.kids}C` : ''}
@@ -549,8 +576,8 @@ export default function ArrivalsForecastPage() {
                             </div>
                             <p className="text-sm font-bold text-slate-600 leading-tight mb-2 truncate" title={arr.names}>{arr.names.replace(/\//g, ', ')}</p>
                             {(arr.arrivalTime || arr.flight || arr.jetty) && (
-                              <div className="flex items-center gap-2 text-[10px] font-bold font-mono text-slate-400 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-100 mt-2">
-                                <PlaneLanding size={12} className="text-slate-400"/>
+                              <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold font-mono text-slate-400 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-100 mt-2">
+                                <PlaneLanding size={12} className="text-slate-400 shrink-0"/>
                                 {arr.flight && <span>{arr.flight}</span>}
                                 {arr.flight && arr.arrivalTime && <span>•</span>}
                                 {arr.arrivalTime && <span className="text-emerald-600">ETA {arr.arrivalTime}</span>}
