@@ -1,9 +1,9 @@
 "use client";
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   Calendar, CheckCircle2, User, Save, Lock, Unlock,
   RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, EyeOff, Eye, Search, Home, Wine, X, Download,
-  PackageSearch, Minus, Plus, ChevronLeft
+  PackageSearch, Minus, Plus, ChevronLeft, Upload, AlertCircle, ArrowRight
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -49,6 +49,14 @@ type FinancialRecord = {
     sales: number;
     minibar_store: number;
     comments: string;
+};
+
+type ImportRow = {
+    id: string;
+    originalName: string;
+    matchedArticleNo: string | null;
+    val1: number; // Sales Qty or Transfer In
+    val2: number; // Transfer Out
 };
 
 // --- CUSTOM VILLA TAG INPUT ---
@@ -137,6 +145,15 @@ export default function MinibarInventoryAdmin() {
   // Extraction State
   const [extractDate, setExtractDate] = useState(getDhakaDateStr());
   const [isExtracting, setIsExtracting] = useState(false);
+
+  // CSV Import Refs & State
+  const salesFileInputRef = useRef<HTMLInputElement>(null);
+  const transfersFileInputRef = useRef<HTMLInputElement>(null);
+  const [importState, setImportState] = useState<{ isOpen: boolean, type: 'sales' | 'transfers', rows: ImportRow[] }>({
+      isOpen: false,
+      type: 'sales',
+      rows: []
+  });
 
   // --- STORE AUDIT STATE ---
   const [isStoreAuditOpen, setIsStoreAuditOpen] = useState(false);
@@ -402,6 +419,150 @@ export default function MinibarInventoryAdmin() {
     toast.success("Mobile App link copied to clipboard!");
   };
 
+  // --- CSV IMPORT LOGIC (WITH REVIEW MODAL) ---
+  const parseCSVLine = (line: string) => {
+      // Properly splits by commas, respecting quotes, and keeping spaces inside values
+      return line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/(^"|"$)/g, '').trim());
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'sales' | 'transfers') => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+          const csv = event.target?.result as string;
+          const lines = csv.split(/\r?\n/).filter(Boolean);
+          if (lines.length < 2) {
+              toast.error("CSV file is empty or missing headers.");
+              return;
+          }
+
+          const headers = parseCSVLine(lines[0].toLowerCase());
+          
+          const parsedRows: ImportRow[] = [];
+
+          if (type === 'sales') {
+              const nameIdx = headers.findIndex(h => h.includes('micros') || h.includes('name'));
+              const qtyIdx = headers.findIndex(h => h.includes('qty') || h.includes('sale') || h.includes('quantity'));
+              
+              if (nameIdx === -1 || qtyIdx === -1) {
+                  toast.error("Sales CSV must contain a 'Micros Name' and 'Qty' column.");
+                  return;
+              }
+
+              for (let i = 1; i < lines.length; i++) {
+                  const cols = parseCSVLine(lines[i]);
+                  if (cols.length <= Math.max(nameIdx, qtyIdx)) continue;
+                  
+                  const originalName = cols[nameIdx];
+                  const qty = parseInt(cols[qtyIdx], 10) || 0;
+                  
+                  if (originalName && qty > 0) {
+                      // Attempt to match by Micros Name
+                      const matchedItem = catalog.find(c => 
+                          c.micros_name?.toLowerCase().trim() === originalName.toLowerCase() ||
+                          c.article_name?.toLowerCase().trim() === originalName.toLowerCase()
+                      );
+                      
+                      parsedRows.push({
+                          id: `row-${i}`,
+                          originalName,
+                          matchedArticleNo: matchedItem ? matchedItem.article_number : null,
+                          val1: qty,
+                          val2: 0
+                      });
+                  }
+              }
+          } else if (type === 'transfers') {
+              const nameIdx = headers.findIndex(h => h.includes('article') || h.includes('name') || h.includes('item'));
+              const inIdx = headers.findIndex(h => h === 'in' || h.includes('transfer in'));
+              const outIdx = headers.findIndex(h => h === 'out' || h.includes('transfer out'));
+              
+              if (nameIdx === -1 || (inIdx === -1 && outIdx === -1)) {
+                  toast.error("Transfers CSV must contain 'Article Name' and 'In'/'Out' columns.");
+                  return;
+              }
+
+              for (let i = 1; i < lines.length; i++) {
+                  const cols = parseCSVLine(lines[i]);
+                  const originalName = nameIdx !== -1 ? cols[nameIdx] : '';
+                  if (!originalName) continue;
+                  
+                  const tIn = inIdx !== -1 && cols[inIdx] ? (parseInt(cols[inIdx], 10) || 0) : 0;
+                  const tOut = outIdx !== -1 && cols[outIdx] ? (parseInt(cols[outIdx], 10) || 0) : 0;
+                  
+                  if (tIn > 0 || tOut > 0) {
+                      // Attempt to match by Article Name
+                      const matchedItem = catalog.find(c => 
+                          c.article_name?.toLowerCase().trim() === originalName.toLowerCase() ||
+                          c.generic_name?.toLowerCase().trim() === originalName.toLowerCase() ||
+                          c.micros_name?.toLowerCase().trim() === originalName.toLowerCase()
+                      );
+
+                      parsedRows.push({
+                          id: `row-${i}`,
+                          originalName,
+                          matchedArticleNo: matchedItem ? matchedItem.article_number : null,
+                          val1: tIn,
+                          val2: tOut
+                      });
+                  }
+              }
+          }
+
+          if (parsedRows.length === 0) {
+              toast.error("No valid data found to import.");
+          } else {
+              setImportState({ isOpen: true, type, rows: parsedRows });
+          }
+      };
+      reader.readAsText(file);
+      e.target.value = ''; // reset input
+  };
+
+  const updateImportRowMapping = (id: string, articleNo: string | null) => {
+      setImportState(prev => ({
+          ...prev,
+          rows: prev.rows.map(r => r.id === id ? { ...r, matchedArticleNo: articleNo } : r)
+      }));
+  };
+
+  const finalizeCSVImport = () => {
+      const { type, rows } = importState;
+      let updatedCount = 0;
+      
+      setFinancials(prev => {
+          const next = { ...prev };
+          
+          rows.forEach(row => {
+              if (row.matchedArticleNo) {
+                  const artNo = row.matchedArticleNo;
+                  if (!next[artNo]) {
+                      next[artNo] = { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
+                  } else {
+                      // Deep copy the existing item to avoid React Strict Mode double-mutation
+                      next[artNo] = { ...next[artNo] };
+                  }
+                  
+                  if (type === 'sales') {
+                      next[artNo].sales = row.val1;
+                      updatedCount++;
+                  } else if (type === 'transfers') {
+                      if (row.val1 > 0) next[artNo].transfer_in = row.val1;
+                      if (row.val2 > 0) next[artNo].transfer_out = row.val2;
+                      updatedCount++;
+                  }
+              }
+          });
+          
+          return next;
+      });
+
+      setImportState({ isOpen: false, type: 'sales', rows: [] });
+      toast.success(`Successfully mapped and imported ${updatedCount} items into the matrix.`);
+  };
+
   // --- MATRIX STATE UPDATERS ---
   const updateFin = (artNo: string, field: keyof FinancialRecord, val: any) => {
       setFinancials(prev => ({
@@ -485,11 +646,9 @@ export default function MinibarInventoryAdmin() {
   }, [submissions, activeVillaList]);
 
   // --- MB STORE AUDIT LOGIC (WITH CALCULATOR) ---
-  const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
-  
   const startStoreAudit = () => {
       const initialCounts: Record<string, number> = {};
-      visibleCatalogItems.forEach(item => {
+      catalog.forEach(item => {
           initialCounts[item.article_number] = financials[item.article_number]?.minibar_store || 0;
       });
       setStoreCounts(initialCounts);
@@ -554,6 +713,9 @@ export default function MinibarInventoryAdmin() {
           Object.entries(storeCounts).forEach(([artNo, count]) => {
               if (!updated[artNo]) {
                   updated[artNo] = { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
+              } else {
+                  // Deep copy the existing item to avoid React Strict Mode double-mutation
+                  updated[artNo] = { ...updated[artNo] };
               }
               updated[artNo].minibar_store = count;
           });
@@ -564,7 +726,7 @@ export default function MinibarInventoryAdmin() {
   };
 
   const displayStoreCatalog = useMemo(() => {
-      let list = visibleCatalogItems;
+      let list = catalog;
       if (storeSearchQuery.trim()) {
           const q = storeSearchQuery.toLowerCase();
           list = list.filter(i => 
@@ -574,7 +736,7 @@ export default function MinibarInventoryAdmin() {
           );
       }
       return list;
-  }, [visibleCatalogItems, storeSearchQuery]);
+  }, [catalog, storeSearchQuery]);
 
 
   if (!isMounted) return null;
@@ -639,6 +801,16 @@ export default function MinibarInventoryAdmin() {
           </div>
           {activeTab === 'MATRIX' && (
               <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1">
+                <input type="file" accept=".csv" ref={salesFileInputRef} onChange={(e) => handleFileUpload(e, 'sales')} className="hidden" />
+                <input type="file" accept=".csv" ref={transfersFileInputRef} onChange={(e) => handleFileUpload(e, 'transfers')} className="hidden" />
+                
+                <button onClick={() => salesFileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-blue-100 text-blue-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-blue-200 transition-all whitespace-nowrap">
+                    <Upload size={16}/> Import Sales
+                </button>
+                <button onClick={() => transfersFileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-amber-100 text-amber-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-amber-200 transition-all whitespace-nowrap">
+                    <Upload size={16}/> Import Transfers
+                </button>
+
                 <button onClick={startStoreAudit} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-purple-100 text-purple-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-purple-200 transition-all whitespace-nowrap">
                     <PackageSearch size={16}/> Count MB Store
                 </button>
@@ -710,7 +882,7 @@ export default function MinibarInventoryAdmin() {
                         </thead>
 
                         <tbody className="divide-y divide-slate-100 font-medium">
-                            {visibleCatalogItems.map(item => {
+                            {catalog.map(item => {
                                 const artNo = item.article_number;
                                 
                                 const fin = financials[artNo] || { 
@@ -967,6 +1139,95 @@ export default function MinibarInventoryAdmin() {
         )}
       </div>
 
+      {/* --- CSV IMPORT REVIEW MODAL --- */}
+      {importState.isOpen && (
+          <div className="fixed inset-0 z-[150] bg-black/50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 overflow-hidden">
+                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+                      <div>
+                          <h2 className="text-xl font-black text-[#6D2158]">Review {importState.type === 'sales' ? 'Sales' : 'Transfers'} Import</h2>
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Please map any unidentified items below</p>
+                      </div>
+                      <button onClick={() => setImportState({ isOpen: false, type: 'sales', rows: [] })} className="p-2 hover:bg-slate-200 rounded-full text-slate-400 transition-colors">
+                          <X size={20}/>
+                      </button>
+                  </div>
+
+                  <div className="overflow-auto p-0 flex-1 bg-slate-50">
+                      <table className="w-full text-left border-collapse">
+                          <thead className="bg-white sticky top-0 shadow-sm z-10">
+                              <tr>
+                                  <th className="p-4 text-[10px] font-black uppercase text-slate-400 w-1/3">Original Name from CSV</th>
+                                  <th className="p-4 text-[10px] font-black uppercase text-slate-400 w-1/3">Matched Matrix Catalog Item</th>
+                                  {importState.type === 'sales' ? (
+                                      <th className="p-4 text-[10px] font-black uppercase text-slate-400 w-1/3 text-right">Sales Qty</th>
+                                  ) : (
+                                      <>
+                                          <th className="p-4 text-[10px] font-black uppercase text-slate-400 text-right">Trans In</th>
+                                          <th className="p-4 text-[10px] font-black uppercase text-slate-400 text-right pr-6">Trans Out</th>
+                                      </>
+                                  )}
+                              </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 bg-white">
+                              {importState.rows.map((row) => (
+                                  <tr key={row.id} className={!row.matchedArticleNo ? 'bg-amber-50/50' : 'hover:bg-slate-50'}>
+                                      <td className="p-4">
+                                          <div className="flex items-center gap-2">
+                                              {!row.matchedArticleNo && <AlertCircle size={14} className="text-amber-500 shrink-0"/>}
+                                              <span className={`text-sm font-bold ${!row.matchedArticleNo ? 'text-amber-900' : 'text-slate-700'}`}>{row.originalName}</span>
+                                          </div>
+                                      </td>
+                                      <td className="p-4 relative">
+                                          <div className="flex items-center gap-2">
+                                              <ArrowRight size={14} className="text-slate-300 shrink-0"/>
+                                              <select 
+                                                  className={`w-full p-2 text-xs font-bold rounded-lg border outline-none transition-colors ${!row.matchedArticleNo ? 'border-amber-300 bg-amber-50 text-amber-900 focus:border-amber-500' : 'border-slate-200 bg-white text-slate-700 focus:border-[#6D2158]'}`}
+                                                  value={row.matchedArticleNo || ''}
+                                                  onChange={(e) => updateImportRowMapping(row.id, e.target.value || null)}
+                                              >
+                                                  <option value="">-- Select Matrix Item to Map --</option>
+                                                  {catalog.map(c => (
+                                                      <option key={c.article_number} value={c.article_number}>
+                                                          {c.article_number} - {c.generic_name || c.article_name}
+                                                      </option>
+                                                  ))}
+                                              </select>
+                                          </div>
+                                      </td>
+                                      {importState.type === 'sales' ? (
+                                          <td className="p-4 text-right font-black text-amber-600">{row.val1}</td>
+                                      ) : (
+                                          <>
+                                              <td className="p-4 text-right font-black text-emerald-600">{row.val1 > 0 ? row.val1 : '-'}</td>
+                                              <td className="p-4 text-right font-black text-rose-600 pr-6">{row.val2 > 0 ? row.val2 : '-'}</td>
+                                          </>
+                                      )}
+                                  </tr>
+                              ))}
+                          </tbody>
+                      </table>
+                  </div>
+
+                  <div className="p-6 border-t border-slate-100 flex justify-end gap-3 bg-white shrink-0">
+                      <button 
+                          onClick={() => setImportState({ isOpen: false, type: 'sales', rows: [] })} 
+                          className="px-6 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-slate-500 hover:bg-slate-100 transition-colors"
+                      >
+                          Cancel
+                      </button>
+                      <button 
+                          onClick={finalizeCSVImport}
+                          className="px-6 py-3 bg-[#6D2158] text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg hover:bg-[#5a1b49] transition-all flex items-center gap-2 disabled:opacity-50"
+                          disabled={importState.rows.every(r => r.matchedArticleNo === null)}
+                      >
+                          <Save size={16}/> Confirm Import
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* --- MB STORE AUDIT MODAL --- */}
       {isStoreAuditOpen && (
           <div className="fixed inset-0 z-[100] bg-[#FDFBFD] flex flex-col animate-in fade-in zoom-in-95 duration-200 overflow-hidden">
@@ -1063,7 +1324,7 @@ export default function MinibarInventoryAdmin() {
                               <div>
                                   <h4 className="font-black text-slate-800 text-base">Direct Input</h4>
                                   <p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
-                                      {visibleCatalogItems.find(c => c.article_number === storeKeypadTarget)?.generic_name || 'Item'}
+                                      {catalog.find(c => c.article_number === storeKeypadTarget)?.generic_name || 'Item'}
                                   </p>
                               </div>
                               <div className="text-3xl font-black text-[#6D2158] bg-purple-50 px-5 py-1.5 rounded-xl border border-purple-100">
