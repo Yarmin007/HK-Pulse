@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -48,6 +48,7 @@ const TEAM_ITEMS = [
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Leave Planner", icon: Plane, path: "/leave-planner" },
+  { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
 ];
 
 const MINIBAR_ITEMS = [
@@ -74,6 +75,7 @@ const STAFF_PROFILE_ITEMS = [
 
 const STAFF_MENU_ITEMS = [
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
+  { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
   { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
 ];
 
@@ -81,7 +83,7 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   const isMinibarRoute = pathname?.includes('/minibar');
-  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart') || pathname?.includes('/team') || pathname?.includes('/leave-planner');
+  const isTeamRoute = pathname?.includes('/hosts') || pathname?.includes('/attendance') || pathname?.includes('/overtime') || pathname?.includes('/org-chart') || pathname?.includes('/team') || pathname?.includes('/leave-planner') || pathname?.includes('/leave-requests');
   const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart') || pathname?.includes('/team');
   const isInventoryRoute = pathname?.includes('/inventory');
   const isAllocationRoute = pathname?.includes('/allocation') || pathname?.includes('/guests') || pathname?.includes('/forecast');
