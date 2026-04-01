@@ -687,7 +687,7 @@ export default function LeaveRequestMode() {
 
                           {!resortDoctor && (
                               <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center hover:bg-slate-50 relative transition-colors">
-                                  <input type="file" accept="image/*,.pdf" capture="environment" onChange={e => setMcFile(e.target.files?.[0] || null)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
+                                  <input type="file" accept="image/*,.pdf" onChange={e => setMcFile(e.target.files?.[0] || null)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
                                   <Camera className="text-slate-400 mb-2" size={24}/>
                                   {mcFile ? (
                                       <p className="text-xs font-bold text-emerald-600">{mcFile.name}</p>
