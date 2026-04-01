@@ -1,9 +1,9 @@
 "use client";
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   CalendarDays, FileText, UploadCloud, CheckCircle2, XCircle, 
   Clock, ShieldCheck, Search, AlertCircle, ChevronRight, Stethoscope, 
-  Loader2, ArrowRight, Trash2, ShieldAlert, Camera, MessageCircle, Sliders, Crop
+  Loader2, ArrowRight, Trash2, ShieldAlert, Camera, MessageCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, addDays, format } from 'date-fns';
@@ -17,222 +17,6 @@ import { getDhakaDateStr } from '@/lib/dateUtils';
 type Host = { id: string; host_id: string; full_name: string; role: string; department: string; off_balance?: number; balOff?: number; };
 type LeaveRequest = { id: string; host_id: string; host_name: string; leave_type: string; start_date: string; end_date: string; total_days: number; status: 'Pending' | 'Approved' | 'Denied'; mc_url: string | null; resort_doctor: boolean; is_extension: boolean; parent_leave_id: string | null; created_at: string; };
 type UnresolvedMC = { id: string; host_id: string; host_name: string; type: string; dates: string[]; };
-type Point = { x: number, y: number };
-
-// ============================================================================
-// MAGIC SCANNER COMPONENT (INTERACTIVE CROP & PERSPECTIVE WARP)
-// ============================================================================
-const DocumentScanner = ({ file, onConfirm, onCancel }: { file: File, onConfirm: (f: File) => void, onCancel: () => void }) => {
-    const [imgSrc, setImgSrc] = useState<string>('');
-    const [corners, setCorners] = useState<Point[]>([]);
-    const [imageRect, setImageRect] = useState({ w: 0, h: 0, t: 0, l: 0 });
-    const [enhance, setEnhance] = useState(true);
-    const [isProcessing, setIsProcessing] = useState(false);
-    const imgRef = useRef<HTMLImageElement>(null);
-    const activeCornerIndex = useRef<number | null>(null);
-
-    useEffect(() => {
-        const url = URL.createObjectURL(file);
-        setImgSrc(url);
-        return () => URL.revokeObjectURL(url);
-    }, [file]);
-
-    const handleImageLoad = () => {
-        if (!imgRef.current) return;
-        const rect = imgRef.current.getBoundingClientRect();
-        setImageRect({ w: rect.width, h: rect.height, t: rect.top, l: rect.left });
-        
-        // Initialize corners 10% inside the image bounds [TL, TR, BR, BL]
-        const padX = rect.width * 0.1;
-        const padY = rect.height * 0.1;
-        setCorners([
-            { x: padX, y: padY },
-            { x: rect.width - padX, y: padY },
-            { x: rect.width - padX, y: rect.height - padY },
-            { x: padX, y: rect.height - padY }
-        ]);
-    };
-
-    // Drag Logic
-    const handleMove = useCallback((clientX: number, clientY: number) => {
-        if (activeCornerIndex.current === null) return;
-        const x = Math.max(0, Math.min(clientX - imageRect.l, imageRect.w));
-        const y = Math.max(0, Math.min(clientY - imageRect.t, imageRect.h));
-        
-        setCorners(prev => {
-            const next = [...prev];
-            next[activeCornerIndex.current as number] = { x, y };
-            return next;
-        });
-    }, [imageRect]);
-
-    useEffect(() => {
-        const onTouchMove = (e: TouchEvent) => handleMove(e.touches[0].clientX, e.touches[0].clientY);
-        const onMouseMove = (e: MouseEvent) => handleMove(e.clientX, e.clientY);
-        const onEnd = () => { activeCornerIndex.current = null; };
-
-        window.addEventListener('touchmove', onTouchMove, { passive: false });
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('touchend', onEnd);
-        window.addEventListener('mouseup', onEnd);
-
-        return () => {
-            window.removeEventListener('touchmove', onTouchMove);
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('touchend', onEnd);
-            window.removeEventListener('mouseup', onEnd);
-        };
-    }, [handleMove]);
-
-    const processScan = async () => {
-        if (!imgRef.current || corners.length !== 4) return;
-        setIsProcessing(true);
-
-        // Allow UI to render loading state before heavy math blocks the thread
-        await new Promise(r => setTimeout(r, 50)); 
-
-        const img = imgRef.current;
-        const scaleX = img.naturalWidth / imageRect.w;
-        const scaleY = img.naturalHeight / imageRect.h;
-
-        // Map visual CSS corners to actual intrinsic image pixels
-        const srcCorners = corners.map(c => ({ x: c.x * scaleX, y: c.y * scaleY }));
-
-        const destW = 1200;
-        const destH = 1600; // Standard Document Ratio
-        
-        const canvas = document.createElement('canvas');
-        canvas.width = destW;
-        canvas.height = destH;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return onCancel();
-
-        // Draw original to offscreen canvas to get pixel data
-        const offCanvas = document.createElement('canvas');
-        offCanvas.width = img.naturalWidth;
-        offCanvas.height = img.naturalHeight;
-        const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
-        if (!offCtx) return onCancel();
-        
-        offCtx.drawImage(img, 0, 0);
-        const srcData = offCtx.getImageData(0, 0, img.naturalWidth, img.naturalHeight).data;
-
-        const destImg = ctx.createImageData(destW, destH);
-        const dData = destImg.data;
-
-        // Bilinear Perspective Transform (Flattens the angled document)
-        for (let y = 0; y < destH; y++) {
-            const v = y / destH;
-            for (let x = 0; x < destW; x++) {
-                const u = x / destW;
-
-                const sx = (1 - u) * (1 - v) * srcCorners[0].x + u * (1 - v) * srcCorners[1].x + u * v * srcCorners[2].x + (1 - u) * v * srcCorners[3].x;
-                const sy = (1 - u) * (1 - v) * srcCorners[0].y + u * (1 - v) * srcCorners[1].y + u * v * srcCorners[2].y + (1 - u) * v * srcCorners[3].y;
-
-                const srcX = Math.min(Math.max(Math.floor(sx), 0), img.naturalWidth - 1);
-                const srcY = Math.min(Math.max(Math.floor(sy), 0), img.naturalHeight - 1);
-                
-                const srcIdx = (srcY * img.naturalWidth + srcX) * 4;
-                const destIdx = (y * destW + x) * 4;
-
-                let r = srcData[srcIdx];
-                let g = srcData[srcIdx + 1];
-                let b = srcData[srcIdx + 2];
-
-                // Auto-Enhance B&W Filter
-                if (enhance) {
-                    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-                    const val = lum > 130 ? 255 : lum * 0.6; // Bleach backgrounds, darken inks
-                    r = g = b = val;
-                }
-
-                dData[destIdx] = r;
-                dData[destIdx + 1] = g;
-                dData[destIdx + 2] = b;
-                dData[destIdx + 3] = 255;
-            }
-        }
-        
-        ctx.putImageData(destImg, 0, 0);
-        
-        canvas.toBlob((blob) => {
-            if (blob) {
-                const newFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_scanned.jpg", { type: 'image/jpeg' });
-                onConfirm(newFile);
-            } else {
-                onCancel();
-            }
-            setIsProcessing(false);
-        }, 'image/jpeg', 0.6); // 60% Quality to save Space
-    };
-
-    return (
-        // ⚡ FIX: h-[100dvh] strictly enforces the exact visible height on mobile browsers, 
-        // bypassing the URL bar and bottom menu bar overlapping issues.
-        <div className="fixed top-0 left-0 w-full h-[100dvh] z-[200] bg-black flex flex-col animate-in fade-in">
-            {/* HEADER */}
-            <div className="p-4 flex justify-between items-center bg-black/50 backdrop-blur-md z-10 text-white shrink-0">
-                <button onClick={onCancel} className="text-white/70 hover:text-white font-bold text-sm uppercase tracking-widest px-3 py-2">Cancel</button>
-                <div className="flex items-center gap-2 font-black tracking-widest text-sm uppercase">
-                    <Crop size={16}/> Adjust Corners
-                </div>
-                <div className="w-16"></div> {/* Spacer */}
-            </div>
-
-            {/* CROP AREA */}
-            <div className="flex-1 relative overflow-hidden flex items-center justify-center touch-none select-none bg-slate-900" style={{ touchAction: 'none' }}>
-                {imgSrc && (
-                    <img ref={imgRef} src={imgSrc} onLoad={handleImageLoad} className="max-w-full max-h-full object-contain pointer-events-none shadow-2xl" alt="To scan" />
-                )}
-                
-                {imageRect.w > 0 && corners.length === 4 && (
-                    <div className="absolute top-0 left-0" style={{ transform: `translate(${imageRect.l}px, ${imageRect.t}px)`, width: imageRect.w, height: imageRect.h }}>
-                        {/* Shaded Overlay & Crop Polygon */}
-                        <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
-                            <polygon 
-                                points={corners.map(c => `${c.x},${c.y}`).join(' ')}
-                                fill="rgba(109, 33, 88, 0.1)" 
-                                stroke="#6D2158" 
-                                strokeWidth="2" 
-                                strokeDasharray="4 4"
-                            />
-                        </svg>
-                        
-                        {/* Draggable Corner Handles */}
-                        {corners.map((c, i) => (
-                            <div 
-                                key={i} 
-                                onTouchStart={() => { activeCornerIndex.current = i; }}
-                                onMouseDown={() => { activeCornerIndex.current = i; }}
-                                className="absolute w-12 h-12 -ml-6 -mt-6 flex items-center justify-center cursor-move"
-                                style={{ left: c.x, top: c.y }}
-                            >
-                                <div className="w-4 h-4 bg-white rounded-full border-2 border-[#6D2158] shadow-[0_0_10px_rgba(0,0,0,0.5)]"></div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
-
-            {/* FOOTER CONTROLS */}
-            {/* ⚡ FIX: Added shrink-0 and robust bottom padding so the button is completely un-hidable */}
-            <div className="p-4 md:p-6 bg-black/80 backdrop-blur-md pb-8 md:pb-6 shrink-0 z-20">
-                <div className="flex justify-center mb-4">
-                    <div className="flex items-center gap-2 bg-white/10 px-4 py-2.5 rounded-full cursor-pointer hover:bg-white/20 transition-colors" onClick={() => setEnhance(!enhance)}>
-                        <input type="checkbox" checked={enhance} readOnly className="accent-[#6D2158]" />
-                        <span className="text-xs font-bold text-white flex items-center gap-1.5 uppercase tracking-widest"><Sliders size={14}/> B&W Filter</span>
-                    </div>
-                </div>
-                
-                <button onClick={processScan} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-[0_0_20px_rgba(109,33,88,0.4)] hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2 mb-2">
-                    {isProcessing ? <Loader2 className="animate-spin" size={18}/> : <CheckCircle2 size={18}/>}
-                    {isProcessing ? 'Processing Scan...' : 'Confirm & Scan'}
-                </button>
-            </div>
-        </div>
-    );
-};
-// ============================================================================
 
 export default function LeaveRequestMode() {
   const [isAdmin, setIsAdmin] = useState(false);
@@ -256,10 +40,13 @@ export default function LeaveRequestMode() {
   // --- MC RESOLUTION STATE ---
   const [resolvingMC, setResolvingMC] = useState<UnresolvedMC | null>(null);
   const [selectedMCDates, setSelectedMCDates] = useState<string[]>([]);
-  const [scanningFile, setScanningFile] = useState<File | null>(null); 
   const [mcFile, setMcFile] = useState<File | null>(null); 
   const [resortDoctor, setResortDoctor] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // --- ADMIN RE-UPLOAD STATE ---
+  const [reuploadReq, setReuploadReq] = useState<LeaveRequest | null>(null);
+  const [reuploadFile, setReuploadFile] = useState<File | null>(null);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -407,13 +194,13 @@ export default function LeaveRequestMode() {
   const submitMCResolution = async () => {
       if (!resolvingMC) return;
       if (selectedMCDates.length === 0) return toast.error("Please select the dates this MC covers.");
-      if (!resortDoctor && !mcFile) return toast.error("Please scan or select a document.");
+      if (!resortDoctor && !mcFile) return toast.error("Please select a document.");
 
       setIsSubmitting(true);
       try {
           let mcUrl = null;
           if (mcFile && !resortDoctor) {
-              toast.loading("Uploading Final Document...", { id: 'mc' });
+              toast.loading("Uploading Document...", { id: 'mc' });
               mcUrl = await uploadProcessedMC(mcFile, resolvingMC.host_id);
               toast.success("MC Securely Uploaded!", { id: 'mc' });
           }
@@ -443,6 +230,32 @@ export default function LeaveRequestMode() {
           setResortDoctor(false);
           fetchData();
       } catch (err: any) { toast.error("Failed to submit MC."); }
+      setIsSubmitting(false);
+  };
+
+  const submitReuploadMC = async () => {
+      if (!reuploadReq || !reuploadFile) return;
+      setIsSubmitting(true);
+      try {
+          toast.loading("Uploading new document...", { id: 'reupload' });
+          const newUrl = await uploadProcessedMC(reuploadFile, reuploadReq.host_id);
+
+          // Optional: Attempt to delete the old file to save space
+          if (reuploadReq.mc_url) {
+              const oldFileName = reuploadReq.mc_url.split('/').pop();
+              if (oldFileName) await supabase.storage.from('documents').remove([`mc_uploads/${oldFileName}`]);
+          }
+
+          const { error } = await supabase.from('hsk_leave_requests').update({ mc_url: newUrl, resort_doctor: false }).eq('id', reuploadReq.id);
+          if (error) throw error;
+
+          toast.success("MC updated successfully!", { id: 'reupload' });
+          setReuploadReq(null);
+          setReuploadFile(null);
+          fetchData();
+      } catch (err: any) {
+          toast.error("Failed to update MC.", { id: 'reupload' });
+      }
       setIsSubmitting(false);
   };
 
@@ -530,18 +343,6 @@ export default function LeaveRequestMode() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-6 pb-24 md:pb-6 font-sans text-slate-800 w-full flex flex-col overflow-x-hidden relative">
-
-      {/* --- RENDER MAGIC SCANNER MODAL --- */}
-      {scanningFile && (
-          <DocumentScanner 
-              file={scanningFile} 
-              onConfirm={(processedFile) => {
-                  setMcFile(processedFile);
-                  setScanningFile(null);
-              }}
-              onCancel={() => setScanningFile(null)}
-          />
-      )}
 
       {/* ================= HOST VIEW ================= */}
       {!isAdmin && (
@@ -720,25 +521,21 @@ export default function LeaveRequestMode() {
 
                           {!resortDoctor && (
                               <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center hover:bg-slate-50 relative transition-colors">
-                                  <input type="file" accept="image/*,.pdf" onChange={e => { const f = e.target.files?.[0]; if(f) setScanningFile(f); }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
-                                  <Camera className="text-slate-400 mb-2" size={24}/>
+                                  <input type="file" accept="image/*,.pdf" onChange={e => setMcFile(e.target.files?.[0] || null)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
+                                  <UploadCloud className="text-slate-400 mb-2" size={24}/>
                                   {mcFile ? (
-                                      <div className="flex flex-col items-center gap-1">
-                                          <CheckCircle2 size={24} className="text-emerald-500 mb-1"/>
-                                          <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">Document Scanned</p>
-                                          <p className="text-[10px] text-slate-400 mt-1">Tap to re-scan</p>
-                                      </div>
+                                      <p className="text-xs font-bold text-emerald-600 text-center truncate px-4">{mcFile.name}</p>
                                   ) : (
                                       <>
-                                          <p className="text-xs font-bold text-slate-600">Scan or Upload MC</p>
-                                          <p className="text-[10px] text-slate-400 mt-1">Tap to select photo or open camera</p>
+                                          <p className="text-xs font-bold text-slate-600">Select Photo or PDF</p>
+                                          <p className="text-[10px] text-slate-400 mt-1">Tap to browse files or camera</p>
                                       </>
                                   )}
                               </div>
                           )}
                       </div>
 
-                      <button onClick={submitMCResolution} disabled={isSubmitting || selectedMCDates.length === 0} className="w-full bg-rose-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg hover:bg-rose-700 disabled:opacity-50 transition-all flex justify-center items-center gap-2">
+                      <button onClick={submitMCResolution} disabled={isSubmitting || selectedMCDates.length === 0 || (!resortDoctor && !mcFile)} className="w-full bg-rose-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg hover:bg-rose-700 disabled:opacity-50 transition-all flex justify-center items-center gap-2">
                           {isSubmitting ? <Loader2 className="animate-spin" size={16}/> : <CheckCircle2 size={16}/>}
                           Submit Resolution
                       </button>
@@ -798,14 +595,13 @@ export default function LeaveRequestMode() {
                                   <tr>
                                       <th className="p-4 text-[10px] font-black uppercase text-slate-400 tracking-widest">Host</th>
                                       <th className="p-4 text-[10px] font-black uppercase text-slate-400 tracking-widest">Leave Details</th>
-                                      <th className="p-4 text-[10px] font-black uppercase text-slate-400 tracking-widest text-center">Off Bal</th>
                                       <th className="p-4 text-[10px] font-black uppercase text-slate-400 tracking-widest">MC Status</th>
                                       <th className="p-4 text-[10px] font-black uppercase text-slate-400 tracking-widest text-right">Actions</th>
                                   </tr>
                               </thead>
                               <tbody>
                                   {adminViewList.length === 0 ? (
-                                      <tr><td colSpan={5} className="p-10 text-center text-slate-400 font-bold italic">No requests to display!</td></tr>
+                                      <tr><td colSpan={4} className="p-10 text-center text-slate-400 font-bold italic">No requests to display!</td></tr>
                                   ) : (
                                       adminViewList.map(req => (
                                           <tr key={req.id} className="hover:bg-slate-50 transition-colors group">
@@ -819,9 +615,6 @@ export default function LeaveRequestMode() {
                                                       {req.is_extension && <span className="text-[8px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded uppercase font-black">EXT</span>}
                                                   </div>
                                                   <p className="text-[10px] font-bold text-slate-500">{format(parseISO(req.start_date), 'dd/MM')} - {format(parseISO(req.end_date), 'dd/MM')} ({req.total_days} Days)</p>
-                                              </td>
-                                              <td className="p-4 text-center">
-                                                  <span className={`text-sm font-black ${req.computedBalOff && req.computedBalOff > 5 ? 'text-rose-600' : 'text-slate-600'}`}>{req.computedBalOff || 0}</span>
                                               </td>
                                               <td className="p-4">
                                                   {['Sick Leave', 'Emergency Leave'].includes(req.leave_type) ? (
@@ -838,11 +631,19 @@ export default function LeaveRequestMode() {
                                               </td>
                                               <td className="p-4 text-right">
                                                   <div className="flex items-center justify-end gap-2">
+                                                      
                                                       {/* WHATSAPP DOC BUTTON */}
                                                       {['Sick Leave', 'Emergency Leave'].includes(req.leave_type) && req.mc_url && (
                                                           <a href={`https://wa.me/?text=${encodeURIComponent(`Please review MC for ${req.host_name} (${req.host_id}).\nDates: ${format(parseISO(req.start_date),'dd MMM')} to ${format(parseISO(req.end_date),'dd MMM')}\n\nMC Link: ${req.mc_url}`)}`} target="_blank" rel="noopener noreferrer" className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors" title="Send to Doctor via WhatsApp">
                                                               <MessageCircle size={18}/>
                                                           </a>
+                                                      )}
+
+                                                      {/* RE-UPLOAD MC BUTTON (ADMIN OVERRIDE) */}
+                                                      {['Sick Leave', 'Emergency Leave'].includes(req.leave_type) && (
+                                                          <button onClick={() => setReuploadReq(req)} className="p-2 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors" title="Replace/Upload New MC">
+                                                              <UploadCloud size={18}/>
+                                                          </button>
                                                       )}
                                                       
                                                       {adminTab === 'PENDING' ? (
@@ -904,6 +705,43 @@ export default function LeaveRequestMode() {
                   </div>
               </div>
 
+          </div>
+      )}
+
+      {/* ADMIN RE-UPLOAD MC MODAL */}
+      {reuploadReq && isAdmin && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+              <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
+                  <div className="p-6 bg-blue-50 border-b border-blue-100 flex justify-between items-center">
+                      <div>
+                          <h2 className="text-lg font-black text-blue-800">Update MC</h2>
+                          <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mt-1">
+                              For {reuploadReq.host_name}
+                          </p>
+                      </div>
+                      <button onClick={() => { setReuploadReq(null); setReuploadFile(null); }} className="p-2 bg-white text-blue-500 rounded-full hover:bg-blue-100 transition-colors"><XCircle size={20}/></button>
+                  </div>
+                  
+                  <div className="p-6 space-y-5">
+                      <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center hover:bg-slate-50 relative transition-colors">
+                          <input type="file" accept="image/*,.pdf" onChange={e => setReuploadFile(e.target.files?.[0] || null)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
+                          <UploadCloud className="text-slate-400 mb-2" size={24}/>
+                          {reuploadFile ? (
+                              <p className="text-xs font-bold text-emerald-600 text-center truncate px-4">{reuploadFile.name}</p>
+                          ) : (
+                              <>
+                                  <p className="text-xs font-bold text-slate-600">Select New Photo or PDF</p>
+                                  <p className="text-[10px] text-slate-400 mt-1">Tap to browse files or camera</p>
+                              </>
+                          )}
+                      </div>
+
+                      <button onClick={submitReuploadMC} disabled={isSubmitting || !reuploadFile} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg hover:bg-blue-700 disabled:opacity-50 transition-all flex justify-center items-center gap-2">
+                          {isSubmitting ? <Loader2 className="animate-spin" size={16}/> : <CheckCircle2 size={16}/>}
+                          Replace Document
+                      </button>
+                  </div>
+              </div>
           </div>
       )}
 

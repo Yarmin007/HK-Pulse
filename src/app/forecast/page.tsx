@@ -63,14 +63,20 @@ export default function ArrivalsForecastPage() {
   const [graphView, setGraphView] = useState<'daily' | 'weekly'>('daily');
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Check user role on load
+  // Check user role on load (UPDATED TO USE YOUR LOCALSTORAGE AUTH)
   useEffect(() => {
-    const checkUserRole = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      // Adjust this condition if your admin role is stored differently (e.g., in a separate profiles table)
-      if (session?.user?.user_metadata?.role === 'admin') {
-        setIsAdmin(true);
-      }
+    const checkUserRole = () => {
+        const sessionData = localStorage.getItem('hk_pulse_session');
+        const adminAuth = localStorage.getItem('hk_pulse_admin_auth');
+        
+        let adminFlag = false;
+        if (sessionData) {
+            const parsed = JSON.parse(sessionData);
+            adminFlag = parsed.system_role === 'admin' || adminAuth === 'true';
+        } else if (adminAuth === 'true') {
+            adminFlag = true;
+        }
+        setIsAdmin(adminFlag);
     };
     checkUserRole();
   }, []);
