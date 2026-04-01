@@ -167,9 +167,11 @@ const DocumentScanner = ({ file, onConfirm, onCancel }: { file: File, onConfirm:
     };
 
     return (
-        <div className="fixed inset-0 z-[200] bg-black flex flex-col animate-in fade-in">
+        // ⚡ FIX: h-[100dvh] strictly enforces the exact visible height on mobile browsers, 
+        // bypassing the URL bar and bottom menu bar overlapping issues.
+        <div className="fixed top-0 left-0 w-full h-[100dvh] z-[200] bg-black flex flex-col animate-in fade-in">
             {/* HEADER */}
-            <div className="p-4 flex justify-between items-center bg-black/50 backdrop-blur-md z-10 text-white">
+            <div className="p-4 flex justify-between items-center bg-black/50 backdrop-blur-md z-10 text-white shrink-0">
                 <button onClick={onCancel} className="text-white/70 hover:text-white font-bold text-sm uppercase tracking-widest px-3 py-2">Cancel</button>
                 <div className="flex items-center gap-2 font-black tracking-widest text-sm uppercase">
                     <Crop size={16}/> Adjust Corners
@@ -213,15 +215,16 @@ const DocumentScanner = ({ file, onConfirm, onCancel }: { file: File, onConfirm:
             </div>
 
             {/* FOOTER CONTROLS */}
-            <div className="p-6 bg-black/80 backdrop-blur-md pb-safe">
-                <div className="flex justify-center mb-6">
+            {/* ⚡ FIX: Added shrink-0 and robust bottom padding so the button is completely un-hidable */}
+            <div className="p-4 md:p-6 bg-black/80 backdrop-blur-md pb-8 md:pb-6 shrink-0 z-20">
+                <div className="flex justify-center mb-4">
                     <div className="flex items-center gap-2 bg-white/10 px-4 py-2.5 rounded-full cursor-pointer hover:bg-white/20 transition-colors" onClick={() => setEnhance(!enhance)}>
                         <input type="checkbox" checked={enhance} readOnly className="accent-[#6D2158]" />
                         <span className="text-xs font-bold text-white flex items-center gap-1.5 uppercase tracking-widest"><Sliders size={14}/> B&W Filter</span>
                     </div>
                 </div>
                 
-                <button onClick={processScan} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-[0_0_20px_rgba(109,33,88,0.4)] hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2">
+                <button onClick={processScan} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-[0_0_20px_rgba(109,33,88,0.4)] hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2 mb-2">
                     {isProcessing ? <Loader2 className="animate-spin" size={18}/> : <CheckCircle2 size={18}/>}
                     {isProcessing ? 'Processing Scan...' : 'Confirm & Scan'}
                 </button>
