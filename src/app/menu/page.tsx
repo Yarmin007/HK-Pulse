@@ -6,7 +6,7 @@ import {
   ShoppingCart, ListChecks, Droplets, Calendar, Wine, Box, Zap, 
   UtensilsCrossed, ChevronRight, Briefcase, Contact, UserCheck, Clock, 
   RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare,
-  User as UserIcon, Map, Wind, Key, Waves, Plane, LayoutDashboard
+  User as UserIcon, Map, Wind, Key, Waves, Plane, LayoutDashboard, CalendarDays
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -97,6 +97,7 @@ export default function MobileMenu() {
         { name: "Attendance", icon: UserCheck, path: "/attendance" },
         { name: "Overtime", icon: Clock, path: "/overtime" },
         { name: "Leave Planner", icon: Plane, path: "/leave-planner" },
+        { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
     ];
     
     const MINIBAR_ITEMS = [
@@ -125,6 +126,7 @@ export default function MobileMenu() {
     const STAFF_OPS = [
         { name: "Forecast", icon: Plane, path: "/forecast" },
         { name: "My Schedule", icon: Calendar, path: "/schedule" },
+        { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
         { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
     ];
 

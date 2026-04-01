@@ -3,11 +3,15 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   CalendarDays, FileText, UploadCloud, CheckCircle2, XCircle, 
   Clock, ShieldCheck, Search, AlertCircle, ChevronRight, Stethoscope, 
-  Loader2, ArrowRight, Trash2, ShieldAlert, Camera, MessageCircle
+  Loader2, ArrowRight, Trash2, ShieldAlert, Camera, MessageCircle, Sliders
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, addDays, format } from 'date-fns';
 import toast from 'react-hot-toast';
+
+// IMPORT THE REAL MATH ENGINE FROM YOUR UTILS
+import { computeLeaveBalancesRPC } from '@/lib/payrollMath';
+import { getDhakaDateStr } from '@/lib/dateUtils';
 
 // --- TYPES ---
 type Host = { 
@@ -16,8 +20,6 @@ type Host = {
     full_name: string; 
     role: string; 
     department: string; 
-    off_balance?: number; // Assuming your DB cron job saves it here
-    balOff?: number; // Fallback
 };
 
 type LeaveRequest = {
@@ -44,9 +46,9 @@ type UnresolvedMC = {
     dates: string[];
 };
 
-// --- IMAGE COMPRESSION UTILITY (SAVES SUPABASE STORAGE SPACE) ---
-const compressImage = async (file: File): Promise<File> => {
-    // If it's already a PDF, don't compress
+// --- MAGIC SCANNER & COMPRESSION ENGINE ---
+const scanAndCompressImage = async (file: File, enhance: boolean): Promise<File> => {
+    // If it's already a PDF, we can't run image filters on it.
     if (file.type === 'application/pdf') return file;
 
     return new Promise((resolve) => {
@@ -57,20 +59,47 @@ const compressImage = async (file: File): Promise<File> => {
             img.src = event.target?.result as string;
             img.onload = () => {
                 const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 1200; // Standard document width
+                const MAX_WIDTH = 1200; // Standard Document Width
                 const scaleSize = MAX_WIDTH / img.width;
                 canvas.width = MAX_WIDTH;
                 canvas.height = img.height * scaleSize;
                 
                 const ctx = canvas.getContext('2d');
-                ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+                if (!ctx) return resolve(file);
+
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 
-                // Compress to 60% quality JPEG
+                // --- THE SCANNER FILTER ---
+                if (enhance) {
+                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const data = imgData.data;
+
+                    for (let i = 0; i < data.length; i += 4) {
+                        const r = data[i];
+                        const g = data[i + 1];
+                        const b = data[i + 2];
+                        
+                        // 1. Calculate perceived brightness (Luminance)
+                        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+                        // 2. Apply Threshold (Bleach backgrounds, darken text)
+                        // Anything lighter than a medium-gray (140) gets pushed to pure white paper
+                        // Anything darker gets darkened further to mimic black ink
+                        const newValue = luminance > 140 ? 255 : luminance * 0.6;
+
+                        data[i] = newValue;     // R
+                        data[i + 1] = newValue; // G
+                        data[i + 2] = newValue; // B
+                    }
+                    ctx.putImageData(imgData, 0, 0);
+                }
+
+                // Compress heavily to save storage space
                 canvas.toBlob((blob) => {
                     if (blob) {
                         resolve(new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_scanned.jpg", { type: 'image/jpeg' }));
                     } else {
-                        resolve(file); // Fallback to original if compression fails
+                        resolve(file); 
                     }
                 }, 'image/jpeg', 0.6); 
             };
@@ -78,8 +107,8 @@ const compressImage = async (file: File): Promise<File> => {
     });
 };
 
-export default function LeaveRequestPage() {
-  const [activeRole, setActiveRole] = useState<'HOST' | 'ADMIN'>('HOST');
+export default function LeaveRequestMode() {
+  const [isAdmin, setIsAdmin] = useState(false);
   const [currentUser, setCurrentUser] = useState<Host | null>(null);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [requests, setRequests] = useState<LeaveRequest[]>([]);
@@ -87,6 +116,12 @@ export default function LeaveRequestPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isPurging, setIsPurging] = useState(false);
   const [adminTab, setAdminTab] = useState<'PENDING' | 'APPROVED'>('PENDING');
+
+  // --- MATH DEPENDENCIES ---
+  const [rpcStats, setRpcStats] = useState<any[]>([]);
+  const [publicHolidays, setPublicHolidays] = useState<any[]>([]);
+  const [anniversaryLeaves, setAnniversaryLeaves] = useState<any[]>([]);
+  const cutoffDate = getDhakaDateStr();
 
   // --- FORM STATE ---
   const [formData, setFormData] = useState({
@@ -102,6 +137,7 @@ export default function LeaveRequestPage() {
   const [selectedMCDates, setSelectedMCDates] = useState<string[]>([]);
   const [mcFile, setMcFile] = useState<File | null>(null);
   const [resortDoctor, setResortDoctor] = useState(false);
+  const [enhanceScan, setEnhanceScan] = useState(true); // Toggles the B&W Scanner Filter
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // --- INIT ---
@@ -112,17 +148,51 @@ export default function LeaveRequestPage() {
   const fetchData = async () => {
       setIsLoading(true);
       try {
-          const { data: hostData } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned');
-          if (hostData) {
-              setHosts(hostData as Host[]);
-              setCurrentUser(hostData[0]); 
+          const sessionData = localStorage.getItem('hk_pulse_session');
+          const adminAuth = localStorage.getItem('hk_pulse_admin_auth');
+          
+          let adminFlag = false;
+          let loggedHostId = '';
+
+          if (sessionData) {
+              const parsed = JSON.parse(sessionData);
+              adminFlag = parsed.system_role === 'admin' || adminAuth === 'true';
+              loggedHostId = String(parsed.host_id || '').trim();
+          } else if (adminAuth === 'true') {
+              adminFlag = true;
           }
+          setIsAdmin(adminFlag);
+
+          const [hostRes, constRes, rpcRes, anniRes] = await Promise.all([
+              supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
+              supabase.from('hsk_constants').select('*').eq('type', 'public_holiday'),
+              supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate }),
+              supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
+          ]);
+
+          if (hostRes.data) {
+              setHosts(hostRes.data as Host[]);
+              if (loggedHostId) {
+                  const me = hostRes.data.find(h => String(h.host_id).trim() === loggedHostId);
+                  if (me) setCurrentUser(me as Host);
+              }
+          }
+
+          if (constRes.data) {
+              const loadedHolidays = constRes.data.map((c: any) => {
+                  const [d, n] = c.label.split('::');
+                  return { id: c.id, date: d, name: n };
+              });
+              setPublicHolidays(loadedHolidays);
+          }
+
+          setRpcStats(rpcRes.data || []);
+          setAnniversaryLeaves(anniRes.data || []);
 
           const { data: reqData } = await supabase.from('hsk_leave_requests').select('*').order('created_at', { ascending: false });
           const parsedRequests = (reqData || []) as LeaveRequest[];
           setRequests(parsedRequests);
 
-          // Smart Scanner: Strict Payroll Cycle Calculator
           const now = new Date();
           const y = now.getFullYear();
           const m = now.getMonth() + 1;
@@ -150,7 +220,7 @@ export default function LeaveRequestPage() {
 
           const unresolvedMap: Record<string, UnresolvedMC> = {};
 
-          if (attData && hostData) {
+          if (attData && hostRes.data) {
               attData.forEach(record => {
                   const dateStr = record.date.split('T')[0];
                   
@@ -164,7 +234,7 @@ export default function LeaveRequestPage() {
                   if (!isCovered) {
                       const key = `${record.host_id}_${record.status_code}`;
                       if (!unresolvedMap[key]) {
-                          const host = hostData.find(h => h.host_id === record.host_id);
+                          const host = hostRes.data.find(h => h.host_id === record.host_id);
                           unresolvedMap[key] = {
                               id: key,
                               host_id: record.host_id,
@@ -203,14 +273,13 @@ export default function LeaveRequestPage() {
   };
 
   const handleFileUpload = async (file: File, hostId: string) => {
-      // Compress the image to save space before uploading
-      const compressedFile = await compressImage(file);
+      const scannedFile = await scanAndCompressImage(file, enhanceScan);
       
-      const fileExt = compressedFile.name.split('.').pop();
+      const fileExt = scannedFile.name.split('.').pop();
       const fileName = `${hostId}_${Date.now()}.${fileExt}`;
       const filePath = `mc_uploads/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, compressedFile);
+      const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, scannedFile);
       if (uploadError) throw uploadError;
 
       const { data } = supabase.storage.from('documents').getPublicUrl(filePath);
@@ -218,7 +287,7 @@ export default function LeaveRequestPage() {
   };
 
   const submitLeaveRequest = async () => {
-      if (!currentUser) return;
+      if (!currentUser) return toast.error("User session not found.");
       if (!formData.start_date || !formData.end_date) return toast.error("Please select dates.");
       
       setIsSubmitting(true);
@@ -253,7 +322,7 @@ export default function LeaveRequestPage() {
   };
 
   const submitMCResolution = async () => {
-      if (!currentUser || !resolvingMC) return;
+      if (!resolvingMC) return;
       if (selectedMCDates.length === 0) return toast.error("Please select the dates this MC covers.");
       if (!resortDoctor && !mcFile) return toast.error("Please upload an MC or confirm resort doctor consultation.");
 
@@ -261,24 +330,23 @@ export default function LeaveRequestPage() {
       try {
           let mcUrl = null;
           if (mcFile && !resortDoctor) {
-              toast.loading("Scanning & Compressing MC...", { id: 'mc' });
-              mcUrl = await handleFileUpload(mcFile, currentUser.host_id);
+              toast.loading(enhanceScan ? "Scanning to B&W..." : "Uploading Photo...", { id: 'mc' });
+              mcUrl = await handleFileUpload(mcFile, resolvingMC.host_id);
               toast.success("MC Securely Uploaded!", { id: 'mc' });
           }
 
-          // Determine start and end from selected checkboxes
           const sortedDates = [...selectedMCDates].sort();
           const startD = sortedDates[0];
           const endD = sortedDates[sortedDates.length - 1];
 
           const payload = {
-              host_id: currentUser.host_id,
-              host_name: currentUser.full_name,
+              host_id: resolvingMC.host_id,
+              host_name: resolvingMC.host_name,
               leave_type: resolvingMC.type,
               start_date: startD,
               end_date: endD,
               total_days: selectedMCDates.length, 
-              status: 'Pending',
+              status: isAdmin ? 'Approved' : 'Pending',
               mc_url: mcUrl,
               resort_doctor: resortDoctor,
               is_extension: false,
@@ -293,11 +361,49 @@ export default function LeaveRequestPage() {
           setSelectedMCDates([]);
           setMcFile(null);
           setResortDoctor(false);
+          setEnhanceScan(true);
           fetchData();
 
       } catch (err: any) {
           console.error(err);
           toast.error("Failed to submit MC.");
+      }
+      setIsSubmitting(false);
+  };
+
+  const clearMCAdmin = async (mc: UnresolvedMC) => {
+      if (!confirm(`Are you sure you want to completely clear the MC requirement for ${mc.host_name}?\n\nThis will auto-approve the sickness in the system without requiring a document.`)) return;
+
+      setIsSubmitting(true);
+      toast.loading("Clearing requirement...", { id: 'clear_mc' });
+      
+      try {
+          const sortedDates = [...mc.dates].sort();
+          const startD = sortedDates[0];
+          const endD = sortedDates[sortedDates.length - 1];
+
+          const payload = {
+              host_id: mc.host_id,
+              host_name: mc.host_name,
+              leave_type: mc.type,
+              start_date: startD,
+              end_date: endD,
+              total_days: mc.dates.length, 
+              status: 'Approved',
+              mc_url: null,
+              resort_doctor: true,
+              is_extension: false,
+              parent_leave_id: null
+          };
+
+          const { error } = await supabase.from('hsk_leave_requests').insert([payload]);
+          if (error) throw error;
+
+          toast.success("MC cleared successfully!", { id: 'clear_mc' });
+          fetchData();
+      } catch (err: any) {
+          console.error(err);
+          toast.error("Failed to clear MC.", { id: 'clear_mc' });
       }
       setIsSubmitting(false);
   };
@@ -318,7 +424,6 @@ export default function LeaveRequestPage() {
       setFormData({ leave_type: 'OFF/PH Clearance', start_date: '', end_date: '', is_extension: false, parent_leave_id: null });
   };
 
-  // --- ADMIN LOGIC ---
   const updateRequestStatus = async (id: string, newStatus: 'Approved' | 'Denied') => {
       try {
           const { error } = await supabase.from('hsk_leave_requests').update({ status: newStatus }).eq('id', id);
@@ -372,53 +477,36 @@ export default function LeaveRequestPage() {
       setIsPurging(false);
   };
 
+  const getBalOffForHost = (hostId: string) => {
+      const host = hosts.find(h => h.host_id === hostId);
+      if (!host) return 0;
+      const balances = computeLeaveBalancesRPC(host, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
+      return balances?.balOff ? parseFloat(balances.balOff) : 0;
+  };
+
   const adminViewList = useMemo(() => {
       return requests
           .filter(r => adminTab === 'PENDING' ? r.status === 'Pending' : r.status !== 'Pending')
-          .map(r => {
-              const host = hosts.find(h => h.host_id === r.host_id);
-              return { ...r, balOff: host?.off_balance ?? host?.balOff ?? 0 };
-          })
+          .map(r => ({ ...r, computedBalOff: getBalOffForHost(r.host_id) }))
           .sort((a, b) => {
               if (adminTab === 'PENDING') {
-                  if (b.balOff !== a.balOff) return b.balOff - a.balOff;
+                  if (b.computedBalOff !== a.computedBalOff) return b.computedBalOff - a.computedBalOff;
               }
               return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
           });
-  }, [requests, hosts, adminTab]);
+  }, [requests, hosts, adminTab, rpcStats]);
 
   const myRequests = requests.filter(r => r.host_id === currentUser?.host_id);
   const myUnresolvedMCs = unresolvedMCs.filter(mc => mc.host_id === currentUser?.host_id);
-  const currentUserBal = currentUser?.off_balance ?? currentUser?.balOff ?? 0;
+  const currentUserBal = currentUser ? getBalOffForHost(currentUser.host_id) : 0;
 
   if (isLoading) return <div className="flex h-screen w-full items-center justify-center bg-slate-50"><Loader2 className="animate-spin text-[#6D2158]" size={40}/></div>;
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-6 pb-24 md:pb-6 font-sans text-slate-800 w-full flex flex-col overflow-x-hidden">
-      
-      {/* ROLE SWITCHER (For Testing) */}
-      <div className="flex justify-between items-center mb-6 bg-white p-3 rounded-2xl shadow-sm border border-slate-200 shrink-0">
-          <div className="flex gap-2">
-              <button onClick={() => setActiveRole('HOST')} className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${activeRole === 'HOST' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
-                  Host View
-              </button>
-              <button onClick={() => setActiveRole('ADMIN')} className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${activeRole === 'ADMIN' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
-                  Admin View
-              </button>
-          </div>
-          
-          {activeRole === 'HOST' && (
-              <div className="flex items-center gap-2">
-                  <span className="hidden md:inline text-xs font-bold text-slate-400 uppercase">Simulating as:</span>
-                  <select className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none max-w-[120px] md:max-w-xs" value={currentUser?.host_id || ''} onChange={(e) => setCurrentUser(hosts.find(h => h.host_id === e.target.value) || null)}>
-                      {hosts.map(h => <option key={h.id} value={h.host_id}>{h.full_name}</option>)}
-                  </select>
-              </div>
-          )}
-      </div>
 
       {/* ================= HOST VIEW ================= */}
-      {activeRole === 'HOST' && (
+      {!isAdmin && (
           <div className="flex flex-col lg:flex-row gap-6 w-full animate-in fade-in">
               
               {/* LEFT COL: LEAVE REQUEST FORM */}
@@ -551,22 +639,24 @@ export default function LeaveRequestPage() {
           </div>
       )}
 
-      {/* RESOLVE MC MODAL (HOST) */}
+      {/* RESOLVE MC MODAL (SHARED BY HOST & ADMIN) */}
       {resolvingMC && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
               <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
                   <div className="p-6 bg-rose-50 border-b border-rose-100 flex justify-between items-center">
                       <div>
                           <h2 className="text-lg font-black text-rose-800">Resolve {resolvingMC.type}</h2>
-                          <p className="text-[10px] font-bold text-rose-600 uppercase tracking-widest mt-1">Select dates and upload document</p>
+                          <p className="text-[10px] font-bold text-rose-600 uppercase tracking-widest mt-1">
+                              {isAdmin ? `For ${resolvingMC.host_name}` : 'Select dates and upload document'}
+                          </p>
                       </div>
-                      <button onClick={() => { setResolvingMC(null); setMcFile(null); setResortDoctor(false); setSelectedMCDates([]); }} className="p-2 bg-white text-rose-500 rounded-full hover:bg-rose-100 transition-colors"><XCircle size={20}/></button>
+                      <button onClick={() => { setResolvingMC(null); setMcFile(null); setResortDoctor(false); setSelectedMCDates([]); setEnhanceScan(true); }} className="p-2 bg-white text-rose-500 rounded-full hover:bg-rose-100 transition-colors"><XCircle size={20}/></button>
                   </div>
                   
                   <div className="p-6 space-y-5">
                       <div className="bg-slate-50 rounded-xl p-4 border border-slate-100">
                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Which dates does this MC cover?</p>
-                          <div className="flex flex-col gap-2">
+                          <div className="flex flex-col gap-2 max-h-[150px] overflow-y-auto custom-scrollbar">
                               {resolvingMC.dates.map(d => (
                                   <label key={d} className="flex items-center gap-3 bg-white border border-slate-200 px-4 py-3 rounded-lg cursor-pointer hover:border-rose-300 transition-colors">
                                       <input 
@@ -588,24 +678,31 @@ export default function LeaveRequestPage() {
                           <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-xl cursor-pointer hover:bg-blue-100 transition-colors" onClick={() => setResortDoctor(!resortDoctor)}>
                               <input type="checkbox" checked={resortDoctor} readOnly className="w-4 h-4 accent-blue-600 cursor-pointer"/>
                               <div className="flex-1">
-                                  <p className="text-xs font-black text-blue-900 flex items-center gap-1"><Stethoscope size={14}/> I consulted the Resort Doctor</p>
+                                  <p className="text-xs font-black text-blue-900 flex items-center gap-1">
+                                      <Stethoscope size={14}/> I consulted the Resort Doctor
+                                  </p>
                                   <p className="text-[10px] text-blue-700 font-medium">No MC upload required.</p>
                               </div>
                           </div>
 
                           {!resortDoctor && (
-                              <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center hover:bg-slate-50 relative transition-colors">
-                                  {/* Added capture="environment" to allow direct mobile camera scanning */}
+                              <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center hover:bg-slate-50 relative transition-colors">
                                   <input type="file" accept="image/*,.pdf" capture="environment" onChange={e => setMcFile(e.target.files?.[0] || null)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
-                                  <Camera className="mx-auto text-slate-400 mb-2" size={24}/>
+                                  <Camera className="text-slate-400 mb-2" size={24}/>
                                   {mcFile ? (
                                       <p className="text-xs font-bold text-emerald-600">{mcFile.name}</p>
                                   ) : (
                                       <>
                                           <p className="text-xs font-bold text-slate-600">Scan or Upload MC</p>
-                                          <p className="text-[10px] text-slate-400 mt-1">Tap to open camera (Auto-compressed to save space)</p>
+                                          <p className="text-[10px] text-slate-400 mt-1">Tap to open camera</p>
                                       </>
                                   )}
+                                  
+                                  {/* SCANNER TOGGLE */}
+                                  <div className="relative z-20 mt-4 flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200 cursor-pointer hover:bg-slate-200" onClick={(e) => { e.stopPropagation(); setEnhanceScan(!enhanceScan); }}>
+                                      <input type="checkbox" checked={enhanceScan} readOnly className="accent-[#6D2158]" />
+                                      <span className="text-[10px] font-bold text-slate-600 flex items-center gap-1"><Sliders size={12}/> Auto-B&W Scan Filter</span>
+                                  </div>
                               </div>
                           )}
                       </div>
@@ -620,7 +717,7 @@ export default function LeaveRequestPage() {
       )}
 
       {/* ================= ADMIN VIEW ================= */}
-      {activeRole === 'ADMIN' && (
+      {isAdmin && (
           <div className="w-full space-y-6 animate-in fade-in">
               
               <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -659,10 +756,9 @@ export default function LeaveRequestPage() {
                   <div className="xl:col-span-2 bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
                       <div className="p-5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 shrink-0">
                           <div className="flex bg-white rounded-lg p-1 border border-slate-200 w-max shadow-sm">
-                              <button onClick={() => setAdminTab('PENDING')} className={`px-4 py-1.5 rounded-md text-xs font-black uppercase tracking-widest transition-colors ${adminTab === 'PENDING' ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:bg-slate-50'}`}>Pending</button>
+                              <button onClick={() => setAdminTab('PENDING')} className={`px-4 py-1.5 rounded-md text-xs font-black uppercase tracking-widest transition-colors ${adminTab === 'PENDING' ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:bg-slate-50'}`}>Pending Queue</button>
                               <button onClick={() => setAdminTab('APPROVED')} className={`px-4 py-1.5 rounded-md text-xs font-black uppercase tracking-widest transition-colors ${adminTab === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' : 'text-slate-400 hover:bg-slate-50'}`}>Approved / History</button>
                           </div>
-                          {adminTab === 'PENDING' && <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Sorted by Off Balance</span>}
                       </div>
 
                       <div className="divide-y divide-slate-100 overflow-x-auto">
@@ -694,7 +790,7 @@ export default function LeaveRequestPage() {
                                                   <p className="text-[10px] font-bold text-slate-500">{format(parseISO(req.start_date), 'dd/MM')} - {format(parseISO(req.end_date), 'dd/MM')} ({req.total_days} Days)</p>
                                               </td>
                                               <td className="p-4 text-center">
-                                                  <span className={`text-sm font-black ${req.balOff && req.balOff > 5 ? 'text-rose-600' : 'text-slate-600'}`}>{req.balOff || 0}</span>
+                                                  <span className={`text-sm font-black ${req.computedBalOff && req.computedBalOff > 5 ? 'text-rose-600' : 'text-slate-600'}`}>{req.computedBalOff || 0}</span>
                                               </td>
                                               <td className="p-4">
                                                   {['Sick Leave', 'Emergency Leave'].includes(req.leave_type) ? (
@@ -738,7 +834,7 @@ export default function LeaveRequestPage() {
                       </div>
                   </div>
 
-                  {/* MISSING MC TRACKER (FROM CURRENT PAYROLL ATTENDANCE SCANNER) */}
+                  {/* ADMIN MISSING MC TRACKER */}
                   <div className="xl:col-span-1 bg-white rounded-3xl shadow-sm border border-rose-200 overflow-hidden flex flex-col">
                       <div className="p-5 bg-rose-50 border-b border-rose-200 flex justify-between items-center">
                           <h2 className="font-black text-rose-800 flex items-center gap-2"><AlertCircle size={18}/> Missing MC Tracker</h2>
@@ -761,6 +857,15 @@ export default function LeaveRequestPage() {
                                       </div>
                                       <p className="text-[10px] text-slate-500 font-bold mt-2">Missing for {mc.dates.length} rostered day(s):</p>
                                       <p className="text-[10px] text-rose-600 font-medium leading-relaxed">{mc.dates.map(d => format(parseISO(d), 'dd MMM')).join(', ')}</p>
+                                      
+                                      <div className="flex gap-2 mt-3 pt-3 border-t border-rose-100/50">
+                                          <button onClick={() => { setResolvingMC(mc); setSelectedMCDates([...mc.dates]); setEnhanceScan(true); }} className="flex-1 bg-white border border-rose-200 text-rose-600 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-rose-50 transition-colors flex items-center justify-center gap-1 shadow-sm">
+                                              <UploadCloud size={14}/> Upload
+                                          </button>
+                                          <button onClick={() => clearMCAdmin(mc)} className="flex-1 bg-white border border-slate-200 text-slate-500 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-slate-50 hover:text-slate-700 transition-colors flex items-center justify-center gap-1 shadow-sm">
+                                              <CheckCircle2 size={14}/> Clear
+                                          </button>
+                                      </div>
                                   </div>
                               ))
                           )}
