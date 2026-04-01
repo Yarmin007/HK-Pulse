@@ -1,9 +1,9 @@
 "use client";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   CalendarDays, FileText, UploadCloud, CheckCircle2, XCircle, 
   Clock, ShieldCheck, Search, AlertCircle, ChevronRight, Stethoscope, 
-  Loader2, ArrowRight, Trash2, ShieldAlert, Camera, MessageCircle, Sliders
+  Loader2, ArrowRight, Trash2, ShieldAlert, Camera, MessageCircle, Sliders, Crop
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, addDays, format } from 'date-fns';
@@ -14,98 +14,222 @@ import { computeLeaveBalancesRPC } from '@/lib/payrollMath';
 import { getDhakaDateStr } from '@/lib/dateUtils';
 
 // --- TYPES ---
-type Host = { 
-    id: string; 
-    host_id: string; 
-    full_name: string; 
-    role: string; 
-    department: string; 
-};
+type Host = { id: string; host_id: string; full_name: string; role: string; department: string; off_balance?: number; balOff?: number; };
+type LeaveRequest = { id: string; host_id: string; host_name: string; leave_type: string; start_date: string; end_date: string; total_days: number; status: 'Pending' | 'Approved' | 'Denied'; mc_url: string | null; resort_doctor: boolean; is_extension: boolean; parent_leave_id: string | null; created_at: string; };
+type UnresolvedMC = { id: string; host_id: string; host_name: string; type: string; dates: string[]; };
+type Point = { x: number, y: number };
 
-type LeaveRequest = {
-    id: string;
-    host_id: string;
-    host_name: string;
-    leave_type: string;
-    start_date: string;
-    end_date: string;
-    total_days: number;
-    status: 'Pending' | 'Approved' | 'Denied';
-    mc_url: string | null;
-    resort_doctor: boolean;
-    is_extension: boolean;
-    parent_leave_id: string | null;
-    created_at: string;
-};
+// ============================================================================
+// MAGIC SCANNER COMPONENT (INTERACTIVE CROP & PERSPECTIVE WARP)
+// ============================================================================
+const DocumentScanner = ({ file, onConfirm, onCancel }: { file: File, onConfirm: (f: File) => void, onCancel: () => void }) => {
+    const [imgSrc, setImgSrc] = useState<string>('');
+    const [corners, setCorners] = useState<Point[]>([]);
+    const [imageRect, setImageRect] = useState({ w: 0, h: 0, t: 0, l: 0 });
+    const [enhance, setEnhance] = useState(true);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const imgRef = useRef<HTMLImageElement>(null);
+    const activeCornerIndex = useRef<number | null>(null);
 
-type UnresolvedMC = {
-    id: string;
-    host_id: string;
-    host_name: string;
-    type: string;
-    dates: string[];
-};
+    useEffect(() => {
+        const url = URL.createObjectURL(file);
+        setImgSrc(url);
+        return () => URL.revokeObjectURL(url);
+    }, [file]);
 
-// --- MAGIC SCANNER & COMPRESSION ENGINE ---
-const scanAndCompressImage = async (file: File, enhance: boolean): Promise<File> => {
-    // If it's already a PDF, we can't run image filters on it.
-    if (file.type === 'application/pdf') return file;
+    const handleImageLoad = () => {
+        if (!imgRef.current) return;
+        const rect = imgRef.current.getBoundingClientRect();
+        setImageRect({ w: rect.width, h: rect.height, t: rect.top, l: rect.left });
+        
+        // Initialize corners 10% inside the image bounds [TL, TR, BR, BL]
+        const padX = rect.width * 0.1;
+        const padY = rect.height * 0.1;
+        setCorners([
+            { x: padX, y: padY },
+            { x: rect.width - padX, y: padY },
+            { x: rect.width - padX, y: rect.height - padY },
+            { x: padX, y: rect.height - padY }
+        ]);
+    };
 
-    return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = (event) => {
-            const img = new Image();
-            img.src = event.target?.result as string;
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 1200; // Standard Document Width
-                const scaleSize = MAX_WIDTH / img.width;
-                canvas.width = MAX_WIDTH;
-                canvas.height = img.height * scaleSize;
+    // Drag Logic
+    const handleMove = useCallback((clientX: number, clientY: number) => {
+        if (activeCornerIndex.current === null) return;
+        const x = Math.max(0, Math.min(clientX - imageRect.l, imageRect.w));
+        const y = Math.max(0, Math.min(clientY - imageRect.t, imageRect.h));
+        
+        setCorners(prev => {
+            const next = [...prev];
+            next[activeCornerIndex.current as number] = { x, y };
+            return next;
+        });
+    }, [imageRect]);
+
+    useEffect(() => {
+        const onTouchMove = (e: TouchEvent) => handleMove(e.touches[0].clientX, e.touches[0].clientY);
+        const onMouseMove = (e: MouseEvent) => handleMove(e.clientX, e.clientY);
+        const onEnd = () => { activeCornerIndex.current = null; };
+
+        window.addEventListener('touchmove', onTouchMove, { passive: false });
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('touchend', onEnd);
+        window.addEventListener('mouseup', onEnd);
+
+        return () => {
+            window.removeEventListener('touchmove', onTouchMove);
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('touchend', onEnd);
+            window.removeEventListener('mouseup', onEnd);
+        };
+    }, [handleMove]);
+
+    const processScan = async () => {
+        if (!imgRef.current || corners.length !== 4) return;
+        setIsProcessing(true);
+
+        // Allow UI to render loading state before heavy math blocks the thread
+        await new Promise(r => setTimeout(r, 50)); 
+
+        const img = imgRef.current;
+        const scaleX = img.naturalWidth / imageRect.w;
+        const scaleY = img.naturalHeight / imageRect.h;
+
+        // Map visual CSS corners to actual intrinsic image pixels
+        const srcCorners = corners.map(c => ({ x: c.x * scaleX, y: c.y * scaleY }));
+
+        const destW = 1200;
+        const destH = 1600; // Standard Document Ratio
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = destW;
+        canvas.height = destH;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return onCancel();
+
+        // Draw original to offscreen canvas to get pixel data
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = img.naturalWidth;
+        offCanvas.height = img.naturalHeight;
+        const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+        if (!offCtx) return onCancel();
+        
+        offCtx.drawImage(img, 0, 0);
+        const srcData = offCtx.getImageData(0, 0, img.naturalWidth, img.naturalHeight).data;
+
+        const destImg = ctx.createImageData(destW, destH);
+        const dData = destImg.data;
+
+        // Bilinear Perspective Transform (Flattens the angled document)
+        for (let y = 0; y < destH; y++) {
+            const v = y / destH;
+            for (let x = 0; x < destW; x++) {
+                const u = x / destW;
+
+                const sx = (1 - u) * (1 - v) * srcCorners[0].x + u * (1 - v) * srcCorners[1].x + u * v * srcCorners[2].x + (1 - u) * v * srcCorners[3].x;
+                const sy = (1 - u) * (1 - v) * srcCorners[0].y + u * (1 - v) * srcCorners[1].y + u * v * srcCorners[2].y + (1 - u) * v * srcCorners[3].y;
+
+                const srcX = Math.min(Math.max(Math.floor(sx), 0), img.naturalWidth - 1);
+                const srcY = Math.min(Math.max(Math.floor(sy), 0), img.naturalHeight - 1);
                 
-                const ctx = canvas.getContext('2d');
-                if (!ctx) return resolve(file);
+                const srcIdx = (srcY * img.naturalWidth + srcX) * 4;
+                const destIdx = (y * destW + x) * 4;
 
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                
-                // --- THE SCANNER FILTER ---
+                let r = srcData[srcIdx];
+                let g = srcData[srcIdx + 1];
+                let b = srcData[srcIdx + 2];
+
+                // Auto-Enhance B&W Filter
                 if (enhance) {
-                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const data = imgData.data;
-
-                    for (let i = 0; i < data.length; i += 4) {
-                        const r = data[i];
-                        const g = data[i + 1];
-                        const b = data[i + 2];
-                        
-                        // 1. Calculate perceived brightness (Luminance)
-                        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-
-                        // 2. Apply Threshold (Bleach backgrounds, darken text)
-                        // Anything lighter than a medium-gray (140) gets pushed to pure white paper
-                        // Anything darker gets darkened further to mimic black ink
-                        const newValue = luminance > 140 ? 255 : luminance * 0.6;
-
-                        data[i] = newValue;     // R
-                        data[i + 1] = newValue; // G
-                        data[i + 2] = newValue; // B
-                    }
-                    ctx.putImageData(imgData, 0, 0);
+                    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                    const val = lum > 130 ? 255 : lum * 0.6; // Bleach backgrounds, darken inks
+                    r = g = b = val;
                 }
 
-                // Compress heavily to save storage space
-                canvas.toBlob((blob) => {
-                    if (blob) {
-                        resolve(new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_scanned.jpg", { type: 'image/jpeg' }));
-                    } else {
-                        resolve(file); 
-                    }
-                }, 'image/jpeg', 0.6); 
-            };
-        };
-    });
+                dData[destIdx] = r;
+                dData[destIdx + 1] = g;
+                dData[destIdx + 2] = b;
+                dData[destIdx + 3] = 255;
+            }
+        }
+        
+        ctx.putImageData(destImg, 0, 0);
+        
+        canvas.toBlob((blob) => {
+            if (blob) {
+                const newFile = new File([blob], file.name.replace(/\.[^/.]+$/, "") + "_scanned.jpg", { type: 'image/jpeg' });
+                onConfirm(newFile);
+            } else {
+                onCancel();
+            }
+            setIsProcessing(false);
+        }, 'image/jpeg', 0.6); // 60% Quality to save Space
+    };
+
+    return (
+        <div className="fixed inset-0 z-[200] bg-black flex flex-col animate-in fade-in">
+            {/* HEADER */}
+            <div className="p-4 flex justify-between items-center bg-black/50 backdrop-blur-md z-10 text-white">
+                <button onClick={onCancel} className="text-white/70 hover:text-white font-bold text-sm uppercase tracking-widest px-3 py-2">Cancel</button>
+                <div className="flex items-center gap-2 font-black tracking-widest text-sm uppercase">
+                    <Crop size={16}/> Adjust Corners
+                </div>
+                <div className="w-16"></div> {/* Spacer */}
+            </div>
+
+            {/* CROP AREA */}
+            <div className="flex-1 relative overflow-hidden flex items-center justify-center touch-none select-none bg-slate-900" style={{ touchAction: 'none' }}>
+                {imgSrc && (
+                    <img ref={imgRef} src={imgSrc} onLoad={handleImageLoad} className="max-w-full max-h-full object-contain pointer-events-none shadow-2xl" alt="To scan" />
+                )}
+                
+                {imageRect.w > 0 && corners.length === 4 && (
+                    <div className="absolute top-0 left-0" style={{ transform: `translate(${imageRect.l}px, ${imageRect.t}px)`, width: imageRect.w, height: imageRect.h }}>
+                        {/* Shaded Overlay & Crop Polygon */}
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible">
+                            <polygon 
+                                points={corners.map(c => `${c.x},${c.y}`).join(' ')}
+                                fill="rgba(109, 33, 88, 0.1)" 
+                                stroke="#6D2158" 
+                                strokeWidth="2" 
+                                strokeDasharray="4 4"
+                            />
+                        </svg>
+                        
+                        {/* Draggable Corner Handles */}
+                        {corners.map((c, i) => (
+                            <div 
+                                key={i} 
+                                onTouchStart={() => { activeCornerIndex.current = i; }}
+                                onMouseDown={() => { activeCornerIndex.current = i; }}
+                                className="absolute w-12 h-12 -ml-6 -mt-6 flex items-center justify-center cursor-move"
+                                style={{ left: c.x, top: c.y }}
+                            >
+                                <div className="w-4 h-4 bg-white rounded-full border-2 border-[#6D2158] shadow-[0_0_10px_rgba(0,0,0,0.5)]"></div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* FOOTER CONTROLS */}
+            <div className="p-6 bg-black/80 backdrop-blur-md pb-safe">
+                <div className="flex justify-center mb-6">
+                    <div className="flex items-center gap-2 bg-white/10 px-4 py-2.5 rounded-full cursor-pointer hover:bg-white/20 transition-colors" onClick={() => setEnhance(!enhance)}>
+                        <input type="checkbox" checked={enhance} readOnly className="accent-[#6D2158]" />
+                        <span className="text-xs font-bold text-white flex items-center gap-1.5 uppercase tracking-widest"><Sliders size={14}/> B&W Filter</span>
+                    </div>
+                </div>
+                
+                <button onClick={processScan} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-4 rounded-2xl font-black uppercase tracking-widest text-sm shadow-[0_0_20px_rgba(109,33,88,0.4)] hover:bg-[#5a1b49] disabled:opacity-50 transition-all flex justify-center items-center gap-2">
+                    {isProcessing ? <Loader2 className="animate-spin" size={18}/> : <CheckCircle2 size={18}/>}
+                    {isProcessing ? 'Processing Scan...' : 'Confirm & Scan'}
+                </button>
+            </div>
+        </div>
+    );
 };
+// ============================================================================
 
 export default function LeaveRequestMode() {
   const [isAdmin, setIsAdmin] = useState(false);
@@ -124,33 +248,23 @@ export default function LeaveRequestMode() {
   const cutoffDate = getDhakaDateStr();
 
   // --- FORM STATE ---
-  const [formData, setFormData] = useState({
-      leave_type: 'OFF/PH Clearance',
-      start_date: '',
-      end_date: '',
-      is_extension: false,
-      parent_leave_id: null as string | null
-  });
+  const [formData, setFormData] = useState({ leave_type: 'OFF/PH Clearance', start_date: '', end_date: '', is_extension: false, parent_leave_id: null as string | null });
   
   // --- MC RESOLUTION STATE ---
   const [resolvingMC, setResolvingMC] = useState<UnresolvedMC | null>(null);
   const [selectedMCDates, setSelectedMCDates] = useState<string[]>([]);
-  const [mcFile, setMcFile] = useState<File | null>(null);
+  const [scanningFile, setScanningFile] = useState<File | null>(null); 
+  const [mcFile, setMcFile] = useState<File | null>(null); 
   const [resortDoctor, setResortDoctor] = useState(false);
-  const [enhanceScan, setEnhanceScan] = useState(true); // Toggles the B&W Scanner Filter
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // --- INIT ---
-  useEffect(() => {
-      fetchData();
-  }, []);
+  useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
       setIsLoading(true);
       try {
           const sessionData = localStorage.getItem('hk_pulse_session');
           const adminAuth = localStorage.getItem('hk_pulse_admin_auth');
-          
           let adminFlag = false;
           let loggedHostId = '';
 
@@ -179,10 +293,7 @@ export default function LeaveRequestMode() {
           }
 
           if (constRes.data) {
-              const loadedHolidays = constRes.data.map((c: any) => {
-                  const [d, n] = c.label.split('::');
-                  return { id: c.id, date: d, name: n };
-              });
+              const loadedHolidays = constRes.data.map((c: any) => { const [d, n] = c.label.split('::'); return { id: c.id, date: d, name: n }; });
               setPublicHolidays(loadedHolidays);
           }
 
@@ -223,46 +334,26 @@ export default function LeaveRequestMode() {
           if (attData && hostRes.data) {
               attData.forEach(record => {
                   const dateStr = record.date.split('T')[0];
-                  
-                  const isCovered = parsedRequests.some(req => 
-                      req.host_id === record.host_id &&
-                      req.start_date <= dateStr && 
-                      req.end_date >= dateStr &&
-                      (req.mc_url || req.resort_doctor)
-                  );
-
+                  const isCovered = parsedRequests.some(req => req.host_id === record.host_id && req.start_date <= dateStr && req.end_date >= dateStr && (req.mc_url || req.resort_doctor));
                   if (!isCovered) {
                       const key = `${record.host_id}_${record.status_code}`;
                       if (!unresolvedMap[key]) {
                           const host = hostRes.data.find(h => h.host_id === record.host_id);
-                          unresolvedMap[key] = {
-                              id: key,
-                              host_id: record.host_id,
-                              host_name: host?.full_name || record.host_id,
-                              type: record.status_code === 'SL' ? 'Sick Leave' : 'Emergency Leave',
-                              dates: []
-                          };
+                          unresolvedMap[key] = { id: key, host_id: record.host_id, host_name: host?.full_name || record.host_id, type: record.status_code === 'SL' ? 'Sick Leave' : 'Emergency Leave', dates: [] };
                       }
                       unresolvedMap[key].dates.push(dateStr);
                   }
               });
           }
           setUnresolvedMCs(Object.values(unresolvedMap));
-          
-      } catch (error) {
-          console.error(error);
-          toast.error("Failed to load data.");
-      }
+      } catch (error) { toast.error("Failed to load data."); }
       setIsLoading(false);
   };
 
-  // --- HOST LOGIC ---
   const handleDateChange = (field: 'start_date' | 'end_date', val: string) => {
       setFormData(prev => {
           const next = { ...prev, [field]: val };
-          if (next.start_date && next.end_date && next.end_date < next.start_date) {
-              next.end_date = next.start_date;
-          }
+          if (next.start_date && next.end_date && next.end_date < next.start_date) next.end_date = next.start_date;
           return next;
       });
   };
@@ -272,16 +363,13 @@ export default function LeaveRequestMode() {
       return differenceInDays(parseISO(end), parseISO(start)) + 1;
   };
 
-  const handleFileUpload = async (file: File, hostId: string) => {
-      const scannedFile = await scanAndCompressImage(file, enhanceScan);
-      
-      const fileExt = scannedFile.name.split('.').pop();
+  const uploadProcessedMC = async (file: File, hostId: string) => {
+      const fileExt = file.name.split('.').pop();
       const fileName = `${hostId}_${Date.now()}.${fileExt}`;
       const filePath = `mc_uploads/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, scannedFile);
+      const { error: uploadError } = await supabase.storage.from('documents').upload(filePath, file);
       if (uploadError) throw uploadError;
-
       const { data } = supabase.storage.from('documents').getPublicUrl(filePath);
       return data.publicUrl;
   };
@@ -292,59 +380,48 @@ export default function LeaveRequestMode() {
       
       setIsSubmitting(true);
       try {
-          const totalDays = calculateDays(formData.start_date, formData.end_date);
-
           const payload = {
               host_id: currentUser.host_id,
               host_name: currentUser.full_name,
               leave_type: formData.leave_type,
               start_date: formData.start_date,
               end_date: formData.end_date,
-              total_days: totalDays,
+              total_days: calculateDays(formData.start_date, formData.end_date),
               status: 'Pending',
               is_extension: formData.is_extension,
               parent_leave_id: formData.parent_leave_id
           };
-
           const { error } = await supabase.from('hsk_leave_requests').insert([payload]);
           if (error) throw error;
 
           toast.success(formData.is_extension ? "Extension requested successfully!" : "Leave requested successfully!");
-          
           setFormData({ leave_type: 'OFF/PH Clearance', start_date: '', end_date: '', is_extension: false, parent_leave_id: null });
           fetchData();
-
-      } catch (err: any) {
-          console.error(err);
-          toast.error("Failed to submit request.");
-      }
+      } catch (err: any) { toast.error("Failed to submit request."); }
       setIsSubmitting(false);
   };
 
   const submitMCResolution = async () => {
       if (!resolvingMC) return;
       if (selectedMCDates.length === 0) return toast.error("Please select the dates this MC covers.");
-      if (!resortDoctor && !mcFile) return toast.error("Please upload an MC or confirm resort doctor consultation.");
+      if (!resortDoctor && !mcFile) return toast.error("Please scan or select a document.");
 
       setIsSubmitting(true);
       try {
           let mcUrl = null;
           if (mcFile && !resortDoctor) {
-              toast.loading(enhanceScan ? "Scanning to B&W..." : "Uploading Photo...", { id: 'mc' });
-              mcUrl = await handleFileUpload(mcFile, resolvingMC.host_id);
+              toast.loading("Uploading Final Document...", { id: 'mc' });
+              mcUrl = await uploadProcessedMC(mcFile, resolvingMC.host_id);
               toast.success("MC Securely Uploaded!", { id: 'mc' });
           }
 
           const sortedDates = [...selectedMCDates].sort();
-          const startD = sortedDates[0];
-          const endD = sortedDates[sortedDates.length - 1];
-
           const payload = {
               host_id: resolvingMC.host_id,
               host_name: resolvingMC.host_name,
               leave_type: resolvingMC.type,
-              start_date: startD,
-              end_date: endD,
+              start_date: sortedDates[0],
+              end_date: sortedDates[sortedDates.length - 1],
               total_days: selectedMCDates.length, 
               status: isAdmin ? 'Approved' : 'Pending',
               mc_url: mcUrl,
@@ -361,68 +438,37 @@ export default function LeaveRequestMode() {
           setSelectedMCDates([]);
           setMcFile(null);
           setResortDoctor(false);
-          setEnhanceScan(true);
           fetchData();
-
-      } catch (err: any) {
-          console.error(err);
-          toast.error("Failed to submit MC.");
-      }
+      } catch (err: any) { toast.error("Failed to submit MC."); }
       setIsSubmitting(false);
   };
 
   const clearMCAdmin = async (mc: UnresolvedMC) => {
       if (!confirm(`Are you sure you want to completely clear the MC requirement for ${mc.host_name}?\n\nThis will auto-approve the sickness in the system without requiring a document.`)) return;
-
       setIsSubmitting(true);
       toast.loading("Clearing requirement...", { id: 'clear_mc' });
-      
       try {
           const sortedDates = [...mc.dates].sort();
-          const startD = sortedDates[0];
-          const endD = sortedDates[sortedDates.length - 1];
-
           const payload = {
-              host_id: mc.host_id,
-              host_name: mc.host_name,
-              leave_type: mc.type,
-              start_date: startD,
-              end_date: endD,
-              total_days: mc.dates.length, 
-              status: 'Approved',
-              mc_url: null,
-              resort_doctor: true,
-              is_extension: false,
-              parent_leave_id: null
+              host_id: mc.host_id, host_name: mc.host_name, leave_type: mc.type,
+              start_date: sortedDates[0], end_date: sortedDates[sortedDates.length - 1],
+              total_days: mc.dates.length, status: 'Approved', mc_url: null, resort_doctor: true, is_extension: false, parent_leave_id: null
           };
-
           const { error } = await supabase.from('hsk_leave_requests').insert([payload]);
           if (error) throw error;
-
           toast.success("MC cleared successfully!", { id: 'clear_mc' });
           fetchData();
-      } catch (err: any) {
-          console.error(err);
-          toast.error("Failed to clear MC.", { id: 'clear_mc' });
-      }
+      } catch (err: any) { toast.error("Failed to clear MC.", { id: 'clear_mc' }); }
       setIsSubmitting(false);
   };
 
   const openExtensionForm = (parentReq: LeaveRequest) => {
-      setFormData({
-          leave_type: parentReq.leave_type,
-          start_date: format(addDays(parseISO(parentReq.end_date), 1), 'yyyy-MM-dd'),
-          end_date: '',
-          is_extension: true,
-          parent_leave_id: parentReq.id
-      });
+      setFormData({ leave_type: parentReq.leave_type, start_date: format(addDays(parseISO(parentReq.end_date), 1), 'yyyy-MM-dd'), end_date: '', is_extension: true, parent_leave_id: parentReq.id });
       window.scrollTo({ top: 0, behavior: 'smooth' });
       toast.success("Ready to extend. Select your new end date.");
   };
 
-  const cancelExtension = () => {
-      setFormData({ leave_type: 'OFF/PH Clearance', start_date: '', end_date: '', is_extension: false, parent_leave_id: null });
-  };
+  const cancelExtension = () => setFormData({ leave_type: 'OFF/PH Clearance', start_date: '', end_date: '', is_extension: false, parent_leave_id: null });
 
   const updateRequestStatus = async (id: string, newStatus: 'Approved' | 'Denied') => {
       try {
@@ -430,50 +476,33 @@ export default function LeaveRequestMode() {
           if (error) throw error;
           toast.success(`Request ${newStatus}!`);
           fetchData();
-      } catch (err) {
-          toast.error(`Failed to ${newStatus.toLowerCase()} request.`);
-      }
+      } catch (err) { toast.error(`Failed to ${newStatus.toLowerCase()} request.`); }
   };
 
   const purgeOldMCs = async () => {
       if (!confirm("This will permanently delete all MC files older than 30 days to clear storage. Continue?")) return;
-      
       setIsPurging(true);
       toast.loading("Scanning for old MCs...", { id: 'purge' });
-      
       try {
-          const thirtyDaysAgo = new Date();
-          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-          const { data: oldRequests } = await supabase
-              .from('hsk_leave_requests')
-              .select('id, mc_url')
-              .not('mc_url', 'is', null)
-              .lt('created_at', thirtyDaysAgo.toISOString());
+          const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          const { data: oldRequests } = await supabase.from('hsk_leave_requests').select('id, mc_url').not('mc_url', 'is', null).lt('created_at', thirtyDaysAgo.toISOString());
 
           if (!oldRequests || oldRequests.length === 0) {
               toast.success("No old MCs to clean up!", { id: 'purge' });
-              setIsPurging(false);
-              return;
+              setIsPurging(false); return;
           }
 
           let purgedCount = 0;
           for (const req of oldRequests) {
               const urlParts = req.mc_url.split('/');
-              const fileName = urlParts[urlParts.length - 1];
-              const filePath = `mc_uploads/${fileName}`;
-
+              const filePath = `mc_uploads/${urlParts[urlParts.length - 1]}`;
               await supabase.storage.from('documents').remove([filePath]);
               await supabase.from('hsk_leave_requests').update({ mc_url: null }).eq('id', req.id);
               purgedCount++;
           }
-          
           toast.success(`Successfully deleted ${purgedCount} old MC files!`, { id: 'purge' });
           fetchData();
-      } catch (e) {
-          toast.error("Failed to purge MCs.", { id: 'purge' });
-          console.error(e);
-      }
+      } catch (e) { toast.error("Failed to purge MCs.", { id: 'purge' }); }
       setIsPurging(false);
   };
 
@@ -485,15 +514,9 @@ export default function LeaveRequestMode() {
   };
 
   const adminViewList = useMemo(() => {
-      return requests
-          .filter(r => adminTab === 'PENDING' ? r.status === 'Pending' : r.status !== 'Pending')
+      return requests.filter(r => adminTab === 'PENDING' ? r.status === 'Pending' : r.status !== 'Pending')
           .map(r => ({ ...r, computedBalOff: getBalOffForHost(r.host_id) }))
-          .sort((a, b) => {
-              if (adminTab === 'PENDING') {
-                  if (b.computedBalOff !== a.computedBalOff) return b.computedBalOff - a.computedBalOff;
-              }
-              return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-          });
+          .sort((a, b) => adminTab === 'PENDING' ? (b.computedBalOff !== a.computedBalOff ? b.computedBalOff - a.computedBalOff : new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) : new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [requests, hosts, adminTab, rpcStats]);
 
   const myRequests = requests.filter(r => r.host_id === currentUser?.host_id);
@@ -503,15 +526,25 @@ export default function LeaveRequestMode() {
   if (isLoading) return <div className="flex h-screen w-full items-center justify-center bg-slate-50"><Loader2 className="animate-spin text-[#6D2158]" size={40}/></div>;
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-6 pb-24 md:pb-6 font-sans text-slate-800 w-full flex flex-col overflow-x-hidden">
+    <div className="min-h-screen bg-slate-50 p-4 md:p-6 pb-24 md:pb-6 font-sans text-slate-800 w-full flex flex-col overflow-x-hidden relative">
+
+      {/* --- RENDER MAGIC SCANNER MODAL --- */}
+      {scanningFile && (
+          <DocumentScanner 
+              file={scanningFile} 
+              onConfirm={(processedFile) => {
+                  setMcFile(processedFile);
+                  setScanningFile(null);
+              }}
+              onCancel={() => setScanningFile(null)}
+          />
+      )}
 
       {/* ================= HOST VIEW ================= */}
       {!isAdmin && (
           <div className="flex flex-col lg:flex-row gap-6 w-full animate-in fade-in">
-              
               {/* LEFT COL: LEAVE REQUEST FORM */}
               <div className="w-full lg:w-[400px] shrink-0 flex flex-col gap-6">
-                  
                   <div className="bg-[#6D2158] rounded-3xl p-6 text-white shadow-lg relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10"></div>
                       <h2 className="text-sm font-bold opacity-80 uppercase tracking-widest">Available Balance</h2>
@@ -551,9 +584,7 @@ export default function LeaveRequestMode() {
                               <h2 className="text-lg font-black text-[#6D2158]">{formData.is_extension ? 'Request Extension' : 'New Leave Request'}</h2>
                               {formData.is_extension && <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mt-1">Extending an existing approved leave</p>}
                           </div>
-                          {formData.is_extension && (
-                              <button onClick={cancelExtension} className="text-xs font-bold text-slate-400 hover:text-rose-600 transition-colors">Cancel</button>
-                          )}
+                          {formData.is_extension && <button onClick={cancelExtension} className="text-xs font-bold text-slate-400 hover:text-rose-600 transition-colors">Cancel</button>}
                       </div>
                       
                       <div className="p-6 space-y-5">
@@ -617,8 +648,7 @@ export default function LeaveRequestMode() {
                                   
                                   <div className="flex items-center gap-4 sm:flex-col sm:items-end">
                                       <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5
-                                          ${req.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' : 
-                                            req.status === 'Denied' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                                          ${req.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' : req.status === 'Denied' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
                                           {req.status === 'Pending' && <Clock size={12}/>}
                                           {req.status === 'Approved' && <ShieldCheck size={12}/>}
                                           {req.status === 'Denied' && <XCircle size={12}/>}
@@ -641,7 +671,7 @@ export default function LeaveRequestMode() {
 
       {/* RESOLVE MC MODAL (SHARED BY HOST & ADMIN) */}
       {resolvingMC && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="fixed inset-0 z-[50] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
               <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
                   <div className="p-6 bg-rose-50 border-b border-rose-100 flex justify-between items-center">
                       <div>
@@ -650,7 +680,7 @@ export default function LeaveRequestMode() {
                               {isAdmin ? `For ${resolvingMC.host_name}` : 'Select dates and upload document'}
                           </p>
                       </div>
-                      <button onClick={() => { setResolvingMC(null); setMcFile(null); setResortDoctor(false); setSelectedMCDates([]); setEnhanceScan(true); }} className="p-2 bg-white text-rose-500 rounded-full hover:bg-rose-100 transition-colors"><XCircle size={20}/></button>
+                      <button onClick={() => { setResolvingMC(null); setMcFile(null); setResortDoctor(false); setSelectedMCDates([]); }} className="p-2 bg-white text-rose-500 rounded-full hover:bg-rose-100 transition-colors"><XCircle size={20}/></button>
                   </div>
                   
                   <div className="p-6 space-y-5">
@@ -687,22 +717,20 @@ export default function LeaveRequestMode() {
 
                           {!resortDoctor && (
                               <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 flex flex-col items-center justify-center hover:bg-slate-50 relative transition-colors">
-                                  <input type="file" accept="image/*,.pdf" onChange={e => setMcFile(e.target.files?.[0] || null)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
+                                  <input type="file" accept="image/*,.pdf" onChange={e => { const f = e.target.files?.[0]; if(f) setScanningFile(f); }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"/>
                                   <Camera className="text-slate-400 mb-2" size={24}/>
                                   {mcFile ? (
-                                      <p className="text-xs font-bold text-emerald-600">{mcFile.name}</p>
+                                      <div className="flex flex-col items-center gap-1">
+                                          <CheckCircle2 size={24} className="text-emerald-500 mb-1"/>
+                                          <p className="text-xs font-black text-emerald-600 uppercase tracking-widest">Document Scanned</p>
+                                          <p className="text-[10px] text-slate-400 mt-1">Tap to re-scan</p>
+                                      </div>
                                   ) : (
                                       <>
                                           <p className="text-xs font-bold text-slate-600">Scan or Upload MC</p>
-                                          <p className="text-[10px] text-slate-400 mt-1">Tap to open camera</p>
+                                          <p className="text-[10px] text-slate-400 mt-1">Tap to select photo or open camera</p>
                                       </>
                                   )}
-                                  
-                                  {/* SCANNER TOGGLE */}
-                                  <div className="relative z-20 mt-4 flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200 cursor-pointer hover:bg-slate-200" onClick={(e) => { e.stopPropagation(); setEnhanceScan(!enhanceScan); }}>
-                                      <input type="checkbox" checked={enhanceScan} readOnly className="accent-[#6D2158]" />
-                                      <span className="text-[10px] font-bold text-slate-600 flex items-center gap-1"><Sliders size={12}/> Auto-B&W Scan Filter</span>
-                                  </div>
                               </div>
                           )}
                       </div>
@@ -859,7 +887,7 @@ export default function LeaveRequestMode() {
                                       <p className="text-[10px] text-rose-600 font-medium leading-relaxed">{mc.dates.map(d => format(parseISO(d), 'dd MMM')).join(', ')}</p>
                                       
                                       <div className="flex gap-2 mt-3 pt-3 border-t border-rose-100/50">
-                                          <button onClick={() => { setResolvingMC(mc); setSelectedMCDates([...mc.dates]); setEnhanceScan(true); }} className="flex-1 bg-white border border-rose-200 text-rose-600 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-rose-50 transition-colors flex items-center justify-center gap-1 shadow-sm">
+                                          <button onClick={() => { setResolvingMC(mc); setSelectedMCDates([...mc.dates]); }} className="flex-1 bg-white border border-rose-200 text-rose-600 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-rose-50 transition-colors flex items-center justify-center gap-1 shadow-sm">
                                               <UploadCloud size={14}/> Upload
                                           </button>
                                           <button onClick={() => clearMCAdmin(mc)} className="flex-1 bg-white border border-slate-200 text-slate-500 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-slate-50 hover:text-slate-700 transition-colors flex items-center justify-center gap-1 shadow-sm">
