@@ -12,17 +12,23 @@ import toast from 'react-hot-toast';
 // --- IMPORTED GLOBAL TIME ENGINE ---
 import { getDhakaTime, getDhakaDateStr } from '@/lib/dateUtils';
 
-type Host = { id: string; full_name: string; host_id: string; };
-type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; };
+// --- SUBCOMPONENTS ---
+import RoomCleaningGrid from './_components/RoomCleaningGrid';
+import ExpiryAuditGrid from './_components/ExpiryAuditGrid';
+import AssetInventoryGrid from './_components/AssetInventoryGrid';
+import MinibarInventoryGrid from './_components/MinibarInventoryGrid';
 
-type UniversalTask = {
+export type Host = { id: string; full_name: string; host_id: string; };
+export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; };
+
+export type UniversalTask = {
     schedule_id: string;
     inventory_type: string;
     villa_number: string;
     status: string;
 };
 
-type GuestRecord = {
+export type GuestRecord = {
     villa_number: string;
     status: string;
     arrival_time?: string;
@@ -30,13 +36,13 @@ type GuestRecord = {
     guest_name?: string;
 };
 
-type ACRecord = {
+export type ACRecord = {
     villa_number: string;
     status: string;
 };
 
 // --- NEW CLEANING TASK TYPE ---
-type CleaningTask = {
+export type CleaningTask = {
     villa_number: string;
     status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused';
     start_time?: string;
@@ -1114,275 +1120,39 @@ export default function MyTasksHub() {
                 ) : (
                     <div className="space-y-6">
                         
-                        {/* --- DAILY CLEANING ALLOCATION BLOCK (ALWAYS VISIBLE) --- */}
-                        <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
-                            <div className="flex justify-between items-start mb-6">
-                                <div>
-                                    <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                                        <BedDouble size={20} className="text-[#6D2158]" /> Room Service
-                                    </h3>
-                                    <p className="text-xs text-slate-400 font-medium">Your assigned villas for today.</p>
-                                </div>
-                                {myCleaningVillas.length > 0 && (
-                                    <div className="text-right">
-                                        <span className="text-2xl font-black text-[#6D2158]">
-                                            {Object.values(cleaningTasks).filter(t => t.status === 'Completed').length}
-                                        </span>
-                                        <span className="text-sm font-bold text-slate-300">/{myCleaningVillas.length}</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {myCleaningVillas.length > 0 ? (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                    {myCleaningVillas.map(v => {
-                                        const cardData = getVillaCardData(v);
-                                        const taskState = cleaningTasks[v] || { status: 'Pending', morning_time: 0, night_time: 0, has_morning_completed: false, has_night_completed: false };
-                                        const isActive = v === activeCleaningVilla;
-                                        const isCompleted = taskState.status === 'Completed';
-                                        const isDND = taskState.status === 'DND';
-                                        const isRefused = taskState.status === 'Refused';
-                                        
-                                        const minibarTasksForVilla = universalTasks['Legacy Minibar']?.filter(t => t.villa_number === v || t.villa_number === `${v}-1` || t.villa_number === `${v}-2`) || [];
-
-                                        let cardStyle = "bg-white border-slate-200";
-                                        if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
-                                        if (isCompleted) cardStyle = "bg-slate-50 border-slate-200 opacity-60";
-                                        if (isDND || isRefused) cardStyle = "bg-rose-50 border-rose-200";
-
-                                        return (
-                                            <div key={v} className={`p-4 md:p-5 rounded-2xl border-2 shadow-sm transition-all duration-300 flex flex-col ${cardStyle}`}>
-                                                
-                                                <div className="flex justify-between items-start mb-4">
-                                                  <div>
-                                                    <div className="flex items-center gap-2 mb-1">
-                                                      <h3 className={`text-2xl md:text-3xl font-black tracking-tighter ${isCompleted ? 'text-slate-400' : 'text-[#6D2158]'}`}>
-                                                        {v}
-                                                      </h3>
-                                                    </div>
-                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                                                      <User size={10}/> {cardData.guestName || 'No Guest Info'}
-                                                    </p>
-                                                  </div>
-
-                                                  <div className="flex flex-col items-end gap-2">
-                                                      <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm ${cardData.headerColor.replace('bg-', 'bg-').replace('text-', 'text-')}`}>
-                                                        {cardData.cleaningType}
-                                                      </div>
-                                                      {cardData.timeStr && (
-                                                          <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm">
-                                                              <Clock size={10} className="text-slate-400"/>
-                                                              <span>{cardData.timeStr}</span>
-                                                          </div>
-                                                      )}
-                                                  </div>
-                                                </div>
-
-                                                {/* ACTION AREA */}
-                                                <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
-                                                  
-                                                  {/* Utilities Row: AC & Minibar */}
-                                                  <div className="flex gap-2">
-                                                      <button 
-                                                          onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
-                                                          className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-2 text-[10px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
-                                                              cardData.acStatus === 'ON' ? 'bg-rose-50 border-rose-200 text-rose-700' : 'bg-emerald-500 border-emerald-600 text-white'
-                                                          }`}
-                                                      >
-                                                          <Wind size={12} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
-                                                          {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
-                                                      </button>
-
-                                                  {minibarTasksForVilla.map(mbTask => {
-                                                      const isMbDone = mbTask.status === 'Submitted';
-                                                      const mbLabel = mbTask.villa_number.includes('-') ? `MB ${mbTask.villa_number.split('-')[1]}` : 'Minibar';
-                                                      return (
-                                                          <button 
-                                                              key={`mb-${mbTask.villa_number}`}
-                                                              onClick={() => startAudit(mbTask.villa_number, 'Legacy Minibar', 'legacy_minibar')}
-                                                              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-1.5 md:gap-2 text-[9px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
-                                                                  isMbDone ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-purple-50 border-purple-200 text-[#6D2158]'
-                                                              }`}
-                                                          >
-                                                              <Wine size={12} className="shrink-0" />
-                                                              <span className="truncate">{isMbDone ? `${mbLabel} Done` : `Count ${mbLabel}`}</span>
-                                                          </button>
-                                                      );
-                                                  })}
-                                                  </div>
-
-                                                  {isActive ? (
-                                                      <div className="flex justify-between items-center bg-white border border-emerald-200 rounded-xl p-1.5 shadow-sm flex-wrap gap-2">
-                                                        <div className="flex items-center gap-2 text-[#6D2158] font-black text-sm px-2">
-                                                            <span className="relative flex h-2 w-2 mr-1">
-                                                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                                                            </span>
-                                                            {formatTimer(cleaningElapsedSeconds)}
-                                                        </div>
-                                                        {taskState.reenter_reason && (
-                                                            <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] uppercase font-black tracking-widest shrink-0">
-                                                                {taskState.reenter_reason}
-                                                            </span>
-                                                        )}
-                                                        <button 
-                                                            onClick={() => handleFinishRoom(v)}
-                                                            className="bg-emerald-500 text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm active:scale-95 flex items-center gap-1 ml-auto"
-                                                        >
-                                                            <CheckSquare size={14}/> Finish
-                                                        </button>
-                                                      </div>
-                                                  ) : (
-                                                      <div className="flex flex-col gap-2">
-                                                        {taskState.has_morning_completed && (
-                                                            <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100">
-                                                              <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Morning Cleaned</span>
-                                                              <span>{taskState.morning_time}m</span>
-                                                            </div>
-                                                        )}
-                                                        {taskState.has_night_completed && (
-                                                            <div className="flex items-center justify-between text-indigo-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-indigo-50 px-3 rounded-xl border border-indigo-100">
-                                                              <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Evening Cleaned</span>
-                                                              <span>{taskState.night_time}m</span>
-                                                            </div>
-                                                        )}
-                                                        
-                                                        {(isDND || isRefused) && (
-                                                            <div className={`flex items-center justify-between font-black uppercase tracking-widest text-[10px] md:text-xs py-2 px-1 ${isDND ? 'text-rose-600' : 'text-orange-600'}`}>
-                                                              <span className="flex items-center gap-1.5">
-                                                                {isDND ? <DoorClosed size={14}/> : <X size={14}/>} 
-                                                                {isDND ? 'DND Logged' : 'Service Refused'}
-                                                              </span>
-                                                              <button onClick={() => resetRoomStatus(v)} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px]">Undo</button>
-                                                            </div>
-                                                        )}
-
-                                                        {/* Hide start button only if CURRENT shift is completed */}
-                                                        {!isCompleted && (
-                                                            <button 
-                                                              onClick={() => setReenterModal({ isOpen: true, villa: v })}
-                                                              disabled={!!activeCleaningVilla}
-                                                              className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
-                                                                  activeCleaningVilla 
-                                                                    ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
-                                                                    : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
-                                                              }`}
-                                                            >
-                                                              <Play size={14}/> {isNightShift ? 'Start Evening Service' : 'Start Morning Service'}
-                                                            </button>
-                                                        )}
-
-                                                        {!isCompleted && (
-                                                          <div className="flex gap-2">
-                                                            <button 
-                                                              onClick={() => handleDND(v)}
-                                                              disabled={!!activeCleaningVilla}
-                                                              className="flex-1 py-2.5 rounded-xl bg-rose-50 text-rose-600 font-black uppercase tracking-widest text-[9px] md:text-[10px] border border-rose-100 flex items-center justify-center gap-1 hover:bg-rose-100 transition-all active:scale-95 disabled:opacity-50"
-                                                              title="Do Not Disturb"
-                                                            >
-                                                              <DoorClosed size={12}/> DND
-                                                            </button>
-                                                            
-                                                            <button 
-                                                              onClick={() => handleRefused(v)}
-                                                              disabled={!!activeCleaningVilla}
-                                                              className="flex-1 py-2.5 rounded-xl bg-orange-50 text-orange-600 font-black uppercase tracking-widest text-[9px] md:text-[10px] border border-orange-100 flex items-center justify-center gap-1 hover:bg-orange-100 transition-all active:scale-95 disabled:opacity-50"
-                                                              title="Service Refused by Guest"
-                                                            >
-                                                              <X size={12}/> Refused
-                                                            </button>
-                                                          </div>
-                                                        )}
-                                                      </div>
-                                                  )}
-                                                </div>
-
-                                            </div>
-                                        )
-                                    })}
-                                </div>
-                            ) : (
-                                <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                                    <p className="text-slate-400 font-bold text-sm">No rooms assigned for cleaning today.</p>
-                                </div>
-                            )}
-                        </div>
+                        {/* --- DAILY CLEANING ALLOCATION BLOCK --- */}
+                        <RoomCleaningGrid 
+                            myCleaningVillas={myCleaningVillas}
+                            cleaningTasks={cleaningTasks}
+                            activeCleaningVilla={activeCleaningVilla}
+                            getVillaCardData={getVillaCardData}
+                            handleAcStatusChange={handleAcStatusChange}
+                            startAudit={startAudit}
+                            handleFinishRoom={handleFinishRoom}
+                            setReenterModal={setReenterModal}
+                            handleDND={handleDND}
+                            handleRefused={handleRefused}
+                            resetRoomStatus={resetRoomStatus}
+                            isNightShift={isNightShift}
+                            universalTasks={universalTasks}
+                            cleaningElapsedSeconds={cleaningElapsedSeconds}
+                            formatTimer={formatTimer}
+                        />
 
                         {/* --- EXPIRY & REFILL AUDIT CARD --- */}
-                        {expiryAssignedVillas.length > 0 && (
-                            <div className="bg-rose-50 p-4 md:p-6 rounded-3xl shadow-sm border border-rose-100 animate-in slide-in-from-bottom-3">
-                                <div className="mb-4 flex justify-between items-center">
-                                    <div>
-                                        <h3 className="text-lg md:text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={18}/> Expiry & Refills</h3>
-                                        <p className="text-[10px] md:text-xs text-rose-600/70 font-medium">Check these villas for targeted items.</p>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
-                                    {expiryAssignedVillas.map(villa => {
-                                        const vData = expiryVillaData[villa];
-                                        const status = vData?.status;
-                                        
-                                        const isNeedsRefill = status === 'Removed';
-                                        const isSent = status === 'Sent';
-                                        const isDone = status === 'All OK' || status === 'Refilled';
-
-                                        return (
-                                            <button 
-                                                key={villa}
-                                                onClick={() => startExpiryAudit(villa)}
-                                                className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${
-                                                    isDone ? 'bg-emerald-50 border-emerald-500 text-emerald-700 hover:bg-emerald-100' : 
-                                                    isSent ? 'bg-indigo-100 border-indigo-400 text-indigo-700 animate-pulse' : 
-                                                    isNeedsRefill ? 'bg-amber-100 border-amber-400 text-amber-700 animate-pulse' : 
-                                                    'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:shadow-md'
-                                                }`}
-                                            >
-                                                {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
-                                                <span className={`font-black ${villa.includes('-') ? 'text-xl' : 'text-2xl md:text-3xl'}`}>{villa}</span>
-                                                <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">
-                                                    {isDone ? 'Done' : isSent ? 'Sent' : isNeedsRefill ? 'Refill' : 'Pending'}
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
+                        <ExpiryAuditGrid 
+                            step={2}
+                            expiryAssignedVillas={expiryAssignedVillas}
+                            expiryVillaData={expiryVillaData}
+                            startExpiryAudit={startExpiryAudit}
+                        />
 
                         {/* --- DYNAMIC UNIVERSAL INVENTORY CARDS --- */}
-                        {Object.entries(universalTasks)
-                            .filter(([taskType]) => taskType !== 'Legacy Minibar') // HIDE MINIBAR FROM BOTTOM GRID
-                            .map(([taskType, assignments]) => {
-                            return (
-                                <div key={taskType} className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
-                                    <div className="flex justify-between items-start mb-4">
-                                        <div>
-                                            <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                                                <PackageSearch size={18} className="text-[#6D2158]"/> {taskType} Count
-                                            </h3>
-                                            <p className="text-[10px] md:text-xs text-slate-400 font-medium">Tap a location to begin auditing.</p>
-                                        </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
-                                        {assignments.map(task => {
-                                            const isDone = task.status === 'Submitted';
-                                            return (
-                                                <button 
-                                                    key={task.villa_number}
-                                                    onClick={() => startAudit(task.villa_number, taskType, task.schedule_id)}
-                                                    className={`aspect-square rounded-2xl flex flex-col items-center justify-center relative shadow-sm border-2 transition-transform active:scale-95 ${isDone ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-500' : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-[#6D2158] hover:shadow-md'}`}
-                                                >
-                                                    {isDone && <CheckCircle2 size={14} className="absolute top-2 right-2 text-emerald-500"/>}
-                                                    <span className={`font-black ${task.villa_number.includes('-') ? 'text-xl' : 'text-2xl md:text-3xl'}`}>{task.villa_number}</span>
-                                                    <span className="text-[9px] md:text-[10px] font-bold uppercase mt-1 opacity-60">{isDone ? 'Done' : 'Pending'}</span>
-                                                </button>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )
-                        })}
+                        <AssetInventoryGrid 
+                            step={2}
+                            universalTasks={universalTasks}
+                            startAudit={startAudit}
+                        />
 
                         {/* EMPTY STATE IF LITERALLY NO TASKS OF ANY KIND */}
                         {myCleaningVillas.length === 0 && Object.keys(universalTasks).length === 0 && expiryAssignedVillas.length === 0 && (
@@ -1486,286 +1256,54 @@ export default function MyTasksHub() {
 
                 {/* UI Content based on Mode */}
                 {isExpiryMode ? (
-                    ['Removed', 'Sent', 'Refilled'].includes(expiryVillaData[selectedVilla]?.status) ? (
-                        
-                        // --- AWAITING REFILL / REFILLED SCREEN ---
-                        <div className="space-y-4 pb-40 animate-in fade-in">
-                            <div className={`${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-50 border-indigo-200' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'} border p-6 md:p-8 rounded-3xl text-center shadow-sm mb-6 relative`}>
-                                <button onClick={handleEditRemovals} className={`absolute top-4 right-4 p-2 bg-white rounded-full shadow-sm transition-colors ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600 hover:bg-indigo-100' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600 hover:bg-blue-100' : 'text-amber-600 hover:bg-amber-100'}`} title="Edit Removals">
-                                    <Edit3 size={14} />
-                                </button>
-                                <div className={`w-12 h-12 md:w-16 md:h-16 rounded-full flex items-center justify-center mx-auto mb-3 ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-100 text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
-                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? <CheckCircle size={24}/> : expiryVillaData[selectedVilla]?.status === 'Refilled' ? <CheckCircle2 size={24}/> : <AlertTriangle size={24}/>}
-                                </div>
-                                <h3 className={`text-xl md:text-2xl font-black tracking-tight ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-700' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-700' : 'text-amber-700'}`}>
-                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'Items Dispatched!' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Refill Confirmed' : 'Awaiting Refill'}
-                                </h3>
-                                <p className={`text-xs md:text-sm font-medium mt-2 leading-relaxed ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600' : 'text-amber-600'}`}>
-                                    {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'The items have been sent to you. Please confirm when placed.' : 'Please adjust the counters below if you could not replace all items.'}
-                                </p>
-                            </div>
-                                
-                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                                {(expiryVillaData[selectedVilla]?.removal_data || []).map((item: any) => {
-                                    const masterItem = masterCatalog.find(c => c.article_number === item.article_number);
-                                    const currentRefill = refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty;
-                                    const isNotRefilled = currentRefill === 0;
-                                    const isPartial = currentRefill > 0 && currentRefill < item.qty;
-
-                                    return (
-                                        <div key={item.article_number} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${isNotRefilled ? 'border-rose-300 bg-rose-50/30' : isPartial ? 'border-amber-300' : 'border-slate-200'}`}>
-                                            
-                                            <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
-                                                {masterItem?.image_url ? <img src={masterItem.image_url} className={`w-full h-full object-contain drop-shadow-sm transition-all ${isNotRefilled ? 'grayscale opacity-50' : ''}`} /> : <Wine size={24} className="text-slate-300"/>}
-                                            </div>
-                                            
-                                            <div className="flex flex-col flex-1 px-1 text-center">
-                                                <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{item.name}</h4>
-                                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Req: {item.qty}</p>
-                                                
-                                                {isNotRefilled && <span className="text-[9px] font-black text-rose-500 uppercase mt-1">Not Refilled</span>}
-                                                {isPartial && <span className="text-[9px] font-black text-amber-500 uppercase mt-1">Partial</span>}
-                                            </div>
-
-                                            <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
-                                                <button onClick={() => updateRefillCount(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
-                                                <span className={`font-black text-base ${isNotRefilled ? 'text-rose-600' : 'text-emerald-600'}`}>{currentRefill}</span>
-                                                <button onClick={() => updateRefillCount(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-600 hover:text-emerald-600 active:scale-95 transition-all"><Plus size={14}/></button>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                            
-                            <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
-                                <div className="max-w-5xl mx-auto">
-                                    <button 
-                                        onClick={confirmExpiryRefill} 
-                                        disabled={isSaving || expiryVillaData[selectedVilla]?.status === 'Removed'} 
-                                        className={`w-full py-4 text-white rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 ${
-                                            expiryVillaData[selectedVilla]?.status === 'Removed' ? 'bg-slate-400 shadow-none cursor-not-allowed' :
-                                            expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-600 shadow-blue-600/20' : 
-                                            'bg-emerald-500 shadow-emerald-500/20'}`}
-                                    >
-                                        {isSaving ? <Loader2 className="animate-spin" size={20}/> : 
-                                         expiryVillaData[selectedVilla]?.status === 'Removed' ? <><Clock size={16}/> Waiting for Dispatch</> :
-                                        <><CheckCircle2 size={16}/> {expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Update Confirmation' : 'Confirm Replacements'}</>}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                    ) : (
-
-                        // --- RECORD REMOVAL SCREEN (Split Sections) ---
-                        <div className="space-y-6 pb-40 animate-in fade-in">
-                            {groupedTargets.expiry.length === 0 && groupedTargets.refill.length === 0 ? (
-                                <p className="text-center font-bold text-slate-400 italic mt-10">No targets set by admin.</p>
-                            ) : (
-                                <>
-                                    {/* EXPIRY & MISSING CHECKS */}
-                                    {groupedTargets.expiry.length > 0 && (
-                                        <div>
-                                            <h3 className="text-[10px] font-black text-rose-500 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                                <AlertTriangle size={14}/> Expiry & Missing Checks
-                                            </h3>
-                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                                                {groupedTargets.expiry.map((t: any) => {
-                                                    const key = t.article_number;
-                                                    const masterItem = masterCatalog.find(c => c.article_number === t.article_number);
-                                                    const qty = expiryCounts[key] || 0;
-
-                                                    return (
-                                                        <div key={key} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 ? 'border-rose-400 ring-4 ring-rose-50' : 'border-slate-200'}`}>
-                                                            
-                                                            <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
-                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={24} className="text-slate-300"/>}
-                                                            </div>
-                                                            
-                                                            <div className="flex flex-col flex-1 px-1 text-center">
-                                                                <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
-                                                                
-                                                                {t.dates && t.dates.length > 0 ? (
-                                                                    <div className="flex flex-wrap justify-center gap-1 mt-1">
-                                                                        {t.dates.map((d: string) => (
-                                                                            <span key={d} className="text-[8px] font-black text-rose-500 uppercase tracking-widest bg-rose-50 px-1.5 py-0.5 rounded border border-rose-100">
-                                                                                {format(parseISO(d), 'dd MMM')}
-                                                                            </span>
-                                                                        ))}
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="mt-1">
-                                                                        <span className="text-[8px] font-black text-blue-500 uppercase tracking-widest bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
-                                                                            Missing Check
-                                                                        </span>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-
-                                                            <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
-                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
-                                                                <span className={`font-black text-base ${qty > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{qty}</span>
-                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-8 h-8 flex items-center justify-center bg-rose-600 rounded-md shadow-sm text-white active:scale-95 transition-all"><Plus size={14}/></button>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* SEPARATE REFILL TASKS */}
-                                    {groupedTargets.refill.length > 0 && (
-                                        <div className="pt-4 border-t border-slate-200">
-                                            <h3 className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                                <RefreshCw size={12}/> Pure Refill Tasks
-                                            </h3>
-                                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                                                {groupedTargets.refill.map((t: any) => {
-                                                    const key = t.article_number;
-                                                    const masterItem = masterCatalog.find(c => c.article_number === t.article_number);
-                                                    const qty = expiryCounts[key] || 0;
-
-                                                    return (
-                                                        <div key={key} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 ? 'border-emerald-400 ring-4 ring-emerald-50' : 'border-slate-200'}`}>
-                                                            <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
-                                                                {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm" /> : <Wine size={24} className="text-slate-300"/>}
-                                                            </div>
-                                                            <div className="flex flex-col flex-1 px-1 text-center">
-                                                                <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{t.article_name}</h4>
-                                                                <div className="mt-1">
-                                                                    <span className="text-[8px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">
-                                                                        Refill Needed
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
-                                                                <button onClick={() => updateExpiryCount(key, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
-                                                                <span className={`font-black text-base ${qty > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{qty}</span>
-                                                                <button onClick={() => updateExpiryCount(key, 1)} className="w-8 h-8 flex items-center justify-center bg-emerald-600 rounded-md shadow-sm text-white active:scale-95 transition-all"><Plus size={14}/></button>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-                            
-                            <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
-                                <div className="max-w-5xl mx-auto flex gap-2 md:gap-3">
-                                    <button 
-                                        onClick={() => submitExpiryRemovals('All OK')} 
-                                        disabled={isSaving} 
-                                        className="flex-1 py-4 text-emerald-700 bg-emerald-50 rounded-xl font-black uppercase tracking-widest border border-emerald-200 active:scale-95 transition-all flex flex-col items-center justify-center gap-0.5 md:gap-1 leading-none"
-                                    >
-                                        {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><span className="text-[10px] md:text-xs">{expiryVillaData[selectedVilla]?.status === 'All OK' ? 'Confirm OK' : 'None Found'}</span><span className="text-[8px] opacity-70">(All OK)</span></>}
-                                    </button>
-                                    <button 
-                                        onClick={() => submitExpiryRemovals('Removed')} 
-                                        disabled={isSaving || (groupedTargets.expiry.length === 0 && groupedTargets.refill.length === 0) || Object.values(expiryCounts).every(v => v === 0)} 
-                                        className="flex-[1.5] py-4 text-white bg-rose-600 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-rose-600/20 active:scale-95 transition-all flex flex-col items-center justify-center gap-0.5 md:gap-1 leading-none disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><span className="text-[10px] md:text-xs">Record Actions</span><span className="text-[8px] opacity-70">(Needs Refill)</span></>}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )
+                    <ExpiryAuditGrid 
+                        step={3}
+                        selectedVilla={selectedVilla}
+                        handleEditRemovals={handleEditRemovals}
+                        groupedTargets={groupedTargets}
+                        expiryCounts={expiryCounts}
+                        refillCounts={refillCounts}
+                        updateExpiryCount={updateExpiryCount}
+                        updateRefillCount={updateRefillCount}
+                        masterCatalog={masterCatalog}
+                        submitExpiryRemovals={submitExpiryRemovals}
+                        confirmExpiryRefill={confirmExpiryRefill}
+                        isSaving={isSaving}
+                        expiryVillaData={expiryVillaData}
+                    />
+                ) : activeTaskType === 'Legacy Minibar' ? (
+                    <MinibarInventoryGrid 
+                        searchQuery={searchQuery}
+                        setSearchQuery={setSearchQuery}
+                        locationFilters={locationFilters}
+                        activeLocation={activeLocation}
+                        setActiveLocation={setActiveLocation}
+                        displayCatalog={displayCatalog}
+                        counts={counts}
+                        keypadTarget={keypadTarget}
+                        openKeypad={openKeypad}
+                        updateCount={updateCount}
+                        requestSaveInventory={requestSaveInventory}
+                        isSaving={isSaving}
+                        activeTaskType={activeTaskType}
+                    />
                 ) : (
-                    // --- STANDARD INVENTORY MODE (UNIVERSAL + KEYPAD) ---
-                    <>
-                        {/* SEARCH BAR */}
-                        <div className="relative mb-3 md:mb-4">
-                            <Search className="absolute left-4 top-3 text-slate-400" size={16}/>
-                            <input 
-                                type="text" 
-                                placeholder="Search items..." 
-                                className="w-full pl-10 pr-10 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] shadow-sm"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                            />
-                            {searchQuery && (
-                                <button onClick={() => setSearchQuery('')} className="absolute right-4 top-3 text-slate-300 hover:text-slate-500">
-                                    <X size={16}/>
-                                </button>
-                            )}
-                        </div>
-
-                        {/* DYNAMIC VILLA LOCATION TABS */}
-                        {locationFilters.length > 1 && (
-                            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-3 mb-2 border-b border-slate-100">
-                                {locationFilters.map(loc => (
-                                    <button 
-                                        key={loc} 
-                                        onClick={() => setActiveLocation(loc)}
-                                        className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest whitespace-nowrap transition-all border shadow-sm flex items-center gap-1.5 ${activeLocation === loc ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:bg-slate-50'}`}
-                                    >
-                                        {loc !== 'All' && loc !== 'Unassigned' && <MapPin size={10}/>}
-                                        {loc}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3 pb-40">
-                            {displayCatalog.length === 0 ? (
-                                <div className="col-span-full py-10 text-center text-slate-400 font-bold">No items found.</div>
-                            ) : displayCatalog.map(item => {
-                                const qty = counts[item.article_number] || 0;
-                                const isKeypadActive = keypadTarget === item.article_number;
-                                
-                                return (
-                                <div key={item.article_number} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${qty > 0 || isKeypadActive ? 'border-[#6D2158] ring-2 ring-[#6D2158]/10' : 'border-slate-200'}`}>
-                                    
-                                    <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3 relative">
-                                        {item.image_url ? <img src={item.image_url} className="w-full h-full object-contain drop-shadow-sm"/> : <Wine size={24} className="text-slate-300"/>}
-                                    </div>
-                                    
-                                    <div className="flex flex-col flex-1 px-1">
-                                        <h4 className="text-[10px] font-black text-slate-800 leading-tight line-clamp-2">{item.generic_name || item.article_name}</h4>
-                                        <div className="flex items-center justify-between mt-1">
-                                            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest truncate">{item.category}</p>
-                                            {item.villa_location && activeLocation === 'All' && (
-                                                <p className="text-[7px] font-black text-[#6D2158] uppercase tracking-widest bg-purple-50 px-1.5 py-0.5 rounded truncate max-w-[60px]">{item.villa_location}</p>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
-                                        <button onClick={() => updateCount(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
-                                            <Minus size={14}/>
-                                        </button>
-                                        
-                                        <button 
-                                            onClick={() => openKeypad(item.article_number)} 
-                                            className={`w-10 text-center font-black text-lg py-1 rounded-md transition-colors ${qty > 0 ? 'text-[#6D2158]' : 'text-slate-400 hover:bg-slate-200'} ${isKeypadActive ? 'bg-[#6D2158]/10 text-[#6D2158] ring-1 ring-[#6D2158]' : ''}`}
-                                        >
-                                            {qty}
-                                        </button>
-
-                                        <button onClick={() => updateCount(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-[#6D2158] rounded-md shadow-sm text-white active:scale-95 transition-all">
-                                            <Plus size={14}/>
-                                        </button>
-                                    </div>
-                                </div>
-                            )})}
-                        </div>
-
-                        {/* Fixed Bottom Submit Bar */}
-                        <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
-                            <div className="max-w-5xl mx-auto">
-                                <button 
-                                    onClick={requestSaveInventory} 
-                                    disabled={isSaving} 
-                                    className="w-full py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
-                                >
-                                    {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><Save size={16}/> {activeTaskType === 'Legacy Minibar' ? 'Confirm Minibar Inventory' : 'Submit Audit'}</>}
-                                </button>
-                            </div>
-                        </div>
-                    </>
+                    <AssetInventoryGrid 
+                        step={3}
+                        searchQuery={searchQuery}
+                        setSearchQuery={setSearchQuery}
+                        locationFilters={locationFilters}
+                        activeLocation={activeLocation}
+                        setActiveLocation={setActiveLocation}
+                        displayCatalog={displayCatalog}
+                        counts={counts}
+                        keypadTarget={keypadTarget}
+                        openKeypad={openKeypad}
+                        updateCount={updateCount}
+                        requestSaveInventory={requestSaveInventory}
+                        isSaving={isSaving}
+                        activeTaskType={activeTaskType}
+                    />
                 )}
             </div>
         )}
