@@ -3,11 +3,12 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, Loader2, Save, X, Search, CheckCircle2, 
   Trash2, Bell, LayoutGrid, Users, Target, User, Plus, Minus,
-  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3, Archive
+  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3, Archive, Sparkles, Lock, Unlock
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { format, parseISO } from 'date-fns';
+import { getDhakaDateStr } from '@/lib/dateUtils';
 
 const TOTAL_VILLAS = 97;
 
@@ -15,6 +16,58 @@ const getLocalMonth = () => {
     const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
     const str = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
     return str.substring(0, 7);
+};
+
+// --- CUSTOM VILLA PARSER & JETTY SORTER ---
+const parseVillas = (input: string, doubleVillas: string[]) => {
+    const result = new Set<string>();
+    const parts = input.split(',').map((s: string) => s.trim());
+    for (const p of parts) {
+        if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
+            const [start, end] = p.split('-').map(Number);
+            if (!isNaN(start) && !isNaN(end) && start <= end) {
+                for (let i = start; i <= end; i++) {
+                    const v = String(i);
+                    if (doubleVillas.includes(v)) { result.add(`${v}-1`); result.add(`${v}-2`); } 
+                    else { result.add(v); }
+                }
+            }
+        } else if (p) {
+            if (!p.includes('-') && doubleVillas.includes(p)) { 
+                result.add(`${p}-1`); 
+                result.add(`${p}-2`); 
+            } else { 
+                result.add(p); 
+            }
+        }
+    }
+    return Array.from(result).sort((a: string, b: string) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
+};
+
+const sortHostsJettyWise = (hostIds: string[], allocMap: Record<string, string>, doubleVillas: string[]) => {
+    const getVillaNumber = (v: string) => parseFloat(v.replace('-', '.'));
+    
+    const getJettyGroup = (vNum: number) => {
+        if (vNum >= 1 && vNum <= 35) return 1; // Jetty A
+        if (vNum >= 37 && vNum <= 50) return 2; // Jetty B
+        if (vNum >= 59 && vNum <= 79) return 3; // Jetty C
+        if (vNum === 9999) return 5; // Unassigned (pushed to bottom)
+        return 4; // Beach (everything else up to 97)
+    };
+
+    return [...hostIds].sort((a, b) => {
+        const villasA = parseVillas(allocMap[a] || '', doubleVillas);
+        const villasB = parseVillas(allocMap[b] || '', doubleVillas);
+        
+        const minA = villasA.length > 0 ? getVillaNumber(villasA[0]) : 9999;
+        const minB = villasB.length > 0 ? getVillaNumber(villasB[0]) : 9999;
+
+        const groupA = getJettyGroup(minA);
+        const groupB = getJettyGroup(minB);
+
+        if (groupA !== groupB) return groupA - groupB;
+        return minA - minB;
+    });
 };
 
 // --- CUSTOM VILLA TAG INPUT ---
@@ -60,6 +113,7 @@ export default function ExpiryRemovalsAdmin() {
   const [activeTab, setActiveTab] = useState<'MATRIX' | 'ALLOCATIONS' | 'TARGETS'>('MATRIX');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isLocked, setIsLocked] = useState(true);
   
   const [selectedMonth, setSelectedMonth] = useState(getLocalMonth());
   const [targets, setTargets] = useState<any[]>([]);
@@ -103,31 +157,6 @@ export default function ExpiryRemovalsAdmin() {
       return list;
   }, [dvList]);
 
-  const parseVillas = useCallback((input: string, doubleVillas: string[]) => {
-      const result = new Set<string>();
-      const parts = input.split(',').map((s: string) => s.trim());
-      for (const p of parts) {
-          if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
-              const [start, end] = p.split('-').map(Number);
-              if (!isNaN(start) && !isNaN(end) && start <= end) {
-                  for (let i = start; i <= end; i++) {
-                      const v = String(i);
-                      if (doubleVillas.includes(v)) { result.add(`${v}-1`); result.add(`${v}-2`); } 
-                      else { result.add(v); }
-                  }
-              }
-          } else if (p) {
-              if (!p.includes('-') && doubleVillas.includes(p)) { 
-                  result.add(`${p}-1`); 
-                  result.add(`${p}-2`); 
-              } else { 
-                  result.add(p); 
-              }
-          }
-      }
-      return Array.from(result).sort((a: string, b: string) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
-  }, []);
-
   const fetchData = useCallback(async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
 
@@ -138,24 +167,33 @@ export default function ExpiryRemovalsAdmin() {
         supabase.from('hsk_expiry_batches').select('*').neq('status', 'Archived'),
         supabase.from('hsk_master_catalog').select('*').eq('is_minibar_item', true),
         supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'),
-        supabase.from('hsk_constants').select('*').eq('type', 'double_mb_villas').maybeSingle()
+        supabase.from('hsk_constants').select('*').in('type', ['double_mb_villas', 'expiry_inv_status'])
     ]);
 
     if (targetRes.data) setTargets(targetRes.data);
     if (remRes.data) setRemovals(remRes.data);
     if (hostRes.data) setHosts(hostRes.data);
-    if (constRes.data) setDoubleVillasStr(constRes.data.label);
     if (masterRes.data) setMasterCatalog(masterRes.data);
+
+    if (constRes.data) {
+        const dv = constRes.data.find((c: any) => c.type === 'double_mb_villas');
+        if (dv) setDoubleVillasStr(dv.label);
+        const expLock = constRes.data.find((c: any) => c.type === 'expiry_inv_status');
+        setIsLocked(expLock ? expLock.label === 'CLOSED' : true);
+    }
 
     if (allocRes.data) {
         const allocMap: Record<string, string> = {};
         const order: string[] = [];
         allocRes.data.forEach((a: any) => { 
             allocMap[a.host_id] = a.villas; 
-            order.push(a.host_id);
+            if (!order.includes(a.host_id)) order.push(a.host_id);
         });
+        
+        const currentDvList = constRes.data ? (constRes.data.find((c: any) => c.type === 'double_mb_villas')?.label || '').split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+        
         setAllocations(allocMap);
-        setAllocationOrder(order);
+        setAllocationOrder(sortHostsJettyWise(order, allocMap, currentDvList));
     } else { 
         setAllocations({}); 
         setAllocationOrder([]);
@@ -185,11 +223,92 @@ export default function ExpiryRemovalsAdmin() {
       return () => { supabase.removeChannel(channel); };
   }, [fetchData, isMounted]);
 
+  const toggleLock = async () => {
+      const newStatus = isLocked ? 'OPEN' : 'CLOSED';
+      const previousStatus = isLocked;
+      setIsLocked(!isLocked); // Optimistic UI update
+
+      try {
+          // 1. Try to update the existing row first
+          const { data, error: updateError } = await supabase
+              .from('hsk_constants')
+              .update({ label: newStatus })
+              .eq('type', 'expiry_inv_status')
+              .select();
+
+          // 2. If it doesn't exist yet (data is empty), insert it instead
+          if (updateError || !data || data.length === 0) {
+              const { error: insertError } = await supabase
+                  .from('hsk_constants')
+                  .insert({ type: 'expiry_inv_status', label: newStatus });
+
+              if (insertError) {
+                  throw insertError;
+              }
+          }
+          
+          toast.success(`Expiry Audit is now ${newStatus === 'OPEN' ? 'Unlocked' : 'Locked'}`);
+      } catch (err: any) {
+          console.error("Lock error:", err);
+          toast.error("Failed to update lock status.");
+          setIsLocked(previousStatus); // Revert UI on failure
+      }
+  };
+
+  // --- ⚡ AUTO ALLOCATE FROM DAILY BOARD (Sorted Jetty Wise) ---
+  const handleAutoAllocate = async () => {
+      setIsLoading(true);
+      const todayStr = getDhakaDateStr(); 
+      
+      const { data, error } = await supabase
+          .from('hsk_allocations')
+          .select('host_id, task_details')
+          .eq('report_date', todayStr);
+
+      if (error) {
+          toast.error("Failed to fetch daily allocations.");
+          setIsLoading(false);
+          return;
+      }
+
+      if (!data || data.length === 0) {
+          toast.error("No allocations found for today on the live board.");
+          setIsLoading(false);
+          return;
+      }
+
+      const newAllocations = { ...allocations };
+      const newOrder = [...allocationOrder];
+      let addedCount = 0;
+
+      data.forEach(alloc => {
+          if (alloc.task_details && alloc.task_details.trim() !== '') {
+              newAllocations[alloc.host_id] = alloc.task_details;
+              if (!newOrder.includes(alloc.host_id)) {
+                  newOrder.push(alloc.host_id);
+              }
+              addedCount++;
+          }
+      });
+
+      // Instantly enforce Jetty-Wise sort based on assigned villas
+      const finalOrder = sortHostsJettyWise(newOrder, newAllocations, dvList);
+
+      setAllocations(newAllocations);
+      setAllocationOrder(finalOrder);
+      toast.success(`Auto-filled & sorted villas for ${addedCount} attendants!`);
+      setIsLoading(false);
+  };
+
   const handleSaveAllocations = async () => {
       setIsSaving(true);
       const now = Date.now();
       
-      const toInsert = allocationOrder
+      // Ensure strict Jetty sorting before final save
+      const sortedOrder = sortHostsJettyWise(allocationOrder, allocations, dvList);
+      setAllocationOrder(sortedOrder);
+      
+      const toInsert = sortedOrder
           .filter((id: string) => allocations[id] && allocations[id].trim() !== '')
           .map((host_id: string, idx: number) => ({ 
               month_period: selectedMonth, 
@@ -238,7 +357,6 @@ export default function ExpiryRemovalsAdmin() {
       fetchData(false);
   };
 
-  // --- NEW: ARCHIVE BATCH GLOBALLY (Does not delete current target!) ---
   const handleArchiveBatchTarget = (target: any) => {
       setConfirmModal({
           isOpen: true,
@@ -249,7 +367,6 @@ export default function ExpiryRemovalsAdmin() {
           onConfirm: async () => {
               setConfirmModal(prev => ({...prev, isOpen: false}));
               
-              // ONLY Mark batch as archived in global tracking. We DO NOT delete the target!
               await supabase.from('hsk_expiry_batches')
                   .update({ status: 'Archived' })
                   .match({ article_number: target.article_number, expiry_date: target.expiry_date });
@@ -331,7 +448,7 @@ export default function ExpiryRemovalsAdmin() {
               .match({ villa_number: editModal.villa, month_period: selectedMonth });
       }
       setEditModal({isOpen: false, villa: '', status: '', data: []});
-      fetchData(false); // Silent fetch immediately after update
+      fetchData(false); 
       toast.success("Log successfully updated!");
   };
 
@@ -356,11 +473,9 @@ export default function ExpiryRemovalsAdmin() {
   };
 
   // --- SMART GROUPING ENGINE ---
-  // Combines active targets AND historical removals so data NEVER vanishes!
   const groupedTargets = useMemo(() => {
       const map: Record<string, any> = {};
       
-      // 1. Load active targets
       targets.forEach((t: any) => {
           if (!map[t.article_number]) {
               map[t.article_number] = { article_number: t.article_number, article_name: t.article_name, dates: [] };
@@ -370,7 +485,6 @@ export default function ExpiryRemovalsAdmin() {
           }
       });
 
-      // 2. Load historical items from removals (prevents vanished data)
       removals.forEach((rem: any) => {
           if (rem.removal_data && Array.isArray(rem.removal_data)) {
               rem.removal_data.forEach((item: any) => {
@@ -418,7 +532,7 @@ export default function ExpiryRemovalsAdmin() {
           }
       });
       return set;
-  }, [allocations, dvList, parseVillas]);
+  }, [allocations, dvList]);
 
   if (!isMounted) return null;
 
@@ -449,9 +563,15 @@ export default function ExpiryRemovalsAdmin() {
            <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-2"><RefreshCw size={24}/> Expiry & Refills</h1>
            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Audit & Tracking Matrix</p>
         </div>
-        <div className="flex items-center bg-slate-50 p-2 rounded-xl border border-slate-200 gap-2">
-           <Calendar size={16} className="text-slate-400 ml-2"/>
-           <input type="month" className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer p-1" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} />
+        <div className="flex items-center gap-2">
+           <button onClick={toggleLock} className={`flex items-center gap-2 px-3 py-2 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider transition-all border shadow-sm ${isLocked ? 'bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100' : 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:bg-emerald-100'}`}>
+               {isLocked ? <Lock size={14}/> : <Unlock size={14}/>}
+               <span className="hidden sm:inline">{isLocked ? 'Audit Locked' : 'Audit Open'}</span>
+           </button>
+           <div className="flex items-center bg-slate-50 p-2 rounded-xl border border-slate-200 gap-2">
+               <Calendar size={16} className="text-slate-400 ml-2"/>
+               <input type="month" className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer p-1" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} />
+           </div>
         </div>
       </div>
 
@@ -622,8 +742,8 @@ export default function ExpiryRemovalsAdmin() {
                                                                         <div key={key} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
                                                                             <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
                                                                             <span className="shrink-0 text-right">
-                                                                                -{removedQty}
-                                                                                {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5">Refilled: {refilledQty}</span>}
+                                                                                {removedQty}
+                                                                                {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5 text-red-500">Refilled: {refilledQty}</span>}
                                                                             </span>
                                                                         </div>
                                                                     );
@@ -724,8 +844,8 @@ export default function ExpiryRemovalsAdmin() {
                                                                     <div key={key} className={`flex justify-between items-center text-xs font-bold ${warning ? 'bg-red-50 text-red-600 px-1 -mx-1 rounded' : textClass}`}>
                                                                         <span className="truncate pr-2" title={t.article_name}>{t.article_name}</span>
                                                                         <span className="shrink-0 text-right">
-                                                                            -{removedQty}
-                                                                            {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5">Refilled: {refilledQty}</span>}
+                                                                            {removedQty}
+                                                                            {warning && <span className="block text-[8px] uppercase tracking-tighter -mt-0.5 text-red-500">Refilled: {refilledQty}</span>}
                                                                         </span>
                                                                     </div>
                                                                 );
@@ -780,8 +900,9 @@ export default function ExpiryRemovalsAdmin() {
                                 <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-slate-100 max-h-60 overflow-y-auto z-[100]">
                                     {availableHostsToAdd.filter((h: any) => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map((h: any) => (
                                         <button key={h.id} onClick={() => { 
-                                            setAllocations(prev => ({...prev, [h.host_id]: ''})); 
-                                            setAllocationOrder(prev => [...prev, h.host_id]); 
+                                            const newAllocations = {...allocations, [h.host_id]: ''};
+                                            setAllocations(newAllocations); 
+                                            setAllocationOrder(sortHostsJettyWise([...allocationOrder, h.host_id], newAllocations, dvList)); 
                                             setHostSearch(''); 
                                             setShowHostDropdown(false); 
                                         }} className="w-full text-left p-3 hover:bg-slate-50 border-b border-slate-50 flex flex-col transition-colors">
@@ -794,9 +915,15 @@ export default function ExpiryRemovalsAdmin() {
                             )}
                         </div>
 
+                        {/* ⚡ NEW BUTTON: AUTO FILL */}
+                        <button onClick={handleAutoAllocate} className="flex items-center gap-2 px-6 py-3 bg-purple-50 text-[#6D2158] border border-purple-200 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-purple-100 shadow-sm transition-all w-full sm:w-auto justify-center">
+                            <Sparkles size={16}/> Auto Fill
+                        </button>
+
                         <button onClick={() => setNotifyModal({ isOpen: true, host_id: '', name: '', msg: "Please check your assigned villas for new tasks." })} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-blue-500 shadow-md transition-all w-full sm:w-auto justify-center">
                             <Bell size={16}/> Notify Team
                         </button>
+
                         <button onClick={handleSaveAllocations} disabled={isSaving} className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-emerald-500 shadow-md transition-all w-full sm:w-auto justify-center">
                             {isSaving ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save Grid
                         </button>

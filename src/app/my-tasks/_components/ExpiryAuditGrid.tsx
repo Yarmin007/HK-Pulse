@@ -89,7 +89,7 @@ export default function ExpiryAuditGrid({
                         {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'Items Dispatched!' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'Refill Confirmed' : 'Awaiting Refill'}
                     </h3>
                     <p className={`text-xs md:text-sm font-medium mt-2 leading-relaxed ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600' : 'text-amber-600'}`}>
-                        {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'The items have been sent to you. Please confirm when placed.' : 'Please adjust the counters below if you could not replace all items.'}
+                        {expiryVillaData[selectedVilla]?.status === 'Sent' ? 'The items have been sent to you. Please confirm when placed.' : 'Please review and confirm you have placed these items.'}
                     </p>
                 </div>
                     
@@ -97,28 +97,22 @@ export default function ExpiryAuditGrid({
                     {(expiryVillaData[selectedVilla]?.removal_data || []).map((item: any) => {
                         const masterItem = masterCatalog.find(c => c.article_number === item.article_number);
                         const currentRefill = refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty;
-                        const isNotRefilled = currentRefill === 0;
-                        const isPartial = currentRefill > 0 && currentRefill < item.qty;
 
                         return (
-                            <div key={item.article_number} className={`bg-white rounded-2xl p-2.5 shadow-sm border flex flex-col gap-2 relative transition-all ${isNotRefilled ? 'border-rose-300 bg-rose-50/30' : isPartial ? 'border-amber-300' : 'border-slate-200'}`}>
+                            <div key={item.article_number} className="bg-white rounded-2xl p-2.5 shadow-sm border border-slate-200 flex flex-col gap-2 relative transition-all">
                                 
                                 <div className="w-full aspect-square bg-slate-50 rounded-xl overflow-hidden flex items-center justify-center p-3">
-                                    {masterItem?.image_url ? <img src={masterItem.image_url} className={`w-full h-full object-contain drop-shadow-sm transition-all ${isNotRefilled ? 'grayscale opacity-50' : ''}`} /> : <Wine size={24} className="text-slate-300"/>}
+                                    {masterItem?.image_url ? <img src={masterItem.image_url} className="w-full h-full object-contain drop-shadow-sm transition-all" /> : <Wine size={24} className="text-slate-300"/>}
                                 </div>
                                 
                                 <div className="flex flex-col flex-1 px-1 text-center">
                                     <h4 className="text-xs font-black text-slate-800 leading-tight line-clamp-2">{item.name}</h4>
                                     <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Req: {item.qty}</p>
-                                    
-                                    {isNotRefilled && <span className="text-[9px] font-black text-rose-500 uppercase mt-1">Not Refilled</span>}
-                                    {isPartial && <span className="text-[9px] font-black text-amber-500 uppercase mt-1">Partial</span>}
                                 </div>
 
-                                <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
-                                    <button onClick={() => updateRefillCount?.(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all"><Minus size={14}/></button>
-                                    <span className={`font-black text-base ${isNotRefilled ? 'text-rose-600' : 'text-emerald-600'}`}>{currentRefill}</span>
-                                    <button onClick={() => updateRefillCount?.(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-600 hover:text-emerald-600 active:scale-95 transition-all"><Plus size={14}/></button>
+                                <div className="flex items-center justify-center bg-slate-50 rounded-lg p-2 border border-slate-200 mt-auto">
+                                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest mr-2">Sent Qty:</span>
+                                    <span className="font-black text-lg text-emerald-600">{currentRefill}</span>
                                 </div>
                             </div>
                         );

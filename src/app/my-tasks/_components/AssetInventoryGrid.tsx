@@ -1,6 +1,6 @@
 "use client";
-import React from 'react';
-import { PackageSearch, CheckCircle2, Search, X, MapPin, Wine, Minus, Plus, Loader2, Save } from 'lucide-react';
+import React, { useState } from 'react';
+import { PackageSearch, CheckCircle2, Search, X, MapPin, Wine, Minus, Plus, Loader2, Save, Info } from 'lucide-react';
 import type { UniversalTask, MasterItem } from '../page';
 
 interface AssetInventoryGridProps {
@@ -16,8 +16,6 @@ interface AssetInventoryGridProps {
     setActiveLocation?: (l: string) => void;
     displayCatalog?: MasterItem[];
     counts?: Record<string, number>;
-    keypadTarget?: string | null;
-    openKeypad?: (artNo: string) => void;
     updateCount?: (artNo: string, delta: number) => void;
     requestSaveInventory?: () => void;
     isSaving?: boolean;
@@ -26,9 +24,34 @@ interface AssetInventoryGridProps {
 
 export default function AssetInventoryGrid({
     step, universalTasks, startAudit, searchQuery, setSearchQuery, locationFilters, 
-    activeLocation, setActiveLocation, displayCatalog, counts, keypadTarget, openKeypad, 
+    activeLocation, setActiveLocation, displayCatalog, counts, 
     updateCount, requestSaveInventory, isSaving, activeTaskType
 }: AssetInventoryGridProps) {
+
+    // Local State for this specific grid
+    const [keypadTarget, setKeypadTarget] = useState<string | null>(null);
+    const [keypadValue, setKeypadValue] = useState<string>('');
+    const [showGuideModal, setShowGuideModal] = useState(false);
+
+    // Keypad Logic
+    const openKeypad = (article_number: string) => {
+        setKeypadTarget(article_number);
+        setKeypadValue(String(counts?.[article_number] || 0));
+    };
+
+    const handleKeypadPress = (val: string) => {
+        if (val === 'DEL') setKeypadValue(prev => prev.length > 1 ? prev.slice(0, -1) : '0');
+        else if (val === 'CLR') setKeypadValue('0');
+        else setKeypadValue(prev => prev === '0' ? val : prev + val);
+    };
+
+    const saveKeypadValue = () => {
+        if (keypadTarget && updateCount && counts) {
+            const num = parseInt(keypadValue, 10);
+            updateCount(keypadTarget, isNaN(num) ? -counts[keypadTarget] : num - (counts[keypadTarget] || 0));
+        }
+        setKeypadTarget(null);
+    };
 
     if (step === 2) {
         return (
@@ -70,26 +93,32 @@ export default function AssetInventoryGrid({
         );
     }
 
-    if (step === 3 && setSearchQuery && setActiveLocation && displayCatalog && counts && openKeypad && updateCount && requestSaveInventory) {
+    if (step === 3 && setSearchQuery && setActiveLocation && displayCatalog && counts && updateCount && requestSaveInventory) {
         const catalogToDisplay = displayCatalog || [];
 
         return (
             <>
-                {/* SEARCH BAR */}
-                <div className="relative mb-3 md:mb-4">
-                    <Search className="absolute left-4 top-3 text-slate-400" size={16}/>
-                    <input 
-                        type="text" 
-                        placeholder="Search items..." 
-                        className="w-full pl-10 pr-10 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] shadow-sm"
-                        value={searchQuery || ''}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                    {searchQuery && (
-                        <button onClick={() => setSearchQuery('')} className="absolute right-4 top-3 text-slate-300 hover:text-slate-500">
-                            <X size={16}/>
-                        </button>
-                    )}
+                <div className="flex justify-between items-center mb-4">
+                    {/* SEARCH BAR */}
+                    <div className="relative w-full max-w-md">
+                        <Search className="absolute left-4 top-3 text-slate-400" size={16}/>
+                        <input 
+                            type="text" 
+                            placeholder="Search items..." 
+                            className="w-full pl-10 pr-10 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] shadow-sm"
+                            value={searchQuery || ''}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                        />
+                        {searchQuery && (
+                            <button onClick={() => setSearchQuery('')} className="absolute right-4 top-3 text-slate-300 hover:text-slate-500">
+                                <X size={16}/>
+                            </button>
+                        )}
+                    </div>
+                    
+                    <button onClick={() => setShowGuideModal(true)} className="p-3 bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158] hover:bg-purple-50 rounded-xl transition-colors shadow-sm active:scale-95 ml-2" title="How to Count">
+                        <Info size={20}/>
+                    </button>
                 </div>
 
                 {/* DYNAMIC VILLA LOCATION TABS */}
@@ -164,6 +193,81 @@ export default function AssetInventoryGrid({
                         </button>
                     </div>
                 </div>
+
+                {/* --- CUSTOM KEYPAD OVERLAY --- */}
+                {keypadTarget && (
+                    <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex flex-col justify-end animate-in fade-in duration-200">
+                        <div className="absolute inset-0" onClick={saveKeypadValue}></div>
+                        <div className="bg-[#FDFBFD] w-full rounded-t-[2rem] p-5 md:p-6 pb-safe shadow-2xl animate-in slide-in-from-bottom-8 relative z-10 max-w-md mx-auto">
+                            
+                            <div className="flex justify-between items-center mb-5">
+                                <div>
+                                    <h4 className="font-black text-slate-800 text-base">Direct Input</h4>
+                                    <p className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
+                                        {displayCatalog.find(c => c.article_number === keypadTarget)?.generic_name || 'Item'}
+                                    </p>
+                                </div>
+                                <div className="text-3xl font-black text-[#6D2158] bg-purple-50 px-5 py-1.5 rounded-xl border border-purple-100">
+                                    {keypadValue}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 md:gap-3 mb-5">
+                                {[1,2,3,4,5,6,7,8,9].map(num => (
+                                    <button key={num} onClick={() => handleKeypadPress(String(num))} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">
+                                        {num}
+                                    </button>
+                                ))}
+                                <button onClick={() => handleKeypadPress('CLR')} className="py-3 md:py-4 bg-rose-50 rounded-xl border border-rose-100 text-xs font-black text-rose-600 uppercase tracking-widest active:scale-95 transition-all">Clear</button>
+                                <button onClick={() => handleKeypadPress('0')} className="py-3 md:py-4 bg-white rounded-xl shadow-sm border border-slate-200 text-xl md:text-2xl font-black text-slate-700 active:scale-95 active:bg-slate-50 transition-all">0</button>
+                                <button onClick={() => handleKeypadPress('DEL')} className="py-3 md:py-4 bg-slate-100 rounded-xl border border-slate-200 text-xs font-black text-slate-600 uppercase tracking-widest active:scale-95 transition-all">Del</button>
+                            </div>
+
+                            <button onClick={saveKeypadValue} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">
+                                Confirm Amount
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* --- ASSET INVENTORY SPECIFIC GUIDE MODAL --- */}
+                {showGuideModal && (
+                    <div className="fixed inset-0 z-[130] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+                        <div className="bg-white w-full max-w-md rounded-[2.5rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
+                            <div className="w-12 h-12 md:w-16 md:h-16 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shrink-0 shadow-inner">
+                                <Info size={24} />
+                            </div>
+                            <h3 className="text-lg md:text-xl font-black text-slate-800 mb-4 tracking-tight text-center shrink-0">
+                                How to count / <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal' }}>ގުނާނެ ގޮތް</span>
+                            </h3>
+                            
+                            <div className="text-xs md:text-sm text-slate-600 font-medium mb-6 space-y-4 bg-slate-50 p-4 md:p-5 rounded-2xl border border-slate-100 overflow-y-auto custom-scrollbar flex-1">
+                                <div className="text-left">
+                                    <p className="font-black text-slate-800 mb-2">🇬🇧 English:</p>
+                                    <div className="space-y-3">
+                                        <p>1. This is an inventory count. You must count exactly what is physically present. If there is 1 item, enter <b className="text-slate-800 text-sm">'1'</b>. If it is missing or empty, enter <b className="text-slate-800 text-sm">'0'</b>.</p>
+                                        <p>2. Use the <b className="text-slate-800 text-sm">Location Tabs</b> at the top (e.g. Wardrobe, Bathroom) to check items room-by-room so nothing is missed.</p>
+                                        <p>3. Tap the <b className="text-[#6D2158] text-sm">large number</b> to open the fast keypad, or use the <b className="text-slate-800 text-sm">+/-</b> buttons to adjust the count.</p>
+                                        <p>4. Make sure you have checked every location before tapping <b className="text-[#6D2158] text-sm">Submit Audit</b>.</p>
+                                    </div>
+                                </div>
+                                <div className="border-t border-slate-200 pt-4" dir="rtl">
+                                    <p className="text-slate-800 mb-3 font-bold" style={{ fontFamily: 'Faruma, sans-serif' }}>🇲🇻 ދިވެހި:</p>
+                                    <div className="space-y-3 leading-loose text-justify" style={{ fontFamily: 'Faruma, sans-serif' }}>
+                                        <p>1. މިއީ އެސެޓް އިންވެންޓުރީއެވެ. ހުރިހާ އެންމެންވެސް އިންވެންޓްރީގައި ޖަހާނީ އެވަގުތު އެތަނުގައި ހުރި ތަކެތީގެ ސީދާ އަދަދެވެ. އެއްޗެއް ހުރިނަމަ <span className="font-bold text-slate-800 text-base">'1'</span>  ނުވަތަ އެހުރި އަދަދެއް ޖަހާށެވެ. އަދި އެއްޗެއް  ހުސްވެފައިވާނަމަ <span className="font-bold text-slate-800 text-base">'0'</span> ޖަހާށެވެ.</p>
+                                        <p>2. އިންވެންޓްރީ ނެގުމަށް ފަސޭހަ ކުރުމަށްޓަކައި، މަތީގައިވާ <span className="font-bold text-slate-800 text-base">Location Tabs</span> (މިސާލަކަށް: ވެނިޓީ އޭރިއާ) ބޭނުންކޮށްގެން ލޮކޭޝަންތައް ވަކިވަކިން ބަލައި ފާސްކުރާށެވެ.</p>
+                                        <p>3. ކީޕޭޑް ބޭނުންކޮށްގެން އަވަހަށް ނަންބަރު ޖެހުމަށްޓަކައި ބޮޑުކޮށް ފެންނަ <span className="font-bold text-[#6D2158] text-base">ނަންބަރަށް</span> ފިއްތާލާށެވެ. ނުވަތަ <span className="font-bold text-slate-800 text-base">+/-</span> ބަޓަން ބޭނުންކޮށްގެން އަދަދުތަކަށް ބަދަލު ގެންނާށެވެ.</p>
+                                        <p>4. <span className="font-bold text-[#6D2158] text-base">'ސަބްމިޓް އޮޑިޓް'</span> އަށް ފިއްތުމުގެ ކުރިން، ހުރިހާ ތަންތަނެއް ބަލައި ފާސްކުރެވުނުކަން ޔަގީންކުރާށެވެ.</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button onClick={() => setShowGuideModal(false)} className="w-full py-4 text-white bg-[#6D2158] rounded-xl font-black uppercase tracking-wider text-xs shadow-lg shadow-purple-900/20 active:scale-95 transition-all shrink-0 flex items-center justify-center gap-2">
+                                I Understand <span className="opacity-50">/</span> <span style={{ fontFamily: 'Faruma, sans-serif', fontWeight: 'normal', fontSize: '14px' }} className="mt-1">ވިސްނިއްޖެ</span>
+                            </button>
+                        </div>
+                    </div>
+                )}
             </>
         );
     }
