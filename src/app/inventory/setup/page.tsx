@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Box, Calendar, Users, Plus, CheckCircle2, X, Settings, 
   Shield, Loader2, Search, Trash2, MapPin, Building,
-  Layers, Lock, Unlock, BellRing, PackagePlus, Edit3, AlertTriangle, ArrowRight, Image as ImageIcon
+  Layers, Lock, Unlock, BellRing, PackagePlus, Edit3, AlertTriangle, ArrowRight, Image as ImageIcon, Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, startOfMonth } from 'date-fns';
@@ -11,7 +11,7 @@ import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ConfirmProvider';
 import PageHeader from '@/components/PageHeader';
 
-type Host = { host_id: string; full_name: string; role: string; };
+type Host = { id: string; host_id: string; full_name: string; role: string; };
 type MasterItem = { article_number: string; article_name: string; category: string; inventory_type: string; is_minibar_item: boolean; image_url?: string; villa_location?: string; };
 
 type Assignment = {
@@ -21,6 +21,31 @@ type Assignment = {
     villa_number: string;
     inventory_type: string;
     assigned_at?: string;
+};
+
+// --- SMART VILLA PARSER ---
+const parseVillas = (input: string, doubleVillas: string[]) => {
+    const result = new Set<string>();
+    const parts = (input || '').split(',').map(s => s.trim());
+    
+    for (const p of parts) {
+        if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
+            const [start, end] = p.split('-').map(Number);
+            if (!isNaN(start) && !isNaN(end) && start <= end) {
+                for (let i = start; i <= end; i++) {
+                    const v = String(i);
+                    if (doubleVillas.includes(v)) { result.add(`${v}-1`); result.add(`${v}-2`); } 
+                    else { result.add(v); }
+                }
+            }
+        } else if (p) {
+            const baseV = p.replace('-1', '').replace('-2', '');
+            if (!p.includes('-') && doubleVillas.includes(baseV)) { result.add(`${baseV}-1`); result.add(`${baseV}-2`); } 
+            else { result.add(p); }
+        }
+    }
+    
+    return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
 
 export default function InventorySettings() {
@@ -36,6 +61,9 @@ export default function InventorySettings() {
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
   
+  const [doubleVillasStr, setDoubleVillasStr] = useState<string>('');
+  const dvList = useMemo(() => doubleVillasStr.split(',').map(s => s.trim()).filter(Boolean), [doubleVillasStr]);
+
   // --- TYPES & LOCATIONS STATE ---
   const [newType, setNewType] = useState('');
   const [newLoc, setNewLoc] = useState('');
@@ -85,10 +113,12 @@ export default function InventorySettings() {
 
   const fetchData = async () => {
     setIsLoading(true);
-    const [constRes, catRes, hostRes] = await Promise.all([
+    // ⚡ FIX: Added "id" to the hsk_hosts select query so the matching logic works
+    const [constRes, catRes, hostRes, dvRes] = await Promise.all([
         supabase.from('hsk_constants').select('*').in('type', ['inv_type', 'inv_location']),
         supabase.from('hsk_master_catalog').select('*').order('article_name'),
-        supabase.from('hsk_hosts').select('host_id, full_name, role').eq('status', 'Active').order('full_name')
+        supabase.from('hsk_hosts').select('id, host_id, full_name, role').eq('status', 'Active').order('full_name'),
+        supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle()
     ]);
 
     if (constRes.data) {
@@ -97,6 +127,7 @@ export default function InventorySettings() {
     }
     if (catRes.data) setCatalog(catRes.data);
     if (hostRes.data) setHosts(hostRes.data);
+    if (dvRes.data) setDoubleVillasStr(dvRes.data.label);
     
     setIsLoading(false);
   };
@@ -200,6 +231,59 @@ export default function InventorySettings() {
       }
   };
 
+  // --- ⚡ AUTO FILL FROM DAILY BOARD ---
+  const handleAutoAllocate = async () => {
+      if (!activeSchedule) return toast.error("Please select a schedule first.");
+      setIsLoading(true);
+
+      const tz = typeof window !== 'undefined' ? localStorage.getItem('hk_pulse_timezone') || 'Indian/Maldives' : 'Indian/Maldives';
+      const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+      const { data: allocData, error } = await supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', todayStr);
+
+      if (error || !allocData || allocData.length === 0) {
+          toast.error("No active room allocations found for today.");
+          setIsLoading(false);
+          return;
+      }
+
+      const inserts: any[] = [];
+      let addedCount = 0;
+      const existingSet = new Set(assignments.map(a => `${a.host_id}-${a.villa_number}`));
+
+      allocData.forEach(alloc => {
+          if (alloc.task_details) {
+              const parsed = parseVillas(alloc.task_details, dvList);
+              parsed.forEach(v => {
+                  if (!existingSet.has(`${alloc.host_id}-${v}`)) {
+                      inserts.push({
+                          schedule_id: activeSchedule.id,
+                          host_id: alloc.host_id, // We insert using whichever ID was stored in the daily board
+                          villa_number: v,
+                          inventory_type: activeSchedule.inventory_type,
+                          assigned_at: new Date().toISOString()
+                      });
+                      existingSet.add(`${alloc.host_id}-${v}`);
+                      addedCount++;
+                  }
+              });
+          }
+      });
+
+      if (inserts.length > 0) {
+          const { error: insErr } = await supabase.from('hsk_inventory_assignments').insert(inserts);
+          if (insErr) toast.error("Error auto-filling: " + insErr.message);
+          else {
+              toast.success(`Auto-filled ${addedCount} villa assignments from daily board!`);
+              refreshAssignments(activeSchedule.id);
+          }
+      } else {
+          toast.success("All daily allocations are already assigned.");
+      }
+
+      setIsLoading(false);
+  };
+
   const sendBulkNotification = async () => {
       const bodyMsg = customNotifyMsg.trim() || `Please check your My Tasks dashboard to complete your count.`;
       toast.success('Sending notifications to allocated staff...');
@@ -216,33 +300,17 @@ export default function InventorySettings() {
       } catch(e) {}
   };
 
-  // --- VILLA INPUT LOGIC ---
+  // --- VILLA INPUT LOGIC (Now using Smart Parser) ---
   const handleVillaKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key === 'Enter' || e.key === ',') {
           e.preventDefault();
           let val = villaInput.trim();
           if (!val) return;
 
-          if (val.includes('-')) {
-              const [startStr, endStr] = val.split('-');
-              const start = parseInt(startStr, 10);
-              const end = parseInt(endStr, 10);
-              if (!isNaN(start) && !isNaN(end) && start <= end) {
-                  const newRange = [];
-                  for (let i = start; i <= end; i++) {
-                      const vString = i.toString().padStart(2, '0');
-                      if (!selectedVillas.includes(vString) && !assignments.some(a => a.villa_number === vString)) {
-                          newRange.push(vString);
-                      }
-                  }
-                  setSelectedVillas([...selectedVillas, ...newRange]);
-              }
-          } else {
-              const vString = parseInt(val, 10).toString().padStart(2, '0');
-              if (vString !== 'NaN' && !selectedVillas.includes(vString) && !assignments.some(a => a.villa_number === vString)) {
-                  setSelectedVillas([...selectedVillas, vString]);
-              }
-          }
+          const parsed = parseVillas(val, dvList);
+          const newVillas = parsed.filter(v => !selectedVillas.includes(v) && !assignments.some(a => a.villa_number === v));
+          
+          setSelectedVillas([...selectedVillas, ...newVillas]);
           setVillaInput('');
       }
   };
@@ -274,7 +342,7 @@ export default function InventorySettings() {
 
       const inserts = locationsToAssign.map(loc => ({
           schedule_id: activeSchedule.id,
-          host_id: selectedHost.host_id,
+          host_id: selectedHost.id, // Store their UUID instead of string ID just to be safe
           villa_number: loc,
           inventory_type: activeSchedule.inventory_type,
           assigned_at: new Date().toISOString() // Force stamp to sort recent to top
@@ -308,13 +376,15 @@ export default function InventorySettings() {
       toast.success("Assignments removed.");
   };
 
+  // ⚡ FIX: Grouping logic now looks for both 'id' and 'host_id' to prevent "Unknown Staff"
   const groupedAssignments = useMemo(() => {
-      const groups: Record<string, { host: Host | undefined, items: Assignment[], latest_assignment: string }> = {};
+      const groups: Record<string, { hostId: string, host: Host | undefined, items: Assignment[], latest_assignment: string }> = {};
       
       assignments.forEach((a: Assignment) => {
           if (!groups[a.host_id]) {
               groups[a.host_id] = {
-                  host: hosts.find(h => h.host_id === a.host_id),
+                  hostId: a.host_id, // Store unique key
+                  host: hosts.find(h => h.id === a.host_id || h.host_id === a.host_id), // Safely check both ID types
                   items: [],
                   latest_assignment: a.assigned_at || '0'
               };
@@ -456,7 +526,14 @@ export default function InventorySettings() {
                           
                           {/* Assignment Panel */}
                           <div className="md:w-1/2 p-4 md:p-6 border-b md:border-b-0 md:border-r border-slate-100 flex flex-col bg-white overflow-y-auto custom-scrollbar">
-                              <h4 className="font-black text-slate-800 mb-4 md:mb-6 flex items-center gap-2 shrink-0"><ArrowRight size={18} className="text-[#6D2158]"/> Dispatch Tasks</h4>
+                              <div className="flex justify-between items-center mb-4 md:mb-6 shrink-0">
+                                  <h4 className="font-black text-slate-800 flex items-center gap-2"><ArrowRight size={18} className="text-[#6D2158]"/> Dispatch Tasks</h4>
+                                  
+                                  {/* ⚡ NEW BUTTON: AUTO FILL */}
+                                  <button onClick={handleAutoAllocate} disabled={isLoading || !activeSchedule} className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 text-[#6D2158] border border-purple-200 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-purple-100 shadow-sm transition-all active:scale-95">
+                                      <Sparkles size={14}/> Auto Fill Daily
+                                  </button>
+                              </div>
                               
                               <div className="space-y-4 md:space-y-6 flex-1">
                                   
@@ -469,7 +546,7 @@ export default function InventorySettings() {
                                               <Search className="absolute left-3.5 top-3.5 text-slate-400" size={18}/>
                                               <input 
                                                   type="text" 
-                                                  placeholder="Type staff name..." 
+                                                  placeholder="Type staff name to assign..." 
                                                   className="w-full pl-10 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-[16px] md:text-sm font-bold outline-none focus:border-[#6D2158]" 
                                                   value={hostSearch} 
                                                   onChange={e => setHostSearch(e.target.value)} 
@@ -577,7 +654,7 @@ export default function InventorySettings() {
                                           <p className="font-bold text-sm">No active tasks</p>
                                       </div>
                                   ) : groupedAssignments.map(group => (
-                                      <div key={group.host?.host_id || 'unknown'} className="bg-white p-3 md:p-4 rounded-xl border border-slate-200 shadow-sm animate-in slide-in-from-right-2">
+                                      <div key={group.hostId} className="bg-white p-3 md:p-4 rounded-xl border border-slate-200 shadow-sm animate-in slide-in-from-right-2">
                                           <div className="flex justify-between items-center mb-2 md:mb-3 border-b border-slate-100 pb-2">
                                               <div className="flex items-center gap-2 md:gap-3">
                                                   <div className="w-8 h-8 md:w-10 md:h-10 bg-purple-50 text-[#6D2158] rounded-lg flex items-center justify-center font-black text-sm md:text-base shadow-inner">
@@ -588,7 +665,7 @@ export default function InventorySettings() {
                                                       <div className="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-widest">{group.items.length} locations</div>
                                                   </div>
                                               </div>
-                                              <button onClick={() => handleRemoveHostAssignments(group.host?.host_id || '')} className="text-slate-300 hover:text-rose-500 transition-colors p-1.5 bg-slate-50 hover:bg-rose-50 rounded-md" title="Remove all assignments for this host">
+                                              <button onClick={() => handleRemoveHostAssignments(group.host?.host_id || group.hostId)} className="text-slate-300 hover:text-rose-500 transition-colors p-1.5 bg-slate-50 hover:bg-rose-50 rounded-md" title="Remove all assignments for this host">
                                                   <Trash2 size={14}/>
                                               </button>
                                           </div>

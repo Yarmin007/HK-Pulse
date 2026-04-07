@@ -89,6 +89,12 @@ const isSameGuest = (n1: string, n2: string) => {
     return c1.includes(c2.substring(0, 10)) || c2.includes(c1.substring(0, 10));
 };
 
+const getAssociatedVillas = (villa: string) => {
+    if (villa === '57') return ['56', '58'];
+    if (villa === '87') return ['88'];
+    return [];
+};
+
 type GuestRecord = {
   id?: string;
   report_date: string;
@@ -135,7 +141,7 @@ export default function HousekeepingSummaryPage() {
   const [activeTab, setActiveTab] = useState<'details' | 'prefs'>('details');
 
   const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
-  const [moveData, setMoveData] = useState({ from: '', to: '', type: 'VM/OCC' });
+  const [moveData, setMoveData] = useState({ from: '', to: '', type: 'VM/OCC', isPartial: false, mergeDest: true });
 
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
   const [pastedText, setPastedText] = useState('');
@@ -237,58 +243,55 @@ export default function HousekeepingSummaryPage() {
         finalPayload.stay_id = `${finalPayload.villa_number}_${arrStr}`;
     }
     
-    const { id, ...payload } = finalPayload;
+    // Automatically mirror updates to associated villas
+    const targetVillas = [finalPayload.villa_number, ...getAssociatedVillas(finalPayload.villa_number)];
     
-    const { error } = id 
-        ? await supabase.from('hsk_daily_summary').update(payload).eq('id', id) 
-        : await supabase.from('hsk_daily_summary').insert(payload);
+    for (const v of targetVillas) {
+        const targetRec = masterList.find(r => r.villa_number === v);
+        const { id, ...payloadWithoutId } = finalPayload;
+        const payloadToSave = { ...payloadWithoutId, villa_number: v };
         
-    if (!error) { 
-        setIsEditOpen(false); 
-        fetchDailyData(); 
-        setEditingRecord(null);
-        toast.success("Profile Saved!");
-    } else {
-        toast.error("Error saving record: " + error.message);
+        const { error } = targetRec?.id 
+            ? await supabase.from('hsk_daily_summary').update(payloadToSave).eq('id', targetRec.id) 
+            : await supabase.from('hsk_daily_summary').insert(payloadToSave);
+            
+        if (error) {
+            toast.error(`Error saving ${v}: ` + error.message);
+        }
     }
+    
+    setIsEditOpen(false); 
+    fetchDailyData(); 
+    setEditingRecord(null);
+    toast.success("Profile Saved!");
     setIsProcessing(false);
-  };
-
-  const handleCloneToConnected = (baseVilla: string) => {
-      if (!editingRecord) return;
-      const targetVillas = baseVilla === '87' ? ['88'] : ['56', '58'];
-      
-      setConfirmDialog({
-          isOpen: true,
-          title: "Clone Guest Profile",
-          message: `Clone this guest profile to connected Villa(s) ${targetVillas.join(', ')}?`,
-          confirmText: "Clone",
-          confirmColor: "bg-indigo-600 hover:bg-indigo-700",
-          onConfirm: async () => {
-              setConfirmDialog(null);
-              setIsProcessing(true);
-              for (const v of targetVillas) {
-                  const targetRec = masterList.find(r => r.villa_number === v);
-                  if (targetRec) {
-                      const payload = { ...editingRecord, id: targetRec.id, villa_number: v };
-                      if (targetRec.id) await supabase.from('hsk_daily_summary').update(payload).eq('id', targetRec.id);
-                      else await supabase.from('hsk_daily_summary').insert(payload);
-                  }
-              }
-              setIsProcessing(false);
-              fetchDailyData();
-              toast.success(`Guest cloned to ${targetVillas.join(', ')}`);
-          }
-      });
   };
 
   const handleApproveUpdate = async () => {
       setIsProcessing(true);
       await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
-      const payload = pendingData.map(r => { 
+      
+      const finalPending = [...pendingData];
+      
+      // Auto mirror 57 to 56/58 and 87 to 88 inside the data map before batch updating
+      const v57 = finalPending.find(p => p.villa_number === '57');
+      if (v57) {
+          const p56 = finalPending.find(p => p.villa_number === '56');
+          const p58 = finalPending.find(p => p.villa_number === '58');
+          if (p56) Object.assign(p56, { ...v57, id: p56.id, villa_number: '56' });
+          if (p58) Object.assign(p58, { ...v57, id: p58.id, villa_number: '58' });
+      }
+      const v87 = finalPending.find(p => p.villa_number === '87');
+      if (v87) {
+          const p88 = finalPending.find(p => p.villa_number === '88');
+          if (p88) Object.assign(p88, { ...v87, id: p88.id, villa_number: '88' });
+      }
+
+      const payload = finalPending.map(r => { 
           const { id, ...rest } = r; 
           return { ...rest, report_date: selectedDate, arrival_time: rest.arrival_time || '', departure_time: rest.departure_time || '' };
       });
+
       await supabase.from('hsk_daily_summary').insert(payload);
       fetchDailyData();
       setDiffModalOpen(false);
@@ -315,85 +318,81 @@ export default function HousekeepingSummaryPage() {
   const handleManualMove = async () => {
       if (!moveData.from || !moveData.to) return toast.error("Please specify both villas.");
       
-      const fromRec = masterList.find(r => r.villa_number === moveData.from);
-      const toRec = masterList.find(r => r.villa_number === moveData.to);
+      // TYPE GUARD: Safely extract strings only and discard nulls
+      const fromVillas = moveData.from.split(',').map(s => normalizeVilla(s)).filter((v): v is string => v !== null);
+      const toVilla = normalizeVilla(moveData.to);
       
-      if (!fromRec || !toRec) return toast.error("Invalid villa numbers.");
+      if (fromVillas.length === 0 || !toVilla) return toast.error("Invalid villa numbers.");
+      
+      const toRec = masterList.find(r => r.villa_number === toVilla);
+      if (!toRec) return toast.error("Destination villa not found.");
 
       setIsProcessing(true);
+
+      let combinedNames = moveData.mergeDest && toRec.guest_name ? [toRec.guest_name] : [];
+      let combinedAdults = moveData.mergeDest ? (toRec.pax_adults || 0) : 0;
+      let combinedKids = moveData.mergeDest ? (toRec.pax_kids || 0) : 0;
+      let combinedPrefs = moveData.mergeDest && toRec.preferences ? [toRec.preferences] : [];
+      let mealPlan = moveData.mergeDest && toRec.meal_plan ? toRec.meal_plan : '';
+      let gemName = moveData.mergeDest && toRec.gem_name ? toRec.gem_name : '';
+      let stayDates = moveData.mergeDest && toRec.stay_dates ? toRec.stay_dates : '';
+
+      for (const v of fromVillas) {
+          const fromRec = masterList.find(r => r.villa_number === v);
+          if (fromRec) {
+              if (fromRec.guest_name) combinedNames.push(fromRec.guest_name);
+              combinedAdults += (fromRec.pax_adults || 0);
+              combinedKids += (fromRec.pax_kids || 0);
+              if (fromRec.preferences) combinedPrefs.push(fromRec.preferences);
+              if (!mealPlan) mealPlan = fromRec.meal_plan;
+              if (!gemName) gemName = fromRec.gem_name;
+              if (!stayDates) stayDates = fromRec.stay_dates;
+          }
+      }
 
       const toPayload = {
           ...toRec,
           status: moveData.type,
-          guest_name: fromRec.guest_name,
-          pax_adults: fromRec.pax_adults,
-          pax_kids: fromRec.pax_kids,
-          gem_name: fromRec.gem_name,
-          meal_plan: fromRec.meal_plan,
-          stay_dates: fromRec.stay_dates,
-          preferences: fromRec.preferences,
-          stay_id: fromRec.stay_id,
-          arrival_time: fromRec.arrival_time,
-          departure_time: fromRec.departure_time
+          guest_name: combinedNames.join(' & '),
+          pax_adults: combinedAdults,
+          pax_kids: combinedKids,
+          preferences: combinedPrefs.join('\n\n'),
+          meal_plan: mealPlan,
+          gem_name: gemName,
+          stay_dates: stayDates
       };
 
-      const fromPayload = {
-          ...fromRec,
-          status: 'VM/VAC',
+      const executeUpdate = async (villaNum: string, payload: any) => {
+          const rec = masterList.find(r => r.villa_number === villaNum);
+          if (rec?.id) await supabase.from('hsk_daily_summary').update(payload).eq('id', rec.id);
+          else await supabase.from('hsk_daily_summary').insert({...payload, report_date: selectedDate, villa_number: villaNum});
       };
 
-      if (toRec.id) await supabase.from('hsk_daily_summary').update(toPayload).eq('id', toRec.id);
-      else await supabase.from('hsk_daily_summary').insert(toPayload);
+      // Update Destination and its associates (57 -> 56/58, 87 -> 88)
+      const toTargets = [toVilla, ...getAssociatedVillas(toVilla)];
+      for (const v of toTargets) {
+          await executeUpdate(v, { ...toPayload, villa_number: v });
+      }
 
-      if (fromRec.id) await supabase.from('hsk_daily_summary').update(fromPayload).eq('id', fromRec.id);
-      else await supabase.from('hsk_daily_summary').insert(fromPayload);
+      // Update Sources
+      if (!moveData.isPartial) {
+          for (const v of fromVillas) {
+              const sourceTargets = [v, ...getAssociatedVillas(v)];
+              for (const sv of sourceTargets) {
+                  const sRec = masterList.find(r => r.villa_number === sv);
+                  if (sRec) {
+                      const fromPayload = { ...sRec, status: 'VM/VAC', guest_name: '', pax_adults: 0, pax_kids: 0 };
+                      await executeUpdate(sv, fromPayload);
+                  }
+              }
+          }
+      }
 
       setIsMoveModalOpen(false);
-      setMoveData({ from: '', to: '', type: 'VM/OCC' });
+      setMoveData({ from: '', to: '', type: 'VM/OCC', isPartial: false, mergeDest: true });
       fetchDailyData();
       setIsProcessing(false);
-      toast.success(`Moved Guest from ${moveData.from} to ${moveData.to}`);
-
-      // RETROSPECTIVE MOVE PROMPT
-      if (selectedDate < getToday()) {
-          setConfirmDialog({
-              isOpen: true,
-              title: "Apply Move to Today?",
-              message: `This move was recorded for a past date (${selectedDate}). Do you want to apply this move to TODAY (${getToday()}) as well?`,
-              confirmText: "Apply to Today",
-              confirmColor: "bg-[#6D2158] hover:bg-[#5a1b49]",
-              onConfirm: async () => {
-                  setConfirmDialog(null);
-                  const { data: todayData } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', getToday()).in('villa_number', [moveData.from, moveData.to]);
-                  const todayFrom = todayData?.find(r => r.villa_number === moveData.from);
-                  const todayTo = todayData?.find(r => r.villa_number === moveData.to);
-                  
-                  // For today, the destination is just OCC. The source is entirely VAC.
-                  const todayToPayload = { 
-                      ...toPayload, 
-                      report_date: getToday(),
-                      status: 'OCC'
-                  };
-                  delete todayToPayload.id;
-                  
-                  const todayFromPayload = { 
-                      ...fromPayload, 
-                      report_date: getToday(),
-                      status: 'VAC',
-                      guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '', preferences: '', gem_name: '', stay_id: '', arrival_time: '', departure_time: ''
-                  };
-                  delete todayFromPayload.id;
-
-                  if (todayTo) await supabase.from('hsk_daily_summary').update(todayToPayload).eq('id', todayTo.id);
-                  else await supabase.from('hsk_daily_summary').insert(todayToPayload);
-
-                  if (todayFrom) await supabase.from('hsk_daily_summary').update(todayFromPayload).eq('id', todayFrom.id);
-                  else await supabase.from('hsk_daily_summary').insert(todayFromPayload);
-                  
-                  toast.success("Applied to today's list as well.");
-              }
-          });
-      }
+      toast.success(`Moved Guests to V${toVilla}`);
   };
 
   const handlePasteSubmit = () => {
@@ -623,6 +622,7 @@ export default function HousekeepingSummaryPage() {
           const record = currentMap.get(cleanVilla)!;
 
           let isArr = false; let isDep = false;
+          let isFullyDeparting = true;
           let arrNames: string[] = []; let depNames: string[] = [];
           let isExtFromCarrier = false;
 
@@ -644,6 +644,11 @@ export default function HousekeepingSummaryPage() {
 
                   if (aFull === selectedDate) { isArr = true; arrNames.push(formattedName); }
                   if (dFull === selectedDate) { isDep = true; depNames.push(formattedName); }
+                  
+                  // Check if any guest in this villa is extending beyond today
+                  if (dFull > selectedDate) {
+                      isFullyDeparting = false;
+                  }
               }
           });
 
@@ -657,8 +662,9 @@ export default function HousekeepingSummaryPage() {
           let finalStatus = 'OCC';
           if (isArr && isDep && !isB2BExtension) finalStatus = 'DEP/ARR';
           else if (isArr) finalStatus = 'ARR';
-          else if (isDep) finalStatus = 'DEP';
-          else if (resList.some(r => getText(r, 'SHORT_RESV_STATUS').includes('CKOT'))) finalStatus = 'VAC';
+          // Ensure we don't mark a villa DEP if only some guests are checking out
+          else if (isDep) finalStatus = isFullyDeparting ? 'DEP' : 'OCC';
+          else if (resList.every(r => getText(r, 'SHORT_RESV_STATUS').includes('CKOT'))) finalStatus = 'VAC';
 
           let primaryResList = resList;
           if (finalStatus === 'DEP/ARR' || isB2BExtension) {
@@ -1170,7 +1176,7 @@ export default function HousekeepingSummaryPage() {
                   </div>
                   
                   {isAdmin && (
-                      <button onClick={(e) => { e.stopPropagation(); setMoveData({from: row.villa_number, to: '', type: 'VM/OCC'}); setIsMoveModalOpen(true); }} className="p-2 bg-slate-50 text-slate-400 rounded-lg shadow-sm active:bg-slate-100">
+                      <button onClick={(e) => { e.stopPropagation(); setMoveData({from: row.villa_number, to: '', type: 'VM/OCC', isPartial: false, mergeDest: true}); setIsMoveModalOpen(true); }} className="p-2 bg-slate-50 text-slate-400 rounded-lg shadow-sm active:bg-slate-100">
                          <ArrowRightLeft size={14}/>
                       </button>
                   )}
@@ -1239,7 +1245,7 @@ export default function HousekeepingSummaryPage() {
                   
                   <td className="py-2 px-4 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-50">
                       <div className="flex items-center gap-2">
-                          <button onClick={() => { if(isAdmin){ setMoveData({from: row.villa_number, to: '', type: 'VM/OCC'}); setIsMoveModalOpen(true); } }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
+                          <button onClick={() => { if(isAdmin){ setMoveData({from: row.villa_number, to: '', type: 'VM/OCC', isPartial: false, mergeDest: true}); setIsMoveModalOpen(true); } }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
                               <ArrowRightLeft size={12}/>
                           </button>
                           <span className="font-bold text-sm text-slate-700">{row.villa_number}</span>
@@ -1378,7 +1384,6 @@ export default function HousekeepingSummaryPage() {
                                                       
                                                       {(c.isMemoEdit || c.type.includes('ARR') || c.type.includes('DEP') || c.type.includes('SYNC') || c.type.includes('EXT') || c.type.includes('ALLOC')) && (
                                                           <div className="flex flex-wrap gap-2">
-                                                              {/* MANUALLY SELECTABLE MEAL PLAN */}
                                                               <select className="w-14 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-blue-400" value={pendingRec.meal_plan} onChange={(e) => updatePendingRecord(c.villa, 'meal_plan', e.target.value)}>
                                                                   <option value="">MP</option>
                                                                   <option value="BB">BB</option>
@@ -1483,8 +1488,8 @@ export default function HousekeepingSummaryPage() {
                   <div className="p-6 space-y-4">
                       <div className="flex items-center gap-4">
                           <div className="flex-1">
-                              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">From Villa</label>
-                              <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-lg font-black text-center text-slate-600 outline-none" value={moveData.from} readOnly/>
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">From Villa(s)</label>
+                              <input type="text" className="w-full p-3 bg-white border border-slate-200 rounded-xl text-lg font-black text-center text-slate-600 outline-none focus:border-indigo-500" value={moveData.from} onChange={e => setMoveData({...moveData, from: e.target.value})} placeholder="e.g. 12, 14"/>
                           </div>
                           <ArrowRight className="text-slate-300 mt-4" size={24}/>
                           <div className="flex-1">
@@ -1492,6 +1497,18 @@ export default function HousekeepingSummaryPage() {
                               <input type="text" autoFocus className="w-full p-3 bg-white border-2 border-indigo-200 rounded-xl text-lg font-black text-center text-indigo-700 outline-none focus:border-indigo-500" placeholder="00" value={moveData.to} onChange={e => setMoveData({...moveData, to: e.target.value})}/>
                           </div>
                       </div>
+
+                      <div className="mt-1 flex flex-col gap-2">
+                          <label className="flex items-center gap-2 text-[11px] font-bold text-slate-600 cursor-pointer">
+                              <input type="checkbox" checked={moveData.mergeDest} onChange={e => setMoveData({...moveData, mergeDest: e.target.checked})} className="w-4 h-4 rounded border-slate-300 text-[#6D2158] focus:ring-[#6D2158]"/>
+                              Merge with existing guests in destination
+                          </label>
+                          <label className="flex items-center gap-2 text-[11px] font-bold text-slate-600 cursor-pointer">
+                              <input type="checkbox" checked={moveData.isPartial} onChange={e => setMoveData({...moveData, isPartial: e.target.checked})} className="w-4 h-4 rounded border-slate-300 text-[#6D2158] focus:ring-[#6D2158]"/>
+                              Partial Move (Keep Source Villa(s) Occupied)
+                          </label>
+                      </div>
+
                       <div>
                           <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Move Type</label>
                           <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none" value={moveData.type} onChange={e => setMoveData({...moveData, type: e.target.value})}>
@@ -1500,7 +1517,6 @@ export default function HousekeepingSummaryPage() {
                               <option value="DAY USE">Day Use Move (DAY USE)</option>
                           </select>
                       </div>
-                      <p className="text-[10px] font-bold text-slate-400 leading-tight italic">Guest profile details will be copied to the new villa. The old villa will become VM/VAC but will retain its profile history for today.</p>
                       
                       <button onClick={handleManualMove} disabled={isProcessing} className="w-full bg-[#6D2158] text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-[#5a1b49] transition-all flex justify-center items-center gap-2 mt-2">
                           {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <RotateCw size={16}/>} Execute Move
@@ -1531,7 +1547,7 @@ export default function HousekeepingSummaryPage() {
               <div className="p-6 overflow-y-auto">
                  {activeTab === 'details' ? (
                      <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-3 gap-3">
                             <div>
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Status</label>
                                 <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700" value={editingRecord.status} onChange={e => setEditingRecord({...editingRecord, status: e.target.value})}>
@@ -1542,9 +1558,23 @@ export default function HousekeepingSummaryPage() {
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">GEM</label>
                                 <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700" value={editingRecord.gem_name} onChange={e => setEditingRecord({...editingRecord, gem_name: e.target.value})}/>
                             </div>
+                            <div>
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Meal Plan</label>
+                                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700" value={editingRecord.meal_plan} onChange={e => setEditingRecord({...editingRecord, meal_plan: e.target.value})}>
+                                    <option value="">MP</option>
+                                    <option value="BB">BB</option>
+                                    <option value="HB">HB</option>
+                                    <option value="FB">FB</option>
+                                    <option value="RO">RO</option>
+                                    <option value="AI">AI</option>
+                                </select>
+                            </div>
                         </div>
                         <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Guest Names (Group)</label>
+                            <div className="flex justify-between items-end mb-1">
+                                <label className="block text-[10px] font-bold text-slate-400 uppercase">Guest Names (Group)</label>
+                                <span className="text-[9px] text-slate-300 italic">(Delete a name to partially depart them)</span>
+                            </div>
                             <textarea className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold h-20 resize-none text-slate-700" value={editingRecord.guest_name} onChange={e => setEditingRecord({...editingRecord, guest_name: e.target.value})}/>
                         </div>
                         <div className="grid grid-cols-2 gap-4 border-t border-slate-100 pt-4">
@@ -1562,15 +1592,6 @@ export default function HousekeepingSummaryPage() {
                             <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Kids</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.pax_kids} onChange={e => setEditingRecord({...editingRecord, pax_kids: parseInt(e.target.value) || 0})}/></div>
                             <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Dates</label><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.stay_dates} onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}/></div>
                         </div>
-
-                        {/* CLONE TO CONNECTED VILLA BUTTON */}
-                        {['87', '57'].includes(editingRecord.villa_number) && (
-                            <div className="pt-2">
-                                <button onClick={() => handleCloneToConnected(editingRecord.villa_number)} className="w-full py-3 bg-indigo-50 text-indigo-700 rounded-xl text-[10px] font-bold uppercase tracking-widest border border-indigo-200 hover:bg-indigo-100 transition-colors">
-                                    Clone Guest to V{editingRecord.villa_number === '87' ? '88' : '56 & 58'}
-                                </button>
-                            </div>
-                        )}
                      </div>
                  ) : (
                      <div className="h-full">
@@ -1584,6 +1605,9 @@ export default function HousekeepingSummaryPage() {
                       {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Edit3 size={16}/>}
                       Save Profile
                   </button>
+                  {['57', '87'].includes(editingRecord.villa_number) && (
+                      <p className="text-center text-[9px] font-bold text-slate-400 uppercase mt-3">Changes automatically mirror to connected villas</p>
+                  )}
               </div>
            </div>
         </div>

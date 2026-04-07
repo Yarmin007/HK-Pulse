@@ -108,7 +108,7 @@ export default function CoordinatorLog() {
   const [isOtherOpen, setIsOtherOpen] = useState(false);
   const [otherModalType, setOtherModalType] = useState<'General' | 'GEM'>('General');
   const [isPartialOpen, setIsPartialOpen] = useState(false);
-  const [showOverdue, setShowOverdue] = useState(true); 
+  const [showOverdue, setShowOverdue] = useState(false); 
 
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -647,13 +647,15 @@ export default function CoordinatorLog() {
             <button onClick={() => handleOpenModal('GEM')} className="btn-primary !bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600 !px-4 !py-2.5 text-white">GEM Req</button>
           </div>
         }
-      >
+      />
+
+      <div className="px-3 sm:px-4 mt-2 mb-2">
         <div className="relative mt-2">
             <Search size={16} className="absolute left-4 top-4 text-slate-400" />
             <input type="text" placeholder="Search Villa or Name..." className="input-field pl-12 py-3 text-[16px] md:text-sm" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
         </div>
 
-        <div className="flex flex-col gap-2.5 mt-2">
+        <div className="flex flex-col gap-2.5 mt-3">
             <div className="flex gap-2 flex-wrap items-center">
                 <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Type</span>
                 {['All', 'Minibar', 'General', 'GEM'].map(t => (
@@ -678,7 +680,7 @@ export default function CoordinatorLog() {
                 </div>
             </div>
         </div>
-      </PageHeader>
+      </div>
 
       <div className="p-2 sm:p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-4 pb-32">
          {visibleRecords.map(r => {

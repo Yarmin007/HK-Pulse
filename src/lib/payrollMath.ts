@@ -51,6 +51,17 @@ export const getUpcomingLeave = (futureLeaves: any[], todayStr: string) => {
     };
 };
 
+// Helper: Counts the exact number of Fridays between two dates
+const countFridays = (start: Date, end: Date) => {
+    if (isAfter(start, end)) return 0;
+    const days = differenceInDays(end, start) + 1; // inclusive
+    const startDay = start.getDay(); // 0 = Sunday, 5 = Friday
+    const daysToFirstFriday = (5 - startDay + 7) % 7;
+    
+    if (days <= daysToFirstFriday) return 0;
+    return 1 + Math.floor((days - daysToFirstFriday - 1) / 7);
+};
+
 export const computeLeaveBalancesRPC = (
     host: any, 
     currentYearData: any[], // Raw rows (used by Attendance Page)
@@ -70,7 +81,11 @@ export const computeLeaveBalancesRPC = (
 
     const joinDate = host.joining_date ? parseISO(host.joining_date) : SYSTEM_START_DATE;
     const isExec = ['DA', 'DB'].includes(host.host_level);
+    
+    // RESTRICTIONS: Interns and Taskforce do not get AL or RR
     const isIntern = (host.role || '').toLowerCase().includes('intern');
+    const isTaskforce = (host.role || '').toLowerCase().includes('taskforce');
+    const noALRR = isIntern || isTaskforce;
 
     const hostCurrentStats = (currentYearData || []).filter((r: any) => String(r.host_id).trim() === String(host.host_id).trim());
     const hostHistStats = historicalStats.filter((r: any) => String(r.host_id).trim() === String(host.host_id).trim());
@@ -106,23 +121,30 @@ export const computeLeaveBalancesRPC = (
     const startYear = Math.max(2026, joinDate.getFullYear());
 
     for (let calcYear = startYear; calcYear < targetYear; calcYear++) {
+        // AL & PH CYCLE: Jan 1 to Dec 31
         const startOfCalcYear = new Date(calcYear, 0, 1);
         const endOfCalcYear = new Date(calcYear, 11, 31);
-        
         const trackingStart = isAfter(joinDate, startOfCalcYear) ? joinDate : startOfCalcYear;
         
         const daysActive = differenceInDays(endOfCalcYear, trackingStart) + 1;
         const penaltyDays = getHistoricalStat(calcYear, ['NP', 'A']);
         const eligibleDays = Math.max(0, daysActive - penaltyDays);
         
-        const earnedOff = eligibleDays / 7;
-        const earnedAL = isIntern ? 0 : (eligibleDays / 12);
+        const earnedAL = noALRR ? 0 : (eligibleDays * 0.0822);
         
         let earnedPH = 0;
         publicHolidays.forEach((ph: any) => {
             const phDate = parseISO(ph.date);
             if (phDate >= trackingStart && phDate <= endOfCalcYear) earnedPH += 1;
         });
+
+        // OFF CYCLE: Dec 21 (prev year) to Dec 20 (calc year)
+        const offCycleStart = new Date(calcYear - 1, 11, 21);
+        const offCycleEnd = new Date(calcYear, 11, 20);
+        const trackingStartOff = isAfter(joinDate, offCycleStart) ? joinDate : offCycleStart;
+        
+        // Count total Fridays that passed in the interval
+        const earnedOff = countFridays(trackingStartOff, offCycleEnd);
 
         // ⚡ OT IS STRICTLY EXCLUDED FROM NORMAL DEDUCTIONS (Handled in Overtime Module)
         const takenOff = getHistoricalStat(calcYear, ['O', 'OFF']); 
@@ -138,18 +160,19 @@ export const computeLeaveBalancesRPC = (
     const calcCfAL = currentCfAL;
     const calcCfPH = currentCfPH;
 
+    // TARGET YEAR CALCULATIONS
     const startOfTargetYear = new Date(targetYear, 0, 1);
     const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
     
-    let earnedOff = 0; let earnedAL = 0; let earnedPH = 0;
+    let earnedAL = 0; let earnedPH = 0;
     
+    // AL & PH (Jan-Dec target year logic)
     if (targetDate >= trackingStartThisYear) {
         const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
         const penaltyDays = getStat(targetYear, ['NP', 'A']);
         const eligibleDays = Math.max(0, daysActive - penaltyDays);
         
-        earnedOff = eligibleDays / 7;
-        earnedAL = isIntern ? 0 : (eligibleDays / 12);
+        earnedAL = noALRR ? 0 : (eligibleDays * 0.0822);
     }
 
     publicHolidays.forEach((ph: any) => {
@@ -159,10 +182,20 @@ export const computeLeaveBalancesRPC = (
         }
     });
 
+    // OFF Target Year (Dec 21 of prev year to Target Date)
+    const offCycleStartTarget = new Date(targetYear - 1, 11, 21);
+    const trackingStartThisYearOff = isAfter(joinDate, offCycleStartTarget) ? joinDate : offCycleStartTarget;
+    
+    let earnedOff = 0;
+    if (targetDate >= trackingStartThisYearOff) {
+        earnedOff = countFridays(trackingStartThisYearOff, targetDate);
+    }
+
     const takenOff = getStat(targetYear, ['O', 'OFF']);
     const takenAL = getStat(targetYear, ['AL', 'VAC']);
     const takenPH = getStat(targetYear, ['PH']);
 
+    // Anniversary leaves calculation (SL, EL, RR)
     let lastAnniversary = new Date(joinDate);
     lastAnniversary.setFullYear(targetYear);
     if (joinDate.getMonth() === 1 && joinDate.getDate() === 29 && !isLeapYear(targetYear)) {
@@ -172,6 +205,10 @@ export const computeLeaveBalancesRPC = (
         lastAnniversary.setFullYear(targetYear - 1);
     }
     
+    // RR Entitlement: Requires exactly 7 months AFTER the anniversary date
+    const rrEntitlementDate = new Date(lastAnniversary);
+    rrEntitlementDate.setMonth(rrEntitlementDate.getMonth() + 7);
+
     // Uses Anniversary Leaves if provided, else falls back to local year data
     const rawAnniversaryData = (anniversaryLeaves && anniversaryLeaves.length > 0) ? anniversaryLeaves : hostCurrentStats;
     const myAnniversaryLeaves = rawAnniversaryData.filter((a: any) => {
@@ -186,21 +223,26 @@ export const computeLeaveBalancesRPC = (
     const takenRR = myAnniversaryLeaves.filter((a: any) => String(a.status_code).toUpperCase().trim() === 'RR').length;
 
     const balOffVal = currentCfOff + earnedOff - takenOff;
-    const balALVal = isIntern ? 0 : (currentCfAL + earnedAL - takenAL);
+    const balALVal = noALRR ? 0 : (currentCfAL + earnedAL - takenAL);
     const balPHVal = currentCfPH + earnedPH - takenPH;
-    const balRRVal = isExec ? 7 - takenRR : 0;
+    
+    // RR Balance: 7 days added ONLY if they have passed the 7 month mark. Early taken RR shows as negative until month 7.
+    const canHaveRR = isExec && !noALRR;
+    const earnedRR = (targetDate >= rrEntitlementDate) ? 7 : 0;
+    const balRRVal = canHaveRR ? (earnedRR - takenRR) : 0;
+    
     const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
 
     return {
-        balOff: balOffVal.toFixed(1),
-        balAL: isIntern ? '0.0' : balALVal.toFixed(1),
+        balOff: balOffVal.toFixed(0), 
+        balAL: noALRR ? '0.00' : balALVal.toFixed(2), 
         balPH: balPHVal.toFixed(1),
-        balRR: isExec ? balRRVal.toString() : '-',
+        balRR: canHaveRR ? balRRVal.toString() : '-',
         balTotal: totalBal.toFixed(1),
         balSL: 30 - takenSL,
         balEL: 10 - takenEL,
-        calcCfOff: calcCfOff.toFixed(1),
-        calcCfAL: calcCfAL.toFixed(1),  
+        calcCfOff: calcCfOff.toFixed(0), 
+        calcCfAL: calcCfAL.toFixed(2),  
         calcCfPH: calcCfPH.toFixed(1)   
     };
 };
