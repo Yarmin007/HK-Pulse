@@ -148,7 +148,6 @@ export default function HousekeepingSummaryPage() {
   
   const [isSarongModalOpen, setIsSarongModalOpen] = useState(false);
 
-  // --- NEW: Custom Confirm Dialog State ---
   const [confirmDialog, setConfirmDialog] = useState<{
       isOpen: boolean;
       title: string;
@@ -202,8 +201,25 @@ export default function HousekeepingSummaryPage() {
     for (let i = 1; i <= TOTAL_VILLAS; i++) {
       const villaNum = i.toString();
       const match = dbRecords?.find(r => normalizeVilla(r.villa_number) === villaNum);
+      
+      // ⚡ FIX: Safely map ALL data to avoid NULLs breaking string methods or Inputs
       if (match) {
-        fullList.push({ ...match, villa_number: villaNum });
+        fullList.push({ 
+            ...match, 
+            villa_number: villaNum,
+            guest_name: match.guest_name || '',
+            status: match.status || 'VAC',
+            pax_adults: match.pax_adults || 0,
+            pax_kids: match.pax_kids || 0,
+            gem_name: match.gem_name || '',
+            meal_plan: match.meal_plan || '',
+            stay_dates: match.stay_dates || '',
+            arrival_time: match.arrival_time || '',
+            departure_time: match.departure_time || '',
+            preferences: match.preferences || '',
+            remarks: match.remarks || '',
+            stay_id: match.stay_id || ''
+        });
       } else {
         fullList.push({
           report_date: selectedDate, villa_number: villaNum, status: 'VAC', guest_name: '',
@@ -243,21 +259,36 @@ export default function HousekeepingSummaryPage() {
         finalPayload.stay_id = `${finalPayload.villa_number}_${arrStr}`;
     }
     
-    // Automatically mirror updates to associated villas
-    const targetVillas = [finalPayload.villa_number, ...getAssociatedVillas(finalPayload.villa_number)];
+    // ⚡ FIX: Save Master Villa
+    const masterRec = masterList.find(r => r.villa_number === finalPayload.villa_number);
+    const { id: mId, ...masterPayload } = finalPayload;
     
-    for (const v of targetVillas) {
+    const { error: masterErr } = masterRec?.id 
+        ? await supabase.from('hsk_daily_summary').update(masterPayload).eq('id', masterRec.id) 
+        : await supabase.from('hsk_daily_summary').insert(masterPayload);
+
+    if (masterErr) toast.error(`Error saving ${finalPayload.villa_number}: ` + masterErr.message);
+
+    // ⚡ FIX: Save Associated Villas (Status only, clear guest data to prevent double count)
+    const associates = getAssociatedVillas(finalPayload.villa_number);
+    for (const v of associates) {
         const targetRec = masterList.find(r => r.villa_number === v);
-        const { id, ...payloadWithoutId } = finalPayload;
-        const payloadToSave = { ...payloadWithoutId, villa_number: v };
+        const assocPayload = { 
+            ...masterPayload, 
+            villa_number: v,
+            guest_name: '', 
+            pax_adults: 0, 
+            pax_kids: 0,
+            arrival_time: '',
+            departure_time: '',
+            preferences: ''
+        };
         
-        const { error } = targetRec?.id 
-            ? await supabase.from('hsk_daily_summary').update(payloadToSave).eq('id', targetRec.id) 
-            : await supabase.from('hsk_daily_summary').insert(payloadToSave);
+        const { error: assocErr } = targetRec?.id 
+            ? await supabase.from('hsk_daily_summary').update(assocPayload).eq('id', targetRec.id) 
+            : await supabase.from('hsk_daily_summary').insert(assocPayload);
             
-        if (error) {
-            toast.error(`Error saving ${v}: ` + error.message);
-        }
+        if (assocErr) toast.error(`Error saving ${v}: ` + assocErr.message);
     }
     
     setIsEditOpen(false); 
@@ -273,18 +304,21 @@ export default function HousekeepingSummaryPage() {
       
       const finalPending = [...pendingData];
       
-      // Auto mirror 57 to 56/58 and 87 to 88 inside the data map before batch updating
+      // ⚡ FIX: Auto mirror 57 to 56/58 and 87 to 88 inside the data map before batch updating
       const v57 = finalPending.find(p => p.villa_number === '57');
       if (v57) {
           const p56 = finalPending.find(p => p.villa_number === '56');
           const p58 = finalPending.find(p => p.villa_number === '58');
-          if (p56) Object.assign(p56, { ...v57, id: p56.id, villa_number: '56' });
-          if (p58) Object.assign(p58, { ...v57, id: p58.id, villa_number: '58' });
+          const childPayload = { ...v57, guest_name: '', pax_adults: 0, pax_kids: 0, arrival_time: '', departure_time: '', preferences: '' };
+          if (p56) Object.assign(p56, { ...childPayload, id: p56.id, villa_number: '56' });
+          if (p58) Object.assign(p58, { ...childPayload, id: p58.id, villa_number: '58' });
       }
+      
       const v87 = finalPending.find(p => p.villa_number === '87');
       if (v87) {
           const p88 = finalPending.find(p => p.villa_number === '88');
-          if (p88) Object.assign(p88, { ...v87, id: p88.id, villa_number: '88' });
+          const childPayload = { ...v87, guest_name: '', pax_adults: 0, pax_kids: 0, arrival_time: '', departure_time: '', preferences: '' };
+          if (p88) Object.assign(p88, { ...childPayload, id: p88.id, villa_number: '88' });
       }
 
       const payload = finalPending.map(r => { 
@@ -318,7 +352,6 @@ export default function HousekeepingSummaryPage() {
   const handleManualMove = async () => {
       if (!moveData.from || !moveData.to) return toast.error("Please specify both villas.");
       
-      // TYPE GUARD: Safely extract strings only and discard nulls
       const fromVillas = moveData.from.split(',').map(s => normalizeVilla(s)).filter((v): v is string => v !== null);
       const toVilla = normalizeVilla(moveData.to);
       
@@ -368,10 +401,22 @@ export default function HousekeepingSummaryPage() {
           else await supabase.from('hsk_daily_summary').insert({...payload, report_date: selectedDate, villa_number: villaNum});
       };
 
-      // Update Destination and its associates (57 -> 56/58, 87 -> 88)
-      const toTargets = [toVilla, ...getAssociatedVillas(toVilla)];
+      // ⚡ FIX: Update Destination Master
+      await executeUpdate(toVilla, { ...toPayload, villa_number: toVilla });
+
+      // ⚡ FIX: Update Destination Associates (Status only, clear guest data)
+      const toTargets = getAssociatedVillas(toVilla);
       for (const v of toTargets) {
-          await executeUpdate(v, { ...toPayload, villa_number: v });
+          await executeUpdate(v, { 
+              ...toPayload, 
+              villa_number: v, 
+              guest_name: '', 
+              pax_adults: 0, 
+              pax_kids: 0, 
+              arrival_time: '', 
+              departure_time: '', 
+              preferences: '' 
+          });
       }
 
       // Update Sources
@@ -986,6 +1031,16 @@ export default function HousekeepingSummaryPage() {
       });
   };
 
+  // ⚡ FIX: Accurate Date Logic
+  const changeDate = (days: number) => {
+      const [year, month, day] = selectedDate.split('-').map(Number);
+      const d = new Date(year, month - 1, day + days);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dy = String(d.getDate()).padStart(2, '0');
+      setSelectedDate(`${y}-${m}-${dy}`);
+  };
+
   // --- SARONG CALCULATOR ---
   const getSarongCounts = () => {
       let counts = {
@@ -997,11 +1052,10 @@ export default function HousekeepingSummaryPage() {
       };
 
       masterList.forEach(rec => {
-          // Ignore Departures completely (unless they are DEP/ARR, which holds the arrival guest info)
           if (rec.status === 'VAC' || (rec.status.includes('DEP') && !rec.status.includes('ARR'))) return;
           if (rec.status === 'VM/VAC') return;
           if (rec.status.includes('TMA')) return;
-          if (rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U') || rec.status === 'HOUSE USE') return;
+          if (rec.guest_name && (rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U') || rec.status === 'HOUSE USE')) return;
 
           const v = parseInt(rec.villa_number, 10);
           if (isNaN(v)) return;
@@ -1017,8 +1071,7 @@ export default function HousekeepingSummaryPage() {
           let male = 0;
           let female = 0;
 
-          // Intelligently guess gender based on titles in the string
-          const nameStr = rec.guest_name.toUpperCase();
+          const nameStr = rec.guest_name ? rec.guest_name.toUpperCase() : '';
           const mrCount = (nameStr.match(/\bMR\b/g) || []).length;
           const msCount = (nameStr.match(/\b(MS|MRS|MISS|ALFAALILA)\b/g) || []).length;
           
@@ -1098,15 +1151,6 @@ export default function HousekeepingSummaryPage() {
       return 'text-slate-300';
   };
 
-  const changeDate = (days: number) => {
-      const d = new Date(selectedDate);
-      d.setDate(d.getDate() + days);
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const dy = String(d.getDate()).padStart(2, '0');
-      setSelectedDate(`${y}-${m}-${dy}`);
-  };
-
   return (
     <div className="min-h-screen bg-slate-50/50 p-4 md:p-6 pb-32 font-sans text-slate-800">
       
@@ -1165,7 +1209,8 @@ export default function HousekeepingSummaryPage() {
       {/* MOBILE LIST VIEW */}
       <div className="md:hidden grid grid-cols-1 gap-4">
         {masterList.map((row) => {
-            const isHouseUse = row.status === 'HOUSE USE' || row.guest_name.toUpperCase().includes('HOUSE USE');
+            // ⚡ FIX: Safe House Use Check
+            const isHouseUse = row.status === 'HOUSE USE' || (row.guest_name && String(row.guest_name).toUpperCase().includes('HOUSE USE'));
             return (
           <div key={row.villa_number} onClick={() => { if(isAdmin){ setEditingRecord(row); setIsEditOpen(true); } }} className={`bg-white rounded-2xl p-4 shadow-sm border flex flex-col gap-3 relative ${row.status === 'VAC' ? 'border-slate-100 bg-slate-50/30' : 'border-slate-200 active:scale-[0.98] transition-transform cursor-pointer'} ${isHouseUse ? 'bg-fuchsia-50/30 border-fuchsia-100' : ''}`}>
               
@@ -1239,7 +1284,8 @@ export default function HousekeepingSummaryPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {masterList.map((row) => {
-                  const isHouseUse = row.status === 'HOUSE USE' || row.guest_name.toUpperCase().includes('HOUSE USE');
+                  // ⚡ FIX: Safe House Use Check
+                  const isHouseUse = row.status === 'HOUSE USE' || (row.guest_name && String(row.guest_name).toUpperCase().includes('HOUSE USE'));
                   return (
                 <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''} ${isHouseUse ? 'bg-fuchsia-50/30' : ''}`}>
                   

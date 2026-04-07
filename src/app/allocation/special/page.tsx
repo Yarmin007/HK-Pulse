@@ -79,24 +79,51 @@ export default function SpecialVillasPage() {
 
   const handleAddSpecialVilla = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!newVillaNo) return toast.error("Please enter a Villa Number");
+      if (!newVillaNo) return toast.error("Please enter Villa Number(s)");
+
+      const villas = newVillaNo.split(',').map(v => v.trim()).filter(v => v);
+      if (villas.length === 0) return toast.error("Invalid villa numbers");
 
       setIsProcessing(true);
       
-      // Build the rich data object based on the type selected
       let gName = selectedType;
       let arrTime = null;
       let depTime = null;
+      let stayDatesStr = null;
+
+      let datesToUpdate = [selectedDate];
 
       if (selectedType === 'HOUSE USE') {
           const details = [];
           if (houseUsePM) details.push(`PM: ${houseUsePM}`);
-          if (houseUseArr) details.push(`Arr: ${new Date(houseUseArr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`);
-          if (houseUseDep) details.push(`Dep: ${new Date(houseUseDep).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`);
+          
+          let arrObj, depObj;
+          if (houseUseArr) {
+              arrObj = new Date(houseUseArr);
+              details.push(`Arr: ${arrObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`);
+          }
+          if (houseUseDep) {
+              depObj = new Date(houseUseDep);
+              details.push(`Dep: ${depObj.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`);
+          }
           
           gName = houseUseName ? houseUseName : 'House Use Staff';
-          if (details.length > 0) {
-              gName += ` (${details.join(' | ')})`;
+          if (details.length > 0) gName += ` (${details.join(' | ')})`;
+
+          // Multi-day calculation for House Use
+          if (arrObj && depObj) {
+              stayDatesStr = `${String(arrObj.getDate()).padStart(2, '0')}/${String(arrObj.getMonth()+1).padStart(2, '0')} - ${String(depObj.getDate()).padStart(2, '0')}/${String(depObj.getMonth()+1).padStart(2, '0')}`;
+              
+              datesToUpdate = [];
+              let curr = new Date(houseUseArr);
+              const end = new Date(houseUseDep);
+              while (curr <= end) {
+                  const y = curr.getFullYear();
+                  const m = String(curr.getMonth() + 1).padStart(2, '0');
+                  const d = String(curr.getDate()).padStart(2, '0');
+                  datesToUpdate.push(`${y}-${m}-${d}`);
+                  curr.setDate(curr.getDate() + 1);
+              }
           }
       } else {
           if (timeInput) {
@@ -106,38 +133,47 @@ export default function SpecialVillasPage() {
           }
       }
 
-      const existing = masterList.find(v => String(v.villa_number) === String(newVillaNo));
-      let resultError = null;
+      let hasError = false;
 
-      if (existing) {
-          const { error } = await supabase
+      // Loop through all determined dates
+      for (const targetDate of datesToUpdate) {
+          // Get existing records for this date to determine if we insert or update
+          const { data: existingData } = await supabase
               .from('hsk_daily_summary')
-              .update({ 
+              .select('id, villa_number')
+              .eq('report_date', targetDate)
+              .in('villa_number', villas);
+              
+          const existingMap = new Map((existingData || []).map(r => [String(r.villa_number), r.id]));
+
+          // Process each villa
+          for (const v of villas) {
+              const payload: any = {
+                  report_date: targetDate,
+                  villa_number: v,
                   status: selectedType,
                   guest_name: gName,
                   arrival_time: arrTime,
                   departure_time: depTime
-              })
-              .eq('id', existing.id);
-          resultError = error;
-      } else {
-          const { error } = await supabase
-              .from('hsk_daily_summary')
-              .insert({ 
-                  report_date: selectedDate, 
-                  villa_number: newVillaNo, 
-                  status: selectedType,
-                  guest_name: gName,
-                  arrival_time: arrTime,
-                  departure_time: depTime
-              });
-          resultError = error;
+              };
+              
+              if (stayDatesStr) payload.stay_dates = stayDatesStr;
+
+              const existingId = existingMap.get(String(v));
+              if (existingId) {
+                  const { error } = await supabase.from('hsk_daily_summary').update(payload).eq('id', existingId);
+                  if (error) hasError = true;
+              } else {
+                  const { error } = await supabase.from('hsk_daily_summary').insert(payload);
+                  if (error) hasError = true;
+              }
+          }
       }
 
-      if (resultError) {
-          toast.error("Failed to update Guest List");
+      if (hasError) {
+          toast.error("Some updates failed. Please check the list.");
       } else {
-          toast.success(`Villa ${newVillaNo} set to ${selectedType}`);
+          toast.success(`Updated ${villas.length} villa(s) successfully!`);
           setNewVillaNo('');
           setTimeInput('');
           setHouseUseName('');
@@ -163,10 +199,14 @@ export default function SpecialVillasPage() {
       fetchData();
   };
 
+  // Safe timezone calculation for date changes
   const changeDate = (days: number) => {
-      const d = new Date(selectedDate);
-      d.setDate(d.getDate() + days);
-      setSelectedDate(d.toISOString().split('T')[0]);
+      const [year, month, day] = selectedDate.split('-').map(Number);
+      const d = new Date(year, month - 1, day + days);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dy = String(d.getDate()).padStart(2, '0');
+      setSelectedDate(`${y}-${m}-${dy}`);
   };
 
   if (!isProcessing && !isAdmin) {
@@ -216,13 +256,13 @@ export default function SpecialVillasPage() {
                     
                     <form onSubmit={handleAddSpecialVilla} className="p-4 flex flex-col gap-4">
                         <div>
-                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5 block">Villa Number</label>
+                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5 block">Villa Number(s)</label>
                             <input 
-                                type="number" 
+                                type="text" 
                                 required
                                 value={newVillaNo}
                                 onChange={(e) => setNewVillaNo(e.target.value)}
-                                placeholder="e.g. 42" 
+                                placeholder="e.g. 12, 14, 56" 
                                 className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-sm font-bold outline-none focus:border-[#6D2158] transition-colors"
                             />
                         </div>
