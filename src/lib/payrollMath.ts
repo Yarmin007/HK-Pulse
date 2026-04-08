@@ -121,30 +121,34 @@ export const computeLeaveBalancesRPC = (
     const startYear = Math.max(2026, joinDate.getFullYear());
 
     for (let calcYear = startYear; calcYear < targetYear; calcYear++) {
-        // AL & PH CYCLE: Jan 1 to Dec 31
+        
+        // ---------------------------------------------------------
+        // AL & OFF CYCLE: Dec 21 (prev year) to Dec 20 (calc year)
+        // ---------------------------------------------------------
+        const cycleStart = new Date(calcYear - 1, 11, 21);
+        const cycleEnd = new Date(calcYear, 11, 20);
+        const trackingStartCycle = isAfter(joinDate, cycleStart) ? joinDate : cycleStart;
+        
+        const daysActiveCycle = differenceInDays(cycleEnd, trackingStartCycle) + 1;
+        const penaltyDays = getHistoricalStat(calcYear, ['NP', 'A']);
+        const eligibleDays = Math.max(0, daysActiveCycle - penaltyDays);
+        
+        // Using exact precision instead of 0.0822
+        const earnedAL = noALRR ? 0 : (eligibleDays * (30 / 365));
+        const earnedOff = countFridays(trackingStartCycle, cycleEnd);
+
+        // ---------------------------------------------------------
+        // PH CYCLE: Jan 1 to Dec 31
+        // ---------------------------------------------------------
         const startOfCalcYear = new Date(calcYear, 0, 1);
         const endOfCalcYear = new Date(calcYear, 11, 31);
-        const trackingStart = isAfter(joinDate, startOfCalcYear) ? joinDate : startOfCalcYear;
-        
-        const daysActive = differenceInDays(endOfCalcYear, trackingStart) + 1;
-        const penaltyDays = getHistoricalStat(calcYear, ['NP', 'A']);
-        const eligibleDays = Math.max(0, daysActive - penaltyDays);
-        
-        const earnedAL = noALRR ? 0 : (eligibleDays * 0.0822);
-        
+        const trackingStartPH = isAfter(joinDate, startOfCalcYear) ? joinDate : startOfCalcYear;
+
         let earnedPH = 0;
         publicHolidays.forEach((ph: any) => {
             const phDate = parseISO(ph.date);
-            if (phDate >= trackingStart && phDate <= endOfCalcYear) earnedPH += 1;
+            if (phDate >= trackingStartPH && phDate <= endOfCalcYear) earnedPH += 1;
         });
-
-        // OFF CYCLE: Dec 21 (prev year) to Dec 20 (calc year)
-        const offCycleStart = new Date(calcYear - 1, 11, 21);
-        const offCycleEnd = new Date(calcYear, 11, 20);
-        const trackingStartOff = isAfter(joinDate, offCycleStart) ? joinDate : offCycleStart;
-        
-        // Count total Fridays that passed in the interval
-        const earnedOff = countFridays(trackingStartOff, offCycleEnd);
 
         // ⚡ OT IS STRICTLY EXCLUDED FROM NORMAL DEDUCTIONS (Handled in Overtime Module)
         const takenOff = getHistoricalStat(calcYear, ['O', 'OFF']); 
@@ -160,36 +164,38 @@ export const computeLeaveBalancesRPC = (
     const calcCfAL = currentCfAL;
     const calcCfPH = currentCfPH;
 
+    // ==========================================
     // TARGET YEAR CALCULATIONS
-    const startOfTargetYear = new Date(targetYear, 0, 1);
-    const trackingStartThisYear = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
+    // ==========================================
     
-    let earnedAL = 0; let earnedPH = 0;
+    // AL & OFF Target Year (Dec 21 of prev year to Target Date)
+    const cycleStartTarget = new Date(targetYear - 1, 11, 21);
+    const trackingStartThisYearCycle = isAfter(joinDate, cycleStartTarget) ? joinDate : cycleStartTarget;
     
-    // AL & PH (Jan-Dec target year logic)
-    if (targetDate >= trackingStartThisYear) {
-        const daysActive = differenceInDays(targetDate, trackingStartThisYear) + 1;
+    let earnedAL = 0;
+    let earnedOff = 0;
+
+    if (targetDate >= trackingStartThisYearCycle) {
+        const daysActive = differenceInDays(targetDate, trackingStartThisYearCycle) + 1;
         const penaltyDays = getStat(targetYear, ['NP', 'A']);
         const eligibleDays = Math.max(0, daysActive - penaltyDays);
         
-        earnedAL = noALRR ? 0 : (eligibleDays * 0.0822);
+        // Using exact precision instead of 0.0822
+        earnedAL = noALRR ? 0 : (eligibleDays * (30 / 365));
+        earnedOff = countFridays(trackingStartThisYearCycle, targetDate);
     }
 
+    // PH Target Year (Jan 1 to Target Date)
+    const startOfTargetYear = new Date(targetYear, 0, 1);
+    const trackingStartThisYearPH = isAfter(joinDate, startOfTargetYear) ? joinDate : startOfTargetYear;
+
+    let earnedPH = 0;
     publicHolidays.forEach((ph: any) => {
         const phDate = parseISO(ph.date);
-        if (phDate >= trackingStartThisYear && phDate <= targetDate) {
+        if (phDate >= trackingStartThisYearPH && phDate <= targetDate) {
             earnedPH += 1;
         }
     });
-
-    // OFF Target Year (Dec 21 of prev year to Target Date)
-    const offCycleStartTarget = new Date(targetYear - 1, 11, 21);
-    const trackingStartThisYearOff = isAfter(joinDate, offCycleStartTarget) ? joinDate : offCycleStartTarget;
-    
-    let earnedOff = 0;
-    if (targetDate >= trackingStartThisYearOff) {
-        earnedOff = countFridays(trackingStartThisYearOff, targetDate);
-    }
 
     const takenOff = getStat(targetYear, ['O', 'OFF']);
     const takenAL = getStat(targetYear, ['AL', 'VAC']);
