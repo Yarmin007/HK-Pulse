@@ -19,9 +19,9 @@ import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtil
 // ⚡ PERFORMANCE FIX: ISOLATED LIVE CLOCK
 // =========================================================================
 const LiveClock = () => {
-    const [time, setTime] = useState<Date>(getDhakaTime());
+    const [time, setTime] = useState<Date>(new Date());
     useEffect(() => {
-        const timer = setInterval(() => setTime(getDhakaTime()), 1000);
+        const timer = setInterval(() => setTime(new Date()), 1000);
         return () => clearInterval(timer);
     }, []);
     return <span className="font-black tracking-widest">{formatDisplayTime(time)}</span>;

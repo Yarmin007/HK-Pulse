@@ -1,8 +1,9 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import Link from 'next/link';
 import { 
   Search, Wand2, Loader2, UserCheck, 
-  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight, BarChart2, HeartPulse, AlertCircle, CalendarDays, Pill, AlertTriangle, ShieldCheck
+  ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight, BarChart2, HeartPulse, AlertCircle, CalendarDays, Pill, AlertTriangle, ShieldCheck, FileSpreadsheet
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
@@ -1047,6 +1048,11 @@ export default function AttendancePage() {
                 <AlertTriangle size={14}/> Pending Leaves
             </button>
 
+            {/* NEW MONTHLY SHEET BUTTON */}
+            <Link href="/attendance/monthly" className="bg-purple-100 text-purple-800 px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-purple-200 transition-all mt-5 border border-purple-200">
+                <FileSpreadsheet size={14}/> Monthly Sheet
+            </Link>
+
             <button onClick={() => setIsInsightsOpen(true)} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-blue-700 transition-all mt-5">
                 <BarChart2 size={14}/> Analytics
             </button>
@@ -1554,4 +1560,4 @@ export default function AttendancePage() {
 
     </div>
   );
-}X  
+}
