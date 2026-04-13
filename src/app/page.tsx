@@ -4,7 +4,7 @@ import {
   Users, ShoppingCart, Clock, AlertTriangle, 
   CheckCircle2, BarChart2, Edit3, Loader2, Search,
   Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft,
-  CheckSquare, RefreshCw, ChevronRight
+  CheckSquare, RefreshCw, ChevronRight, Play
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -19,9 +19,9 @@ import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtil
 // ⚡ PERFORMANCE FIX: ISOLATED LIVE CLOCK
 // =========================================================================
 const LiveClock = () => {
-    const [time, setTime] = useState<Date>(new Date());
+    const [time, setTime] = useState<Date>(getDhakaTime());
     useEffect(() => {
-        const timer = setInterval(() => setTime(new Date()), 1000);
+        const timer = setInterval(() => setTime(getDhakaTime()), 1000);
         return () => clearInterval(timer);
     }, []);
     return <span className="font-black tracking-widest">{formatDisplayTime(time)}</span>;
@@ -75,6 +75,8 @@ export default function Dashboard() {
   const [criticalItems, setCriticalItems] = useState<any[]>([]);
 
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [activeService, setActiveService] = useState<{villa: string, start_time: string} | null>(null);
+  const [cleaningElapsedSeconds, setCleaningElapsedSeconds] = useState(0);
   
   const [rpcStats, setRpcStats] = useState<any[]>([]);
   const [futureLeaves, setFutureLeaves] = useState<any[]>([]);
@@ -135,6 +137,35 @@ export default function Dashboard() {
           fetchRPC();
       }
   }, [cutoffDate, isLoading]);
+
+  // ⚡ LIVE TIMER FOR ACTIVE DASHBOARD BANNER
+  useEffect(() => {
+      let interval: NodeJS.Timeout;
+      const updateTimer = () => {
+          if (activeService?.start_time) {
+              const start = new Date(activeService.start_time).getTime();
+              if (!isNaN(start)) {
+                  setCleaningElapsedSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+              }
+          }
+      };
+
+      if (activeService) {
+          updateTimer();
+          interval = setInterval(updateTimer, 1000);
+      } else {
+          setCleaningElapsedSeconds(0);
+      }
+      return () => clearInterval(interval);
+  }, [activeService]);
+
+  const formatTimer = (totalSeconds: number) => {
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+      const s = (totalSeconds % 60).toString().padStart(2, '0');
+      if (h > 0) return `${h}:${m}:${s}`;
+      return `${m}:${s}`;
+  };
 
   const handleHostClick = async (itemData: any) => {
       setSelectedTeamHost(itemData);
@@ -308,6 +339,19 @@ export default function Dashboard() {
             .lte('date', format(end, 'yyyy-MM-dd'));
             
         setMyAttendance(payrollAtt || []);
+
+        const { data: activeLog } = await supabase.from('hsk_cleaning_logs')
+            .select('villa_number, start_time')
+            .eq('report_date', todayStr)
+            .eq('host_id', loggedHostId)
+            .eq('status', 'In Progress')
+            .maybeSingle();
+            
+        if (activeLog) {
+            setActiveService({ villa: activeLog.villa_number, start_time: activeLog.start_time });
+        } else {
+            setActiveService(null);
+        }
     }
 
     if (showLoading) setIsLoading(false);
@@ -1070,6 +1114,30 @@ export default function Dashboard() {
                   </div>
               </div>
           </div>
+      )}
+
+      {/* ⚡ ACTIVE SERVICE FLOATING BANNER FOR DASHBOARD */}
+      {activeService && (
+          <Link href="/my-tasks" className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-colors ${
+              cleaningElapsedSeconds > 3600 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'
+          }`}>
+              <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2 font-black text-white text-[10px] md:text-xs tracking-widest uppercase">
+                      <span className="relative flex h-2.5 w-2.5 shrink-0">
+                          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${cleaningElapsedSeconds > 3600 ? 'bg-white' : 'bg-emerald-200'}`}></span>
+                          <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${cleaningElapsedSeconds > 3600 ? 'bg-white' : 'bg-emerald-100'}`}></span>
+                      </span>
+                      <span className="truncate">{cleaningElapsedSeconds > 3600 ? 'Timer Warning' : 'Active Room'}</span>
+                  </div>
+                  <div className="text-xl md:text-2xl font-mono text-white font-black tracking-widest leading-none mt-1 whitespace-nowrap">
+                      V{activeService.villa} - {formatTimer(cleaningElapsedSeconds)}
+                  </div>
+              </div>
+              <div className="w-px h-8 bg-white/30 mx-1 md:mx-2 shrink-0"></div>
+              <div className="bg-white text-slate-800 px-4 py-2.5 md:py-3 rounded-xl text-[10px] md:text-xs font-black uppercase tracking-widest shadow-sm active:scale-95 flex items-center justify-center gap-2 hover:bg-slate-50 shrink-0">
+                  Go to Tasks <ChevronRight size={16} className="shrink-0"/>
+              </div>
+          </Link>
       )}
 
     </div>

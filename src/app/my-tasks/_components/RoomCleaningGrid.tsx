@@ -1,7 +1,9 @@
 "use client";
 import React from 'react';
 import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch } from 'lucide-react';
-import type { CleaningTask, UniversalTask } from '../page';
+
+export type UniversalTask = { schedule_id: string; inventory_type: string; villa_number: string; status: string; };
+export type CleaningTask = { villa_number: string; status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused'; start_time?: string; raw_start_time?: string; end_time?: string; time_spent?: string; reenter_reason?: string; morning_time: number; night_time: number; has_morning_completed: boolean; has_night_completed: boolean; };
 
 interface RoomCleaningGridProps {
     displayVillas: string[];
@@ -205,15 +207,15 @@ export default function RoomCleaningGrid({
                                     ) : (
                                         <div className="flex flex-col gap-2 mt-1">
                                             {taskState.has_morning_completed && (
-                                                <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100">
-                                                    <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Morning Cleaned</span>
-                                                    <span>{taskState.morning_time}m</span>
+                                                <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100 opacity-80">
+                                                    <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Morning ({taskState.morning_time}m)</span>
+                                                    <button onClick={() => resetRoomStatus(v)} className="text-emerald-700 hover:text-emerald-900 text-[9px] bg-emerald-100/50 px-2 py-0.5 rounded shadow-sm">Undo</button>
                                                 </div>
                                             )}
                                             {taskState.has_night_completed && (
-                                                <div className="flex items-center justify-between text-indigo-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-indigo-50 px-3 rounded-xl border border-indigo-100">
-                                                    <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Evening Cleaned</span>
-                                                    <span>{taskState.night_time}m</span>
+                                                <div className="flex items-center justify-between text-indigo-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-indigo-50 px-3 rounded-xl border border-indigo-100 opacity-80">
+                                                    <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> TD Service ({taskState.night_time}m)</span>
+                                                    <button onClick={() => resetRoomStatus(v)} className="text-indigo-700 hover:text-indigo-900 text-[9px] bg-indigo-100/50 px-2 py-0.5 rounded shadow-sm">Undo</button>
                                                 </div>
                                             )}
                                             
@@ -223,23 +225,22 @@ export default function RoomCleaningGrid({
                                                         {isDND ? <DoorClosed size={14}/> : <X size={14}/>} 
                                                         {isDND ? 'DND Logged' : 'Service Refused'}
                                                     </span>
-                                                    <button onClick={() => resetRoomStatus(v)} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px]">Undo</button>
+                                                    <button onClick={() => resetRoomStatus(v)} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px] bg-slate-100 px-2 py-0.5 rounded">Undo</button>
                                                 </div>
                                             )}
 
-                                            {!isCompleted && (
-                                                <button 
-                                                    onClick={() => setReenterModal({ isOpen: true, villa: v })}
-                                                    disabled={!!activeCleaningVilla}
-                                                    className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
-                                                        activeCleaningVilla 
-                                                        ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
-                                                        : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
-                                                    }`}
-                                                >
-                                                    <Play size={14}/> {isNightShift ? 'Start Evening Service' : 'Start Morning Service'}
-                                                </button>
-                                            )}
+                                            {/* ⚡ ALLOW ADDING MORE SERVICES EVEN IF COMPLETED */}
+                                            <button 
+                                                onClick={() => setReenterModal({ isOpen: true, villa: v })}
+                                                disabled={!!activeCleaningVilla}
+                                                className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
+                                                    activeCleaningVilla 
+                                                    ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
+                                                    : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
+                                                }`}
+                                            >
+                                                <Play size={14}/> {isCompleted ? 'Add Service' : 'Start Service'}
+                                            </button>
 
                                             {!isCompleted && (
                                                 <div className="flex gap-2">

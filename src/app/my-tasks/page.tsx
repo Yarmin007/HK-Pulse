@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
-  Save, CheckCircle2, Loader2, ChevronLeft, RefreshCw, CheckCircle
+  Save, CheckCircle2, Loader2, ChevronLeft, RefreshCw, CheckCircle, CheckSquare
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
@@ -78,6 +78,36 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
 
+// ⚡ SYSTEM NOTIFICATION HELPER FOR iOS/ANDROID PWA
+const triggerSystemNotification = (villa: string) => {
+    const title = "⏰ Service Time Alert";
+    const options = {
+        body: `Villa ${villa} timer has been running too long. Did you forget to finish it?`,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [500, 250, 500, 250, 500, 250, 500], // Aggressive vibration pattern
+        requireInteraction: true
+    };
+
+    if (typeof window !== 'undefined') {
+        // Vibrate Device if supported (Android mostly)
+        if ('vibrate' in navigator) navigator.vibrate(options.vibrate);
+        
+        // Native System Push Notification
+        if ('Notification' in window && Notification.permission === 'granted') {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.ready.then(reg => {
+                    reg.showNotification(title, options);
+                }).catch(() => {
+                    new Notification(title, options); // Fallback
+                });
+            } else {
+                new Notification(title, options); // Fallback
+            }
+        }
+    }
+};
+
 export default function MyTasksHub() {
   const [isMounted, setIsMounted] = useState(false);
   const [step, setStep] = useState<2 | 3>(2);
@@ -97,6 +127,7 @@ export default function MyTasksHub() {
   const [activeCleaningVilla, setActiveCleaningVilla] = useState<string | null>(null);
   const [cleaningElapsedSeconds, setCleaningElapsedSeconds] = useState(0);
   const [reenterModal, setReenterModal] = useState<{isOpen: boolean, villa: string}>({isOpen: false, villa: ''}); 
+  const [hasWarnedTimer, setHasWarnedTimer] = useState(false); // ⚡ Added timer warning state
 
   // --- UNIVERSAL TASK STATE ---
   const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
@@ -146,9 +177,28 @@ export default function MyTasksHub() {
     return () => clearInterval(interval);
   }, [activeCleaningVilla, activeStartTime]);
 
+  // ⚡ TIMER WARNING EFFECT (SET TO 10 SECONDS FOR TESTING)
+  useEffect(() => {
+      if (cleaningElapsedSeconds > 10 && !hasWarnedTimer && activeCleaningVilla) {
+          toast.error(`Reminder: Villa ${activeCleaningVilla} timer has been running. Did you forget to finish it?`, { 
+              duration: 8000, 
+              icon: '⏰' 
+          });
+          
+          // ⚡ TRIGGER NATIVE NOTIFICATION & VIBRATION
+          triggerSystemNotification(activeCleaningVilla);
+          
+          setHasWarnedTimer(true);
+      } else if (cleaningElapsedSeconds === 0) {
+          setHasWarnedTimer(false);
+      }
+  }, [cleaningElapsedSeconds, activeCleaningVilla, hasWarnedTimer]);
+
   const formatTimer = (totalSeconds: number) => {
-    const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
     const s = (totalSeconds % 60).toString().padStart(2, '0');
+    if (h > 0) return `${h}:${m}:${s}`;
     return `${m}:${s}`;
   };
 
@@ -306,12 +356,24 @@ export default function MyTasksHub() {
 
   const handleStartService = async (villa: string, reason?: string) => {
     if (activeCleaningVilla) { toast.error("Please finish or pause your current room first!"); return; }
+    
+    // ⚡ REQUEST NATIVE NOTIFICATION PERMISSION ON IOS/ANDROID
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+        if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+            Notification.requestPermission();
+        }
+    }
+
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
     localStorage.setItem(`hk_timer_${villa}`, now);
 
-    const isNightShift = getDhakaTime().getHours() >= 15;
-    const finalReason = reason || (isNightShift ? 'TD Service' : 'Morning Service');
+    // ⚡ AUTOMATICALLY SELECT MORNING OR TD SERVICE BASED ON TIME
+    const isTD = getDhakaTime().getHours() >= 17;
+    let finalReason = reason;
+    if (reason === 'Service' || !reason) {
+        finalReason = isTD ? 'TD Service' : 'Morning Service';
+    }
 
     setActiveCleaningVilla(villa);
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'In Progress', start_time: format(parseISO(now), 'hh:mm a'), raw_start_time: now, reenter_reason: finalReason } }));
@@ -377,8 +439,27 @@ export default function MyTasksHub() {
   const resetRoomStatus = async (villa: string) => {
       localStorage.removeItem(`hk_timer_${villa}`);
       if (activeCleaningVilla === villa) { setActiveCleaningVilla(null); setCleaningElapsedSeconds(0); }
-      setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'Pending', time_spent: undefined } }));
-      const { data } = await supabase.from('hsk_cleaning_logs').update({ status: 'Pending', updated_at: new Date().toISOString() }).match({ report_date: getDhakaDateStr(), villa_number: villa }).select();
+      
+      setCleaningTasks(prev => ({ 
+          ...prev, 
+          [villa]: { 
+              ...prev[villa], 
+              status: 'Pending', 
+              time_spent: undefined,
+              has_morning_completed: false,
+              has_night_completed: false,
+              morning_time: 0,
+              night_time: 0
+          } 
+      }));
+
+      const { data } = await supabase.from('hsk_cleaning_logs').update({ 
+          status: 'Pending', 
+          time_spent_minutes: null,
+          session_history: [],
+          updated_at: new Date().toISOString() 
+      }).match({ report_date: getDhakaDateStr(), villa_number: villa }).select();
+      
       if (!data || data.length === 0) await supabase.from('hsk_cleaning_logs').insert({ report_date: getDhakaDateStr(), villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'Pending', updated_at: new Date().toISOString() });
   };
 
@@ -714,7 +795,7 @@ export default function MyTasksHub() {
                     <h3 className="text-xl md:text-2xl font-black mb-2 tracking-tight text-[#6D2158]">Service Room {reenterModal.villa}</h3>
                     <p className="text-xs md:text-sm text-slate-500 font-medium mb-6 md:mb-8 leading-relaxed">Please select the type of service for this room.</p>
                     <div className="flex flex-col gap-2.5">
-                        {['Morning Service', 'TD Service', 'Arrival', 'Dep', 'Minibar Refill', 'Guest Request', 'Other'].map(reason => (
+                        {['Service', 'Arrival', 'Dep', 'Minibar Refill', 'Guest Request', 'Other'].map(reason => (
                             <button key={reason} onClick={() => { handleStartService(reenterModal.villa, reason); setReenterModal({isOpen: false, villa: ''}); }} className="w-full py-3.5 bg-slate-50 text-slate-700 hover:bg-[#6D2158] hover:text-white rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all border border-slate-200 hover:border-[#6D2158]">{reason}</button>
                         ))}
                         <button onClick={() => setReenterModal({ isOpen: false, villa: '' })} className="w-full mt-2 py-3.5 bg-white text-rose-500 rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all">Cancel</button>
@@ -744,6 +825,33 @@ export default function MyTasksHub() {
                 <h2 className="text-3xl font-black text-center mb-2">Saved!</h2>
                 <p className="text-center font-medium text-emerald-100 mb-10 text-sm md:text-base">Location {selectedVilla} record has been logged.</p>
                 <button onClick={resetFlow} className="px-8 py-4 bg-white text-emerald-700 rounded-xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all hover:scale-105">Return to Hub</button>
+            </div>
+        )}
+
+        {/* ⚡ ACTIVE SERVICE FLOATING BANNER */}
+        {activeCleaningVilla && (
+            <div className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-colors ${
+                cleaningElapsedSeconds > 10 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'
+            }`}>
+                <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-2 font-black text-white text-[10px] md:text-xs tracking-widest uppercase">
+                        <span className="relative flex h-2.5 w-2.5 shrink-0">
+                            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${cleaningElapsedSeconds > 10 ? 'bg-white' : 'bg-emerald-200'}`}></span>
+                            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${cleaningElapsedSeconds > 10 ? 'bg-white' : 'bg-emerald-100'}`}></span>
+                        </span>
+                        <span className="truncate">{cleaningElapsedSeconds > 10 ? 'Timer Warning' : 'Active Room'}</span>
+                    </div>
+                    <div className="text-xl md:text-2xl font-mono text-white font-black tracking-widest leading-none mt-1 whitespace-nowrap">
+                        V{activeCleaningVilla} - {formatTimer(cleaningElapsedSeconds)}
+                    </div>
+                </div>
+                <div className="w-px h-8 bg-white/30 mx-1 md:mx-2 shrink-0"></div>
+                <button 
+                    onClick={(e) => { e.stopPropagation(); handleFinishRoom(activeCleaningVilla); }}
+                    className="bg-white text-slate-800 px-4 py-2.5 md:py-3 rounded-xl text-[10px] md:text-xs font-black uppercase tracking-widest shadow-sm active:scale-95 flex items-center justify-center gap-2 hover:bg-slate-50 shrink-0"
+                >
+                    <CheckSquare size={16} className="shrink-0"/> Finish
+                </button>
             </div>
         )}
 
