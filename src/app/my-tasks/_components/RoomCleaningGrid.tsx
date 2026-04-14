@@ -10,14 +10,15 @@ interface RoomCleaningGridProps {
     myCleaningVillas: string[];
     cleaningTasks: Record<string, CleaningTask>;
     activeCleaningVilla: string | null;
-    getVillaCardData: (v: string) => { status: string; headerColor: string; timeStr: string; guestName: string; acStatus: string; cleaningType: string; arrDate?: string; depDate?: string; gemsName?: string; };
+    getVillaCardData: (v: string) => { status: string; headerColor: string; timeStr: string; guestName: string; acStatus: string; cleaningType: string; };
     handleAcStatusChange: (v: string, status: string) => void;
     startAudit: (v: string, taskType: string, scheduleId: string) => void;
     handleFinishRoom: (v: string) => void;
     setReenterModal: (val: { isOpen: boolean, villa: string }) => void;
     handleDND: (v: string) => void;
     handleRefused: (v: string) => void;
-    resetRoomStatus: (v: string) => void;
+    confirmResetRoom: (v: string, serviceName: string) => void;
+    openEditModal: (v: string, type: string) => void;
     isNightShift: boolean;
     universalTasks: Record<string, UniversalTask[]>;
     cleaningElapsedSeconds: number;
@@ -29,7 +30,7 @@ interface RoomCleaningGridProps {
 
 export default function RoomCleaningGrid({
     displayVillas, myCleaningVillas, cleaningTasks, activeCleaningVilla, getVillaCardData, handleAcStatusChange,
-    startAudit, handleFinishRoom, setReenterModal, handleDND, handleRefused, resetRoomStatus,
+    startAudit, handleFinishRoom, setReenterModal, handleDND, handleRefused, confirmResetRoom, openEditModal,
     isNightShift, universalTasks, cleaningElapsedSeconds, formatTimer, expiryAssignedVillas, expiryVillaData, startExpiryAudit
 }: RoomCleaningGridProps) {
 
@@ -90,32 +91,23 @@ export default function RoomCleaningGrid({
                             
                             {/* Card Header */}
                             <div className="flex justify-between items-start mb-4">
-                                <div className="flex flex-col w-full max-w-[70%]">
+                                <div>
                                     <div className="flex items-center gap-2 mb-1">
                                         <h3 className={`text-2xl md:text-3xl font-black tracking-tighter ${isCompleted && isCleaningAssigned ? 'text-slate-400' : 'text-[#6D2158]'}`}>
                                             {v}
                                         </h3>
                                     </div>
-                                    
-                                    {/* ⚡ DETAILED GUEST INFO WIDGET */}
-                                    <div className="text-[9px] font-bold text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100 flex flex-col gap-1 w-full mt-1.5 shadow-sm">
-                                        <div className="flex justify-between items-center">
-                                            <span className="flex items-center gap-1 text-[#6D2158] truncate mr-2"><User size={10}/> {cardData.guestName || 'No Guest Info'}</span>
-                                            {cardData.gemsName && <span className="uppercase bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-black truncate shrink-0 max-w-[45%] border border-emerald-200">G: {cardData.gemsName}</span>}
-                                        </div>
-                                        <div className="flex justify-between items-center border-t border-slate-200 pt-1.5 mt-0.5 text-[8px] md:text-[9px]">
-                                            <span>ARR: <span className="text-slate-700">{cardData.arrDate}</span></span>
-                                            <span>DEP: <span className="text-slate-700">{cardData.depDate}</span></span>
-                                        </div>
-                                    </div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                        <User size={10}/> {cardData.guestName || 'No Guest Info'}
+                                    </p>
                                 </div>
 
-                                <div className="flex flex-col items-end gap-2 pl-2">
-                                    <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm whitespace-nowrap ${!isCleaningAssigned ? 'bg-slate-500' : cardData.headerColor.replace('bg-', 'bg-').replace('text-', 'text-')}`}>
+                                <div className="flex flex-col items-end gap-2">
+                                    <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm ${!isCleaningAssigned ? 'bg-slate-500' : cardData.headerColor.replace('bg-', 'bg-').replace('text-', 'text-')}`}>
                                         {displayType}
                                     </div>
                                     {cardData.timeStr && isCleaningAssigned && (
-                                        <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm whitespace-nowrap">
+                                        <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm">
                                             <Clock size={10} className="text-slate-400"/>
                                             <span>{cardData.timeStr}</span>
                                         </div>
@@ -218,13 +210,19 @@ export default function RoomCleaningGrid({
                                             {taskState.has_morning_completed && (
                                                 <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100 opacity-80">
                                                     <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Morning ({taskState.morning_time}m)</span>
-                                                    <button onClick={() => resetRoomStatus(v)} className="text-emerald-700 hover:text-emerald-900 text-[9px] bg-emerald-100/50 px-2 py-0.5 rounded shadow-sm">Undo</button>
+                                                    <div className="flex gap-1">
+                                                        <button onClick={() => openEditModal(v, 'Morning Service')} className="text-blue-700 hover:text-blue-900 text-[9px] bg-blue-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Edit</button>
+                                                        <button onClick={() => confirmResetRoom(v, 'Morning Service')} className="text-emerald-700 hover:text-emerald-900 text-[9px] bg-emerald-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Undo</button>
+                                                    </div>
                                                 </div>
                                             )}
                                             {taskState.has_night_completed && (
                                                 <div className="flex items-center justify-between text-indigo-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-indigo-50 px-3 rounded-xl border border-indigo-100 opacity-80">
                                                     <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> TD Service ({taskState.night_time}m)</span>
-                                                    <button onClick={() => resetRoomStatus(v)} className="text-indigo-700 hover:text-indigo-900 text-[9px] bg-indigo-100/50 px-2 py-0.5 rounded shadow-sm">Undo</button>
+                                                    <div className="flex gap-1">
+                                                        <button onClick={() => openEditModal(v, 'TD Service')} className="text-blue-700 hover:text-blue-900 text-[9px] bg-blue-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Edit</button>
+                                                        <button onClick={() => confirmResetRoom(v, 'TD Service')} className="text-indigo-700 hover:text-indigo-900 text-[9px] bg-indigo-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Undo</button>
+                                                    </div>
                                                 </div>
                                             )}
                                             
@@ -234,11 +232,11 @@ export default function RoomCleaningGrid({
                                                         {isDND ? <DoorClosed size={14}/> : <X size={14}/>} 
                                                         {isDND ? 'DND Logged' : 'Service Refused'}
                                                     </span>
-                                                    <button onClick={() => resetRoomStatus(v)} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px] bg-slate-100 px-2 py-0.5 rounded">Undo</button>
+                                                    <button onClick={() => confirmResetRoom(v, isDND ? 'DND Log' : 'Service Refusal')} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px] bg-slate-100 px-2 py-0.5 rounded">Undo</button>
                                                 </div>
                                             )}
 
-                                            {/* ⚡ START / ADD SERVICE BUTTON ALWAYS VISIBLE */}
+                                            {/* ⚡ ALLOW ADDING MORE SERVICES EVEN IF COMPLETED */}
                                             <button 
                                                 onClick={() => setReenterModal({ isOpen: true, villa: v })}
                                                 disabled={!!activeCleaningVilla}

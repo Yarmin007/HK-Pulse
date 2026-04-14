@@ -26,16 +26,12 @@ export type UniversalTask = {
     status: string;
 };
 
-// ⚡ CORRECTED GUEST RECORD
 export type GuestRecord = {
     villa_number: string;
     status: string;
     arrival_time?: string;
     departure_time?: string;
     guest_name?: string;
-    stay_dates?: string; 
-    meal_plan?: string; 
-    gem_name?: string; 
 };
 
 export type ACRecord = {
@@ -82,14 +78,33 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
 
-// ⚡ SERVICE WORKER TIMER TRIGGER (BACKGROUND)
-const triggerBackgroundTimer = (villa: string, action: 'START' | 'STOP') => {
-    if (typeof window !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({
-            type: action === 'START' ? 'SCHEDULE_TIMER' : 'CLEAR_TIMER',
-            villa: villa,
-            delay: 10 * 1000 // ⚡ 10 SECONDS FOR TESTING
-        });
+// ⚡ SYSTEM NOTIFICATION HELPER FOR iOS/ANDROID PWA
+const triggerSystemNotification = (villa: string) => {
+    const title = "⏰ Service Time Alert";
+    const options = {
+        body: `Villa ${villa} timer has been running too long. Did you forget to finish it?`,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [500, 250, 500, 250, 500, 250, 500], // Aggressive vibration pattern
+        requireInteraction: true
+    };
+
+    if (typeof window !== 'undefined') {
+        // Vibrate Device if supported (Android mostly)
+        if ('vibrate' in navigator) navigator.vibrate(options.vibrate);
+        
+        // Native System Push Notification
+        if ('Notification' in window && Notification.permission === 'granted') {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.ready.then(reg => {
+                    reg.showNotification(title, options);
+                }).catch(() => {
+                    new Notification(title, options); // Fallback
+                });
+            } else {
+                new Notification(title, options); // Fallback
+            }
+        }
     }
 };
 
@@ -112,7 +127,10 @@ export default function MyTasksHub() {
   const [activeCleaningVilla, setActiveCleaningVilla] = useState<string | null>(null);
   const [cleaningElapsedSeconds, setCleaningElapsedSeconds] = useState(0);
   const [reenterModal, setReenterModal] = useState<{isOpen: boolean, villa: string}>({isOpen: false, villa: ''}); 
-  const [hasWarnedTimer, setHasWarnedTimer] = useState(false);
+  const [hasWarnedTimer, setHasWarnedTimer] = useState(false); // ⚡ Added timer warning state
+
+  // --- EDIT SERVICE STATE ---
+  const [editServiceModal, setEditServiceModal] = useState<{isOpen: boolean, villa: string, serviceType: string, startTime: string, endTime: string, duration: number}>({isOpen: false, villa: '', serviceType: '', startTime: '', endTime: '', duration: 0});
 
   // --- UNIVERSAL TASK STATE ---
   const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
@@ -162,18 +180,33 @@ export default function MyTasksHub() {
     return () => clearInterval(interval);
   }, [activeCleaningVilla, activeStartTime]);
 
-  // ⚡ TIMER WARNING EFFECT
+  // ⚡ TIMER WARNING EFFECT (SET TO 10 SECONDS FOR TESTING)
   useEffect(() => {
       if (cleaningElapsedSeconds > 10 && !hasWarnedTimer && activeCleaningVilla) {
-          toast.error(`Reminder: Villa ${activeCleaningVilla} timer has been running for over an hour. Did you forget to finish it?`, { 
+          toast.error(`Reminder: Villa ${activeCleaningVilla} timer has been running. Did you forget to finish it?`, { 
               duration: 8000, 
               icon: '⏰' 
           });
+          
+          // ⚡ TRIGGER NATIVE NOTIFICATION & VIBRATION
+          triggerSystemNotification(activeCleaningVilla);
+          
           setHasWarnedTimer(true);
       } else if (cleaningElapsedSeconds === 0) {
           setHasWarnedTimer(false);
       }
   }, [cleaningElapsedSeconds, activeCleaningVilla, hasWarnedTimer]);
+
+  // ⚡ AUTO CALCULATE DURATION FOR EDITS
+  useEffect(() => {
+      if (editServiceModal.startTime && editServiceModal.endTime) {
+          const [sh, sm] = editServiceModal.startTime.split(':').map(Number);
+          const [eh, em] = editServiceModal.endTime.split(':').map(Number);
+          let diff = (eh * 60 + em) - (sh * 60 + sm);
+          if (diff < 0) diff += 24 * 60; // Handle cross-midnight
+          setEditServiceModal(prev => ({...prev, duration: diff}));
+      }
+  }, [editServiceModal.startTime, editServiceModal.endTime]);
 
   const formatTimer = (totalSeconds: number) => {
     const h = Math.floor(totalSeconds / 3600);
@@ -246,10 +279,7 @@ export default function MyTasksHub() {
           if (activeV) setActiveCleaningVilla(activeV);
       } else { setMyCleaningVillas([]); }
 
-      // ⚡ FETCH CORRECT FIELDS FROM DAILY SUMMARY
-      const { data: gData } = await supabase.from('hsk_daily_summary')
-        .select('villa_number, status, arrival_time, departure_time, guest_name, stay_dates, meal_plan, gem_name')
-        .eq('report_date', todayStr);
+      const { data: gData } = await supabase.from('hsk_daily_summary').select('villa_number, status, arrival_time, departure_time, guest_name').eq('report_date', todayStr);
       if (gData) setGuestData(gData);
 
       const { data: aData } = await supabase.from('hsk_ac_tracker').select('villa_number, status');
@@ -336,17 +366,12 @@ export default function MyTasksHub() {
     } else { window.location.href = '/'; }
     setIsMounted(true);
     fetchCatalog();
-    
-    // Register Service Worker
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js').catch(console.error);
-    }
   }, [loadInitialData, fetchCatalog]);
 
   const handleStartService = async (villa: string, reason?: string) => {
     if (activeCleaningVilla) { toast.error("Please finish or pause your current room first!"); return; }
     
-    // ⚡ REQUEST NATIVE NOTIFICATION PERMISSION
+    // ⚡ REQUEST NATIVE NOTIFICATION PERMISSION ON IOS/ANDROID
     if (typeof window !== 'undefined' && 'Notification' in window) {
         if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
             Notification.requestPermission();
@@ -357,6 +382,7 @@ export default function MyTasksHub() {
     const todayStr = getDhakaDateStr();
     localStorage.setItem(`hk_timer_${villa}`, now);
 
+    // ⚡ AUTOMATICALLY SELECT MORNING OR TD SERVICE BASED ON TIME
     const isTD = getDhakaTime().getHours() >= 17;
     let finalReason = reason;
     if (reason === 'Service' || !reason) {
@@ -366,9 +392,6 @@ export default function MyTasksHub() {
     setActiveCleaningVilla(villa);
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'In Progress', start_time: format(parseISO(now), 'hh:mm a'), raw_start_time: now, reenter_reason: finalReason } }));
     toast.success(`Service Started: Room ${villa}`);
-
-    // ⚡ START BACKGROUND SW TIMER
-    triggerBackgroundTimer(villa, 'START');
 
     const payload = { report_date: todayStr, villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'In Progress', start_time: now, updated_at: now };
     const { data, error: updateError } = await supabase.from('hsk_cleaning_logs').update(payload).match({ report_date: todayStr, villa_number: villa }).select();
@@ -380,9 +403,6 @@ export default function MyTasksHub() {
 
   const handleFinishRoom = async (villa: string) => {
     localStorage.removeItem(`hk_timer_${villa}`);
-    // ⚡ STOP BACKGROUND SW TIMER
-    triggerBackgroundTimer(villa, 'STOP');
-
     const minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
@@ -412,7 +432,6 @@ export default function MyTasksHub() {
 
   const handleDND = async (villa: string) => {
     localStorage.removeItem(`hk_timer_${villa}`);
-    triggerBackgroundTimer(villa, 'STOP');
     const now = new Date().toISOString();
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'DND', time_spent: undefined } }));
     toast.success(`DND Logged: Room ${villa}`);
@@ -423,7 +442,6 @@ export default function MyTasksHub() {
 
   const handleRefused = async (villa: string) => {
     localStorage.removeItem(`hk_timer_${villa}`);
-    triggerBackgroundTimer(villa, 'STOP');
     const now = new Date().toISOString();
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'Refused', time_spent: undefined } }));
     toast.success(`Service Refused: Room ${villa}`);
@@ -434,7 +452,6 @@ export default function MyTasksHub() {
 
   const resetRoomStatus = async (villa: string) => {
       localStorage.removeItem(`hk_timer_${villa}`);
-      triggerBackgroundTimer(villa, 'STOP');
       if (activeCleaningVilla === villa) { setActiveCleaningVilla(null); setCleaningElapsedSeconds(0); }
       
       setCleaningTasks(prev => ({ 
@@ -458,6 +475,55 @@ export default function MyTasksHub() {
       }).match({ report_date: getDhakaDateStr(), villa_number: villa }).select();
       
       if (!data || data.length === 0) await supabase.from('hsk_cleaning_logs').insert({ report_date: getDhakaDateStr(), villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'Pending', updated_at: new Date().toISOString() });
+  };
+
+  const confirmResetRoom = (villa: string, serviceName: string) => {
+      setConfirmModal({
+          isOpen: true,
+          title: `Undo ${serviceName}?`,
+          message: `Are you sure you want to undo the ${serviceName} for Villa ${villa}? This will delete the saved time and reset the status.`,
+          confirmText: 'Yes, Undo Service',
+          isDestructive: true,
+          onConfirm: async () => {
+              setConfirmModal(prev => ({ ...prev, isOpen: false }));
+              await resetRoomStatus(villa);
+          }
+      });
+  };
+
+  const openEditModal = (villa: string, serviceType: string) => {
+      setEditServiceModal({
+          isOpen: true,
+          villa,
+          serviceType,
+          startTime: '',
+          endTime: '',
+          duration: 0
+      });
+  };
+
+  const submitEditRequest = async () => {
+      setIsSaving(true);
+      const payload = {
+          villa_number: editServiceModal.villa,
+          request_type: 'Time Edit Request',
+          item_details: `${editServiceModal.serviceType} time edit requested.\nStart: ${editServiceModal.startTime}\nEnd: ${editServiceModal.endTime}\nNew Duration: ${editServiceModal.duration}m`,
+          request_time: new Date().toISOString(),
+          attendant_name: currentHost?.full_name || 'VA',
+          logged_by: currentHost?.full_name || 'VA',
+          is_sent: false,
+          is_done: false
+      };
+      
+      const { error } = await supabase.from('hsk_daily_requests').insert(payload);
+      setIsSaving(false);
+      
+      if (error) {
+          toast.error("Failed to send request.");
+      } else {
+          toast.success('Edit request sent to Admin!');
+          setEditServiceModal({isOpen: false, villa: '', serviceType: '', startTime: '', endTime: '', duration: 0});
+      }
   };
 
   const handleAcStatusChange = async (villaNumber: string, newStatus: string) => {
@@ -624,28 +690,7 @@ export default function MyTasksHub() {
       if (st.includes('ARR')) cleaningType = 'Arrival';
       if (st.includes('VAC')) cleaningType = 'Touch Up';
 
-      // ⚡ EXTRACT ARR AND DEP DATES FROM STAY_DATES
-      let arrDate = '--';
-      let depDate = '--';
-      if (match?.stay_dates) {
-          const parts = match.stay_dates.split('-');
-          if (parts.length === 2) {
-              arrDate = parts[0].trim();
-              depDate = parts[1].trim();
-          }
-      }
-
-      return { 
-          status: shortStatus, 
-          headerColor, 
-          timeStr, 
-          guestName, 
-          acStatus, 
-          cleaningType,
-          arrDate: arrDate,
-          depDate: depDate,
-          gemsName: match?.gem_name
-      };
+      return { status: shortStatus, headerColor, timeStr, guestName, acStatus, cleaningType };
   };
 
   // ⚡ COMBINED VILLA LIST
@@ -720,7 +765,8 @@ export default function MyTasksHub() {
                             setReenterModal={setReenterModal}
                             handleDND={handleDND}
                             handleRefused={handleRefused}
-                            resetRoomStatus={resetRoomStatus}
+                            confirmResetRoom={confirmResetRoom}
+                            openEditModal={openEditModal}
                             isNightShift={isNightShift}
                             universalTasks={universalTasks}
                             cleaningElapsedSeconds={cleaningElapsedSeconds}
@@ -817,6 +863,36 @@ export default function MyTasksHub() {
                             <button key={reason} onClick={() => { handleStartService(reenterModal.villa, reason); setReenterModal({isOpen: false, villa: ''}); }} className="w-full py-3.5 bg-slate-50 text-slate-700 hover:bg-[#6D2158] hover:text-white rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all border border-slate-200 hover:border-[#6D2158]">{reason}</button>
                         ))}
                         <button onClick={() => setReenterModal({ isOpen: false, villa: '' })} className="w-full mt-2 py-3.5 bg-white text-rose-500 rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        )}
+
+        {/* --- EDIT SERVICE MODAL ⚡ --- */}
+        {editServiceModal.isOpen && (
+            <div className="fixed inset-0 z-[115] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
+                <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 text-center">
+                    <h3 className="text-xl md:text-2xl font-black mb-2 tracking-tight text-[#6D2158]">Edit {editServiceModal.serviceType}</h3>
+                    <p className="text-xs md:text-sm text-slate-500 font-medium mb-6 leading-relaxed">Villa {editServiceModal.villa}</p>
+                    
+                    <div className="space-y-4 mb-6 text-left">
+                        <div>
+                            <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block ml-1">Start Time</label>
+                            <input type="time" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-[#6D2158]" value={editServiceModal.startTime} onChange={e => setEditServiceModal(prev => ({...prev, startTime: e.target.value}))} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block ml-1">End Time</label>
+                            <input type="time" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none focus:border-[#6D2158]" value={editServiceModal.endTime} onChange={e => setEditServiceModal(prev => ({...prev, endTime: e.target.value}))} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 block ml-1">Duration (Auto)</label>
+                            <input type="text" readOnly className="w-full p-3 bg-slate-100 border border-slate-200 rounded-xl font-black text-[#6D2158]" value={`${editServiceModal.duration} mins`} />
+                        </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2.5">
+                        <button onClick={submitEditRequest} disabled={!editServiceModal.startTime || !editServiceModal.endTime || isSaving} className="w-full py-3.5 bg-[#6D2158] text-white rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all disabled:opacity-50">Send Request to Admin</button>
+                        <button onClick={() => setEditServiceModal(prev => ({...prev, isOpen: false}))} className="w-full py-3.5 bg-slate-50 text-slate-500 hover:bg-slate-100 rounded-xl font-bold uppercase tracking-wider text-xs active:scale-95 transition-all border border-slate-200">Cancel</button>
                     </div>
                 </div>
             </div>
