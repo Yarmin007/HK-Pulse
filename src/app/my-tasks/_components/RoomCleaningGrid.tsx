@@ -10,7 +10,7 @@ interface RoomCleaningGridProps {
     myCleaningVillas: string[];
     cleaningTasks: Record<string, CleaningTask>;
     activeCleaningVilla: string | null;
-    getVillaCardData: (v: string) => { status: string; headerColor: string; timeStr: string; guestName: string; acStatus: string; cleaningType: string; };
+    getVillaCardData: (v: string) => { status: string; headerColor: string; timeStr: string; guestName: string; acStatus: string; cleaningType: string; arrDate?: string; depDate?: string; gemsName?: string; };
     handleAcStatusChange: (v: string, status: string) => void;
     startAudit: (v: string, taskType: string, scheduleId: string) => void;
     handleFinishRoom: (v: string) => void;
@@ -90,23 +90,32 @@ export default function RoomCleaningGrid({
                             
                             {/* Card Header */}
                             <div className="flex justify-between items-start mb-4">
-                                <div>
+                                <div className="flex flex-col w-full max-w-[70%]">
                                     <div className="flex items-center gap-2 mb-1">
                                         <h3 className={`text-2xl md:text-3xl font-black tracking-tighter ${isCompleted && isCleaningAssigned ? 'text-slate-400' : 'text-[#6D2158]'}`}>
                                             {v}
                                         </h3>
                                     </div>
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                                        <User size={10}/> {cardData.guestName || 'No Guest Info'}
-                                    </p>
+                                    
+                                    {/* ⚡ DETAILED GUEST INFO WIDGET */}
+                                    <div className="text-[9px] font-bold text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-100 flex flex-col gap-1 w-full mt-1.5 shadow-sm">
+                                        <div className="flex justify-between items-center">
+                                            <span className="flex items-center gap-1 text-[#6D2158] truncate mr-2"><User size={10}/> {cardData.guestName || 'No Guest Info'}</span>
+                                            {cardData.gemsName && <span className="uppercase bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded font-black truncate shrink-0 max-w-[45%] border border-emerald-200">G: {cardData.gemsName}</span>}
+                                        </div>
+                                        <div className="flex justify-between items-center border-t border-slate-200 pt-1.5 mt-0.5 text-[8px] md:text-[9px]">
+                                            <span>ARR: <span className="text-slate-700">{cardData.arrDate}</span></span>
+                                            <span>DEP: <span className="text-slate-700">{cardData.depDate}</span></span>
+                                        </div>
+                                    </div>
                                 </div>
 
-                                <div className="flex flex-col items-end gap-2">
-                                    <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm ${!isCleaningAssigned ? 'bg-slate-500' : cardData.headerColor.replace('bg-', 'bg-').replace('text-', 'text-')}`}>
+                                <div className="flex flex-col items-end gap-2 pl-2">
+                                    <div className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm whitespace-nowrap ${!isCleaningAssigned ? 'bg-slate-500' : cardData.headerColor.replace('bg-', 'bg-').replace('text-', 'text-')}`}>
                                         {displayType}
                                     </div>
                                     {cardData.timeStr && isCleaningAssigned && (
-                                        <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm">
+                                        <div className="flex items-center gap-1.5 text-[9px] font-bold text-slate-500 bg-white px-2 py-1 rounded border border-slate-200 shadow-sm whitespace-nowrap">
                                             <Clock size={10} className="text-slate-400"/>
                                             <span>{cardData.timeStr}</span>
                                         </div>
@@ -229,7 +238,7 @@ export default function RoomCleaningGrid({
                                                 </div>
                                             )}
 
-                                            {/* ⚡ ALLOW ADDING MORE SERVICES EVEN IF COMPLETED */}
+                                            {/* ⚡ START / ADD SERVICE BUTTON ALWAYS VISIBLE */}
                                             <button 
                                                 onClick={() => setReenterModal({ isOpen: true, villa: v })}
                                                 disabled={!!activeCleaningVilla}

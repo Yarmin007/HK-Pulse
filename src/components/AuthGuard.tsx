@@ -53,13 +53,14 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
 
     // 3. Security Verification
     const verifySession = async () => {
-        // --- ADDED /eng-ac TO THE PUBLIC VIP LIST HERE ---
+        // --- ADDED /eng-ac AND /guests TO THE PUBLIC VIP LIST HERE ---
         const isPublicRoute = 
             pathname?.includes('/water/view') || 
             pathname?.includes('/minibar/finance') || 
             pathname?.includes('/inventory/store') ||
             pathname?.includes('/mobile') ||
-            pathname?.includes('/eng-ac'); 
+            pathname?.includes('/eng-ac') ||
+            pathname?.includes('/guests'); 
 
         if (isPublicRoute) {
             setIsAuthenticated(true);

@@ -1291,9 +1291,11 @@ export default function HousekeepingSummaryPage() {
                   
                   <td className="py-2 px-4 sticky left-0 bg-white group-hover:bg-slate-50 z-10 border-r border-slate-50">
                       <div className="flex items-center gap-2">
-                          <button onClick={() => { if(isAdmin){ setMoveData({from: row.villa_number, to: '', type: 'VM/OCC', isPartial: false, mergeDest: true}); setIsMoveModalOpen(true); } }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
-                              <ArrowRightLeft size={12}/>
-                          </button>
+                          {isAdmin && (
+                              <button onClick={() => { setMoveData({from: row.villa_number, to: '', type: 'VM/OCC', isPartial: false, mergeDest: true}); setIsMoveModalOpen(true); }} className="p-1.5 text-slate-300 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 rounded-md transition-colors opacity-100 lg:opacity-0 lg:group-hover:opacity-100" title="Move Villa">
+                                  <ArrowRightLeft size={12}/>
+                              </button>
+                          )}
                           <span className="font-bold text-sm text-slate-700">{row.villa_number}</span>
                       </div>
                   </td>
@@ -1351,7 +1353,7 @@ export default function HousekeepingSummaryPage() {
       </div>
 
       {/* CHANGES MODAL */}
-      {diffModalOpen && (
+      {diffModalOpen && isAdmin && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
            <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
               <div className="bg-slate-50 p-6 border-b border-slate-200 flex justify-between items-center">
@@ -1478,7 +1480,7 @@ export default function HousekeepingSummaryPage() {
       )}
 
       {/* SARONG MODAL */}
-      {isSarongModalOpen && (
+      {isSarongModalOpen && isAdmin && (
           <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
                   <div className="bg-pink-600 p-5 text-white flex justify-between items-center">
@@ -1524,7 +1526,7 @@ export default function HousekeepingSummaryPage() {
       )}
 
       {/* MANUAL MOVE MODAL */}
-      {isMoveModalOpen && (
+      {isMoveModalOpen && isAdmin && (
           <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
                   <div className="bg-[#6D2158] p-5 text-white flex justify-between items-center">
@@ -1574,7 +1576,7 @@ export default function HousekeepingSummaryPage() {
       )}
 
       {/* EDIT MODAL */}
-      {isEditOpen && editingRecord && (
+      {isEditOpen && editingRecord && isAdmin && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
            <div className="bg-white w-full max-w-md rounded-3xl shadow-xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
               <div className="bg-[#6D2158] p-6 text-white">
@@ -1660,7 +1662,7 @@ export default function HousekeepingSummaryPage() {
       )}
 
       {/* PASTE MODAL */}
-      {isPasteModalOpen && (
+      {isPasteModalOpen && isAdmin && (
           <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
                   <div className="bg-[#6D2158] p-5 text-white flex justify-between items-center">

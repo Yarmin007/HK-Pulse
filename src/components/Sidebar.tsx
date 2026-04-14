@@ -18,7 +18,7 @@ const ADMIN_CORE_TABS = [
 ];
 
 const ALLOCATION_ITEMS = [
-  { name: "Live Board", icon: LayoutDashboard, path: "/allocation/board" }, // ⚡ NEW: Live Admin Board added here
+  { name: "Live Board", icon: LayoutDashboard, path: "/allocation/board" }, 
   { name: "Forecast", icon: Plane, path: "/forecast" },
   { name: "Guest List", icon: Users, path: "/guests" },
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
@@ -73,7 +73,9 @@ const STAFF_PROFILE_ITEMS = [
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
+// ⚡ FIX: ADDED GUEST LIST HERE FOR NORMAL STAFF
 const STAFF_MENU_ITEMS = [
+  { name: "Guest List", icon: Users, path: "/guests" }, 
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
   { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },

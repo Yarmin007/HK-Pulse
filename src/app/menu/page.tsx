@@ -124,6 +124,7 @@ export default function MobileMenu() {
     ];
     
     const STAFF_OPS = [
+        { name: "Guest List", icon: Users, path: "/guests" },
         { name: "Forecast", icon: Plane, path: "/forecast" },
         { name: "My Schedule", icon: Calendar, path: "/schedule" },
         { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },

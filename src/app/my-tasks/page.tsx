@@ -26,12 +26,16 @@ export type UniversalTask = {
     status: string;
 };
 
+// ⚡ CORRECTED GUEST RECORD
 export type GuestRecord = {
     villa_number: string;
     status: string;
     arrival_time?: string;
     departure_time?: string;
     guest_name?: string;
+    stay_dates?: string; 
+    meal_plan?: string; 
+    gem_name?: string; 
 };
 
 export type ACRecord = {
@@ -78,33 +82,14 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
 
-// ⚡ SYSTEM NOTIFICATION HELPER FOR iOS/ANDROID PWA
-const triggerSystemNotification = (villa: string) => {
-    const title = "⏰ Service Time Alert";
-    const options = {
-        body: `Villa ${villa} timer has been running too long. Did you forget to finish it?`,
-        icon: '/icon-192.png',
-        badge: '/icon-192.png',
-        vibrate: [500, 250, 500, 250, 500, 250, 500], // Aggressive vibration pattern
-        requireInteraction: true
-    };
-
-    if (typeof window !== 'undefined') {
-        // Vibrate Device if supported (Android mostly)
-        if ('vibrate' in navigator) navigator.vibrate(options.vibrate);
-        
-        // Native System Push Notification
-        if ('Notification' in window && Notification.permission === 'granted') {
-            if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.ready.then(reg => {
-                    reg.showNotification(title, options);
-                }).catch(() => {
-                    new Notification(title, options); // Fallback
-                });
-            } else {
-                new Notification(title, options); // Fallback
-            }
-        }
+// ⚡ SERVICE WORKER TIMER TRIGGER (BACKGROUND)
+const triggerBackgroundTimer = (villa: string, action: 'START' | 'STOP') => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+            type: action === 'START' ? 'SCHEDULE_TIMER' : 'CLEAR_TIMER',
+            villa: villa,
+            delay: 10 * 1000 // ⚡ 10 SECONDS FOR TESTING
+        });
     }
 };
 
@@ -127,7 +112,7 @@ export default function MyTasksHub() {
   const [activeCleaningVilla, setActiveCleaningVilla] = useState<string | null>(null);
   const [cleaningElapsedSeconds, setCleaningElapsedSeconds] = useState(0);
   const [reenterModal, setReenterModal] = useState<{isOpen: boolean, villa: string}>({isOpen: false, villa: ''}); 
-  const [hasWarnedTimer, setHasWarnedTimer] = useState(false); // ⚡ Added timer warning state
+  const [hasWarnedTimer, setHasWarnedTimer] = useState(false);
 
   // --- UNIVERSAL TASK STATE ---
   const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
@@ -177,17 +162,13 @@ export default function MyTasksHub() {
     return () => clearInterval(interval);
   }, [activeCleaningVilla, activeStartTime]);
 
-  // ⚡ TIMER WARNING EFFECT (SET TO 10 SECONDS FOR TESTING)
+  // ⚡ TIMER WARNING EFFECT
   useEffect(() => {
       if (cleaningElapsedSeconds > 10 && !hasWarnedTimer && activeCleaningVilla) {
-          toast.error(`Reminder: Villa ${activeCleaningVilla} timer has been running. Did you forget to finish it?`, { 
+          toast.error(`Reminder: Villa ${activeCleaningVilla} timer has been running for over an hour. Did you forget to finish it?`, { 
               duration: 8000, 
               icon: '⏰' 
           });
-          
-          // ⚡ TRIGGER NATIVE NOTIFICATION & VIBRATION
-          triggerSystemNotification(activeCleaningVilla);
-          
           setHasWarnedTimer(true);
       } else if (cleaningElapsedSeconds === 0) {
           setHasWarnedTimer(false);
@@ -265,7 +246,10 @@ export default function MyTasksHub() {
           if (activeV) setActiveCleaningVilla(activeV);
       } else { setMyCleaningVillas([]); }
 
-      const { data: gData } = await supabase.from('hsk_daily_summary').select('villa_number, status, arrival_time, departure_time, guest_name').eq('report_date', todayStr);
+      // ⚡ FETCH CORRECT FIELDS FROM DAILY SUMMARY
+      const { data: gData } = await supabase.from('hsk_daily_summary')
+        .select('villa_number, status, arrival_time, departure_time, guest_name, stay_dates, meal_plan, gem_name')
+        .eq('report_date', todayStr);
       if (gData) setGuestData(gData);
 
       const { data: aData } = await supabase.from('hsk_ac_tracker').select('villa_number, status');
@@ -352,12 +336,17 @@ export default function MyTasksHub() {
     } else { window.location.href = '/'; }
     setIsMounted(true);
     fetchCatalog();
+    
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(console.error);
+    }
   }, [loadInitialData, fetchCatalog]);
 
   const handleStartService = async (villa: string, reason?: string) => {
     if (activeCleaningVilla) { toast.error("Please finish or pause your current room first!"); return; }
     
-    // ⚡ REQUEST NATIVE NOTIFICATION PERMISSION ON IOS/ANDROID
+    // ⚡ REQUEST NATIVE NOTIFICATION PERMISSION
     if (typeof window !== 'undefined' && 'Notification' in window) {
         if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
             Notification.requestPermission();
@@ -368,7 +357,6 @@ export default function MyTasksHub() {
     const todayStr = getDhakaDateStr();
     localStorage.setItem(`hk_timer_${villa}`, now);
 
-    // ⚡ AUTOMATICALLY SELECT MORNING OR TD SERVICE BASED ON TIME
     const isTD = getDhakaTime().getHours() >= 17;
     let finalReason = reason;
     if (reason === 'Service' || !reason) {
@@ -378,6 +366,9 @@ export default function MyTasksHub() {
     setActiveCleaningVilla(villa);
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'In Progress', start_time: format(parseISO(now), 'hh:mm a'), raw_start_time: now, reenter_reason: finalReason } }));
     toast.success(`Service Started: Room ${villa}`);
+
+    // ⚡ START BACKGROUND SW TIMER
+    triggerBackgroundTimer(villa, 'START');
 
     const payload = { report_date: todayStr, villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'In Progress', start_time: now, updated_at: now };
     const { data, error: updateError } = await supabase.from('hsk_cleaning_logs').update(payload).match({ report_date: todayStr, villa_number: villa }).select();
@@ -389,6 +380,9 @@ export default function MyTasksHub() {
 
   const handleFinishRoom = async (villa: string) => {
     localStorage.removeItem(`hk_timer_${villa}`);
+    // ⚡ STOP BACKGROUND SW TIMER
+    triggerBackgroundTimer(villa, 'STOP');
+
     const minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
@@ -418,6 +412,7 @@ export default function MyTasksHub() {
 
   const handleDND = async (villa: string) => {
     localStorage.removeItem(`hk_timer_${villa}`);
+    triggerBackgroundTimer(villa, 'STOP');
     const now = new Date().toISOString();
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'DND', time_spent: undefined } }));
     toast.success(`DND Logged: Room ${villa}`);
@@ -428,6 +423,7 @@ export default function MyTasksHub() {
 
   const handleRefused = async (villa: string) => {
     localStorage.removeItem(`hk_timer_${villa}`);
+    triggerBackgroundTimer(villa, 'STOP');
     const now = new Date().toISOString();
     setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'Refused', time_spent: undefined } }));
     toast.success(`Service Refused: Room ${villa}`);
@@ -438,6 +434,7 @@ export default function MyTasksHub() {
 
   const resetRoomStatus = async (villa: string) => {
       localStorage.removeItem(`hk_timer_${villa}`);
+      triggerBackgroundTimer(villa, 'STOP');
       if (activeCleaningVilla === villa) { setActiveCleaningVilla(null); setCleaningElapsedSeconds(0); }
       
       setCleaningTasks(prev => ({ 
@@ -627,7 +624,28 @@ export default function MyTasksHub() {
       if (st.includes('ARR')) cleaningType = 'Arrival';
       if (st.includes('VAC')) cleaningType = 'Touch Up';
 
-      return { status: shortStatus, headerColor, timeStr, guestName, acStatus, cleaningType };
+      // ⚡ EXTRACT ARR AND DEP DATES FROM STAY_DATES
+      let arrDate = '--';
+      let depDate = '--';
+      if (match?.stay_dates) {
+          const parts = match.stay_dates.split('-');
+          if (parts.length === 2) {
+              arrDate = parts[0].trim();
+              depDate = parts[1].trim();
+          }
+      }
+
+      return { 
+          status: shortStatus, 
+          headerColor, 
+          timeStr, 
+          guestName, 
+          acStatus, 
+          cleaningType,
+          arrDate: arrDate,
+          depDate: depDate,
+          gemsName: match?.gem_name
+      };
   };
 
   // ⚡ COMBINED VILLA LIST
