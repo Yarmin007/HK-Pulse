@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   LayoutDashboard, Sparkles, CheckCircle2, DoorClosed, 
-  Clock, User, AlertCircle, BedDouble, Loader2, RefreshCw, Calendar, Search, X, Maximize, Minimize, TableProperties, LayoutGrid, ChevronDown, ZoomIn, Edit, Trash2, Plus, Save
+  Clock, User, AlertCircle, BedDouble, Loader2, RefreshCw, Calendar, Search, X, Maximize, Minimize, TableProperties, LayoutGrid, ChevronDown, ZoomIn, Edit, Trash2, Plus, Save, LineChart
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO, isToday } from 'date-fns';
@@ -19,6 +19,7 @@ type LiveTask = {
     timeSpent?: string;
     timeLogged?: string;
     sessionHistory?: any[];
+    pendingEditRequest?: any;
 };
 
 type EditState = {
@@ -26,6 +27,7 @@ type EditState = {
     status: string;
     timeSpent: number;
     sessionHistory: any[];
+    pendingEditRequest?: any;
 };
 
 // Reusable villa parser
@@ -67,6 +69,30 @@ const parseTimeString = (timeStr: string | undefined) => {
     return today.getTime();
 };
 
+// ⚡ Helper to calculate minutes between two 12-hour times
+const calculateMinutes = (startStr: string, endStr: string) => {
+    const parseMins = (s: string) => {
+        const m = s.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+        if (!m) return null;
+        let h = parseInt(m[1], 10);
+        const mins = parseInt(m[2], 10);
+        const p = m[3] ? m[3].toUpperCase() : '';
+        if (p === 'PM' && h < 12) h += 12;
+        if (p === 'AM' && h === 12) h = 0;
+        return h * 60 + mins;
+    };
+
+    const sMins = parseMins(startStr);
+    const eMins = parseMins(endStr);
+    
+    if (sMins !== null && eMins !== null) {
+        let diff = eMins - sMins;
+        if (diff < 0) diff += 24 * 60; // Handle cross-midnight
+        return diff;
+    }
+    return null;
+};
+
 // ⚡ Refined Styles with Reset Logic & Unified Colors
 const getDoneStyles = (history: any[], isPastTurndown: boolean = false) => {
     const latestSession = history && history.length > 0 ? history[history.length - 1] : null;
@@ -80,7 +106,7 @@ const getDoneStyles = (history: any[], isPastTurndown: boolean = false) => {
     else if (reason === 'Dep') label = 'Dep Done';
     else label = 'Morn Done';
 
-    // Reset visual background for Daytime tasks after 15:00
+    // Reset visual background for Daytime tasks after 17:00
     if (isPastTurndown && reason !== 'TD Service') {
         return {
             bg: 'bg-white',
@@ -97,10 +123,8 @@ const getDoneStyles = (history: any[], isPastTurndown: boolean = false) => {
     if (reason === 'TD Service') {
         return { bg: 'bg-indigo-500', border: 'border-indigo-600', text: 'text-indigo-100', badge: 'bg-indigo-700', label, colorHex: 'text-indigo-600', rowBg: 'bg-indigo-50/50', isReset: false };
     } else if (['Morning Service', 'Arrival', 'Dep'].includes(reason)) {
-        // Unified Light Green
         return { bg: 'bg-emerald-500', border: 'border-emerald-600', text: 'text-emerald-100', badge: 'bg-emerald-700', label, colorHex: 'text-emerald-600', rowBg: 'bg-emerald-50/50', isReset: false };
     } else {
-        // Other minor tasks (Neutral Slate)
         return { bg: 'bg-slate-500', border: 'border-slate-600', text: 'text-slate-100', badge: 'bg-slate-700', label, colorHex: 'text-slate-600', rowBg: 'bg-slate-50', isReset: false };
     }
 };
@@ -117,19 +141,21 @@ export default function LiveCleaningBoard() {
   const [viewMode, setViewMode] = useState<'GRID' | 'SHEET'>('GRID');
   const [gridColumns, setGridColumns] = useState(8);
   
-  // Current time tracker for 15:00 Turndown reset
+  // Current time tracker for 17:00 Turndown reset
   const [currentTime, setCurrentTime] = useState(getDhakaTime());
 
   // Admin Edit Modal State
   const [editModal, setEditModal] = useState<EditState | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  
+  // Insights State
+  const [isInsightsOpen, setIsInsightsOpen] = useState(false);
 
   useEffect(() => {
       const savedZoom = localStorage.getItem('hk_pulse_board_zoom');
       if (savedZoom) {
           setGridColumns(Number(savedZoom));
       }
-      // Update time every minute
       const interval = setInterval(() => setCurrentTime(getDhakaTime()), 60000);
       return () => clearInterval(interval);
   }, []);
@@ -143,19 +169,20 @@ export default function LiveCleaningBoard() {
   const fetchBoardData = useCallback(async (showLoader = true) => {
       if (showLoader) setIsLoading(true);
 
-      const [allocRes, hostsRes, guestsRes, logsRes] = await Promise.all([
+      const [allocRes, hostsRes, guestsRes, logsRes, reqsRes] = await Promise.all([
           supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', boardDate),
           supabase.from('hsk_hosts').select('id, host_id, full_name, nicknames'),
           supabase.from('hsk_daily_summary').select('villa_number, status').eq('report_date', boardDate),
-          supabase.from('hsk_cleaning_logs').select('*').eq('report_date', boardDate)
+          supabase.from('hsk_cleaning_logs').select('*').eq('report_date', boardDate),
+          supabase.from('hsk_daily_requests').select('*').eq('request_type', 'Time Edit Request').eq('is_done', false)
       ]);
 
       const allocations = allocRes.data || [];
       const hosts = hostsRes.data || [];
       const guests = guestsRes.data || [];
       const logs = logsRes.data || [];
+      const reqs = reqsRes.data || [];
 
-      // Map Hosts
       const hostMap: Record<string, string> = {};
       hosts.forEach(h => {
           const nickname = h.nicknames ? h.nicknames.split(',')[0].trim() : h.full_name;
@@ -163,7 +190,6 @@ export default function LiveCleaningBoard() {
           hostMap[h.host_id] = nickname; 
       });
 
-      // Map Guests
       const guestMap: Record<string, string> = {};
       guests.forEach(g => {
           let type = 'Occupied';
@@ -174,11 +200,11 @@ export default function LiveCleaningBoard() {
           guestMap[g.villa_number] = type;
       });
 
-      // Map Logs to easily attach to villas
       const logsMap: Record<string, any> = {};
-      logs.forEach(log => {
-          logsMap[log.villa_number] = log;
-      });
+      logs.forEach(log => { logsMap[log.villa_number] = log; });
+
+      const reqsMap: Record<string, any> = {};
+      reqs.forEach(req => { reqsMap[req.villa_number] = req; });
 
       const allTasks: LiveTask[] = [];
 
@@ -199,11 +225,11 @@ export default function LiveCleaningBoard() {
                   timeSpent: log?.time_spent_minutes ? `${log.time_spent_minutes}` : undefined,
                   timeLogged: log?.dnd_time ? format(parseISO(log.dnd_time), 'hh:mm a') : log?.updated_at ? format(parseISO(log.updated_at), 'hh:mm a') : undefined,
                   sessionHistory: log?.session_history || [],
+                  pendingEditRequest: reqsMap[v]
               });
           });
       });
 
-      // Grid Base Sort is Villa Number
       allTasks.sort((a,b) => parseFloat(a.villa.replace('-', '.')) - parseFloat(b.villa.replace('-', '.')));
       
       setLiveData(allTasks);
@@ -216,37 +242,64 @@ export default function LiveCleaningBoard() {
 
   // SUPABASE REALTIME LISTENER
   useEffect(() => {
-      const channel = supabase.channel('realtime-cleaning-board')
-          .on(
-              'postgres_changes', 
-              { event: '*', schema: 'public', table: 'hsk_cleaning_logs' }, 
-              (payload) => {
-                  const newLog = payload.new as any;
-                  
-                  if (newLog.report_date === boardDate) {
-                      setLiveData(prevData => prevData.map(task => {
-                          if (task.villa === newLog.villa_number) {
-                              return {
-                                  ...task,
-                                  status: newLog.status,
-                                  startTime: newLog.start_time ? format(parseISO(newLog.start_time), 'hh:mm a') : task.startTime,
-                                  endTime: newLog.end_time ? format(parseISO(newLog.end_time), 'hh:mm a') : task.endTime,
-                                  timeSpent: newLog.time_spent_minutes ? `${newLog.time_spent_minutes}` : task.timeSpent,
-                                  timeLogged: newLog.dnd_time ? format(parseISO(newLog.dnd_time), 'hh:mm a') : newLog.updated_at ? format(parseISO(newLog.updated_at), 'hh:mm a') : task.timeLogged,
-                                  sessionHistory: newLog.session_history || task.sessionHistory,
-                              };
-                          }
-                          return task;
-                      }));
-                  }
-              }
-          )
+      const logChannel = supabase.channel('realtime-cleaning-board')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_cleaning_logs' }, () => fetchBoardData(false))
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests', filter: "request_type=eq.Time Edit Request" }, () => fetchBoardData(false))
           .subscribe();
 
       return () => {
-          supabase.removeChannel(channel);
+          supabase.removeChannel(logChannel);
       };
-  }, [boardDate]);
+  }, [boardDate, fetchBoardData]);
+
+  // ⚡ INSIGHTS GENERATOR
+  const getInsights = () => {
+      const hostStats: Record<string, { assigned: number, completed: number, validDurations: number[], autoStops: number }> = {};
+      
+      liveData.forEach(task => {
+          if (!hostStats[task.attendant]) {
+              hostStats[task.attendant] = { assigned: 0, completed: 0, validDurations: [], autoStops: 0 };
+          }
+          const stats = hostStats[task.attendant];
+          
+          if (['Arrival', 'Departure', 'Occupied'].includes(task.type)) {
+              stats.assigned++;
+              if (task.status === 'Completed') stats.completed++;
+          }
+
+          if (task.sessionHistory) {
+              task.sessionHistory.forEach(s => {
+                  if (s.autoStopped) stats.autoStops++;
+                  if (s.duration > 0 && s.duration < 90) {
+                      stats.validDurations.push(s.duration);
+                  }
+              });
+          }
+      });
+
+      const insights = [];
+      for (const [host, stats] of Object.entries(hostStats)) {
+          if (host === 'Unknown Host') continue;
+
+          const avgTime = stats.validDurations.length > 0 
+              ? Math.round(stats.validDurations.reduce((a,b)=>a+b,0) / stats.validDurations.length) 
+              : 0;
+
+          const completionRate = stats.assigned > 0 ? Math.round((stats.completed / stats.assigned) * 100) : 0;
+
+          let flag = null;
+          if (avgTime > 45) flag = 'Slow Service';
+          if (stats.assigned > 3 && completionRate < 30 && getDhakaTime().getHours() >= 14) flag = 'Inactive / Not Updating';
+          if (stats.autoStops > 0) flag = 'Forgetting Timer';
+
+          if (flag || avgTime > 0) {
+              insights.push({ host, avgTime, completionRate, flag, autoStops: stats.autoStops });
+          }
+      }
+
+      return insights.sort((a, b) => b.avgTime - a.avgTime);
+  };
+
 
   // Admin Edit Functions
   const openEditModal = (task: LiveTask) => {
@@ -254,7 +307,8 @@ export default function LiveCleaningBoard() {
           villa: task.villa,
           status: task.status,
           timeSpent: parseInt(task.timeSpent || '0', 10),
-          sessionHistory: JSON.parse(JSON.stringify(task.sessionHistory || []))
+          sessionHistory: JSON.parse(JSON.stringify(task.sessionHistory || [])),
+          pendingEditRequest: task.pendingEditRequest
       });
   };
 
@@ -262,6 +316,22 @@ export default function LiveCleaningBoard() {
       if (!editModal) return;
       const newHistory = [...editModal.sessionHistory];
       newHistory[index] = { ...newHistory[index], [field]: value };
+      
+      // ⚡ Auto Calculate Duration
+      if (field === 'start' || field === 'end') {
+          const calcMins = calculateMinutes(newHistory[index].start, newHistory[index].end);
+          if (calcMins !== null) {
+              newHistory[index].duration = calcMins;
+              
+              // Automatically update the global timeSpent sum
+              let newTotal = 0;
+              newHistory.forEach(s => newTotal += (s.duration || 0));
+              
+              setEditModal({ ...editModal, timeSpent: newTotal, sessionHistory: newHistory });
+              return;
+          }
+      }
+
       setEditModal({ ...editModal, sessionHistory: newHistory });
   };
 
@@ -274,7 +344,74 @@ export default function LiveCleaningBoard() {
   const removeSession = (index: number) => {
       if (!editModal) return;
       const newHistory = editModal.sessionHistory.filter((_, i) => i !== index);
-      setEditModal({ ...editModal, sessionHistory: newHistory });
+      // Update global timeSpent sum
+      let newTotal = 0;
+      newHistory.forEach(s => newTotal += (s.duration || 0));
+
+      setEditModal({ ...editModal, timeSpent: newTotal, sessionHistory: newHistory });
+  };
+
+  // ⚡ Auto-Approve & Apply VA Edit Request Logic
+  const acceptEditRequest = async () => {
+      if (!editModal || !editModal.pendingEditRequest) return;
+      setIsSavingEdit(true);
+      
+      const details = editModal.pendingEditRequest.item_details;
+      const serviceTypeMatch = details.match(/(.*) time edit requested/i);
+      const startMatch = details.match(/Start:\s*([0-9:]+)/i);
+      const endMatch = details.match(/End:\s*([0-9:]+)/i);
+      const durationMatch = details.match(/New Duration:\s*(\d+)/i);
+
+      const serviceType = serviceTypeMatch ? serviceTypeMatch[1].trim() : 'Morning Service';
+      
+      const formatTo12H = (time24: string) => {
+          if (!time24) return '';
+          const parts = time24.split(':');
+          if(parts.length < 2) return time24;
+          let h = parseInt(parts[0], 10);
+          const period = h >= 12 ? 'PM' : 'AM';
+          h = h % 12 || 12;
+          return `${h.toString().padStart(2, '0')}:${parts[1]} ${period}`;
+      };
+
+      const startTime = formatTo12H(startMatch ? startMatch[1].trim() : '');
+      const endTime = formatTo12H(endMatch ? endMatch[1].trim() : '');
+      const newDuration = durationMatch ? parseInt(durationMatch[1], 10) : 0;
+
+      let newHistory = [...editModal.sessionHistory];
+      const existingIndex = newHistory.findIndex(s => s.reason === serviceType);
+      
+      if (existingIndex >= 0) {
+          newHistory[existingIndex] = { ...newHistory[existingIndex], start: startTime, end: endTime, duration: newDuration };
+      } else {
+          newHistory.push({ reason: serviceType, start: startTime, end: endTime, duration: newDuration });
+      }
+
+      const newTotalSpent = newHistory.reduce((total, s) => total + (s.duration || 0), 0);
+      
+      const payload = {
+          status: 'Completed',
+          time_spent_minutes: newTotalSpent,
+          session_history: newHistory,
+          updated_at: new Date().toISOString()
+      };
+
+      const { error: logError } = await supabase.from('hsk_cleaning_logs')
+          .update(payload)
+          .match({ report_date: boardDate, villa_number: editModal.villa });
+
+      if (!logError) {
+           await supabase.from('hsk_daily_requests')
+              .update({is_done: true, is_sent: true})
+              .eq('id', editModal.pendingEditRequest.id);
+           
+           toast.success('Time Edit Approved & Saved!');
+           setEditModal(null);
+           fetchBoardData(false);
+      } else {
+           toast.error('Failed to apply edit: ' + logError.message);
+      }
+      setIsSavingEdit(false);
   };
 
   const saveEditModal = async () => {
@@ -306,7 +443,6 @@ export default function LiveCleaningBoard() {
       return Array.from(new Set(liveData.map(t => t.attendant))).sort();
   }, [liveData]);
 
-  // Baseline Grid Filter
   const filteredVillas = useMemo(() => {
     let result = [...liveData];
 
@@ -323,11 +459,9 @@ export default function LiveCleaningBoard() {
     return result;
   }, [filter, liveData, hostSearch]);
 
-  // ⚡ Flattened & Sorted Sheet Data
   const sheetRows = useMemo(() => {
       let rows: any[] = [];
       filteredVillas.forEach(villa => {
-          // Add historical completed sessions
           if (villa.sessionHistory && villa.sessionHistory.length > 0) {
               villa.sessionHistory.forEach((session, sIdx) => {
                   rows.push({
@@ -340,13 +474,13 @@ export default function LiveCleaningBoard() {
                       startTime: session.start,
                       endTime: session.end,
                       duration: session.duration,
+                      autoStopped: session.autoStopped,
                       rawTime: parseTimeString(session.start) || parseTimeString(session.end),
                       originalTask: villa
                   });
               });
           }
           
-          // Add Active, DND, or Refused entries
           if (villa.status !== 'Completed' && villa.status !== 'Pending') {
              rows.push({
                  id: `${villa.villa}-active`,
@@ -365,7 +499,6 @@ export default function LiveCleaningBoard() {
           }
       });
 
-      // Sort strictly by Start Time chronologically
       rows.sort((a, b) => a.rawTime - b.rawTime);
       return rows;
   }, [filteredVillas]);
@@ -373,20 +506,17 @@ export default function LiveCleaningBoard() {
 
   const baseVillas = hostSearch ? liveData.filter(v => v.attendant === hostSearch) : liveData;
   
-  // Progress Logic: Only count Arrival, Departure, Occupied
   const progressVillas = baseVillas.filter(v => ['Arrival', 'Departure', 'Occupied'].includes(v.type));
   const total = progressVillas.length;
   const completed = progressVillas.filter(v => v.status === 'Completed').length;
   const progressPct = total === 0 ? 0 : (completed / total) * 100;
   
-  // Sub-counters for UI metric cards
   const inProgress = baseVillas.filter(v => v.status === 'In Progress').length;
   const dnd = baseVillas.filter(v => v.status === 'DND').length;
   const refused = baseVillas.filter(v => v.status === 'Refused').length;
 
   const isViewingHistory = !isToday(parseISO(boardDate));
 
-  // DYNAMIC ZOOM THRESHOLDS
   const isExtreme = gridColumns >= 14;
   const isUltraDense = gridColumns >= 11;
   const isDense = gridColumns >= 8;
@@ -409,6 +539,11 @@ export default function LiveCleaningBoard() {
                 </h1>
                 
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {/* INSIGHTS BUTTON */}
+                    <button onClick={() => setIsInsightsOpen(true)} className="p-2 bg-amber-500/20 text-amber-300 rounded-full hover:bg-amber-500/30 active:scale-95 transition-all" title="View Insights">
+                        <LineChart size={14}/>
+                    </button>
+
                     {/* ZOOM SLIDER */}
                     {viewMode === 'GRID' && (
                         <div className="flex items-center bg-white/10 px-3 py-1.5 md:py-2 rounded-full border border-white/20 gap-2 transition-colors focus-within:ring-2 focus-within:ring-white/50">
@@ -549,7 +684,6 @@ export default function LiveCleaningBoard() {
                                 const isDND = row.status === 'DND';
                                 const isRefused = row.status === 'Refused';
                                 
-                                // Color logic based solely on the specific row's reason
                                 const doneStyles = getDoneStyles([{ reason: row.reason }]);
                                 
                                 return (
@@ -558,7 +692,12 @@ export default function LiveCleaningBoard() {
                                         <td className={`p-2 border-r border-slate-100 text-xs font-bold text-slate-500`}>
                                             {row.startTime || row.timeLogged || '--:--'}
                                         </td>
-                                        <td className={`p-2 border-r border-slate-100 font-black text-lg ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>{row.villa}</td>
+                                        <td className={`p-2 border-r border-slate-100 font-black text-lg flex items-center gap-2 ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
+                                            {row.villa}
+                                            {row.originalTask.pendingEditRequest && (
+                                                <span className="bg-purple-600 text-white text-[8px] font-black uppercase px-1.5 py-0.5 rounded shadow animate-pulse border border-purple-400">Edit Req</span>
+                                            )}
+                                        </td>
                                         <td className={`p-2 border-r border-slate-100 text-xs font-bold flex items-center gap-2 ${isDone ? doneStyles.colorHex : 'text-slate-700'}`}>
                                             <User size={12} className={isDone ? doneStyles.colorHex : 'text-slate-400 hidden md:block'}/> {row.attendant}
                                         </td>
@@ -583,10 +722,11 @@ export default function LiveCleaningBoard() {
                                                 {isDone ? row.reason : row.status}
                                             </span>
                                         </td>
-                                        <td className={`p-2 border-r border-slate-100 text-[10px] md:text-xs font-mono font-bold ${isDone ? doneStyles.colorHex : 'text-slate-500'}`}>
+                                        <td className={`p-2 border-r border-slate-100 text-[10px] md:text-xs font-mono font-bold flex flex-col items-start ${isDone ? doneStyles.colorHex : 'text-slate-500'}`}>
                                             {isDone ? `${row.startTime || '--:--'} to ${row.endTime || '--:--'}` : 
                                              isCleaning ? `Start: ${row.startTime || '--:--'}` : 
                                              (isDND || isRefused) ? `Log: ${row.timeLogged || '--:--'}` : '-'}
+                                            {row.autoStopped && <span className="bg-rose-500 text-white text-[8px] px-1 rounded uppercase tracking-widest mt-0.5">Auto Stop</span>}
                                         </td>
                                         <td className={`p-2 text-center border-r border-slate-100 text-sm font-black ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
                                             {isDone ? `${row.duration || '0'}m` : isCleaning ? 'Active' : '-'}
@@ -612,7 +752,7 @@ export default function LiveCleaningBoard() {
             >
             {filteredVillas.map((item, idx) => {
                 const isDone = item.status === 'Completed';
-                const isPastTurndown = currentTime.getHours() >= 15;
+                const isPastTurndown = currentTime.getHours() >= 17;
                 const doneStyles = getDoneStyles(item.sessionHistory || [], isPastTurndown);
                 
                 const isResetDone = isDone && doneStyles.isReset;
@@ -644,13 +784,20 @@ export default function LiveCleaningBoard() {
                         'border-slate-200 hover:border-[#6D2158]/40 hover:shadow-md bg-white'
                     }`}
                 >
-                    {/* EDIT BUTTON (Visible on Hover or always if touch) */}
+                    {/* VA TIME EDIT REQUEST BADGE */}
+                    {item.pendingEditRequest && (
+                        <div className="absolute top-1 left-1 z-20">
+                            <span className="bg-purple-600 text-white text-[8px] md:text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded shadow-sm animate-pulse border border-purple-400">Edit Req</span>
+                        </div>
+                    )}
+
+                    {/* EDIT BUTTON (Visible permanently on touch devices, hover on desktop) */}
                     <button 
                         onClick={() => openEditModal(item)}
-                        className={`absolute top-1.5 right-1.5 p-1.5 rounded-md bg-white/90 backdrop-blur-sm border border-slate-200 text-slate-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity z-10 hover:text-blue-600 ${isExtreme || isUltraDense ? 'hidden' : 'block'}`}
+                        className={`absolute top-1.5 right-1.5 rounded-md bg-white/90 backdrop-blur-sm border border-slate-200 text-slate-500 shadow-sm opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity z-10 hover:text-blue-600 ${isExtreme || isUltraDense ? 'p-0.5' : 'p-1.5'}`}
                         title="Edit Log"
                     >
-                        <Edit size={12}/>
+                        <Edit size={isExtreme || isUltraDense ? 10 : 12}/>
                     </button>
 
                     {/* Top Row: Villa Number & Status Icon */}
@@ -726,7 +873,10 @@ export default function LiveCleaningBoard() {
                                     item.sessionHistory.map((session, sIdx) => (
                                         <div key={sIdx} className={`border-b ${isResetDone ? 'border-slate-100' : 'border-white/10'} last:border-0 pb-1 mb-1 last:pb-0 last:mb-0`}>
                                             <div className="flex items-center justify-between leading-none">
-                                                {!isExtreme && <span className={`${isUltraDense ? 'text-[4px]' : 'text-[6px]'} font-black uppercase tracking-widest ${isResetDone ? 'text-slate-400' : doneStyles.text} truncate mr-1`}>{session.reason || 'Service'}:</span>}
+                                                {!isExtreme && <span className={`${isUltraDense ? 'text-[4px]' : 'text-[6px]'} font-black uppercase tracking-widest ${isResetDone ? 'text-slate-400' : doneStyles.text} truncate mr-1`}>
+                                                    {session.reason || 'Service'}
+                                                    {session.autoStopped && <span className="text-rose-400 ml-0.5 font-black">(Auto)</span>}
+                                                </span>}
                                                 <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} font-bold ${isResetDone ? 'text-slate-700' : 'text-white'} ml-auto`}>
                                                     {session.end?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) || '--:--'}
                                                 </span>
@@ -793,6 +943,40 @@ export default function LiveCleaningBoard() {
                   </div>
                   
                   <div className="p-5 overflow-y-auto custom-scrollbar flex-1 space-y-6">
+
+                      {/* --- VA EDIT REQUEST BANNER --- */}
+                      {editModal.pendingEditRequest && (
+                          <div className="bg-purple-50 p-4 rounded-2xl border border-purple-200 shadow-inner">
+                              <div className="flex items-center gap-2 mb-2 text-purple-800">
+                                  <AlertCircle size={16}/>
+                                  <h4 className="text-xs font-black uppercase tracking-widest">VA Requested Time Edit</h4>
+                              </div>
+                              <p className="text-sm font-bold text-purple-900 whitespace-pre-wrap bg-white/60 p-3 rounded-xl border border-purple-100">{editModal.pendingEditRequest.item_details}</p>
+                              
+                              <div className="flex gap-2 mt-3">
+                                  <button 
+                                      onClick={acceptEditRequest}
+                                      disabled={isSavingEdit}
+                                      className="flex-1 py-2.5 bg-purple-600 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-md hover:bg-purple-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-50"
+                                  >
+                                      {isSavingEdit ? <Loader2 className="animate-spin" size={14}/> : <CheckCircle2 size={14}/>}
+                                      Accept & Apply
+                                  </button>
+                                  <button 
+                                      onClick={async () => {
+                                          await supabase.from('hsk_daily_requests').update({is_done: true, is_sent: true}).eq('id', editModal.pendingEditRequest.id);
+                                          setEditModal({...editModal, pendingEditRequest: null});
+                                          fetchBoardData(false);
+                                          toast.success('Request declined & cleared.');
+                                      }}
+                                      disabled={isSavingEdit}
+                                      className="flex-1 py-2.5 bg-white text-purple-700 border border-purple-200 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-purple-50 active:scale-95 transition-all flex justify-center items-center disabled:opacity-50"
+                                  >
+                                      Decline
+                                  </button>
+                              </div>
+                          </div>
+                      )}
                       
                       {/* Global Overrides */}
                       <div className="grid grid-cols-2 gap-4">
@@ -871,12 +1055,12 @@ export default function LiveCleaningBoard() {
                                                   />
                                               </div>
                                               <div>
-                                                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Mins</label>
+                                                  <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Mins (Auto)</label>
                                                   <input 
                                                       type="number" 
                                                       value={session.duration}
                                                       onChange={(e) => handleSessionChange(index, 'duration', parseInt(e.target.value || '0', 10))}
-                                                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center"
+                                                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-black text-emerald-700 text-center"
                                                   />
                                               </div>
                                           </div>
@@ -896,6 +1080,53 @@ export default function LiveCleaningBoard() {
                           {isSavingEdit ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>}
                           Save Overrides
                       </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* --- INSIGHTS MODAL --- */}
+      {isInsightsOpen && (
+          <div className="fixed inset-0 z-[10000] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
+                  <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <div>
+                          <h2 className="text-xl font-black text-amber-600 flex items-center gap-2"><LineChart size={20}/> Daily Insights</h2>
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Attendant Performance</p>
+                      </div>
+                      <button onClick={() => setIsInsightsOpen(false)} className="p-2 bg-white rounded-full text-slate-400 hover:text-rose-500 shadow-sm transition-colors">
+                          <X size={20}/>
+                      </button>
+                  </div>
+                  
+                  <div className="p-5 overflow-y-auto custom-scrollbar flex-1">
+                      {getInsights().length === 0 ? (
+                          <div className="text-center py-10">
+                              <p className="text-sm font-bold text-slate-400">No notable insights generated yet.</p>
+                          </div>
+                      ) : (
+                          <div className="space-y-3">
+                              {getInsights().map((insight, idx) => (
+                                  <div key={idx} className={`p-4 rounded-2xl border ${insight.flag === 'Inactive / Not Updating' ? 'bg-rose-50 border-rose-200' : insight.flag === 'Slow Service' ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                                      <h4 className="font-black text-slate-800 text-base">{insight.host}</h4>
+                                      <div className="flex gap-2 mt-2">
+                                          {insight.flag && <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${insight.flag === 'Inactive / Not Updating' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}`}>{insight.flag}</span>}
+                                          {insight.autoStops > 0 && <span className="px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest bg-rose-100 text-rose-700">{insight.autoStops} Auto Stops</span>}
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t border-black/5">
+                                          <div>
+                                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg Time</p>
+                                              <p className={`text-lg font-black ${insight.avgTime > 45 ? 'text-amber-600' : 'text-slate-700'}`}>{insight.avgTime}m</p>
+                                          </div>
+                                          <div>
+                                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Completion</p>
+                                              <p className={`text-lg font-black ${insight.completionRate < 50 ? 'text-rose-600' : 'text-emerald-600'}`}>{insight.completionRate}%</p>
+                                          </div>
+                                      </div>
+                                  </div>
+                              ))}
+                          </div>
+                      )}
                   </div>
               </div>
           </div>

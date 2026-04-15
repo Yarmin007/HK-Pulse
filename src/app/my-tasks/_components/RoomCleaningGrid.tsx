@@ -3,7 +3,7 @@ import React from 'react';
 import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch } from 'lucide-react';
 
 export type UniversalTask = { schedule_id: string; inventory_type: string; villa_number: string; status: string; };
-export type CleaningTask = { villa_number: string; status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused'; start_time?: string; raw_start_time?: string; end_time?: string; time_spent?: string; reenter_reason?: string; morning_time: number; night_time: number; has_morning_completed: boolean; has_night_completed: boolean; };
+export type CleaningTask = { villa_number: string; status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused'; start_time?: string; raw_start_time?: string; end_time?: string; time_spent?: string; reenter_reason?: string; session_history: any[]; };
 
 interface RoomCleaningGridProps {
     displayVillas: string[];
@@ -61,7 +61,7 @@ export default function RoomCleaningGrid({
                     const displayType = isCleaningAssigned ? cardData.cleaningType : 'Audit Only';
 
                     // Cleaning State
-                    const taskState = cleaningTasks[v] || { status: 'Pending', morning_time: 0, night_time: 0, has_morning_completed: false, has_night_completed: false };
+                    const taskState = cleaningTasks[v] || { status: 'Pending', session_history: [] };
                     const isActive = v === activeCleaningVilla;
                     const isCompleted = taskState.status === 'Completed';
                     const isDND = taskState.status === 'DND';
@@ -182,7 +182,7 @@ export default function RoomCleaningGrid({
                                     })}
                                 </div>
 
-                                {/* Room Cleaning Controls (Only show if actually assigned to clean) */}
+                                {/* Room Cleaning Controls */}
                                 {isCleaningAssigned ? (
                                     isActive ? (
                                         <div className="flex justify-between items-center bg-white border border-emerald-200 rounded-xl p-1.5 shadow-sm flex-wrap gap-2 mt-1">
@@ -207,22 +207,31 @@ export default function RoomCleaningGrid({
                                         </div>
                                     ) : (
                                         <div className="flex flex-col gap-2 mt-1">
-                                            {taskState.has_morning_completed && (
-                                                <div className="flex items-center justify-between text-emerald-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-emerald-50 px-3 rounded-xl border border-emerald-100 opacity-80">
-                                                    <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> Morning ({taskState.morning_time}m)</span>
-                                                    <div className="flex gap-1">
-                                                        <button onClick={() => openEditModal(v, 'Morning Service')} className="text-blue-700 hover:text-blue-900 text-[9px] bg-blue-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Edit</button>
-                                                        <button onClick={() => confirmResetRoom(v, 'Morning Service')} className="text-emerald-700 hover:text-emerald-900 text-[9px] bg-emerald-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Undo</button>
-                                                    </div>
-                                                </div>
-                                            )}
-                                            {taskState.has_night_completed && (
-                                                <div className="flex items-center justify-between text-indigo-600 font-black uppercase tracking-widest text-[10px] md:text-xs py-2 bg-indigo-50 px-3 rounded-xl border border-indigo-100 opacity-80">
-                                                    <span className="flex items-center gap-1.5"><CheckCircle2 size={14}/> TD Service ({taskState.night_time}m)</span>
-                                                    <div className="flex gap-1">
-                                                        <button onClick={() => openEditModal(v, 'TD Service')} className="text-blue-700 hover:text-blue-900 text-[9px] bg-blue-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Edit</button>
-                                                        <button onClick={() => confirmResetRoom(v, 'TD Service')} className="text-indigo-700 hover:text-indigo-900 text-[9px] bg-indigo-100/50 px-2 py-0.5 rounded shadow-sm transition-colors">Undo</button>
-                                                    </div>
+                                            
+                                            {/* ⚡ SEPARATE SESSION BLOCKS */}
+                                            {taskState.session_history && taskState.session_history.length > 0 && (
+                                                <div className="flex flex-col gap-1.5">
+                                                    {taskState.session_history.map((session, sIdx) => (
+                                                        <div key={sIdx} className={`flex items-center justify-between font-black uppercase tracking-widest text-[10px] md:text-xs py-2 px-3 rounded-xl border opacity-90 ${
+                                                            session.autoStopped ? 'bg-rose-50 text-rose-600 border-rose-200' :
+                                                            session.reason === 'TD Service' || session.reason === 'Night Service' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 
+                                                            'bg-emerald-50 text-emerald-600 border-emerald-100'
+                                                        }`}>
+                                                            <div className="flex flex-col">
+                                                                <span className="flex items-center gap-1.5">
+                                                                    {session.autoStopped ? <AlertTriangle size={14}/> : <CheckCircle2 size={14}/>} 
+                                                                    {session.reason} ({session.duration}m)
+                                                                </span>
+                                                                <span className="text-[8px] font-bold mt-0.5 opacity-80 normal-case">
+                                                                    {session.start} - {session.end} {session.autoStopped && <span className="text-rose-500 uppercase ml-1">Auto-Stopped</span>}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex gap-1 shrink-0">
+                                                                <button onClick={() => openEditModal(v, session.reason)} className="text-blue-700 hover:text-blue-900 text-[9px] bg-white/60 px-2 py-1 rounded shadow-sm transition-colors">Edit</button>
+                                                                <button onClick={() => confirmResetRoom(v, session.reason)} className="text-slate-500 hover:text-slate-700 text-[9px] bg-white/60 px-2 py-1 rounded shadow-sm transition-colors">Undo</button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             )}
                                             
@@ -236,20 +245,19 @@ export default function RoomCleaningGrid({
                                                 </div>
                                             )}
 
-                                            {/* ⚡ ALLOW ADDING MORE SERVICES EVEN IF COMPLETED */}
                                             <button 
                                                 onClick={() => setReenterModal({ isOpen: true, villa: v })}
                                                 disabled={!!activeCleaningVilla}
-                                                className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md ${
+                                                className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md mt-1 ${
                                                     activeCleaningVilla 
                                                     ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
                                                     : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
                                                 }`}
                                             >
-                                                <Play size={14}/> {isCompleted ? 'Add Service' : 'Start Service'}
+                                                <Play size={14}/> {taskState.session_history && taskState.session_history.length > 0 ? 'Add Service' : 'Start Service'}
                                             </button>
 
-                                            {!isCompleted && (
+                                            {(!isCompleted) && (
                                                 <div className="flex gap-2">
                                                     <button 
                                                         onClick={() => handleDND(v)}

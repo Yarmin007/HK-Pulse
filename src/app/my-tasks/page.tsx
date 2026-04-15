@@ -39,7 +39,7 @@ export type ACRecord = {
     status: string;
 };
 
-// --- NEW CLEANING TASK TYPE ---
+// --- CLEANING TASK TYPE ---
 export type CleaningTask = {
     villa_number: string;
     status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused';
@@ -48,10 +48,7 @@ export type CleaningTask = {
     end_time?: string;
     time_spent?: string;
     reenter_reason?: string; 
-    morning_time: number;
-    night_time: number;
-    has_morning_completed: boolean;
-    has_night_completed: boolean;
+    session_history: any[]; // ⚡ Full session history now exposed to UI
 };
 
 const parseVillas = (input: string, doubleVillas: string[]) => {
@@ -78,32 +75,24 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
 
-// ⚡ SYSTEM NOTIFICATION HELPER FOR iOS/ANDROID PWA
 const triggerSystemNotification = (villa: string) => {
     const title = "⏰ Service Time Alert";
     const options = {
         body: `Villa ${villa} timer has been running too long. Did you forget to finish it?`,
         icon: '/icon-192.png',
         badge: '/icon-192.png',
-        vibrate: [500, 250, 500, 250, 500, 250, 500], // Aggressive vibration pattern
+        vibrate: [500, 250, 500, 250, 500, 250, 500],
         requireInteraction: true
     };
 
     if (typeof window !== 'undefined') {
-        // Vibrate Device if supported (Android mostly)
         if ('vibrate' in navigator) navigator.vibrate(options.vibrate);
-        
-        // Native System Push Notification
         if ('Notification' in window && Notification.permission === 'granted') {
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.ready.then(reg => {
                     reg.showNotification(title, options);
-                }).catch(() => {
-                    new Notification(title, options); // Fallback
-                });
-            } else {
-                new Notification(title, options); // Fallback
-            }
+                }).catch(() => { new Notification(title, options); });
+            } else { new Notification(title, options); }
         }
     }
 };
@@ -117,22 +106,18 @@ export default function MyTasksHub() {
   const [currentHost, setCurrentHost] = useState<Host | null>(null);
   const [dailyTask, setDailyTask] = useState<{shift_type?: string, shift_note?: string} | null>(null);
 
-  // --- CLEANING ALLOCATION STATE ---
   const [myCleaningVillas, setMyCleaningVillas] = useState<string[]>([]);
   const [guestData, setGuestData] = useState<GuestRecord[]>([]);
   const [acData, setAcData] = useState<ACRecord[]>([]);
   
-  // --- NEW: CLEANING WORKFLOW STATE ---
   const [cleaningTasks, setCleaningTasks] = useState<Record<string, CleaningTask>>({});
   const [activeCleaningVilla, setActiveCleaningVilla] = useState<string | null>(null);
   const [cleaningElapsedSeconds, setCleaningElapsedSeconds] = useState(0);
   const [reenterModal, setReenterModal] = useState<{isOpen: boolean, villa: string}>({isOpen: false, villa: ''}); 
-  const [hasWarnedTimer, setHasWarnedTimer] = useState(false); // ⚡ Added timer warning state
+  const [hasWarnedTimer, setHasWarnedTimer] = useState(false); 
 
-  // --- EDIT SERVICE STATE ---
   const [editServiceModal, setEditServiceModal] = useState<{isOpen: boolean, villa: string, serviceType: string, startTime: string, endTime: string, duration: number}>({isOpen: false, villa: '', serviceType: '', startTime: '', endTime: '', duration: 0});
 
-  // --- UNIVERSAL TASK STATE ---
   const [universalTasks, setUniversalTasks] = useState<Record<string, UniversalTask[]>>({});
   const [activeTaskType, setActiveTaskType] = useState<string>(''); 
   const [activeScheduleId, setActiveScheduleId] = useState<string>('');
@@ -145,7 +130,6 @@ export default function MyTasksHub() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sharedAssignments, setSharedAssignments] = useState<string[]>([]);
 
-  // Expiry Specific
   const [isExpiryMode, setIsExpiryMode] = useState(false);
   const [expiryTargets, setExpiryTargets] = useState<any[]>([]);
   const [expiryAssignedVillas, setExpiryAssignedVillas] = useState<string[]>([]);
@@ -156,9 +140,9 @@ export default function MyTasksHub() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
 
-  // --- LIVE CLEANING TIMER ---
   const activeStartTime = activeCleaningVilla ? cleaningTasks[activeCleaningVilla]?.raw_start_time : null;
 
+  // ⚡ TIMER LOGIC & 90-MINUTE AUTO-DISCONNECT
   useEffect(() => {
     let interval: NodeJS.Timeout;
     
@@ -166,7 +150,14 @@ export default function MyTasksHub() {
         if (activeStartTime) {
             const start = new Date(activeStartTime).getTime();
             if (!isNaN(start)) {
-                setCleaningElapsedSeconds(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+                const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+                
+                // FORCE STOP AT 90 MINUTES
+                if (elapsed >= 5400 && activeCleaningVilla) {
+                     handleFinishRoom(activeCleaningVilla, true);
+                } else {
+                     setCleaningElapsedSeconds(elapsed);
+                }
             }
         }
     };
@@ -180,30 +171,41 @@ export default function MyTasksHub() {
     return () => clearInterval(interval);
   }, [activeCleaningVilla, activeStartTime]);
 
-  // ⚡ TIMER WARNING EFFECT (SET TO 10 SECONDS FOR TESTING)
+  // ⚡ BACKGROUND WAKE-UP CATCH (Handles locked phones)
   useEffect(() => {
-      if (cleaningElapsedSeconds > 10 && !hasWarnedTimer && activeCleaningVilla) {
-          toast.error(`Reminder: Villa ${activeCleaningVilla} timer has been running. Did you forget to finish it?`, { 
-              duration: 8000, 
-              icon: '⏰' 
-          });
-          
-          // ⚡ TRIGGER NATIVE NOTIFICATION & VIBRATION
+      const handleVisibilityChange = () => {
+          if (document.visibilityState === 'visible' && activeStartTime && activeCleaningVilla) {
+              const start = new Date(activeStartTime).getTime();
+              const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
+              
+              if (elapsed >= 5400) {
+                  handleFinishRoom(activeCleaningVilla, true);
+              } else {
+                  setCleaningElapsedSeconds(elapsed);
+              }
+          }
+      };
+
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [activeStartTime, activeCleaningVilla]);
+
+  useEffect(() => {
+      if (cleaningElapsedSeconds > 2700 && !hasWarnedTimer && activeCleaningVilla) { // 45 Mins warning
+          toast.error(`Reminder: Villa ${activeCleaningVilla} timer is at 45 minutes!`, { duration: 8000, icon: '⏰' });
           triggerSystemNotification(activeCleaningVilla);
-          
           setHasWarnedTimer(true);
       } else if (cleaningElapsedSeconds === 0) {
           setHasWarnedTimer(false);
       }
   }, [cleaningElapsedSeconds, activeCleaningVilla, hasWarnedTimer]);
 
-  // ⚡ AUTO CALCULATE DURATION FOR EDITS
   useEffect(() => {
       if (editServiceModal.startTime && editServiceModal.endTime) {
           const [sh, sm] = editServiceModal.startTime.split(':').map(Number);
           const [eh, em] = editServiceModal.endTime.split(':').map(Number);
           let diff = (eh * 60 + em) - (sh * 60 + sm);
-          if (diff < 0) diff += 24 * 60; // Handle cross-midnight
+          if (diff < 0) diff += 24 * 60; 
           setEditServiceModal(prev => ({...prev, duration: diff}));
       }
   }, [editServiceModal.startTime, editServiceModal.endTime]);
@@ -216,7 +218,6 @@ export default function MyTasksHub() {
     return `${m}:${s}`;
   };
 
-  // ⚡ BULLETPROOF DATA LOADING
   const loadInitialData = useCallback(async (host: Host, isManualRefresh: boolean, silent = false) => {
       if (!silent) setIsLoading(true);
       const todayStr = getDhakaDateStr();
@@ -238,22 +239,10 @@ export default function MyTasksHub() {
 
           let activeV: string | null = null;
           const newTasksState: Record<string, CleaningTask> = {};
-          const isNightShift = getDhakaTime().getHours() >= 15;
 
           assignedCleanVillas.forEach(v => {
               const dbLog = existingLogs?.find(l => l.villa_number === v);
               const localTimer = typeof window !== 'undefined' ? localStorage.getItem(`hk_timer_${v}`) : null;
-              
-              let morningTime = 0, nightTime = 0, hasMorning = false, hasNight = false;
-
-              if (dbLog?.session_history && dbLog.session_history.length > 0) {
-                  dbLog.session_history.forEach((s: any) => {
-                      if (s.reason === 'TD Service' || s.reason === 'Night Service') { nightTime += s.duration || 0; hasNight = true; } 
-                      else { morningTime += s.duration || 0; hasMorning = true; }
-                  });
-              } else if (dbLog?.status === 'Completed') {
-                  hasMorning = true; morningTime = dbLog.time_spent_minutes || 0;
-              }
 
               const isInProgressLocally = !!localTimer && dbLog?.status !== 'Completed' && dbLog?.status !== 'DND' && dbLog?.status !== 'Refused';
               const isActuallyInProgress = dbLog?.status === 'In Progress' || isInProgressLocally;
@@ -262,17 +251,13 @@ export default function MyTasksHub() {
               if (localTimer && !isActuallyInProgress) localStorage.removeItem(`hk_timer_${v}`);
 
               let effectiveStatus = dbLog?.status || 'Pending';
-              if (!isActuallyInProgress && dbLog?.status === 'Completed') {
-                  if (isNightShift && !hasNight) effectiveStatus = 'Pending';
-                  else if (!isNightShift && !hasMorning) effectiveStatus = 'Pending';
-              }
 
               newTasksState[v] = { 
                   villa_number: v, status: isActuallyInProgress ? 'In Progress' : effectiveStatus as any, 
                   start_time: dbLog?.start_time ? format(parseISO(dbLog.start_time), 'hh:mm a') : (localTimer ? format(parseISO(localTimer), 'hh:mm a') : undefined),
                   raw_start_time: isActuallyInProgress ? (dbLog?.start_time || localTimer) : dbLog?.start_time,
                   time_spent: dbLog?.time_spent_minutes ? `${dbLog.time_spent_minutes}m` : undefined,
-                  morning_time: morningTime, night_time: nightTime, has_morning_completed: hasMorning, has_night_completed: hasNight
+                  session_history: dbLog?.session_history || []
               };
           });
           setCleaningTasks(prev => ({ ...prev, ...newTasksState }));
@@ -371,18 +356,15 @@ export default function MyTasksHub() {
   const handleStartService = async (villa: string, reason?: string) => {
     if (activeCleaningVilla) { toast.error("Please finish or pause your current room first!"); return; }
     
-    // ⚡ REQUEST NATIVE NOTIFICATION PERMISSION ON IOS/ANDROID
     if (typeof window !== 'undefined' && 'Notification' in window) {
-        if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-            Notification.requestPermission();
-        }
+        if (Notification.permission !== 'granted' && Notification.permission !== 'denied') Notification.requestPermission();
     }
 
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
     localStorage.setItem(`hk_timer_${villa}`, now);
 
-    // ⚡ AUTOMATICALLY SELECT MORNING OR TD SERVICE BASED ON TIME
+    // ⚡ 17:00 CUTOFF FOR TURNDOWN
     const isTD = getDhakaTime().getHours() >= 17;
     let finalReason = reason;
     if (reason === 'Service' || !reason) {
@@ -401,33 +383,58 @@ export default function MyTasksHub() {
     }
   };
 
-  const handleFinishRoom = async (villa: string) => {
+  // ⚡ UPDATED TO ACCEPT isAutoStop OVERRIDE
+  const handleFinishRoom = async (villa: string, isAutoStop = false) => {
     localStorage.removeItem(`hk_timer_${villa}`);
-    const minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
+    
+    let minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
+    if (isAutoStop || minutes >= 90) {
+        minutes = 90;
+        isAutoStop = true;
+    }
+
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
 
-    const currentTaskState = cleaningTasks[villa];
-    const sessionReason = currentTaskState?.reenter_reason || (getDhakaTime().getHours() >= 15 ? 'TD Service' : 'Morning Service');
-    const sessionStart = currentTaskState?.start_time || format(parseISO(now), 'hh:mm a');
-    const sessionEnd = format(parseISO(now), 'hh:mm a');
-    const totalMinutes = (parseInt(currentTaskState?.time_spent || '0m') || 0) + minutes;
+    setCleaningTasks(prev => {
+        const currentTaskState = prev[villa];
+        const sessionReason = currentTaskState?.reenter_reason || (getDhakaTime().getHours() >= 17 ? 'TD Service' : 'Morning Service');
+        const sessionStart = currentTaskState?.start_time || format(parseISO(now), 'hh:mm a');
+        const sessionEnd = format(parseISO(now), 'hh:mm a');
+        const totalMinutes = (parseInt(currentTaskState?.time_spent || '0m') || 0) + minutes;
 
-    let newMorningTime = currentTaskState?.morning_time || 0, newNightTime = currentTaskState?.night_time || 0, hasMorning = currentTaskState?.has_morning_completed || false, hasNight = currentTaskState?.has_night_completed || false;
-    if (sessionReason === 'TD Service' || sessionReason === 'Night Service') { newNightTime += minutes; hasNight = true; } 
-    else { newMorningTime += minutes; hasMorning = true; }
+        const newSession = { reason: sessionReason, start: sessionStart, end: sessionEnd, duration: minutes, autoStopped: isAutoStop };
+        const updatedHistory = [...(currentTaskState?.session_history || []), newSession];
 
-    setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'Completed', end_time: sessionEnd, time_spent: `${totalMinutes}m`, morning_time: newMorningTime, night_time: newNightTime, has_morning_completed: hasMorning, has_night_completed: hasNight, reenter_reason: undefined } }));
-    setActiveCleaningVilla(null);
-    toast.success(`Service Completed: Room ${villa}`);
+        // Process database update in background
+        supabase.from('hsk_cleaning_logs').select('session_history').eq('report_date', todayStr).eq('villa_number', villa).maybeSingle().then(({data}) => {
+            const existingHistory = Array.isArray(data?.session_history) ? data.session_history : [];
+            const dbHistory = [...existingHistory, newSession];
+            const payload = { report_date: todayStr, villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'Completed', end_time: now, time_spent_minutes: totalMinutes, session_history: dbHistory, updated_at: now };
+            
+            supabase.from('hsk_cleaning_logs').update(payload).match({ report_date: todayStr, villa_number: villa }).select().then(({data: updData}) => {
+                if (!updData || updData.length === 0) supabase.from('hsk_cleaning_logs').insert(payload);
+            });
+        });
 
-    const { data: existingData } = await supabase.from('hsk_cleaning_logs').select('session_history').eq('report_date', todayStr).eq('villa_number', villa).maybeSingle();
-    const existingHistory = Array.isArray(existingData?.session_history) ? existingData.session_history : [];
-    const updatedHistory = [...existingHistory, { reason: sessionReason, start: sessionStart, end: sessionEnd, duration: minutes }];
+        if (isAutoStop) toast.error(`Timer for ${villa} auto-stopped at 90m limit.`, { duration: 6000 });
+        else toast.success(`Service Completed: Room ${villa}`);
 
-    const payload = { report_date: todayStr, villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'Completed', end_time: now, time_spent_minutes: totalMinutes, session_history: updatedHistory, updated_at: now };
-    const { data, error: updateError } = await supabase.from('hsk_cleaning_logs').update(payload).match({ report_date: todayStr, villa_number: villa }).select();
-    if (updateError || !data || data.length === 0) await supabase.from('hsk_cleaning_logs').insert(payload);
+        setActiveCleaningVilla(null);
+        setCleaningElapsedSeconds(0);
+
+        return { 
+            ...prev, 
+            [villa]: { 
+                ...prev[villa], 
+                status: 'Completed', 
+                end_time: sessionEnd, 
+                time_spent: `${totalMinutes}m`, 
+                session_history: updatedHistory, 
+                reenter_reason: undefined 
+            } 
+        };
+    });
   };
 
   const handleDND = async (villa: string) => {
@@ -460,10 +467,7 @@ export default function MyTasksHub() {
               ...prev[villa], 
               status: 'Pending', 
               time_spent: undefined,
-              has_morning_completed: false,
-              has_night_completed: false,
-              morning_time: 0,
-              night_time: 0
+              session_history: []
           } 
       }));
 
@@ -693,7 +697,6 @@ export default function MyTasksHub() {
       return { status: shortStatus, headerColor, timeStr, guestName, acStatus, cleaningType };
   };
 
-  // ⚡ COMBINED VILLA LIST
   const displayVillas = useMemo(() => {
       const s = new Set<string>([...myCleaningVillas, ...expiryAssignedVillas]);
       Object.values(universalTasks).forEach(tasks => { tasks.forEach(t => s.add(t.villa_number)); });
@@ -730,7 +733,6 @@ export default function MyTasksHub() {
   if (hasUnassignedLocations) locationFilters.push('Unassigned');
 
   if (!isMounted) return null;
-  const isNightShift = getDhakaTime().getHours() >= 15;
 
   return (
     <div className="min-h-screen bg-[#FDFBFD] p-2 md:p-4 font-sans text-slate-800 pb-24">
@@ -761,13 +763,13 @@ export default function MyTasksHub() {
                             getVillaCardData={getVillaCardData}
                             handleAcStatusChange={handleAcStatusChange}
                             startAudit={startAudit}
-                            handleFinishRoom={handleFinishRoom}
+                            handleFinishRoom={(v) => handleFinishRoom(v)}
                             setReenterModal={setReenterModal}
                             handleDND={handleDND}
                             handleRefused={handleRefused}
                             confirmResetRoom={confirmResetRoom}
                             openEditModal={openEditModal}
-                            isNightShift={isNightShift}
+                            isNightShift={getDhakaTime().getHours() >= 17}
                             universalTasks={universalTasks}
                             cleaningElapsedSeconds={cleaningElapsedSeconds}
                             formatTimer={formatTimer}
@@ -852,7 +854,7 @@ export default function MyTasksHub() {
             </div>
         )}
 
-        {/* --- RE-ENTER REASON MODAL ⚡ --- */}
+        {/* --- RE-ENTER REASON MODAL --- */}
         {reenterModal.isOpen && (
             <div className="fixed inset-0 z-[115] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
                 <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 text-center">
@@ -868,7 +870,7 @@ export default function MyTasksHub() {
             </div>
         )}
 
-        {/* --- EDIT SERVICE MODAL ⚡ --- */}
+        {/* --- EDIT SERVICE MODAL --- */}
         {editServiceModal.isOpen && (
             <div className="fixed inset-0 z-[115] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 animate-in fade-in duration-200">
                 <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 md:p-8 shadow-2xl animate-in zoom-in-95 text-center">
@@ -925,15 +927,15 @@ export default function MyTasksHub() {
         {/* ⚡ ACTIVE SERVICE FLOATING BANNER */}
         {activeCleaningVilla && (
             <div className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-colors ${
-                cleaningElapsedSeconds > 10 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'
+                cleaningElapsedSeconds > 2700 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'
             }`}>
                 <div className="flex flex-col min-w-0">
                     <div className="flex items-center gap-2 font-black text-white text-[10px] md:text-xs tracking-widest uppercase">
                         <span className="relative flex h-2.5 w-2.5 shrink-0">
-                            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${cleaningElapsedSeconds > 10 ? 'bg-white' : 'bg-emerald-200'}`}></span>
-                            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${cleaningElapsedSeconds > 10 ? 'bg-white' : 'bg-emerald-100'}`}></span>
+                            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${cleaningElapsedSeconds > 2700 ? 'bg-white' : 'bg-emerald-200'}`}></span>
+                            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${cleaningElapsedSeconds > 2700 ? 'bg-white' : 'bg-emerald-100'}`}></span>
                         </span>
-                        <span className="truncate">{cleaningElapsedSeconds > 10 ? 'Timer Warning' : 'Active Room'}</span>
+                        <span className="truncate">{cleaningElapsedSeconds > 2700 ? 'Timer Warning' : 'Active Room'}</span>
                     </div>
                     <div className="text-xl md:text-2xl font-mono text-white font-black tracking-widest leading-none mt-1 whitespace-nowrap">
                         V{activeCleaningVilla} - {formatTimer(cleaningElapsedSeconds)}
