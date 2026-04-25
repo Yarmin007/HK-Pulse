@@ -101,6 +101,7 @@ export default function Sidebar() {
   const [isStepCleaner, setIsStepCleaner] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
+  // 1. INITIAL LOAD: Read from storage once
   useEffect(() => {
       const sessionData = localStorage.getItem('hk_pulse_session');
       if (sessionData) {
@@ -124,12 +125,16 @@ export default function Sidebar() {
       }
       
       setIsLoaded(true);
+  }, []);
+
+  // 2. ROUTING LOGIC: Auto-expand menus based on current path
+  useEffect(() => {
       if (isMinibarRoute) setIsMinibarOpen(true);
       if (isTeamRoute) setIsTeamOpen(true);
       if (isProfileRoute) setIsProfileOpen(true);
       if (isInventoryRoute) setIsInventoryOpen(true);
       if (isAllocationRoute) setIsAllocationOpen(true);
-  }, [pathname, isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute]);
+  }, [isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute]);
 
   const handleLogout = () => {
       localStorage.removeItem('hk_pulse_session');

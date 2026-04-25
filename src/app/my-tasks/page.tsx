@@ -136,6 +136,7 @@ export default function MyTasksHub() {
   const [expiryVillaData, setExpiryVillaData] = useState<Record<string, any>>({}); 
   const [expiryCounts, setExpiryCounts] = useState<Record<string, number>>({});
   const [refillCounts, setRefillCounts] = useState<Record<string, number>>({});
+  const [hiddenMbItems, setHiddenMbItems] = useState<string[]>([]);
 
   const [showSuccess, setShowSuccess] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
@@ -287,12 +288,15 @@ export default function MyTasksHub() {
           }
       }
 
-      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas', 'expiry_inv_status']);
+      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas', 'expiry_inv_status', 'hidden_mb_item']);
       const mbStatus = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
       const mbPeriod = constData?.find(c => c.type === 'mb_active_period')?.label;
       const expiryStatus = constData?.find(c => c.type === 'expiry_inv_status')?.label || 'CLOSED';
       const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
       const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
+      
+      const hiddenList = constData?.filter(c => c.type === 'hidden_mb_item').map(c => c.label) || [];
+      setHiddenMbItems(hiddenList);
 
       if (mbStatus === 'OPEN' && mbPeriod) {
           const allocDate = `${mbPeriod}-01`;
@@ -707,6 +711,12 @@ export default function MyTasksHub() {
       
   const displayCatalog = useMemo(() => {
       let list = [...activeCatalog];
+
+      // ⚡ FILTER HIDDEN ITEMS FOR MINIBAR ONLY
+      if (activeTaskType === 'Legacy Minibar') {
+          list = list.filter(i => !hiddenMbItems.includes(i.article_number));
+      }
+
       const isVilla = /^\d+$/.test(selectedVilla) || selectedVilla.includes('-');
       if (!isVilla && sharedAssignments.length > 1 && currentHost) {
           const myIndex = sharedAssignments.indexOf(currentHost.host_id);
@@ -725,7 +735,7 @@ export default function MyTasksHub() {
           list = list.filter(i => (i.article_name || '').toLowerCase().includes(q) || (i.generic_name || '').toLowerCase().includes(q) || (i.article_number || '').includes(q));
       }
       return list;
-  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery]);
+  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery, hiddenMbItems, activeTaskType]);
 
   const uniqueLocations = Array.from(new Set(activeCatalog.map(i => i.villa_location).filter(Boolean))) as string[];
   const hasUnassignedLocations = activeCatalog.some(i => !i.villa_location);

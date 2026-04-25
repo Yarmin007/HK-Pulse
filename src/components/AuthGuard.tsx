@@ -51,77 +51,89 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     };
     syncGlobalSettings();
 
-    // 3. Security Verification
-    const verifySession = async () => {
-        // --- ADDED /eng-ac AND /guests TO THE PUBLIC VIP LIST HERE ---
-        const isPublicRoute = 
-            pathname?.includes('/water/view') || 
-            pathname?.includes('/minibar/finance') || 
-            pathname?.includes('/inventory/store') ||
-            pathname?.includes('/mobile') ||
-            pathname?.includes('/eng-ac') ||
-            pathname?.includes('/guests'); 
-
-        if (isPublicRoute) {
-            setIsAuthenticated(true);
-            setIsLoading(false);
-            return;
-        }
-
+    // 3. Initial DB Security Verification (Runs Once)
+    const initialVerify = async () => {
         const sessionStr = localStorage.getItem('hk_pulse_session');
-        if (!sessionStr) {
-            setIsAuthenticated(false);
-            setIsLoading(false);
-            return;
-        }
-
-        try {
-            const session = JSON.parse(sessionStr);
-            
-            // STRICT DATABASE VERIFICATION
-            // We do not trust local storage. We verify the ID still exists and is active.
-            const { data, error } = await supabase
-                .from('hsk_hosts')
-                .select('id, host_id, full_name, system_role, role, status')
-                .eq('id', session.id)
-                .single();
-
-            if (error || !data || data.status === 'Resigned') {
-                // If user was deleted or resigned, wipe their session
-                localStorage.removeItem('hk_pulse_session');
-                localStorage.removeItem('hk_pulse_admin_auth');
-                setIsAuthenticated(false);
-            } else {
-                // Silently update local storage in case their role was changed by an admin
-                localStorage.setItem('hk_pulse_session', JSON.stringify({
-                    id: data.id,
-                    host_id: data.host_id,
-                    full_name: data.full_name,
-                    system_role: data.system_role,
-                    role: data.role
-                }));
-                localStorage.setItem('hk_pulse_admin_auth', data.system_role === 'admin' ? 'true' : 'false');
+        if (sessionStr) {
+            try {
+                const session = JSON.parse(sessionStr);
                 
-                // Extra security: If they try to access settings without admin role, boot them to dashboard
-                if (pathname?.includes('/settings') && data.system_role !== 'admin') {
-                    window.location.href = '/';
-                    return;
+                // STRICT DATABASE VERIFICATION
+                // We do not trust local storage entirely. We verify the ID still exists and is active on load.
+                const { data, error } = await supabase
+                    .from('hsk_hosts')
+                    .select('id, host_id, full_name, system_role, role, status')
+                    .eq('id', session.id)
+                    .single();
+
+                if (error || !data || data.status === 'Resigned') {
+                    // If user was deleted or resigned, wipe their session
+                    localStorage.removeItem('hk_pulse_session');
+                    localStorage.removeItem('hk_pulse_admin_auth');
+                    setIsAuthenticated(false);
+                } else {
+                    // Silently update local storage in case their role was changed by an admin
+                    localStorage.setItem('hk_pulse_session', JSON.stringify({
+                        id: data.id,
+                        host_id: data.host_id,
+                        full_name: data.full_name,
+                        system_role: data.system_role,
+                        role: data.role
+                    }));
+                    localStorage.setItem('hk_pulse_admin_auth', data.system_role === 'admin' ? 'true' : 'false');
                 }
-
-                setIsAuthenticated(true);
+            } catch (e) {
+                localStorage.removeItem('hk_pulse_session');
             }
-        } catch (e) {
-            localStorage.removeItem('hk_pulse_session');
-            setIsAuthenticated(false);
         }
-
-        setIsLoading(false);
     };
 
-    verifySession();
+    initialVerify();
 
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-  }, [pathname]);
+  }, []); // Run only on initial application load
+
+  // 4. Fast Route Verification
+  useEffect(() => {
+    // --- ADDED /eng-ac AND /guests TO THE PUBLIC VIP LIST HERE ---
+    const isPublicRoute = 
+        pathname?.includes('/water/view') || 
+        pathname?.includes('/minibar/finance') || 
+        pathname?.includes('/inventory/store') ||
+        pathname?.includes('/mobile') ||
+        pathname?.includes('/eng-ac') ||
+        pathname?.includes('/guests'); 
+
+    if (isPublicRoute) {
+        setIsAuthenticated(true);
+        setIsLoading(false);
+        return;
+    }
+
+    const sessionStr = localStorage.getItem('hk_pulse_session');
+    if (!sessionStr) {
+        setIsAuthenticated(false);
+        setIsLoading(false);
+        return;
+    }
+
+    try {
+        const session = JSON.parse(sessionStr);
+        
+        // Extra security: If they try to access settings without admin role, boot them to dashboard
+        if (pathname?.includes('/settings') && session.system_role !== 'admin') {
+            window.location.href = '/';
+            return;
+        }
+
+        setIsAuthenticated(true);
+    } catch (e) {
+        localStorage.removeItem('hk_pulse_session');
+        setIsAuthenticated(false);
+    }
+
+    setIsLoading(false);
+  }, [pathname]); // Runs fast and synchronously on route changes
 
   const handleAndroidInstall = async () => {
     if (!installPrompt) return;
