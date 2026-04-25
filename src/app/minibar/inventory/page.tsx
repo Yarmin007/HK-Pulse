@@ -707,22 +707,50 @@ export default function MinibarInventoryAdmin() {
       setStoreKeypadTarget(null);
   };
 
-  const confirmStoreAudit = () => {
-      setFinancials(prev => {
-          const updated = { ...prev };
-          Object.entries(storeCounts).forEach(([artNo, count]) => {
-              if (!updated[artNo]) {
-                  updated[artNo] = { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
-              } else {
-                  // Deep copy the existing item to avoid React Strict Mode double-mutation
-                  updated[artNo] = { ...updated[artNo] };
-              }
-              updated[artNo].minibar_store = count;
-          });
-          return updated;
+  const confirmStoreAudit = async () => {
+      // 1. Prepare next state
+      const nextFin = { ...financials };
+      Object.entries(storeCounts).forEach(([artNo, count]) => {
+          if (!nextFin[artNo]) {
+              nextFin[artNo] = { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
+          } else {
+              nextFin[artNo] = { ...nextFin[artNo] };
+          }
+          nextFin[artNo].minibar_store = count;
       });
+
+      // 2. Update local state immediately & Close modal
+      setFinancials(nextFin);
       setIsStoreAuditOpen(false);
-      toast.success("MB Store counts updated in Matrix! Don't forget to save the report.");
+
+      // 3. Force Database Save so amounts don't disappear on reload
+      setIsSavingMatrix(true);
+      try {
+          const finUpdates = catalog.map(c => {
+              const artNo = c.article_number;
+              const fin = nextFin[artNo] || { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
+              return {
+                  month_period: selectedMonth,
+                  article_number: artNo,
+                  opening_stock: fin.opening_stock || 0,
+                  transfer_in: fin.transfer_in || 0,
+                  transfer_out: fin.transfer_out || 0,
+                  sales: fin.sales || 0,
+                  minibar_store: fin.minibar_store || 0,
+                  comments: fin.comments || ''
+              };
+          });
+
+          if (finUpdates.length > 0) {
+              const { error: finErr } = await supabase.from('hsk_monthly_minibar').upsert(finUpdates, { onConflict: 'month_period, article_number' });
+              if (finErr) throw new Error("Database Error: " + finErr.message);
+          }
+
+          toast.success("MB Store counts saved to Matrix & Database!");
+      } catch (err: any) {
+          toast.error(err.message || "Failed to save Store Counts.");
+      }
+      setIsSavingMatrix(false);
   };
 
   const displayStoreCatalog = useMemo(() => {
@@ -1142,7 +1170,7 @@ export default function MinibarInventoryAdmin() {
       {/* --- CSV IMPORT REVIEW MODAL --- */}
       {importState.isOpen && (
           <div className="fixed inset-0 z-[150] bg-black/50 flex items-center justify-center p-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 overflow-hidden">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col animate-in fade-in zoom-in-95 overflow-hidden">
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
                       <div>
                           <h2 className="text-xl font-black text-[#6D2158]">Review {importState.type === 'sales' ? 'Sales' : 'Transfers'} Import</h2>
@@ -1153,7 +1181,7 @@ export default function MinibarInventoryAdmin() {
                       </button>
                   </div>
 
-                  <div className="overflow-auto p-0 flex-1 bg-slate-50">
+                  <div className="overflow-auto p-0 flex-1 bg-slate-50 custom-scrollbar">
                       <table className="w-full text-left border-collapse">
                           <thead className="bg-white sticky top-0 shadow-sm z-10">
                               <tr>
@@ -1230,8 +1258,9 @@ export default function MinibarInventoryAdmin() {
 
       {/* --- MB STORE AUDIT MODAL --- */}
       {isStoreAuditOpen && (
-          <div className="fixed inset-0 z-[100] bg-[#FDFBFD] flex flex-col animate-in fade-in zoom-in-95 duration-200 overflow-hidden">
-              <div className="bg-white p-4 md:p-6 border-b border-slate-200 flex flex-col gap-4 shrink-0 shadow-sm">
+          <div className="fixed inset-0 z-[100] bg-[#FDFBFD] flex flex-col h-[100dvh] w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+              {/* Header Flex None */}
+              <div className="flex-none bg-white p-4 md:p-6 border-b border-slate-200 flex flex-col gap-4 shadow-sm z-20">
                   <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                           <button onClick={() => setIsStoreAuditOpen(false)} className="p-2.5 md:p-3 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-full transition-colors">
@@ -1261,7 +1290,8 @@ export default function MinibarInventoryAdmin() {
                   </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-40 custom-scrollbar">
+              {/* Scrollable Middle Area Flex 1 */}
+              <div className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar">
                   <div className="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
                       {displayStoreCatalog.length === 0 ? (
                           <div className="col-span-full py-10 text-center text-slate-400 font-bold">No items found.</div>
@@ -1299,7 +1329,8 @@ export default function MinibarInventoryAdmin() {
                   </div>
               </div>
 
-              <div className="fixed bottom-0 left-0 right-0 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
+              {/* Footer Actions Flex None */}
+              <div className="flex-none bg-white border-t border-slate-200 p-4 md:p-6 pb-28 md:pb-6 z-20 shadow-[0_-15px_40px_rgba(0,0,0,0.08)]">
                   <div className="max-w-5xl mx-auto flex gap-3">
                       <button 
                           onClick={() => setIsStoreAuditOpen(false)} 
@@ -1309,17 +1340,19 @@ export default function MinibarInventoryAdmin() {
                       </button>
                       <button 
                           onClick={confirmStoreAudit} 
-                          className="flex-1 py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                          disabled={isSavingMatrix}
+                          className="flex-1 py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg hover:bg-[#5a1b49] disabled:opacity-70 active:scale-95 transition-all flex items-center justify-center gap-2"
                       >
-                          <Save size={16}/> Confirm Store Count
+                          {isSavingMatrix ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Confirm Store Count
                       </button>
                   </div>
               </div>
 
+              {/* Fixed Keypad Overlay */}
               {storeKeypadTarget && (
-                  <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex flex-col justify-end animate-in fade-in duration-200">
+                  <div className="fixed inset-0 z-[99999] bg-black/60 backdrop-blur-sm flex flex-col justify-end animate-in fade-in duration-200">
                       <div className="absolute inset-0" onClick={saveStoreKeypadValue}></div>
-                      <div className="bg-[#FDFBFD] w-full rounded-t-[2rem] p-5 md:p-6 pb-safe shadow-2xl animate-in slide-in-from-bottom-8 relative z-10 max-w-md mx-auto">
+                      <div className="bg-[#FDFBFD] w-full rounded-t-[2rem] p-5 md:p-6 pb-28 md:pb-6 shadow-2xl animate-in slide-in-from-bottom-8 relative z-10 max-w-md mx-auto">
                           <div className="flex justify-between items-center mb-5">
                               <div>
                                   <h4 className="font-black text-slate-800 text-base">Direct Input</h4>
