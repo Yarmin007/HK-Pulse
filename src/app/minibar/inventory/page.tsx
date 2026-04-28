@@ -3,11 +3,12 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { 
   Calendar, CheckCircle2, User, Save, Lock, Unlock,
   RefreshCw, Loader2, Smartphone, LayoutGrid, Users, Settings, EyeOff, Eye, Search, Home, Wine, X, Download,
-  PackageSearch, Minus, Plus, ChevronLeft, Upload, AlertCircle, ArrowRight
+  PackageSearch, Minus, Plus, ChevronLeft, Upload, AlertCircle, ArrowRight, FileSpreadsheet
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { getDhakaDateStr } from '@/lib/dateUtils';
+import * as ExcelJS from 'exceljs';
 
 const TOTAL_VILLAS = 97;
 
@@ -120,6 +121,7 @@ export default function MinibarInventoryAdmin() {
   const [activeTab, setActiveTab] = useState<'MATRIX' | 'ASSIGNMENTS' | 'SETUP'>('MATRIX');
   const [isLoading, setIsLoading] = useState(true);
   const [isSavingMatrix, setIsSavingMatrix] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   
   // MONTHLY STATE
   const [selectedMonth, setSelectedMonth] = useState(getLocalMonth());
@@ -419,6 +421,152 @@ export default function MinibarInventoryAdmin() {
     toast.success("Mobile App link copied to clipboard!");
   };
 
+  const matrixDict = useMemo(() => {
+    const dict: Record<string, Record<string, number>> = {};
+    
+    activeVillaList.forEach(v => dict[v] = {});
+    submissions.forEach(sub => {
+        if (!dict[sub.villa_number]) dict[sub.villa_number] = {};
+        if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
+            sub.inventory_data.forEach((item: any) => {
+                dict[sub.villa_number][item.article_number] = item.qty;
+            });
+        }
+    });
+    return dict;
+  }, [submissions, activeVillaList]);
+
+  // --- EXCEL EXPORT LOGIC ---
+  const exportToExcel = async () => {
+      setIsExporting(true);
+      try {
+          const wb = new ExcelJS.Workbook();
+          const ws = wb.addWorksheet('Minibar P&L Matrix', {
+              views: [{ state: 'frozen', xSplit: 6, ySplit: 2 }]
+          });
+
+          const headerRow = [
+              "Category", "Micros Name", "Art #", "Article Name", "Unit", "Avg Cost", "Sell Price",
+              "Open Stk", "Open Val", "Trans IN", "Trans OUT", "Sales", "Sales Val", "COS", "COS %", "SOH Clos", "Close Val",
+              ...activeVillaList,
+              "Villa Total", "MB Store", "Total Phys", "Var Qty", "Var Val", "Comments"
+          ];
+
+          // 1. Add Main Title
+          ws.addRow(['MINIBAR P&L MATRIX - ' + selectedMonth]);
+          ws.mergeCells(1, 1, 1, headerRow.length);
+          const titleCell = ws.getCell(1, 1);
+          titleCell.font = { name: 'Arial', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+          titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6D2158' } };
+          titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+          ws.getRow(1).height = 35;
+
+          // 2. Add Table Headers
+          const headerRowObj = ws.addRow(headerRow);
+          headerRowObj.eachCell((cell) => {
+              cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF475569' } };
+              cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+              cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+          });
+          ws.getRow(2).height = 25;
+
+          // 3. Widths
+          const baseWidths = [15, 25, 10, 35, 8, 12, 12, 10, 12, 10, 10, 10, 12, 12, 10, 12, 12];
+          const villaWidths = activeVillaList.map(() => 6);
+          const endWidths = [12, 12, 12, 10, 12, 40];
+          const allWidths = [...baseWidths, ...villaWidths, ...endWidths];
+          allWidths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+          // 4. Rows
+          catalog.forEach(item => {
+              const artNo = item.article_number;
+              const fin = financials[artNo] || { opening_stock: previousClosing[artNo] || 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
+              const avgCost = parseFloat(item.avg_cost) || 0;
+              const salePrice = parseFloat(item.sales_price) || 0;
+              
+              const opVal = fin.opening_stock * avgCost;
+              const salesVal = fin.sales * salePrice;
+              const cos = fin.sales * avgCost;
+              const cosPct = salesVal > 0 ? (cos / salesVal) : 0; 
+              const soh = fin.opening_stock + fin.transfer_in - fin.transfer_out - fin.sales;
+              const closingVal = soh * avgCost;
+              
+              const villaTotal = activeVillaList.reduce((sum, v) => sum + (matrixDict[v]?.[artNo] || 0), 0);
+              const physTotal = villaTotal + fin.minibar_store;
+              const varQty = physTotal - soh;
+              const varVal = varQty * avgCost;
+
+              const rowData = [
+                  item.category, item.micros_name || '', artNo, item.article_name, item.unit,
+                  avgCost, salePrice,
+                  fin.opening_stock, opVal, fin.transfer_in, fin.transfer_out,
+                  fin.sales, salesVal, cos, cosPct,
+                  soh, closingVal,
+                  ...activeVillaList.map(v => matrixDict[v]?.[artNo] || 0),
+                  villaTotal, fin.minibar_store, physTotal,
+                  varQty, varVal, fin.comments || ''
+              ];
+
+              const row = ws.addRow(rowData);
+              row.height = 22;
+
+              row.getCell(6).numFmt = '"$"#,##0.00'; 
+              row.getCell(7).numFmt = '"$"#,##0.00'; 
+              row.getCell(9).numFmt = '"$"#,##0.00'; 
+              row.getCell(13).numFmt = '"$"#,##0.00'; 
+              row.getCell(14).numFmt = '"$"#,##0.00'; 
+              row.getCell(15).numFmt = '0.0%'; 
+              row.getCell(17).numFmt = '"$"#,##0.00'; 
+
+              const offset = 17 + activeVillaList.length;
+              row.getCell(offset + 5).numFmt = '"$"#,##0.00'; 
+
+              row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+                  cell.alignment = { vertical: 'middle', horizontal: colNumber <= 4 || colNumber === offset + 6 ? 'left' : 'center' };
+                  cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+              });
+
+              row.getCell(8).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } }; 
+              row.getCell(8).font = { color: { argb: 'FF1D4ED8' }, bold: true };
+              
+              row.getCell(16).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDF4FF' } }; 
+              row.getCell(16).font = { color: { argb: 'FF86198F' }, bold: true };
+
+              row.getCell(offset + 3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDF4FF' } }; 
+              row.getCell(offset + 3).font = { color: { argb: 'FF86198F' }, bold: true };
+
+              const varQtyCell = row.getCell(offset + 4);
+              if (varQty < 0) {
+                  varQtyCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE4E6' } };
+                  varQtyCell.font = { color: { argb: 'FFE11D48' }, bold: true };
+              } else if (varQty > 0) {
+                  varQtyCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFEF3' } };
+                  varQtyCell.font = { color: { argb: 'FFD97706' }, bold: true };
+              } else {
+                  varQtyCell.font = { color: { argb: 'FF10B981' }, bold: true };
+              }
+          });
+
+          const buffer = await wb.xlsx.writeBuffer();
+          const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `Minibar_Working_Matrix_${selectedMonth}.xlsx`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+
+      } catch (error) {
+          console.error("Excel generation error:", error);
+          toast.error("Error generating the Excel file.");
+      } finally {
+          setIsExporting(false);
+      }
+  };
+
   // --- CSV IMPORT LOGIC (WITH REVIEW MODAL) ---
   const downloadCSVTemplate = (type: 'sales' | 'transfers') => {
       let csvContent = "";
@@ -653,21 +801,6 @@ export default function MinibarInventoryAdmin() {
       setIsSavingMatrix(false);
   };
 
-  const matrixDict = useMemo(() => {
-      const dict: Record<string, Record<string, number>> = {};
-      
-      activeVillaList.forEach(v => dict[v] = {});
-      submissions.forEach(sub => {
-          if (!dict[sub.villa_number]) dict[sub.villa_number] = {};
-          if (sub.inventory_data && Array.isArray(sub.inventory_data)) {
-              sub.inventory_data.forEach((item: any) => {
-                  dict[sub.villa_number][item.article_number] = item.qty;
-              });
-          }
-      });
-      return dict;
-  }, [submissions, activeVillaList]);
-
   // --- MB STORE AUDIT LOGIC (WITH CALCULATOR) ---
   const startStoreAudit = () => {
       const initialCounts: Record<string, number> = {};
@@ -876,6 +1009,11 @@ export default function MinibarInventoryAdmin() {
                 <button onClick={startStoreAudit} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-purple-100 text-purple-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-purple-200 transition-all whitespace-nowrap">
                     <PackageSearch size={16}/> Count MB Store
                 </button>
+
+                <button onClick={exportToExcel} disabled={isExporting} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-slate-200 hover:text-slate-800 transition-all whitespace-nowrap">
+                    {isExporting ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} Export Excel
+                </button>
+
                 <button onClick={handleSaveMatrix} disabled={isSavingMatrix} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-emerald-600 text-white rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-lg hover:bg-emerald-500 transition-all whitespace-nowrap">
                     {isSavingMatrix ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save P&L
                 </button>
