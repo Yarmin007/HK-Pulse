@@ -420,6 +420,29 @@ export default function MinibarInventoryAdmin() {
   };
 
   // --- CSV IMPORT LOGIC (WITH REVIEW MODAL) ---
+  const downloadCSVTemplate = (type: 'sales' | 'transfers') => {
+      let csvContent = "";
+      let filename = "";
+
+      if (type === 'sales') {
+          csvContent = "Micros Name,Qty\nCoca Cola 330ml,10\nSnickers Bar,5";
+          filename = "Minibar_Sales_Import_Format.csv";
+      } else {
+          csvContent = "Article Name,In,Out\nCoca Cola 330ml,24,0\nSnickers Bar,0,10";
+          filename = "Minibar_Transfers_Import_Format.csv";
+      }
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+  };
+
   const parseCSVLine = (line: string) => {
       // Properly splits by commas, respecting quotes, and keeping spaces inside values
       return line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/(^"|"$)/g, '').trim());
@@ -832,12 +855,23 @@ export default function MinibarInventoryAdmin() {
                 <input type="file" accept=".csv" ref={salesFileInputRef} onChange={(e) => handleFileUpload(e, 'sales')} className="hidden" />
                 <input type="file" accept=".csv" ref={transfersFileInputRef} onChange={(e) => handleFileUpload(e, 'transfers')} className="hidden" />
                 
-                <button onClick={() => salesFileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-blue-100 text-blue-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-blue-200 transition-all whitespace-nowrap">
-                    <Upload size={16}/> Import Sales
-                </button>
-                <button onClick={() => transfersFileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-amber-100 text-amber-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-amber-200 transition-all whitespace-nowrap">
-                    <Upload size={16}/> Import Transfers
-                </button>
+                <div className="flex-1 md:flex-none flex items-center shadow-sm rounded-xl">
+                    <button onClick={() => salesFileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-4 py-2.5 md:py-3 bg-blue-100 text-blue-700 rounded-l-xl text-[10px] md:text-xs font-bold uppercase tracking-wider hover:bg-blue-200 transition-all whitespace-nowrap border-r border-blue-200">
+                        <Upload size={16}/> Import Sales
+                    </button>
+                    <button onClick={() => downloadCSVTemplate('sales')} title="Download Template Format" className="flex items-center justify-center px-2 md:px-3 py-2.5 md:py-3 bg-blue-100 text-blue-700 rounded-r-xl hover:bg-blue-200 transition-all">
+                        <Download size={14}/>
+                    </button>
+                </div>
+
+                <div className="flex-1 md:flex-none flex items-center shadow-sm rounded-xl">
+                    <button onClick={() => transfersFileInputRef.current?.click()} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-4 py-2.5 md:py-3 bg-amber-100 text-amber-700 rounded-l-xl text-[10px] md:text-xs font-bold uppercase tracking-wider hover:bg-amber-200 transition-all whitespace-nowrap border-r border-amber-200">
+                        <Upload size={16}/> Import Transfers
+                    </button>
+                    <button onClick={() => downloadCSVTemplate('transfers')} title="Download Template Format" className="flex items-center justify-center px-2 md:px-3 py-2.5 md:py-3 bg-amber-100 text-amber-700 rounded-r-xl hover:bg-amber-200 transition-all">
+                        <Download size={14}/>
+                    </button>
+                </div>
 
                 <button onClick={startStoreAudit} className="flex-1 md:flex-none flex items-center justify-center gap-1 md:gap-2 px-3 md:px-6 py-2.5 md:py-3 bg-purple-100 text-purple-700 rounded-xl text-[10px] md:text-xs font-bold uppercase tracking-wider shadow-sm hover:bg-purple-200 transition-all whitespace-nowrap">
                     <PackageSearch size={16}/> Count MB Store
