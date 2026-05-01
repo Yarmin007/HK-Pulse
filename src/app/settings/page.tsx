@@ -31,6 +31,7 @@ type MasterItem = {
   generic_name: string;   
   unit: string;
   category: string;
+  sub_category?: string;
   is_minibar_item: boolean;
   micros_name: string;    
   sales_price: number;
@@ -142,7 +143,7 @@ export default function SettingsPage() {
   const [qrModalItem, setQrModalItem] = useState<MasterItem | null>(null);
 
   const defaultItemState: MasterItem = {
-    article_number: '', hk_no: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests',
+    article_number: '', hk_no: '', article_name: '', generic_name: '', unit: 'Each', category: 'General Requests', sub_category: '',
     is_minibar_item: false, micros_name: '', sales_price: 0, avg_cost: 0, sort_order: 0,
     image_url: '', has_expiry: false, par_level: 0, reorder_qty: 0, primary_supplier: '', inventory_type: '', legacy_ids: ''
   };
@@ -287,7 +288,7 @@ export default function SettingsPage() {
         ...defaultItemState, 
         hk_no: newHK, 
         is_minibar_item: activeTab === 'Minibar Menu',
-        category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : 'Guest Amenities'
+        category: activeTab === 'Minibar Menu' ? 'Soft Drinks' : (activeTab === 'Linen Catalog' ? 'Linen' : 'Guest Amenities')
     });
     setOriginalArticleNumber('');
     setIsEditing(false);
@@ -342,7 +343,8 @@ export default function SettingsPage() {
       generic_name: finalGeneric,
       article_name: finalArticle,
       micros_name: currentItem.is_minibar_item && !currentItem.micros_name ? finalArticle : currentItem.micros_name,
-      hk_no: generatedHk 
+      hk_no: generatedHk,
+      sub_category: currentItem.sub_category || ''
     };
 
     if (isEditing) {
@@ -684,7 +686,8 @@ export default function SettingsPage() {
     item.article_number.includes(searchQuery)
   ).filter(item => {
     if (activeTab === 'Minibar Menu') return item.is_minibar_item;
-    if (activeTab === 'Master List') return !item.is_minibar_item;
+    if (activeTab === 'Linen Catalog') return item.category === 'Linen';
+    if (activeTab === 'Master List') return !item.is_minibar_item && item.category !== 'Linen';
     if (activeTab === 'Expiry Setup') return item.has_expiry;
     return true;
   });
@@ -708,7 +711,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
-         {['Master List', 'Minibar Menu', 'Expiry Setup', 'GEM Directory', 'System Config', 'Access Control'].map(tab => (
+         {['Master List', 'Minibar Menu', 'Linen Catalog', 'Expiry Setup', 'GEM Directory', 'System Config', 'Access Control'].map(tab => (
             <button key={tab} onClick={() => { setActiveTab(tab); setIsFormOpen(false); }} className={`px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${activeTab === tab ? 'bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20' : 'bg-white text-slate-400 border border-slate-100 hover:border-[#6D2158]'}`}>{tab}</button>
          ))}
       </div>
@@ -936,6 +939,10 @@ export default function SettingsPage() {
                            </select>
                         </div>
                         <div>
+                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Sub Category (Optional)</label>
+                           <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={currentItem.sub_category || ''} onChange={e => setCurrentItem({...currentItem, sub_category: e.target.value})} placeholder="e.g. Pillows, Towels" />
+                        </div>
+                        <div>
                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Unit</label>
                            <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 outline-none" value={currentItem.unit || 'Each'} onChange={e => setCurrentItem({...currentItem, unit: e.target.value})}><option>Each</option><option>Kg</option><option>Ltr</option><option>Box</option></select>
                         </div>
@@ -1007,6 +1014,11 @@ export default function SettingsPage() {
                                                {item.article_name} • #{item.article_number} • {item.unit}
                                                {item.inventory_type && <span className="ml-2 text-indigo-500 font-black tracking-widest">• linked: {item.inventory_type}</span>}
                                            </div>
+                                           {item.sub_category && (
+                                               <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1 bg-slate-100 px-2 py-0.5 rounded w-max border border-slate-200">
+                                                   Group: {item.sub_category}
+                                               </div>
+                                           )}
                                            {item.legacy_ids && (
                                                <div className="text-[9px] font-black text-amber-500 uppercase tracking-widest mt-1 bg-amber-50 px-2 py-0.5 rounded w-max border border-amber-200">
                                                    Archived IDs: {item.legacy_ids}

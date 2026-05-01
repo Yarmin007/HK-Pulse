@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -30,6 +30,8 @@ const INVENTORY_ITEMS = [
   { name: "Live Matrix", icon: FileSpreadsheet, path: "/inventory/matrix" },
   { name: "Monthly Setup", icon: ClipboardCheck, path: "/inventory/setup" },
   { name: "Housekeeping Store", icon: Warehouse, path: "/inventory/store" },
+  { name: "Linen Setup", icon: ClipboardCheck, path: "/inventory/linen-setup" },
+  { name: "Linen Inventory", icon: Layers, path: "/inventory/linen" },
 ];
 
 const MENU_ITEMS = [
