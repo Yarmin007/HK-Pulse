@@ -344,17 +344,32 @@ export default function LinenControlPanel() {
                 });
             });
 
-            // 4. Assign Public Area counts (Filtered by PA whitelist)
+            // 4. Assign Public Area counts (Dynamically split by configured PA Locations)
             const paHosts = hosts.filter(h => h.role.toLowerCase().includes('public area') || h.role.toLowerCase() === 'pa');
             paHosts.forEach(host => {
-                inserts.push({
-                    month_year: selectedMonth,
-                    host_id: host.host_id,
-                    location_type: 'PA',
-                    location_name: 'Public Area',
-                    assigned_items: paLinenArticleNumbers,
-                    assigned_at: new Date().toISOString()
-                });
+                // If locations exist, assign each location to the PA host
+                if (paLocations.length > 0) {
+                    paLocations.forEach(loc => {
+                        inserts.push({
+                            month_year: selectedMonth,
+                            host_id: host.host_id,
+                            location_type: 'PA',
+                            location_name: loc.label,
+                            assigned_items: paLinenArticleNumbers,
+                            assigned_at: new Date().toISOString()
+                        });
+                    });
+                } else {
+                    // Fallback if no locations are configured in settings
+                    inserts.push({
+                        month_year: selectedMonth,
+                        host_id: host.host_id,
+                        location_type: 'PA',
+                        location_name: 'Public Area',
+                        assigned_items: paLinenArticleNumbers,
+                        assigned_at: new Date().toISOString()
+                    });
+                }
             });
 
             const { error } = await supabase.from('hsk_linen_assignments').insert(inserts);
@@ -414,40 +429,41 @@ export default function LinenControlPanel() {
                                 <p className="text-xs font-bold text-slate-500 mt-1">Review and modify assigned villas and pantries before dispatching.</p>
                             </div>
                             
-                            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mt-2">
-                                <div className="flex items-center gap-2 w-full sm:w-auto">
-                                    <div className="flex items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm flex-1">
+                            {/* --- RESPONSIVE TOOLBAR (FIXED UI) --- */}
+                            <div className="flex flex-wrap lg:flex-nowrap gap-3 items-center justify-between mt-2 bg-white p-2 rounded-2xl border border-slate-100 shadow-sm">
+                                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full lg:w-auto">
+                                    <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 flex-1 sm:flex-none">
                                         <Calendar size={16} className="text-slate-400 ml-2 shrink-0"/>
                                         <input 
                                             type="date" 
-                                            className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer flex-1 px-2"
+                                            className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer px-1 w-full sm:w-[130px]"
                                             value={extractDate}
                                             onChange={(e) => setExtractDate(e.target.value)}
                                         />
                                         <button 
                                             onClick={handleExtractAllocations} 
                                             disabled={isLoading}
-                                            className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
+                                            className="bg-white text-indigo-600 border border-slate-200 hover:border-indigo-300 hover:text-indigo-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 shadow-sm shrink-0"
                                         >
                                             {isLoading ? <Loader2 size={14} className="animate-spin"/> : <DownloadCloud size={14}/>}
-                                            Extract Board
+                                            Extract
                                         </button>
                                     </div>
+                                    
                                     <button 
                                         onClick={handleSaveLayout}
                                         disabled={isLoading}
-                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors flex items-center justify-center gap-1 shrink-0"
+                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors flex items-center justify-center gap-1 shrink-0 flex-1 sm:flex-none h-[42px]"
                                     >
                                         <Save size={14}/> Save Layout
                                     </button>
                                 </div>
 
-                                {/* ADD HOST SEARCH DROPDOWN */}
-                                <div className="relative w-full sm:w-72">
-                                    <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
+                                <div className="relative w-full lg:w-72 shrink-0">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/>
                                     <input 
                                         type="text" 
-                                        className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] transition-all shadow-sm"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158] focus:bg-white transition-all"
                                         placeholder="Search & Add Attendant..."
                                         value={hostSearch}
                                         onChange={(e) => {
@@ -485,7 +501,7 @@ export default function LinenControlPanel() {
                                 <div className="text-center py-12">
                                     <div className="w-16 h-16 bg-slate-100 text-slate-300 rounded-full flex items-center justify-center mx-auto mb-4"><Users size={32}/></div>
                                     <h4 className="font-black text-slate-600 mb-1">No Allocations Loaded</h4>
-                                    <p className="text-xs font-bold text-slate-400">Click "Extract Board" to pull today's active roster, or search to add manually.</p>
+                                    <p className="text-xs font-bold text-slate-400">Click "Extract" to pull today's active roster, or search to add manually.</p>
                                 </div>
                             ) : (
                                 <table className="w-full text-left border-separate border-spacing-y-2">
