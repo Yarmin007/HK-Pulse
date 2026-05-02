@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { 
     Sparkles, Layers, Lock, Unlock, AlertTriangle, Users, 
     ShieldCheck, MapPin, Plus, Trash2, DownloadCloud, EyeOff, 
-    X, Search, Calendar, Loader2 
+    X, Search, Calendar, Loader2, Save
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import toast from 'react-hot-toast';
@@ -16,8 +16,8 @@ type Constant = { id: string; type: string; label: string; };
 
 const PANTRIES = [
     'Jetty A Pantry',
-    'JB Pantry',
-    'JC Pantry',
+    'Jetty B Pantry',
+    'Jetty C Pantry',
     'Beach Pantry'
 ];
 
@@ -30,8 +30,8 @@ const determinePantries = (villas: string[]): string[] => {
         if (isNaN(v)) return;
 
         if (v >= 1 && v <= 35) pantries.add('Jetty A Pantry');
-        else if (v >= 37 && v <= 50) pantries.add('JB Pantry');
-        else if (v >= 59 && v <= 79) pantries.add('JC Pantry');
+        else if (v >= 37 && v <= 50) pantries.add('Jetty B Pantry');
+        else if (v >= 59 && v <= 79) pantries.add('Jetty C Pantry');
         else if (v <= 97) pantries.add('Beach Pantry'); // Catches 36, 51-58, 80-97
     });
 
@@ -59,8 +59,8 @@ const TagInput = ({ values = [], onChange, placeholder, options }: { values: str
 
     return (
         <div className="flex flex-wrap gap-1.5 items-center bg-slate-50 border border-slate-200 p-2 rounded-xl focus-within:border-[#6D2158] focus-within:ring-1 focus-within:ring-[#6D2158]/10 transition-all min-h-[42px] cursor-text">
-            {values.map(t => (
-                <span key={t} className="flex items-center gap-1 bg-white border border-slate-200 px-2 py-1 rounded-md text-[11px] font-black text-slate-700 shadow-sm animate-in zoom-in-95 duration-200">
+            {values.map((t, idx) => (
+                <span key={`${t}-${idx}`} className="flex items-center gap-1 bg-white border border-slate-200 px-2 py-1 rounded-md text-[11px] font-black text-slate-700 shadow-sm animate-in zoom-in-95 duration-200">
                     {t} <X size={12} className="cursor-pointer text-slate-400 hover:text-rose-500 ml-0.5 transition-colors" onClick={(e) => { e.stopPropagation(); removeTag(t); }} />
                 </span>
             ))}
@@ -131,8 +131,19 @@ export default function LinenControlPanel() {
     const fetchControlData = async () => {
         setIsLoading(true);
         
-        const { data: periodData } = await supabase.from('hsk_inventory_periods').select('is_locked').eq('month_year', selectedMonth).single();
-        setIsLocked(periodData ? periodData.is_locked : true);
+        // Fetch Lock Status and Saved Allocations
+        const { data: periodData } = await supabase.from('hsk_inventory_periods').select('is_locked, parsed_allocations').eq('month_year', selectedMonth).single();
+        if (periodData) {
+            setIsLocked(periodData.is_locked);
+            if (periodData.parsed_allocations && Array.isArray(periodData.parsed_allocations)) {
+                setParsedAllocations(periodData.parsed_allocations);
+            } else {
+                setParsedAllocations([]);
+            }
+        } else {
+            setIsLocked(true);
+            setParsedAllocations([]);
+        }
 
         const { data: items } = await supabase.from('hsk_master_catalog').select('*').eq('category', 'Linen').order('article_name', { ascending: true });
         if (items) setLinenItems(items);
@@ -148,13 +159,34 @@ export default function LinenControlPanel() {
 
     const toggleLockStatus = async () => {
         const newStatus = !isLocked;
-        const { error } = await supabase.from('hsk_inventory_periods').upsert({ month_year: selectedMonth, is_locked: newStatus });
+        const { error } = await supabase.from('hsk_inventory_periods').upsert({ 
+            month_year: selectedMonth, 
+            is_locked: newStatus,
+            parsed_allocations: parsedAllocations // Preserve layout
+        }, { onConflict: 'month_year' });
 
         if (error) toast.error("Failed to update lock status.");
         else {
             setIsLocked(newStatus);
             toast.success(newStatus ? "Inventory Locked. Staff cannot see tasks." : "Inventory Unlocked! Tasks are live.");
         }
+    };
+
+    // --- SAVE ALLOCATIONS TO DB ---
+    const handleSaveLayout = async () => {
+        setIsLoading(true);
+        const { error } = await supabase.from('hsk_inventory_periods').upsert({
+            month_year: selectedMonth,
+            is_locked: isLocked,
+            parsed_allocations: parsedAllocations
+        }, { onConflict: 'month_year' });
+
+        if (error) {
+            toast.error("Failed to save layout: " + error.message);
+        } else {
+            toast.success(`Allocation layout saved for ${selectedMonth}!`);
+        }
+        setIsLoading(false);
     };
 
     // --- ALLOCATION PARSER ---
@@ -166,27 +198,25 @@ export default function LinenControlPanel() {
         if (error) {
             toast.error("Extraction Error: " + error.message);
         } else if (allocData && allocData.length > 0) {
-            // Filter strictly for those with villas assigned
             const activeAllocations = allocData.filter(a => a.task_details && a.task_details.trim() !== '').map(a => {
                 const matchedHost = hosts.find(h => h.id === a.host_id || h.host_id === a.host_id);
                 
-                // Parse Villas into array
-                const assignedVillas = a.task_details.split(',').map((s: string) => s.trim()).filter(Boolean);
+                const rawVillas = a.task_details.split(',').map((s: string) => s.trim()).filter(Boolean) as string[];
+                const assignedVillas: string[] = Array.from(new Set<string>(rawVillas));
                 
-                // Auto-determine pantries
                 const assignedPantries = determinePantries(assignedVillas);
 
                 return {
                     id: a.id,
-                    host_id: a.host_id,
+                    host_id: matchedHost ? matchedHost.host_id : a.host_id, 
                     host_name: matchedHost ? matchedHost.full_name : (a.host_name || 'Unknown'),
                     assigned_villas: assignedVillas,
                     assigned_pantries: assignedPantries
-                };
+                } as Allocation;
             });
 
             setParsedAllocations(activeAllocations);
-            toast.success(`Parsed ${activeAllocations.length} VAs with active rooms from ${format(parse(extractDate, 'yyyy-MM-dd', new Date()), 'dd/MM/yyyy')}.`);
+            toast.success(`Parsed ${activeAllocations.length} VAs from ${format(parse(extractDate, 'yyyy-MM-dd', new Date()), 'dd/MM/yyyy')}. Remember to save!`);
         } else {
             toast.error(`No daily allocations found for ${format(parse(extractDate, 'yyyy-MM-dd', new Date()), 'dd/MM/yyyy')}.`);
         }
@@ -197,7 +227,6 @@ export default function LinenControlPanel() {
         const newAllocations = [...parsedAllocations];
         newAllocations[index] = { ...newAllocations[index], [field]: value };
         
-        // If villas changed, auto-update pantries (Optional: you could disable this if you want manual overrides to stick strictly)
         if (field === 'assigned_villas') {
              newAllocations[index].assigned_pantries = determinePantries(value);
         }
@@ -249,6 +278,9 @@ export default function LinenControlPanel() {
                 return;
             }
             
+            // Auto-save the layout right before dispatching just to be safe
+            await supabase.from('hsk_inventory_periods').upsert({ month_year: selectedMonth, is_locked: isLocked, parsed_allocations: parsedAllocations }, { onConflict: 'month_year' });
+
             const allLinenArticleNumbers = linenItems.map(i => i.article_number);
             const vaLinenArticleNumbers = linenItems.filter(i => !i.is_va_excluded).map(i => i.article_number);
             const paLinenArticleNumbers = linenItems.filter(i => i.is_pa_applicable).map(i => i.article_number);
@@ -259,11 +291,9 @@ export default function LinenControlPanel() {
             
             // 1. Process Pantry Splits based on the custom assigned_pantries array
             PANTRIES.forEach(pantryName => {
-                // Find all VAs who have this pantry assigned to them in the parser
                 const assignedVAs = parsedAllocations.filter(a => a.assigned_pantries && a.assigned_pantries.includes(pantryName));
                 
                 if (assignedVAs.length > 0) {
-                    // Randomize and split the full catalog
                     const shuffledLinen = [...allLinenArticleNumbers].sort(() => 0.5 - Math.random());
                     const chunkSize = Math.ceil(shuffledLinen.length / assignedVAs.length);
                     const chunks = Array.from({ length: assignedVAs.length }, (v, i) =>
@@ -331,7 +361,6 @@ export default function LinenControlPanel() {
 
             if (error) throw error;
             toast.success(`Successfully dispatched ${inserts.length} assignments across all teams!`);
-            setParsedAllocations([]); 
 
         } catch (error: any) {
             toast.error("Error generating allocations: " + error.message);
@@ -386,21 +415,30 @@ export default function LinenControlPanel() {
                             </div>
                             
                             <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mt-2">
-                                <div className="flex items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm w-full sm:w-auto">
-                                    <Calendar size={16} className="text-slate-400 ml-2 shrink-0"/>
-                                    <input 
-                                        type="date" 
-                                        className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer flex-1 px-2"
-                                        value={extractDate}
-                                        onChange={(e) => setExtractDate(e.target.value)}
-                                    />
+                                <div className="flex items-center gap-2 w-full sm:w-auto">
+                                    <div className="flex items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm flex-1">
+                                        <Calendar size={16} className="text-slate-400 ml-2 shrink-0"/>
+                                        <input 
+                                            type="date" 
+                                            className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer flex-1 px-2"
+                                            value={extractDate}
+                                            onChange={(e) => setExtractDate(e.target.value)}
+                                        />
+                                        <button 
+                                            onClick={handleExtractAllocations} 
+                                            disabled={isLoading}
+                                            className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
+                                        >
+                                            {isLoading ? <Loader2 size={14} className="animate-spin"/> : <DownloadCloud size={14}/>}
+                                            Extract Board
+                                        </button>
+                                    </div>
                                     <button 
-                                        onClick={handleExtractAllocations} 
+                                        onClick={handleSaveLayout}
                                         disabled={isLoading}
-                                        className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 whitespace-nowrap shrink-0"
+                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors flex items-center justify-center gap-1 shrink-0"
                                     >
-                                        {isLoading ? <Loader2 size={14} className="animate-spin"/> : <DownloadCloud size={14}/>}
-                                        Extract Board
+                                        <Save size={14}/> Save Layout
                                     </button>
                                 </div>
 
@@ -494,12 +532,12 @@ export default function LinenControlPanel() {
                         <div className="p-6 border-t border-slate-100 bg-white shrink-0">
                             {isLocked && parsedAllocations.length > 0 && (
                                 <div className="mb-4 inline-flex items-center gap-2 bg-amber-50 text-amber-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest border border-amber-200">
-                                    <AlertTriangle size={14} /> Unlock system first to dispatch
+                                    <AlertTriangle size={14} /> Unlock system first to dispatch tasks
                                 </div>
                             )}
                             <button onClick={handleAutoAllocateLinen} disabled={isLoading || isLocked || parsedAllocations.length === 0} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-sm shadow-md hover:bg-[#5a1b49] active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
                                 {isLoading ? <span className="animate-pulse">Dispatching...</span> : <Sparkles size={18} />} 
-                                {isLoading ? '' : 'Dispatch Active Allocations'}
+                                {isLoading ? '' : 'Dispatch Active Allocations to Staff App'}
                             </button>
                         </div>
                     </div>

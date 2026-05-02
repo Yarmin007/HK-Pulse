@@ -4,7 +4,7 @@ import {
   Save, CheckCircle2, Loader2, ChevronLeft, RefreshCw, CheckCircle, CheckSquare
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, startOfMonth } from 'date-fns';
 import toast from 'react-hot-toast';
 
 // --- IMPORTED GLOBAL TIME ENGINE ---
@@ -15,6 +15,7 @@ import RoomCleaningGrid from './_components/RoomCleaningGrid';
 import ExpiryAuditGrid from './_components/ExpiryAuditGrid';
 import AssetInventoryGrid from './_components/AssetInventoryGrid';
 import MinibarInventoryGrid from './_components/MinibarInventoryGrid';
+import LinenInventoryGrid from './_components/LinenInventoryGrid'; // ADDED FOR LINEN
 
 export type Host = { id: string; full_name: string; host_id: string; };
 export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; };
@@ -48,7 +49,7 @@ export type CleaningTask = {
     end_time?: string;
     time_spent?: string;
     reenter_reason?: string; 
-    session_history: any[]; // ⚡ Full session history now exposed to UI
+    session_history: any[];
 };
 
 const parseVillas = (input: string, doubleVillas: string[]) => {
@@ -123,6 +124,11 @@ export default function MyTasksHub() {
   const [activeScheduleId, setActiveScheduleId] = useState<string>('');
   const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
   
+  // NEW LINEN STATE
+  const [linenAssignments, setLinenAssignments] = useState<any[]>([]);
+  const [activeLinenTaskLocation, setActiveLinenTaskLocation] = useState<any>(null); // Full object for passing to grid
+  const [isLinenLocked, setIsLinenLocked] = useState(true);
+
   const [selectedVilla, setSelectedVilla] = useState('');
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [activeLocation, setActiveLocation] = useState('All');
@@ -153,7 +159,6 @@ export default function MyTasksHub() {
             if (!isNaN(start)) {
                 const elapsed = Math.max(0, Math.floor((Date.now() - start) / 1000));
                 
-                // FORCE STOP AT 90 MINUTES
                 if (elapsed >= 5400 && activeCleaningVilla) {
                      handleFinishRoom(activeCleaningVilla, true);
                 } else {
@@ -172,7 +177,6 @@ export default function MyTasksHub() {
     return () => clearInterval(interval);
   }, [activeCleaningVilla, activeStartTime]);
 
-  // ⚡ BACKGROUND WAKE-UP CATCH (Handles locked phones)
   useEffect(() => {
       const handleVisibilityChange = () => {
           if (document.visibilityState === 'visible' && activeStartTime && activeCleaningVilla) {
@@ -192,7 +196,7 @@ export default function MyTasksHub() {
   }, [activeStartTime, activeCleaningVilla]);
 
   useEffect(() => {
-      if (cleaningElapsedSeconds > 2700 && !hasWarnedTimer && activeCleaningVilla) { // 45 Mins warning
+      if (cleaningElapsedSeconds > 2700 && !hasWarnedTimer && activeCleaningVilla) {
           toast.error(`Reminder: Villa ${activeCleaningVilla} timer is at 45 minutes!`, { duration: 8000, icon: '⏰' });
           triggerSystemNotification(activeCleaningVilla);
           setHasWarnedTimer(true);
@@ -271,6 +275,19 @@ export default function MyTasksHub() {
       const { data: aData } = await supabase.from('hsk_ac_tracker').select('villa_number, status');
       if (aData) setAcData(aData);
 
+      // --- LINEN ASSIGNMENTS ---
+      const { data: periodData } = await supabase.from('hsk_inventory_periods').select('is_locked').eq('month_year', currentMonth).single();
+      const isLinenLoc = periodData ? periodData.is_locked : true;
+      setIsLinenLocked(isLinenLoc);
+
+      if (!isLinenLoc) {
+          const { data: lData } = await supabase.from('hsk_linen_assignments').select('*').eq('month_year', currentMonth).eq('host_id', host.host_id);
+          if (lData) setLinenAssignments(lData);
+      } else {
+          setLinenAssignments([]);
+      }
+
+      // --- ASSET/MINIBAR SCHEDULES ---
       const { data: activeSchedules } = await supabase.from('hsk_inventory_schedules').select('id, inventory_type').eq('status', 'Active');
       const taskMap: Record<string, UniversalTask[]> = {};
 
@@ -357,6 +374,7 @@ export default function MyTasksHub() {
     fetchCatalog();
   }, [loadInitialData, fetchCatalog]);
 
+  // --- ACTIONS ---
   const handleStartService = async (villa: string, reason?: string) => {
     if (activeCleaningVilla) { toast.error("Please finish or pause your current room first!"); return; }
     
@@ -368,7 +386,6 @@ export default function MyTasksHub() {
     const todayStr = getDhakaDateStr();
     localStorage.setItem(`hk_timer_${villa}`, now);
 
-    // ⚡ 17:00 CUTOFF FOR TURNDOWN
     const isTD = getDhakaTime().getHours() >= 17;
     let finalReason = reason;
     if (reason === 'Service' || !reason) {
@@ -387,15 +404,11 @@ export default function MyTasksHub() {
     }
   };
 
-  // ⚡ UPDATED TO ACCEPT isAutoStop OVERRIDE
   const handleFinishRoom = async (villa: string, isAutoStop = false) => {
     localStorage.removeItem(`hk_timer_${villa}`);
     
     let minutes = Math.max(1, Math.ceil(cleaningElapsedSeconds / 60));
-    if (isAutoStop || minutes >= 90) {
-        minutes = 90;
-        isAutoStop = true;
-    }
+    if (isAutoStop || minutes >= 90) { minutes = 90; isAutoStop = true; }
 
     const now = new Date().toISOString();
     const todayStr = getDhakaDateStr();
@@ -410,7 +423,6 @@ export default function MyTasksHub() {
         const newSession = { reason: sessionReason, start: sessionStart, end: sessionEnd, duration: minutes, autoStopped: isAutoStop };
         const updatedHistory = [...(currentTaskState?.session_history || []), newSession];
 
-        // Process database update in background
         supabase.from('hsk_cleaning_logs').select('session_history').eq('report_date', todayStr).eq('villa_number', villa).maybeSingle().then(({data}) => {
             const existingHistory = Array.isArray(data?.session_history) ? data.session_history : [];
             const dbHistory = [...existingHistory, newSession];
@@ -427,17 +439,7 @@ export default function MyTasksHub() {
         setActiveCleaningVilla(null);
         setCleaningElapsedSeconds(0);
 
-        return { 
-            ...prev, 
-            [villa]: { 
-                ...prev[villa], 
-                status: 'Completed', 
-                end_time: sessionEnd, 
-                time_spent: `${totalMinutes}m`, 
-                session_history: updatedHistory, 
-                reenter_reason: undefined 
-            } 
-        };
+        return { ...prev, [villa]: { ...prev[villa], status: 'Completed', end_time: sessionEnd, time_spent: `${totalMinutes}m`, session_history: updatedHistory, reenter_reason: undefined } };
     });
   };
 
@@ -465,73 +467,31 @@ export default function MyTasksHub() {
       localStorage.removeItem(`hk_timer_${villa}`);
       if (activeCleaningVilla === villa) { setActiveCleaningVilla(null); setCleaningElapsedSeconds(0); }
       
-      setCleaningTasks(prev => ({ 
-          ...prev, 
-          [villa]: { 
-              ...prev[villa], 
-              status: 'Pending', 
-              time_spent: undefined,
-              session_history: []
-          } 
-      }));
+      setCleaningTasks(prev => ({ ...prev, [villa]: { ...prev[villa], status: 'Pending', time_spent: undefined, session_history: [] } }));
 
-      const { data } = await supabase.from('hsk_cleaning_logs').update({ 
-          status: 'Pending', 
-          time_spent_minutes: null,
-          session_history: [],
-          updated_at: new Date().toISOString() 
-      }).match({ report_date: getDhakaDateStr(), villa_number: villa }).select();
-      
+      const { data } = await supabase.from('hsk_cleaning_logs').update({ status: 'Pending', time_spent_minutes: null, session_history: [], updated_at: new Date().toISOString() }).match({ report_date: getDhakaDateStr(), villa_number: villa }).select();
       if (!data || data.length === 0) await supabase.from('hsk_cleaning_logs').insert({ report_date: getDhakaDateStr(), villa_number: villa, host_id: currentHost?.host_id, host_name: currentHost?.full_name, status: 'Pending', updated_at: new Date().toISOString() });
   };
 
   const confirmResetRoom = (villa: string, serviceName: string) => {
       setConfirmModal({
-          isOpen: true,
-          title: `Undo ${serviceName}?`,
-          message: `Are you sure you want to undo the ${serviceName} for Villa ${villa}? This will delete the saved time and reset the status.`,
-          confirmText: 'Yes, Undo Service',
-          isDestructive: true,
-          onConfirm: async () => {
-              setConfirmModal(prev => ({ ...prev, isOpen: false }));
-              await resetRoomStatus(villa);
-          }
+          isOpen: true, title: `Undo ${serviceName}?`, message: `Are you sure you want to undo the ${serviceName} for Villa ${villa}? This will delete the saved time and reset the status.`,
+          confirmText: 'Yes, Undo Service', isDestructive: true,
+          onConfirm: async () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); await resetRoomStatus(villa); }
       });
   };
 
   const openEditModal = (villa: string, serviceType: string) => {
-      setEditServiceModal({
-          isOpen: true,
-          villa,
-          serviceType,
-          startTime: '',
-          endTime: '',
-          duration: 0
-      });
+      setEditServiceModal({ isOpen: true, villa, serviceType, startTime: '', endTime: '', duration: 0 });
   };
 
   const submitEditRequest = async () => {
       setIsSaving(true);
-      const payload = {
-          villa_number: editServiceModal.villa,
-          request_type: 'Time Edit Request',
-          item_details: `${editServiceModal.serviceType} time edit requested.\nStart: ${editServiceModal.startTime}\nEnd: ${editServiceModal.endTime}\nNew Duration: ${editServiceModal.duration}m`,
-          request_time: new Date().toISOString(),
-          attendant_name: currentHost?.full_name || 'VA',
-          logged_by: currentHost?.full_name || 'VA',
-          is_sent: false,
-          is_done: false
-      };
-      
+      const payload = { villa_number: editServiceModal.villa, request_type: 'Time Edit Request', item_details: `${editServiceModal.serviceType} time edit requested.\nStart: ${editServiceModal.startTime}\nEnd: ${editServiceModal.endTime}\nNew Duration: ${editServiceModal.duration}m`, request_time: new Date().toISOString(), attendant_name: currentHost?.full_name || 'VA', logged_by: currentHost?.full_name || 'VA', is_sent: false, is_done: false };
       const { error } = await supabase.from('hsk_daily_requests').insert(payload);
       setIsSaving(false);
-      
-      if (error) {
-          toast.error("Failed to send request.");
-      } else {
-          toast.success('Edit request sent to Admin!');
-          setEditServiceModal({isOpen: false, villa: '', serviceType: '', startTime: '', endTime: '', duration: 0});
-      }
+      if (error) toast.error("Failed to send request.");
+      else { toast.success('Edit request sent to Admin!'); setEditServiceModal({isOpen: false, villa: '', serviceType: '', startTime: '', endTime: '', duration: 0}); }
   };
 
   const handleAcStatusChange = async (villaNumber: string, newStatus: string) => {
@@ -564,8 +524,9 @@ export default function MyTasksHub() {
       }
   }, [step, isExpiryMode, selectedVilla, expiryVillaData]);
 
+  // --- START AUDIT FLOWS ---
   const startAudit = async (villa: string, taskType: string, scheduleId: string) => {
-    setIsLoading(true); setSelectedVilla(villa); setActiveTaskType(taskType); setActiveScheduleId(scheduleId); setIsExpiryMode(false); setActiveLocation('All'); setSearchQuery('');
+    setIsLoading(true); setSelectedVilla(villa); setActiveTaskType(taskType); setActiveScheduleId(scheduleId); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveLocation('All'); setSearchQuery('');
     const { data: allAssigned } = await supabase.from('hsk_inventory_assignments').select('host_id').match({ schedule_id: scheduleId, villa_number: villa }).order('host_id');
     if (allAssigned) setSharedAssignments(allAssigned.map(a => a.host_id));
     
@@ -587,7 +548,7 @@ export default function MyTasksHub() {
   };
 
   const startExpiryAudit = (villa: string) => {
-      setSelectedVilla(villa); setIsExpiryMode(true);
+      setSelectedVilla(villa); setIsExpiryMode(true); setActiveTaskType(''); setActiveLinenTaskLocation(null);
       const initialCounts: Record<string, number> = {};
       groupedTargets.expiry.forEach((t: any) => { initialCounts[t.article_number] = 0; });
       groupedTargets.refill.forEach((t: any) => { initialCounts[t.article_number] = 0; });
@@ -596,9 +557,50 @@ export default function MyTasksHub() {
       setExpiryCounts(initialCounts); setStep(3);
   };
 
-  const updateCount = (article_number: string, delta: number) => {
-    setCounts(prev => { const next = (prev[article_number] || 0) + delta; return { ...prev, [article_number]: next < 0 ? 0 : next }; });
+  const startLinenAudit = async (taskObj: any) => {
+      setIsLoading(true);
+      setActiveTaskType('Linen');
+      setActiveLinenTaskLocation(taskObj); // the task object from hsk_linen_assignments
+      setSelectedVilla(taskObj.location_name);
+      setIsExpiryMode(false);
+      setActiveLocation('All');
+      setSearchQuery('');
+
+      const initialCounts: Record<string, number> = {};
+      
+      // Fetch prior counts for this location to pre-fill
+      const { data: existingRecords } = await supabase.from('hsk_linen_records')
+          .select('article_number, counted_qty_used, counted_qty_new')
+          .eq('month_year', getDhakaDateStr().substring(0, 7))
+          .eq('location_type', taskObj.location_type)
+          .eq('location_name', taskObj.location_name);
+
+      if (existingRecords) {
+          existingRecords.forEach(r => { 
+              // Store as string combined for laundry, or just number for normal
+              if (taskObj.location_type === 'Laundry') {
+                  // We'll store an object internally for dual inputs, stringified to fit the record pattern
+                  initialCounts[r.article_number] = JSON.stringify({ used: r.counted_qty_used, new: r.counted_qty_new }) as any;
+              } else {
+                  initialCounts[r.article_number] = r.counted_qty_used; 
+              }
+          });
+      }
+
+      // Initialize missing assigned items to 0
+      if (taskObj.assigned_items && Array.isArray(taskObj.assigned_items)) {
+          taskObj.assigned_items.forEach((artNo: string) => {
+              if (initialCounts[artNo] === undefined) {
+                  initialCounts[artNo] = taskObj.location_type === 'Laundry' ? JSON.stringify({used: 0, new: 0}) as any : 0;
+              }
+          });
+      }
+
+      setCounts(initialCounts);
+      setStep(3);
+      setIsLoading(false);
   };
+
   const updateExpiryCount = (artNo: string, delta: number) => {
       setExpiryCounts(prev => { const next = (prev[artNo] || 0) + delta; return { ...prev, [artNo]: next < 0 ? 0 : next }; });
   };
@@ -608,7 +610,47 @@ export default function MyTasksHub() {
 
   const executeSaveInventory = async () => {
     setIsSaving(true);
-    if (activeTaskType === 'Legacy Minibar') {
+    
+    // --- LINEN SAVE LOGIC ---
+    if (activeTaskType === 'Linen' && activeLinenTaskLocation) {
+        const recordsToInsert = Object.entries(counts).filter(([_, val]) => {
+            if (typeof val === 'string') return true; // Laundry dual object
+            return val > 0; // Normal count
+        }).map(([artNo, val]) => {
+            let used = 0; let newQty = 0;
+            if (typeof val === 'string') {
+                try { const p = JSON.parse(val); used = p.used || 0; newQty = p.new || 0; } catch(e){}
+            } else { used = val; }
+            
+            return {
+                month_year: getDhakaDateStr().substring(0, 7),
+                host_id: currentHost?.host_id,
+                article_number: artNo,
+                location_type: activeLinenTaskLocation.location_type,
+                location_name: activeLinenTaskLocation.location_name,
+                counted_qty_used: used,
+                counted_qty_new: newQty,
+                submitted_at: new Date().toISOString()
+            };
+        });
+
+        // 1. Delete old records for this location
+        await supabase.from('hsk_linen_records').delete()
+            .eq('month_year', getDhakaDateStr().substring(0, 7))
+            .eq('location_type', activeLinenTaskLocation.location_type)
+            .eq('location_name', activeLinenTaskLocation.location_name);
+
+        // 2. Insert new
+        if (recordsToInsert.length > 0) {
+            const { error: insErr } = await supabase.from('hsk_linen_records').insert(recordsToInsert);
+            if (insErr) { toast.error("Failed to save linen count."); setIsSaving(false); return; }
+        }
+        
+        // 3. Update assignment status locally to show completion checkmark
+        setLinenAssignments(prev => prev.map(a => a.id === activeLinenTaskLocation.id ? {...a, is_submitted: true} : a));
+    } 
+    // --- MINIBAR LOGIC ---
+    else if (activeTaskType === 'Legacy Minibar') {
         const countedItems = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => {
                 const item = masterCatalog.find(c => c.article_number === artNo); return { article_number: artNo, name: item?.generic_name || item?.article_name, qty };
         });
@@ -616,7 +658,9 @@ export default function MyTasksHub() {
         const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
         if (error) { toast.error("Failed to save minibar: " + error.message); setIsSaving(false); return; }
         setUniversalTasks(prev => { const updated = { ...prev }; if (updated['Legacy Minibar']) { updated['Legacy Minibar'] = updated['Legacy Minibar'].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t); } return updated; });
-    } else {
+    } 
+    // --- ASSET LOGIC ---
+    else {
         const recordsToInsert = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => ({ schedule_id: activeScheduleId, villa_number: selectedVilla, article_number: artNo, counted_qty: qty, inventory_type: activeTaskType }));
         const { error: delErr } = await supabase.from('hsk_inventory_records').delete().match({ schedule_id: activeScheduleId, villa_number: selectedVilla });
         if (delErr) { toast.error("Database error (Clear): " + delErr.message); setIsSaving(false); return; }
@@ -676,7 +720,7 @@ export default function MyTasksHub() {
       }
   };
 
-  const resetFlow = () => { setShowSuccess(false); setSelectedVilla(''); setIsExpiryMode(false); setStep(2); };
+  const resetFlow = () => { setShowSuccess(false); setSelectedVilla(''); setIsExpiryMode(false); setActiveTaskType(''); setActiveLinenTaskLocation(null); setStep(2); };
 
   const getVillaCardData = (vNum: string) => {
       const match = guestData.find(r => r.villa_number === vNum);
@@ -704,21 +748,33 @@ export default function MyTasksHub() {
   const displayVillas = useMemo(() => {
       const s = new Set<string>([...myCleaningVillas, ...expiryAssignedVillas]);
       Object.values(universalTasks).forEach(tasks => { tasks.forEach(t => s.add(t.villa_number)); });
+      // ADD LINEN VILLAS
+      if (!isLinenLocked) {
+          linenAssignments.forEach(a => {
+              if (a.location_type === 'Villa') s.add(a.location_name);
+          });
+      }
       return Array.from(s).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
-  }, [myCleaningVillas, expiryAssignedVillas, universalTasks]);
+  }, [myCleaningVillas, expiryAssignedVillas, universalTasks, linenAssignments, isLinenLocked]);
 
-  const activeCatalog = activeTaskType === 'Legacy Minibar' ? masterCatalog.filter(i => i.is_minibar_item) : masterCatalog.filter(i => i.inventory_type === activeTaskType);
+  const activeCatalog = activeTaskType === 'Legacy Minibar' ? masterCatalog.filter(i => i.is_minibar_item) : 
+                        activeTaskType === 'Linen' ? masterCatalog.filter(i => i.category === 'Linen') :
+                        masterCatalog.filter(i => i.inventory_type === activeTaskType);
       
   const displayCatalog = useMemo(() => {
       let list = [...activeCatalog];
 
-      // ⚡ FILTER HIDDEN ITEMS FOR MINIBAR ONLY
       if (activeTaskType === 'Legacy Minibar') {
           list = list.filter(i => !hiddenMbItems.includes(i.article_number));
+      } else if (activeTaskType === 'Linen' && activeLinenTaskLocation) {
+          // STRICT FILTERING FOR LINEN BASED ON ASSIGNMENTS
+          const assignedIds = activeLinenTaskLocation.assigned_items || [];
+          list = list.filter(i => assignedIds.includes(i.article_number));
       }
 
+      // Shared assignment splitting (skip for Linen as it's already pre-split)
       const isVilla = /^\d+$/.test(selectedVilla) || selectedVilla.includes('-');
-      if (!isVilla && sharedAssignments.length > 1 && currentHost) {
+      if (!isVilla && sharedAssignments.length > 1 && currentHost && activeTaskType !== 'Linen') {
           const myIndex = sharedAssignments.indexOf(currentHost.host_id);
           if (myIndex !== -1) {
               const itemsPerPerson = Math.ceil(list.length / sharedAssignments.length);
@@ -726,7 +782,8 @@ export default function MyTasksHub() {
               list = list.slice(start, start + itemsPerPerson);
           }
       }
-      if (activeLocation !== 'All') {
+      
+      if (activeLocation !== 'All' && activeTaskType !== 'Linen') {
           if (activeLocation === 'Unassigned') list = list.filter(i => !i.villa_location);
           else list = list.filter(i => i.villa_location === activeLocation);
       }
@@ -735,7 +792,7 @@ export default function MyTasksHub() {
           list = list.filter(i => (i.article_name || '').toLowerCase().includes(q) || (i.generic_name || '').toLowerCase().includes(q) || (i.article_number || '').includes(q));
       }
       return list;
-  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery, hiddenMbItems, activeTaskType]);
+  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery, hiddenMbItems, activeTaskType, activeLinenTaskLocation]);
 
   const uniqueLocations = Array.from(new Set(activeCatalog.map(i => i.villa_location).filter(Boolean))) as string[];
   const hasUnassignedLocations = activeCatalog.some(i => !i.villa_location);
@@ -773,7 +830,7 @@ export default function MyTasksHub() {
                             getVillaCardData={getVillaCardData}
                             handleAcStatusChange={handleAcStatusChange}
                             startAudit={startAudit}
-                            handleFinishRoom={(v) => handleFinishRoom(v)}
+                            handleFinishRoom={(v: string) => handleFinishRoom(v)}
                             setReenterModal={setReenterModal}
                             handleDND={handleDND}
                             handleRefused={handleRefused}
@@ -786,9 +843,11 @@ export default function MyTasksHub() {
                             expiryAssignedVillas={expiryAssignedVillas}
                             expiryVillaData={expiryVillaData}
                             startExpiryAudit={startExpiryAudit}
+                            linenAssignments={linenAssignments} // NEW
+                            startLinenAudit={startLinenAudit} // NEW
                         />
 
-                        {displayVillas.length === 0 && (
+                        {displayVillas.length === 0 && linenAssignments.filter(a => a.location_type !== 'Villa').length === 0 && (
                             <div className="text-center py-16 bg-white rounded-3xl border border-slate-100 shadow-sm max-w-lg mx-auto mt-10">
                                 <CheckCircle size={40} className="mx-auto text-emerald-300 mb-3"/>
                                 <p className="font-bold text-slate-500">You have no active tasks right now.</p>
@@ -804,11 +863,11 @@ export default function MyTasksHub() {
                 <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-4 md:p-6 rounded-3xl shadow-sm border mb-4 md:mb-6 flex flex-col gap-4`}>
                     <div className="flex items-center justify-between gap-4">
                         <div className="flex items-center gap-3">
-                            <button onClick={() => { setStep(2); setIsExpiryMode(false); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
+                            <button onClick={() => { setStep(2); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveTaskType(''); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
                             <div>
                                 <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
                                 <p className={`text-[10px] md:text-xs font-bold uppercase tracking-widest mt-0.5 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>
-                                    {isExpiryMode ? 'Targeted Tasks' : (activeTaskType === 'Legacy Minibar' ? `${format(getDhakaTime(), 'MMMM')} Minibar Inventory` : `${activeTaskType} Audit`)}
+                                    {isExpiryMode ? 'Targeted Tasks' : (activeTaskType === 'Legacy Minibar' ? `${format(getDhakaTime(), 'MMMM')} Minibar Inventory` : activeTaskType === 'Linen' ? 'Linen Inventory Count' : `${activeTaskType} Audit`)}
                                 </p>
                             </div>
                         </div>
@@ -826,10 +885,21 @@ export default function MyTasksHub() {
                         updateExpiryCount={updateExpiryCount}
                         updateRefillCount={updateRefillCount}
                         masterCatalog={masterCatalog}
-                        submitExpiryRemovals={submitExpiryRemovals}
+                        submitExpiryRemovals={submitExpiryRemovals as any}
                         confirmExpiryRefill={confirmExpiryRefill}
                         isSaving={isSaving}
                         expiryVillaData={expiryVillaData}
+                    />
+                ) : activeTaskType === 'Linen' ? (
+                    <LinenInventoryGrid 
+                        searchQuery={searchQuery}
+                        setSearchQuery={setSearchQuery}
+                        displayCatalog={displayCatalog}
+                        counts={counts}
+                        updateCount={(artNo: string, val: any) => setCounts(prev => ({...prev, [artNo]: val}))}
+                        requestSaveInventory={() => setConfirmModal({ isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this linen record?", confirmText: "Submit Linen", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); } })}
+                        isSaving={isSaving}
+                        locationType={activeLinenTaskLocation?.location_type}
                     />
                 ) : activeTaskType === 'Legacy Minibar' ? (
                     <MinibarInventoryGrid 
@@ -839,8 +909,8 @@ export default function MyTasksHub() {
                         activeLocation={activeLocation}
                         setActiveLocation={setActiveLocation}
                         displayCatalog={displayCatalog}
-                        counts={counts}
-                        updateCount={updateCount}
+                        counts={counts as any} // Ignore type difference as Minibar handles numbers
+                        updateCount={(artNo: string, val: number) => setCounts(prev => ({...prev, [artNo]: val}))}
                         requestSaveInventory={() => setConfirmModal({ isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this inventory record?", confirmText: "Confirm Minibar Inventory", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); } })}
                         isSaving={isSaving}
                         activeTaskType={activeTaskType}
@@ -854,8 +924,8 @@ export default function MyTasksHub() {
                         activeLocation={activeLocation}
                         setActiveLocation={setActiveLocation}
                         displayCatalog={displayCatalog}
-                        counts={counts}
-                        updateCount={updateCount}
+                        counts={counts as any} // Ignore type difference as Asset handles numbers
+                        updateCount={(artNo: string, val: number) => setCounts(prev => ({...prev, [artNo]: val}))}
                         requestSaveInventory={() => setConfirmModal({ isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this inventory record?", confirmText: "Submit Record", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); } })}
                         isSaving={isSaving}
                         activeTaskType={activeTaskType}

@@ -1,6 +1,6 @@
 "use client";
 import React from 'react';
-import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch } from 'lucide-react';
+import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch, Layers, Building, WashingMachine } from 'lucide-react';
 
 export type UniversalTask = { schedule_id: string; inventory_type: string; villa_number: string; status: string; };
 export type CleaningTask = { villa_number: string; status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused'; start_time?: string; raw_start_time?: string; end_time?: string; time_spent?: string; reenter_reason?: string; session_history: any[]; };
@@ -26,34 +26,80 @@ interface RoomCleaningGridProps {
     expiryAssignedVillas: string[];
     expiryVillaData: Record<string, any>;
     startExpiryAudit: (v: string) => void;
+    
+    // NEW LINEN PROPS
+    linenAssignments: any[];
+    startLinenAudit: (taskObj: any) => void;
 }
 
 export default function RoomCleaningGrid({
     displayVillas, myCleaningVillas, cleaningTasks, activeCleaningVilla, getVillaCardData, handleAcStatusChange,
     startAudit, handleFinishRoom, setReenterModal, handleDND, handleRefused, confirmResetRoom, openEditModal,
-    isNightShift, universalTasks, cleaningElapsedSeconds, formatTimer, expiryAssignedVillas, expiryVillaData, startExpiryAudit
+    isNightShift, universalTasks, cleaningElapsedSeconds, formatTimer, expiryAssignedVillas, expiryVillaData, startExpiryAudit,
+    linenAssignments, startLinenAudit
 }: RoomCleaningGridProps) {
 
-    if (!displayVillas || displayVillas.length === 0) return null;
+    // Separate Non-Villa Linen Tasks (Pantries, Laundry, PA) from Villa Tasks
+    const nonVillaLinenTasks = linenAssignments.filter(a => a.location_type !== 'Villa');
+
+    if (displayVillas.length === 0 && nonVillaLinenTasks.length === 0) return null;
 
     return (
         <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
             <div className="flex justify-between items-start mb-6">
                 <div>
                     <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
-                        <BedDouble size={20} className="text-[#6D2158]" /> My Villa Tasks
+                        <BedDouble size={20} className="text-[#6D2158]" /> My Active Tasks
                     </h3>
-                    <p className="text-xs text-slate-400 font-medium">All assigned cleaning and audit locations.</p>
-                </div>
-                <div className="text-right">
-                    <span className="text-2xl font-black text-[#6D2158]">
-                        {displayVillas.length}
-                    </span>
-                    <span className="text-sm font-bold text-slate-300"> Total Villas</span>
+                    <p className="text-xs text-slate-400 font-medium">All assigned cleaning, audit, and inventory locations.</p>
                 </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                
+                {/* RENDER NON-VILLA LINEN TASKS FIRST (Pantry, Laundry, PA) */}
+                {nonVillaLinenTasks.map(task => {
+                    const isDone = task.is_submitted;
+                    let Icon = Layers;
+                    if (task.location_type === 'PA') Icon = Building;
+                    if (task.location_type === 'Laundry') Icon = WashingMachine;
+
+                    return (
+                        <div key={task.id} className={`p-4 md:p-5 rounded-2xl border-2 shadow-sm transition-all duration-300 flex flex-col ${isDone ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-white border-blue-200'}`}>
+                            <div className="flex justify-between items-start mb-4">
+                                <div>
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <h3 className={`text-xl md:text-2xl font-black tracking-tighter ${isDone ? 'text-slate-400' : 'text-blue-600'}`}>
+                                            {task.location_name}
+                                        </h3>
+                                    </div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                        <Icon size={10}/> {task.location_type} Inventory
+                                    </p>
+                                </div>
+                                <div className="flex flex-col items-end gap-2">
+                                    <div className="px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm bg-blue-500">
+                                        Linen Task
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
+                                <button 
+                                    onClick={() => startLinenAudit(task)}
+                                    className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 text-[10px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                        isDone ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                                    }`}
+                                >
+                                    <Layers size={14} className="shrink-0" />
+                                    <span className="truncate">{isDone ? `Linen Counted` : `Count Linen`}</span>
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
+
+                {/* RENDER VILLA CARDS */}
                 {displayVillas.map(v => {
                     const isCleaningAssigned = myCleaningVillas.includes(v);
                     const hasExpiry = expiryAssignedVillas.includes(v);
@@ -79,6 +125,9 @@ export default function RoomCleaningGrid({
                     const otherInventoryTasks = Object.entries(universalTasks)
                         .filter(([key]) => key !== 'Legacy Minibar')
                         .flatMap(([key, tasks]) => tasks.filter(t => t.villa_number === v || t.villa_number === `${v}-1` || t.villa_number === `${v}-2`).map(t => ({...t, taskType: key})));
+
+                    // Linen Task
+                    const linenTaskForVilla = linenAssignments.find(a => a.location_type === 'Villa' && a.location_name === v);
 
                     let cardStyle = "bg-white border-slate-200";
                     if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
@@ -118,7 +167,7 @@ export default function RoomCleaningGrid({
                             {/* ACTION AREA */}
                             <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
                                 
-                                {/* Utilities Row: AC, Minibar, Expiry, Asset Inventory */}
+                                {/* Utilities Row: AC, Minibar, Expiry, Asset Inventory, LINEN */}
                                 <div className="flex flex-wrap gap-2">
                                     <button 
                                         onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
@@ -129,6 +178,19 @@ export default function RoomCleaningGrid({
                                         <Wind size={12} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
                                         {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
                                     </button>
+
+                                    {/* LINEN VILLA TASK */}
+                                    {linenTaskForVilla && (
+                                        <button 
+                                            onClick={() => startLinenAudit(linenTaskForVilla)}
+                                            className={`flex-1 min-w-[100px] py-2 rounded-xl flex items-center justify-center gap-1.5 md:gap-2 text-[9px] md:text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                                linenTaskForVilla.is_submitted ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                                            }`}
+                                        >
+                                            <Layers size={12} className="shrink-0" />
+                                            <span className="truncate">{linenTaskForVilla.is_submitted ? `Linen Done` : `Count Linen`}</span>
+                                        </button>
+                                    )}
 
                                     {/* MINIBAR */}
                                     {minibarTasksForVilla.map(mbTask => {
