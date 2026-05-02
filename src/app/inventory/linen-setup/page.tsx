@@ -331,46 +331,38 @@ export default function LinenControlPanel() {
                  }
             });
 
-            // 3. Assign Laundry counts (Full linen list)
-            const laundryHosts = hosts.filter(h => h.role.toLowerCase().includes('laundry'));
-            laundryHosts.forEach(host => {
-                inserts.push({
-                    month_year: selectedMonth,
-                    host_id: host.host_id,
-                    location_type: 'Laundry',
-                    location_name: 'Laundry & Store',
-                    assigned_items: allLinenArticleNumbers,
-                    assigned_at: new Date().toISOString()
-                });
+            // 3. Assign Laundry counts (SHARED TEAM TASK - One single task for all laundry staff)
+            inserts.push({
+                month_year: selectedMonth,
+                host_id: 'SHARED_LAUNDRY',
+                location_type: 'Laundry',
+                location_name: 'Laundry & Store',
+                assigned_items: allLinenArticleNumbers,
+                assigned_at: new Date().toISOString()
             });
 
-            // 4. Assign Public Area counts (Dynamically split by configured PA Locations)
-            const paHosts = hosts.filter(h => h.role.toLowerCase().includes('public area') || h.role.toLowerCase() === 'pa');
-            paHosts.forEach(host => {
-                // If locations exist, assign each location to the PA host
-                if (paLocations.length > 0) {
-                    paLocations.forEach(loc => {
-                        inserts.push({
-                            month_year: selectedMonth,
-                            host_id: host.host_id,
-                            location_type: 'PA',
-                            location_name: loc.label,
-                            assigned_items: paLinenArticleNumbers,
-                            assigned_at: new Date().toISOString()
-                        });
-                    });
-                } else {
-                    // Fallback if no locations are configured in settings
+            // 4. Assign PA Locations (SHARED TEAM TASKS - One single task per location for all PA staff)
+            if (paLocations.length > 0) {
+                paLocations.forEach(loc => {
                     inserts.push({
                         month_year: selectedMonth,
-                        host_id: host.host_id,
+                        host_id: 'SHARED_PA',
                         location_type: 'PA',
-                        location_name: 'Public Area',
+                        location_name: loc.label, // specifically Chill Bar, Cinema, etc.
                         assigned_items: paLinenArticleNumbers,
                         assigned_at: new Date().toISOString()
                     });
-                }
-            });
+                });
+            } else {
+                inserts.push({
+                    month_year: selectedMonth,
+                    host_id: 'SHARED_PA',
+                    location_type: 'PA',
+                    location_name: 'Public Area',
+                    assigned_items: paLinenArticleNumbers,
+                    assigned_at: new Date().toISOString()
+                });
+            }
 
             const { error } = await supabase.from('hsk_linen_assignments').insert(inserts);
 
@@ -426,7 +418,7 @@ export default function LinenControlPanel() {
                         <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex flex-col justify-between gap-4 sticky top-0 z-20">
                             <div>
                                 <h3 className="font-black text-lg text-slate-800 flex items-center gap-2"><Users size={20} className="text-[#6D2158]"/> Villa Attendant Allocations</h3>
-                                <p className="text-xs font-bold text-slate-500 mt-1">Review and modify assigned villas and pantries before dispatching.</p>
+                                <p className="text-xs font-bold text-slate-500 mt-1">Review and modify assigned villas and pantries before dispatching. (PA & Laundry tasks are auto-generated).</p>
                             </div>
                             
                             {/* --- RESPONSIVE TOOLBAR (FIXED UI) --- */}
