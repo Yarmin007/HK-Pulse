@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { 
     Download, Loader2, Layers, MapPin, Users, LayoutGrid, 
     ListTree, CheckCircle2, Clock, ChevronLeft, ChevronRight,
-    Edit3, Save, X, Plus
+    Edit3, Save, X, Plus, Trash2
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import toast from 'react-hot-toast';
@@ -14,7 +14,7 @@ import * as XLSX from 'xlsx';
 type LinenRecord = {
     id?: string;
     article_number: string;
-    location_type: 'Villa' | 'Pantry' | 'Laundry' | 'PA' | 'NEW_STOCK';
+    location_type: 'Villa' | 'Pantry' | 'Laundry' | 'PA' | 'NEW_STOCK' | 'DISCARDED';
     location_name: string;
     host_id: string;
     counted_qty_used: number;
@@ -57,6 +57,10 @@ export default function LinenMasterInventory() {
     const [isNewStockModalOpen, setIsNewStockModalOpen] = useState(false);
     const [newStockForm, setNewStockForm] = useState<any[]>([]);
 
+    // Discard Modal State
+    const [isDiscardModalOpen, setIsDiscardModalOpen] = useState(false);
+    const [discardForm, setDiscardForm] = useState<any[]>([]);
+
     useEffect(() => {
         loadLinenData();
     }, [selectedMonth]);
@@ -87,25 +91,27 @@ export default function LinenMasterInventory() {
     // --- 1. SUMMARY DATA (Opening/Closing & Renaming) ---
     const aggregatedLinen = useMemo(() => {
         const newStockRecords = records.filter(r => r.location_type === 'NEW_STOCK');
+        const discardedRecords = records.filter(r => r.location_type === 'DISCARDED');
 
         return masterList.map(item => {
             const itemRecords = records.filter(r => r.article_number === item.article_number);
             
             const villaCount = itemRecords.filter(r => r.location_type === 'Villa').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
             const pantryCount = itemRecords.filter(r => r.location_type === 'Pantry').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
-            const paCount = itemRecords.filter(r => r.location_type === 'PA').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
+            const paCount = itemRecords.filter(r => r.location_type === 'PA' || (r.location_type as string) === 'Public Area').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
             
             const laundryRecords = itemRecords.filter(r => r.location_type === 'Laundry');
             const onCirculation = laundryRecords.reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
             const laundryNew = laundryRecords.reduce((sum, r) => sum + (r.counted_qty_new || 0), 0);
 
             const newStock = newStockRecords.filter(r => r.article_number === item.article_number).reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
+            const discardedCount = discardedRecords.filter(r => r.article_number === item.article_number).reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
 
             // Previous month calculation
             const prevItemRecords = prevRecords.filter(r => r.article_number === item.article_number);
             const prevVillaCount = prevItemRecords.filter(r => r.location_type === 'Villa').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
             const prevPantryCount = prevItemRecords.filter(r => r.location_type === 'Pantry').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
-            const prevPaCount = prevItemRecords.filter(r => r.location_type === 'PA').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
+            const prevPaCount = prevItemRecords.filter(r => r.location_type === 'PA' || (r.location_type as string) === 'Public Area').reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
             const prevLaundryRecords = prevItemRecords.filter(r => r.location_type === 'Laundry');
             const prevOnCirculation = prevLaundryRecords.reduce((sum, r) => sum + (r.counted_qty_used || 0), 0);
             const prevLaundryNew = prevLaundryRecords.reduce((sum, r) => sum + (r.counted_qty_new || 0), 0);
@@ -115,7 +121,7 @@ export default function LinenMasterInventory() {
             const openingStock = prevClosingTotal > 0 ? prevClosingTotal : (item.initial_stock || 0); 
             const closingTotal = villaCount + pantryCount + paCount + onCirculation + laundryNew;
 
-            return { ...item, openingStock, newStock, villaCount, pantryCount, paCount, onCirculation, laundryNew, closingTotal };
+            return { ...item, openingStock, newStock, discardedCount, villaCount, pantryCount, paCount, onCirculation, laundryNew, closingTotal };
         });
     }, [masterList, records, prevRecords]);
 
@@ -124,7 +130,7 @@ export default function LinenMasterInventory() {
         const locs = Array.from(new Set([
             ...records.map(r => r.location_name),
             ...assignments.map(a => a.location_name)
-        ])).filter(name => name !== 'NEW_STOCK'); // Hide New Stock from the location matrix
+        ])).filter(name => name !== 'NEW_STOCK' && name !== 'DISCARDED'); // Hide special types from location matrix
         
         return locs.sort((a, b) => {
             const numA = parseInt(a.replace(/\D/g, ''), 10);
@@ -142,7 +148,7 @@ export default function LinenMasterInventory() {
             const host = hosts.find(h => h.host_id === a.host_id);
             const hostId = a.host_id || 'unassigned';
             
-            const hostName = a.location_type === 'PA' 
+            const hostName = (a.location_type === 'PA' || a.location_type === 'Public Area') 
                 ? 'Public Area' 
                 : a.location_type === 'Laundry' 
                     ? 'Laundry' 
@@ -177,6 +183,7 @@ export default function LinenMasterInventory() {
     // --- EXCEL EXPORT (Perfectly Designed) ---
     const handleExportExcel = () => {
         const hasNewStock = aggregatedLinen.some(r => r.newStock > 0);
+        const hasDiscards = aggregatedLinen.some(r => r.discardedCount > 0);
         
         const worksheetData = [
             [`LINEN INVENTORY REPORT - ${format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy').toUpperCase()}`],
@@ -184,31 +191,38 @@ export default function LinenMasterInventory() {
             [
                 "Article Name", "HK Code", "Opening Stock", 
                 ...(hasNewStock ? ["New Stock"] : []),
+                ...(hasDiscards ? ["Discarded/Damaged"] : []),
                 "Villas", "Pantries", "Public Area", "On Circulation", "Laundry (New)", "Closing Total", "Variance"
             ]
         ];
 
         aggregatedLinen.forEach(item => {
+            const expectedClosing = item.openingStock + item.newStock - item.discardedCount;
             const row = [
                 item.generic_name || item.article_name,
                 item.hk_no || 'NO-HK',
                 item.openingStock,
                 ...(hasNewStock ? [item.newStock] : []),
+                ...(hasDiscards ? [item.discardedCount] : []),
                 item.villaCount,
                 item.pantryCount,
                 item.paCount,
                 item.onCirculation,
                 item.laundryNew,
                 item.closingTotal,
-                item.closingTotal - (item.openingStock + item.newStock)
+                item.closingTotal - expectedClosing
             ];
             worksheetData.push(row);
         });
 
         const ws = XLSX.utils.aoa_to_sheet(worksheetData);
         
+        let colCount = 9;
+        if (hasNewStock) colCount++;
+        if (hasDiscards) colCount++;
+
         if(!ws["!merges"]) ws["!merges"] = [];
-        ws["!merges"].push({ s: { r: 0, c: 0 }, e: { r: 0, c: hasNewStock ? 10 : 9 } });
+        ws["!merges"].push({ s: { r: 0, c: 0 }, e: { r: 0, c: colCount } });
 
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Linen Inventory");
@@ -217,6 +231,7 @@ export default function LinenMasterInventory() {
         ws["!cols"] = [
             { wch: maxWidth + 5 }, { wch: 15 }, { wch: 15 },
             ...(hasNewStock ? [{ wch: 15 }] : []),
+            ...(hasDiscards ? [{ wch: 20 }] : []),
             { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 18 }, { wch: 15 }, { wch: 15 }, { wch: 12 }
         ];
 
@@ -276,6 +291,59 @@ export default function LinenMasterInventory() {
         }
     };
 
+    // --- DISCARD MODAL LOGIC ---
+    const openDiscardModal = () => {
+        const discardedRecords = records.filter(r => r.location_type === 'DISCARDED');
+        
+        const initialForm = masterList.map(item => {
+            const existing = discardedRecords.find(r => r.article_number === item.article_number);
+            return {
+                article_number: item.article_number,
+                article_name: item.article_name,
+                id: existing?.id,
+                counted_qty_used: existing?.counted_qty_used || 0,
+                location_type: 'DISCARDED'
+            };
+        });
+        
+        setDiscardForm(initialForm);
+        setIsDiscardModalOpen(true);
+    };
+
+    const handleSaveDiscard = async () => {
+        setIsSaving(true);
+        try {
+            const updates = discardForm
+                .filter(item => item.counted_qty_used > 0 || item.id) 
+                .map(item => {
+                    const payload: any = {
+                        article_number: item.article_number,
+                        location_name: 'DISCARDED',
+                        location_type: 'DISCARDED',
+                        counted_qty_used: item.counted_qty_used,
+                        counted_qty_new: 0,
+                        month_year: selectedMonth,
+                        host_id: 'ADJUSTMENT'
+                    };
+                    if (item.id) payload.id = item.id;
+                    return payload;
+                });
+
+            if (updates.length > 0) {
+                const { error } = await supabase.from('hsk_linen_records').upsert(updates);
+                if (error) throw error;
+            }
+
+            toast.success(`Discarded items recorded successfully`);
+            setIsDiscardModalOpen(false);
+            loadLinenData();
+        } catch (err) {
+            toast.error("Error saving discarded items");
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
     // --- EDIT MODAL LOGIC ---
     const openEditModal = (locationName: string) => {
         setEditingLocation(locationName);
@@ -328,6 +396,7 @@ export default function LinenMasterInventory() {
     };
 
     const hasNewStockData = aggregatedLinen.some(r => r.newStock > 0);
+    const hasDiscardData = aggregatedLinen.some(r => r.discardedCount > 0);
 
     return (
         <div className="flex flex-col min-h-full bg-[#FDFBFD] pb-36 font-sans">
@@ -363,6 +432,9 @@ export default function LinenMasterInventory() {
                         <button onClick={openNewStockModal} className="flex items-center gap-2 bg-purple-50 text-purple-700 px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-sm hover:bg-purple-100 transition-colors shrink-0">
                             <Plus size={16}/> Add New Stock
                         </button>
+                        <button onClick={openDiscardModal} className="flex items-center gap-2 bg-red-50 text-red-700 px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-sm hover:bg-red-100 transition-colors shrink-0">
+                            <Trash2 size={16}/> Discard/Damage
+                        </button>
                         <button onClick={handleExportExcel} className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-sm hover:bg-emerald-100 transition-colors shrink-0">
                             <Download size={16}/> Export Excel
                         </button>
@@ -385,35 +457,51 @@ export default function LinenMasterInventory() {
                                                 {hasNewStockData && (
                                                     <th className="px-4 py-4 border-b border-slate-200 text-center bg-purple-50/50 text-purple-600">New Stock</th>
                                                 )}
+                                                {hasDiscardData && (
+                                                    <th className="px-4 py-4 border-b border-slate-200 text-center bg-red-50/50 text-red-600">Discarded</th>
+                                                )}
                                                 <th className="px-4 py-4 border-b border-slate-200 text-center bg-blue-50/50 text-blue-600">Villas</th>
                                                 <th className="px-4 py-4 border-b border-slate-200 text-center bg-indigo-50/50 text-indigo-600">Pantries</th>
                                                 <th className="px-4 py-4 border-b border-slate-200 text-center bg-amber-50/50 text-amber-600">Public Area</th>
                                                 <th className="px-4 py-4 border-b border-slate-200 text-center bg-rose-50/50 text-rose-600">In Circulation</th>
                                                 <th className="px-4 py-4 border-b border-slate-200 text-center bg-emerald-50/50 text-emerald-600">Laundry (New)</th>
                                                 <th className="px-6 py-4 border-b border-slate-200 text-center text-[#6D2158] bg-[#6D2158]/5">Closing Total</th>
+                                                <th className="px-4 py-4 border-b border-slate-200 text-center bg-slate-100/50 text-slate-700">Variance</th>
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
-                                            {aggregatedLinen.map(row => (
-                                                <tr key={row.article_number} className="hover:bg-slate-50 transition-colors">
-                                                    <td className="px-6 py-4">
-                                                        <div className="font-black text-sm text-slate-800">{row.generic_name || row.article_name}</div>
-                                                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{row.hk_no || 'NO-HK'}</div>
-                                                    </td>
-                                                    <td className="px-4 py-4 text-center font-black text-slate-400 bg-slate-100/20">{row.openingStock || '-'}</td>
-                                                    {hasNewStockData && (
-                                                        <td className="px-4 py-4 text-center font-black text-purple-700 bg-purple-50/20">{row.newStock > 0 ? row.newStock : '-'}</td>
-                                                    )}
-                                                    <td className="px-4 py-4 text-center font-black text-blue-700 bg-blue-50/20">{row.villaCount || '-'}</td>
-                                                    <td className="px-4 py-4 text-center font-black text-indigo-700 bg-indigo-50/20">{row.pantryCount || '-'}</td>
-                                                    <td className="px-4 py-4 text-center font-black text-amber-700 bg-amber-50/20">{row.paCount || '-'}</td>
-                                                    <td className="px-4 py-4 text-center font-black text-rose-700 bg-rose-50/20">{row.onCirculation || '-'}</td>
-                                                    <td className="px-4 py-4 text-center font-black text-emerald-700 bg-emerald-50/20">{row.laundryNew || '-'}</td>
-                                                    <td className="px-6 py-4 text-center bg-[#6D2158]/5">
-                                                        <span className="inline-block px-3 py-1 bg-[#6D2158] text-white rounded-lg font-black text-sm shadow-sm">{row.closingTotal}</span>
-                                                    </td>
-                                                </tr>
-                                            ))}
+                                            {aggregatedLinen.map(row => {
+                                                const expectedClosing = row.openingStock + row.newStock - row.discardedCount;
+                                                const variance = row.closingTotal - expectedClosing;
+                                                const hasVariance = variance !== 0;
+
+                                                return (
+                                                    <tr key={row.article_number} className="hover:bg-slate-50 transition-colors">
+                                                        <td className="px-6 py-4">
+                                                            <div className="font-black text-sm text-slate-800">{row.generic_name || row.article_name}</div>
+                                                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{row.hk_no || 'NO-HK'}</div>
+                                                        </td>
+                                                        <td className="px-4 py-4 text-center font-black text-slate-400 bg-slate-100/20">{row.openingStock || '-'}</td>
+                                                        {hasNewStockData && (
+                                                            <td className="px-4 py-4 text-center font-black text-purple-700 bg-purple-50/20">{row.newStock > 0 ? row.newStock : '-'}</td>
+                                                        )}
+                                                        {hasDiscardData && (
+                                                            <td className="px-4 py-4 text-center font-black text-red-700 bg-red-50/20">{row.discardedCount > 0 ? row.discardedCount : '-'}</td>
+                                                        )}
+                                                        <td className="px-4 py-4 text-center font-black text-blue-700 bg-blue-50/20">{row.villaCount || '-'}</td>
+                                                        <td className="px-4 py-4 text-center font-black text-indigo-700 bg-indigo-50/20">{row.pantryCount || '-'}</td>
+                                                        <td className="px-4 py-4 text-center font-black text-amber-700 bg-amber-50/20">{row.paCount || '-'}</td>
+                                                        <td className="px-4 py-4 text-center font-black text-rose-700 bg-rose-50/20">{row.onCirculation || '-'}</td>
+                                                        <td className="px-4 py-4 text-center font-black text-emerald-700 bg-emerald-50/20">{row.laundryNew || '-'}</td>
+                                                        <td className="px-6 py-4 text-center bg-[#6D2158]/5">
+                                                            <span className="inline-block px-3 py-1 bg-[#6D2158] text-white rounded-lg font-black text-sm shadow-sm">{row.closingTotal}</span>
+                                                        </td>
+                                                        <td className={`px-4 py-4 text-center font-black ${hasVariance ? (variance > 0 ? 'text-emerald-600 bg-emerald-50' : 'text-red-600 bg-red-50') : 'text-slate-400 bg-slate-100/20'}`}>
+                                                            {hasVariance ? (variance > 0 ? `+${variance}` : variance) : '-'}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
                                         </tbody>
                                     </table>
                                 </div>
@@ -522,7 +610,7 @@ export default function LinenMasterInventory() {
                                                         </div>
                                                         {task.isDone && (
                                                             <div className="text-[9px] font-bold text-slate-400 mt-1 flex justify-between border-t border-slate-100 pt-1">
-                                                                <span>BY: {task.personName || 'SYSTEM'}</span>
+                                                                <span>{task.type === 'Villa' || task.type === 'Pantry' ? 'COMPLETED' : `BY: ${task.personName || 'SYSTEM'}`}</span>
                                                                 <button onClick={() => openEditModal(task.location)} className="text-[#6D2158] hover:underline uppercase">Edit</button>
                                                             </div>
                                                         )}
@@ -583,6 +671,56 @@ export default function LinenMasterInventory() {
                                 {isSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} Save New Stock
                             </button>
                             <button onClick={() => setIsNewStockModalOpen(false)} className="px-8 py-3.5 bg-white text-slate-400 border border-slate-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-100 transition-all">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* DISCARD MODAL */}
+            {isDiscardModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in">
+                    <div className="bg-white rounded-[2rem] w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95">
+                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-red-50">
+                            <div>
+                                <h2 className="text-xl font-black text-red-800 flex items-center gap-2 uppercase tracking-tight"><Trash2 className="text-red-600"/> Discard/Damage Items</h2>
+                                <p className="text-xs font-bold text-red-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Ledger</p>
+                            </div>
+                            <button onClick={() => setIsDiscardModalOpen(false)} className="p-2 hover:bg-white rounded-xl transition-all text-red-400"><X size={24}/></button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-4">
+                            {discardForm.map((item, idx) => (
+                                <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
+                                    <div className="col-span-8">
+                                        <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
+                                        <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
+                                    </div>
+                                    <div className="col-span-4">
+                                        <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">Discarded Qty</label>
+                                        <input 
+                                            type="number" 
+                                            value={item.counted_qty_used} 
+                                            onChange={e => {
+                                                const copy = [...discardForm];
+                                                copy[idx].counted_qty_used = parseInt(e.target.value) || 0;
+                                                setDiscardForm(copy);
+                                            }}
+                                            className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-red-600 outline-none"
+                                        />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
+                            <button 
+                                onClick={handleSaveDiscard}
+                                disabled={isSaving}
+                                className="flex-1 bg-red-600 text-white py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg shadow-red-600/20 flex items-center justify-center gap-2 hover:opacity-90 disabled:opacity-50"
+                            >
+                                {isSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} Save Discarded Items
+                            </button>
+                            <button onClick={() => setIsDiscardModalOpen(false)} className="px-8 py-3.5 bg-white text-slate-400 border border-slate-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-100 transition-all">Cancel</button>
                         </div>
                     </div>
                 </div>
