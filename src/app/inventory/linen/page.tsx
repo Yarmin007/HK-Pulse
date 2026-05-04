@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { 
     Download, Loader2, Layers, MapPin, Users, LayoutGrid, 
     ListTree, CheckCircle2, Clock, ChevronLeft, ChevronRight,
-    Edit3, Save, X, Plus, Trash2
+    Edit3, Save, X, Plus, Trash2, Search
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import toast from 'react-hot-toast';
@@ -51,15 +51,18 @@ export default function LinenMasterInventory() {
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [editingLocation, setEditingLocation] = useState<string | null>(null);
     const [editForm, setEditForm] = useState<any[]>([]);
+    const [editSearch, setEditSearch] = useState("");
     const [isSaving, setIsSaving] = useState(false);
 
     // New Stock Modal State
     const [isNewStockModalOpen, setIsNewStockModalOpen] = useState(false);
     const [newStockForm, setNewStockForm] = useState<any[]>([]);
+    const [newStockSearch, setNewStockSearch] = useState("");
 
     // Discard Modal State
     const [isDiscardModalOpen, setIsDiscardModalOpen] = useState(false);
     const [discardForm, setDiscardForm] = useState<any[]>([]);
+    const [discardSearch, setDiscardSearch] = useState("");
 
     useEffect(() => {
         loadLinenData();
@@ -88,7 +91,7 @@ export default function LinenMasterInventory() {
         setIsLoading(false);
     };
 
-    // --- 1. SUMMARY DATA (Opening/Closing & Renaming) ---
+    // --- 1. SUMMARY DATA ---
     const aggregatedLinen = useMemo(() => {
         const newStockRecords = records.filter(r => r.location_type === 'NEW_STOCK');
         const discardedRecords = records.filter(r => r.location_type === 'DISCARDED');
@@ -130,7 +133,7 @@ export default function LinenMasterInventory() {
         const locs = Array.from(new Set([
             ...records.map(r => r.location_name),
             ...assignments.map(a => a.location_name)
-        ])).filter(name => name !== 'NEW_STOCK' && name !== 'DISCARDED'); // Hide special types from location matrix
+        ])).filter(name => name !== 'NEW_STOCK' && name !== 'DISCARDED'); 
         
         return locs.sort((a, b) => {
             const numA = parseInt(a.replace(/\D/g, ''), 10);
@@ -140,7 +143,7 @@ export default function LinenMasterInventory() {
         });
     }, [records, assignments]);
 
-    // --- 3. ATTENDANT PROGRESS DATA (Updated Person Names) ---
+    // --- 3. ATTENDANT PROGRESS DATA ---
     const attendantProgress = useMemo(() => {
         const grouped: Record<string, { host_name: string, host_id: string, tasks: { location: string, type: string, isDone: boolean, personName?: string }[] }> = {};
         
@@ -180,7 +183,7 @@ export default function LinenMasterInventory() {
         setSelectedMonth(format(updated, 'yyyy-MM'));
     };
 
-    // --- EXCEL EXPORT (Perfectly Designed) ---
+    // --- EXCEL EXPORT ---
     const handleExportExcel = () => {
         const hasNewStock = aggregatedLinen.some(r => r.newStock > 0);
         const hasDiscards = aggregatedLinen.some(r => r.discardedCount > 0);
@@ -238,10 +241,9 @@ export default function LinenMasterInventory() {
         XLSX.writeFile(wb, `Linen_Inventory_${selectedMonth}.xlsx`);
     };
 
-    // --- NEW STOCK MODAL LOGIC ---
+    // --- MODAL TRIGGERS ---
     const openNewStockModal = () => {
         const newStockRecords = records.filter(r => r.location_type === 'NEW_STOCK');
-        
         const initialForm = masterList.map(item => {
             const existing = newStockRecords.find(r => r.article_number === item.article_number);
             return {
@@ -252,11 +254,48 @@ export default function LinenMasterInventory() {
                 location_type: 'NEW_STOCK'
             };
         });
-        
         setNewStockForm(initialForm);
+        setNewStockSearch("");
         setIsNewStockModalOpen(true);
     };
 
+    const openDiscardModal = () => {
+        const discardedRecords = records.filter(r => r.location_type === 'DISCARDED');
+        const initialForm = masterList.map(item => {
+            const existing = discardedRecords.find(r => r.article_number === item.article_number);
+            return {
+                article_number: item.article_number,
+                article_name: item.article_name,
+                id: existing?.id,
+                counted_qty_used: existing?.counted_qty_used || 0,
+                location_type: 'DISCARDED'
+            };
+        });
+        setDiscardForm(initialForm);
+        setDiscardSearch("");
+        setIsDiscardModalOpen(true);
+    };
+
+    const openEditModal = (locationName: string) => {
+        setEditingLocation(locationName);
+        const locationRecords = records.filter(r => r.location_name === locationName);
+        const initialForm = masterList.map(item => {
+            const existing = locationRecords.find(r => r.article_number === item.article_number);
+            return {
+                article_number: item.article_number,
+                article_name: item.article_name,
+                id: existing?.id,
+                counted_qty_used: existing?.counted_qty_used || 0,
+                counted_qty_new: existing?.counted_qty_new || 0,
+                location_type: locationRecords[0]?.location_type || (locationName.toLowerCase().includes('villa') ? 'Villa' : 'Pantry')
+            };
+        });
+        setEditForm(initialForm);
+        setEditSearch("");
+        setIsEditModalOpen(true);
+    };
+
+    // --- SAVE HANDLERS ---
     const handleSaveNewStock = async () => {
         setIsSaving(true);
         try {
@@ -264,6 +303,7 @@ export default function LinenMasterInventory() {
                 .filter(item => item.counted_qty_used > 0 || item.id) 
                 .map(item => {
                     const payload: any = {
+                        id: item.id || crypto.randomUUID(), // Guarantee ID is passed to prevent DB null constraint
                         article_number: item.article_number,
                         location_name: 'NEW_STOCK',
                         location_type: 'NEW_STOCK',
@@ -272,7 +312,6 @@ export default function LinenMasterInventory() {
                         month_year: selectedMonth,
                         host_id: 'ADJUSTMENT'
                     };
-                    if (item.id) payload.id = item.id;
                     return payload;
                 });
 
@@ -292,25 +331,6 @@ export default function LinenMasterInventory() {
         }
     };
 
-    // --- DISCARD MODAL LOGIC ---
-    const openDiscardModal = () => {
-        const discardedRecords = records.filter(r => r.location_type === 'DISCARDED');
-        
-        const initialForm = masterList.map(item => {
-            const existing = discardedRecords.find(r => r.article_number === item.article_number);
-            return {
-                article_number: item.article_number,
-                article_name: item.article_name,
-                id: existing?.id,
-                counted_qty_used: existing?.counted_qty_used || 0,
-                location_type: 'DISCARDED'
-            };
-        });
-        
-        setDiscardForm(initialForm);
-        setIsDiscardModalOpen(true);
-    };
-
     const handleSaveDiscard = async () => {
         setIsSaving(true);
         try {
@@ -318,6 +338,7 @@ export default function LinenMasterInventory() {
                 .filter(item => item.counted_qty_used > 0 || item.id) 
                 .map(item => {
                     const payload: any = {
+                        id: item.id || crypto.randomUUID(), // Guarantee ID is passed to prevent DB null constraint
                         article_number: item.article_number,
                         location_name: 'DISCARDED',
                         location_type: 'DISCARDED',
@@ -326,7 +347,6 @@ export default function LinenMasterInventory() {
                         month_year: selectedMonth,
                         host_id: 'ADJUSTMENT'
                     };
-                    if (item.id) payload.id = item.id;
                     return payload;
                 });
 
@@ -346,46 +366,29 @@ export default function LinenMasterInventory() {
         }
     };
 
-    // --- EDIT MODAL LOGIC ---
-    const openEditModal = (locationName: string) => {
-        setEditingLocation(locationName);
-        const locationRecords = records.filter(r => r.location_name === locationName);
-        
-        const initialForm = masterList.map(item => {
-            const existing = locationRecords.find(r => r.article_number === item.article_number);
-            return {
-                article_number: item.article_number,
-                article_name: item.article_name,
-                id: existing?.id,
-                counted_qty_used: existing?.counted_qty_used || 0,
-                counted_qty_new: existing?.counted_qty_new || 0,
-                location_type: locationRecords[0]?.location_type || (locationName.toLowerCase().includes('villa') ? 'Villa' : 'Pantry')
-            };
-        });
-        
-        setEditForm(initialForm);
-        setIsEditModalOpen(true);
-    };
-
     const handleSaveEdits = async () => {
         setIsSaving(true);
         try {
-            const updates = editForm.map(item => {
-                const payload: any = {
-                    article_number: item.article_number,
-                    location_name: editingLocation,
-                    location_type: item.location_type,
-                    counted_qty_used: item.counted_qty_used,
-                    counted_qty_new: item.counted_qty_new,
-                    month_year: selectedMonth,
-                    host_id: 'ADJUSTMENT'
-                };
-                if (item.id) payload.id = item.id;
-                return payload;
-            });
+            const updates = editForm
+                .filter(item => item.counted_qty_used > 0 || item.counted_qty_new > 0 || item.id) // Filter to prevent empty records
+                .map(item => {
+                    const payload: any = {
+                        id: item.id || crypto.randomUUID(), // Guarantee ID is passed to prevent DB null constraint
+                        article_number: item.article_number,
+                        location_name: editingLocation,
+                        location_type: item.location_type,
+                        counted_qty_used: item.counted_qty_used,
+                        counted_qty_new: item.counted_qty_new,
+                        month_year: selectedMonth,
+                        host_id: 'ADJUSTMENT'
+                    };
+                    return payload;
+                });
 
-            const { error } = await supabase.from('hsk_linen_records').upsert(updates);
-            if (error) throw error;
+            if (updates.length > 0) {
+                const { error } = await supabase.from('hsk_linen_records').upsert(updates);
+                if (error) throw error;
+            }
 
             toast.success(`Updated ${editingLocation} successfully`);
             setIsEditModalOpen(false);
@@ -397,6 +400,22 @@ export default function LinenMasterInventory() {
             setIsSaving(false);
         }
     };
+
+    // --- FILTERED FORM DATA ---
+    const filteredNewStockForm = newStockForm.filter(item => 
+        item.article_name.toLowerCase().includes(newStockSearch.toLowerCase()) || 
+        item.article_number.toLowerCase().includes(newStockSearch.toLowerCase())
+    );
+
+    const filteredDiscardForm = discardForm.filter(item => 
+        item.article_name.toLowerCase().includes(discardSearch.toLowerCase()) || 
+        item.article_number.toLowerCase().includes(discardSearch.toLowerCase())
+    );
+
+    const filteredEditForm = editForm.filter(item => 
+        item.article_name.toLowerCase().includes(editSearch.toLowerCase()) || 
+        item.article_number.toLowerCase().includes(editSearch.toLowerCase())
+    );
 
     const hasNewStockData = aggregatedLinen.some(r => r.newStock > 0);
     const hasDiscardData = aggregatedLinen.some(r => r.discardedCount > 0);
@@ -511,7 +530,7 @@ export default function LinenMasterInventory() {
                             </div>
                         )}
 
-                        {/* TAB 2: DETAILED LOCATION BREAKDOWN (Clickable) */}
+                        {/* TAB 2: DETAILED LOCATION BREAKDOWN */}
                         {activeTab === 'DETAILS' && (
                             <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden animate-in fade-in flex flex-col h-[70vh]">
                                 <div className="p-4 bg-slate-50 border-b border-slate-100 shrink-0 flex justify-between items-center">
@@ -633,36 +652,53 @@ export default function LinenMasterInventory() {
             {isNewStockModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in">
                     <div className="bg-white rounded-[2rem] w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95">
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-purple-50">
-                            <div>
-                                <h2 className="text-xl font-black text-purple-800 flex items-center gap-2 uppercase tracking-tight"><Plus className="text-purple-600"/> Add New Stock</h2>
-                                <p className="text-xs font-bold text-purple-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Ledger</p>
+                        <div className="p-6 border-b border-purple-100 flex flex-col gap-4 bg-purple-50">
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h2 className="text-xl font-black text-purple-800 flex items-center gap-2 uppercase tracking-tight"><Plus className="text-purple-600"/> Add New Stock</h2>
+                                    <p className="text-xs font-bold text-purple-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Ledger</p>
+                                </div>
+                                <button onClick={() => setIsNewStockModalOpen(false)} className="p-2 bg-white rounded-xl shadow-sm text-purple-400 hover:text-purple-600"><X size={20}/></button>
                             </div>
-                            <button onClick={() => setIsNewStockModalOpen(false)} className="p-2 hover:bg-white rounded-xl transition-all text-purple-400"><X size={24}/></button>
+                            <div className="relative">
+                                <Search className="absolute left-3 top-3 text-purple-400" size={16}/>
+                                <input 
+                                    type="text" 
+                                    placeholder="Search item name or code..." 
+                                    value={newStockSearch} 
+                                    onChange={e => setNewStockSearch(e.target.value)} 
+                                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-purple-100 rounded-xl text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100 transition-all shadow-inner"
+                                />
+                            </div>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-4">
-                            {newStockForm.map((item, idx) => (
-                                <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
-                                    <div className="col-span-8">
-                                        <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
-                                        <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
+                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-3">
+                            {filteredNewStockForm.length === 0 ? (
+                                <p className="text-center text-slate-400 font-bold py-10">No items match your search.</p>
+                            ) : (
+                                filteredNewStockForm.map((item) => (
+                                    <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
+                                        <div className="col-span-8">
+                                            <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
+                                            <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
+                                        </div>
+                                        <div className="col-span-4">
+                                            <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">New Received Qty</label>
+                                            <input 
+                                                type="number" 
+                                                value={item.counted_qty_used} 
+                                                onChange={e => {
+                                                    const val = parseInt(e.target.value) || 0;
+                                                    setNewStockForm(prev => prev.map(p => 
+                                                        p.article_number === item.article_number ? { ...p, counted_qty_used: val } : p
+                                                    ));
+                                                }}
+                                                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-purple-600 outline-none"
+                                            />
+                                        </div>
                                     </div>
-                                    <div className="col-span-4">
-                                        <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">New Received Qty</label>
-                                        <input 
-                                            type="number" 
-                                            value={item.counted_qty_used} 
-                                            onChange={e => {
-                                                const copy = [...newStockForm];
-                                                copy[idx].counted_qty_used = parseInt(e.target.value) || 0;
-                                                setNewStockForm(copy);
-                                            }}
-                                            className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-purple-600 outline-none"
-                                        />
-                                    </div>
-                                </div>
-                            ))}
+                                ))
+                            )}
                         </div>
 
                         <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
@@ -673,7 +709,6 @@ export default function LinenMasterInventory() {
                             >
                                 {isSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} Save New Stock
                             </button>
-                            <button onClick={() => setIsNewStockModalOpen(false)} className="px-8 py-3.5 bg-white text-slate-400 border border-slate-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-100 transition-all">Cancel</button>
                         </div>
                     </div>
                 </div>
@@ -683,36 +718,53 @@ export default function LinenMasterInventory() {
             {isDiscardModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in">
                     <div className="bg-white rounded-[2rem] w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95">
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-red-50">
-                            <div>
-                                <h2 className="text-xl font-black text-red-800 flex items-center gap-2 uppercase tracking-tight"><Trash2 className="text-red-600"/> Discard/Damage Items</h2>
-                                <p className="text-xs font-bold text-red-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Ledger</p>
+                        <div className="p-6 border-b border-red-100 flex flex-col gap-4 bg-red-50">
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h2 className="text-xl font-black text-red-800 flex items-center gap-2 uppercase tracking-tight"><Trash2 className="text-red-600"/> Discard/Damage Items</h2>
+                                    <p className="text-xs font-bold text-red-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Ledger</p>
+                                </div>
+                                <button onClick={() => setIsDiscardModalOpen(false)} className="p-2 bg-white rounded-xl shadow-sm text-red-400 hover:text-red-600"><X size={20}/></button>
                             </div>
-                            <button onClick={() => setIsDiscardModalOpen(false)} className="p-2 hover:bg-white rounded-xl transition-all text-red-400"><X size={24}/></button>
+                            <div className="relative">
+                                <Search className="absolute left-3 top-3 text-red-400" size={16}/>
+                                <input 
+                                    type="text" 
+                                    placeholder="Search item name or code..." 
+                                    value={discardSearch} 
+                                    onChange={e => setDiscardSearch(e.target.value)} 
+                                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-red-100 rounded-xl text-sm outline-none focus:border-red-400 focus:ring-2 focus:ring-red-100 transition-all shadow-inner"
+                                />
+                            </div>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-4">
-                            {discardForm.map((item, idx) => (
-                                <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
-                                    <div className="col-span-8">
-                                        <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
-                                        <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
+                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-3">
+                            {filteredDiscardForm.length === 0 ? (
+                                <p className="text-center text-slate-400 font-bold py-10">No items match your search.</p>
+                            ) : (
+                                filteredDiscardForm.map((item) => (
+                                    <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
+                                        <div className="col-span-8">
+                                            <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
+                                            <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
+                                        </div>
+                                        <div className="col-span-4">
+                                            <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">Discarded Qty</label>
+                                            <input 
+                                                type="number" 
+                                                value={item.counted_qty_used} 
+                                                onChange={e => {
+                                                    const val = parseInt(e.target.value) || 0;
+                                                    setDiscardForm(prev => prev.map(p => 
+                                                        p.article_number === item.article_number ? { ...p, counted_qty_used: val } : p
+                                                    ));
+                                                }}
+                                                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-red-600 outline-none"
+                                            />
+                                        </div>
                                     </div>
-                                    <div className="col-span-4">
-                                        <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">Discarded Qty</label>
-                                        <input 
-                                            type="number" 
-                                            value={item.counted_qty_used} 
-                                            onChange={e => {
-                                                const copy = [...discardForm];
-                                                copy[idx].counted_qty_used = parseInt(e.target.value) || 0;
-                                                setDiscardForm(copy);
-                                            }}
-                                            className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-red-600 outline-none"
-                                        />
-                                    </div>
-                                </div>
-                            ))}
+                                ))
+                            )}
                         </div>
 
                         <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
@@ -723,7 +775,6 @@ export default function LinenMasterInventory() {
                             >
                                 {isSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} Save Discarded Items
                             </button>
-                            <button onClick={() => setIsDiscardModalOpen(false)} className="px-8 py-3.5 bg-white text-slate-400 border border-slate-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-100 transition-all">Cancel</button>
                         </div>
                     </div>
                 </div>
@@ -733,51 +784,69 @@ export default function LinenMasterInventory() {
             {isEditModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in">
                     <div className="bg-white rounded-[2rem] w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95">
-                        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                            <div>
-                                <h2 className="text-xl font-black text-slate-800 flex items-center gap-2 uppercase tracking-tight"><Edit3 className="text-[#6D2158]"/> {editingLocation} Ledger</h2>
-                                <p className="text-xs font-bold text-slate-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Adjustment</p>
+                        <div className="p-6 border-b border-slate-200 flex flex-col gap-4 bg-slate-100/50">
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h2 className="text-xl font-black text-slate-800 flex items-center gap-2 uppercase tracking-tight"><Edit3 className="text-[#6D2158]"/> {editingLocation} Ledger</h2>
+                                    <p className="text-xs font-bold text-slate-400 tracking-widest">{format(parseISO(`${selectedMonth}-01`), 'MMMM yyyy')} Adjustment</p>
+                                </div>
+                                <button onClick={() => setIsEditModalOpen(false)} className="p-2 bg-white rounded-xl shadow-sm text-slate-400 hover:text-slate-600"><X size={20}/></button>
                             </div>
-                            <button onClick={() => setIsEditModalOpen(false)} className="p-2 hover:bg-white rounded-xl transition-all text-slate-400"><X size={24}/></button>
+                            <div className="relative">
+                                <Search className="absolute left-3 top-3 text-slate-400" size={16}/>
+                                <input 
+                                    type="text" 
+                                    placeholder="Search item name or code..." 
+                                    value={editSearch} 
+                                    onChange={e => setEditSearch(e.target.value)} 
+                                    className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:border-[#6D2158] shadow-inner"
+                                />
+                            </div>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-4">
-                            {editForm.map((item, idx) => (
-                                <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
-                                    <div className="col-span-6">
-                                        <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
-                                        <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
-                                    </div>
-                                    <div className="col-span-3">
-                                        <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">Used</label>
-                                        <input 
-                                            type="number" 
-                                            value={item.counted_qty_used} 
-                                            onChange={e => {
-                                                const copy = [...editForm];
-                                                copy[idx].counted_qty_used = parseInt(e.target.value) || 0;
-                                                setEditForm(copy);
-                                            }}
-                                            className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-[#6D2158] outline-none"
-                                        />
-                                    </div>
-                                    {item.location_type === 'Laundry' && (
+                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar space-y-3">
+                            {filteredEditForm.length === 0 ? (
+                                <p className="text-center text-slate-400 font-bold py-10">No items match your search.</p>
+                            ) : (
+                                filteredEditForm.map((item) => (
+                                    <div key={item.article_number} className="grid grid-cols-12 gap-4 items-center p-4 rounded-2xl bg-slate-50/50 border border-slate-100">
+                                        <div className="col-span-6">
+                                            <div className="text-xs font-black text-slate-700 uppercase tracking-tight">{item.article_name}</div>
+                                            <div className="text-[9px] font-bold text-slate-400">{item.article_number}</div>
+                                        </div>
                                         <div className="col-span-3">
-                                            <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">New</label>
+                                            <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">Used</label>
                                             <input 
                                                 type="number" 
-                                                value={item.counted_qty_new} 
+                                                value={item.counted_qty_used} 
                                                 onChange={e => {
-                                                    const copy = [...editForm];
-                                                    copy[idx].counted_qty_new = parseInt(e.target.value) || 0;
-                                                    setEditForm(copy);
+                                                    const val = parseInt(e.target.value) || 0;
+                                                    setEditForm(prev => prev.map(p => 
+                                                        p.article_number === item.article_number ? { ...p, counted_qty_used: val } : p
+                                                    ));
                                                 }}
                                                 className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-[#6D2158] outline-none"
                                             />
                                         </div>
-                                    )}
-                                </div>
-                            ))}
+                                        {item.location_type === 'Laundry' && (
+                                            <div className="col-span-3">
+                                                <label className="text-[8px] font-black text-slate-400 uppercase block mb-1">New</label>
+                                                <input 
+                                                    type="number" 
+                                                    value={item.counted_qty_new} 
+                                                    onChange={e => {
+                                                        const val = parseInt(e.target.value) || 0;
+                                                        setEditForm(prev => prev.map(p => 
+                                                            p.article_number === item.article_number ? { ...p, counted_qty_new: val } : p
+                                                        ));
+                                                    }}
+                                                    className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm font-black text-center focus:border-[#6D2158] outline-none"
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                ))
+                            )}
                         </div>
 
                         <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
@@ -788,7 +857,6 @@ export default function LinenMasterInventory() {
                             >
                                 {isSaving ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} Save Inventory Updates
                             </button>
-                            <button onClick={() => setIsEditModalOpen(false)} className="px-8 py-3.5 bg-white text-slate-400 border border-slate-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-100 transition-all">Cancel</button>
                         </div>
                     </div>
                 </div>
