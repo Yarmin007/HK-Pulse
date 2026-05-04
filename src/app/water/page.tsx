@@ -1,6 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Download, AlertTriangle, Calendar, FileText } from 'lucide-react';
+import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Download, AlertTriangle, Calendar, FileText, Coffee, TrendingUp, TrendingDown, AlertOctagon } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
 type DailyRecord = {
@@ -11,6 +11,13 @@ type DailyRecord = {
   b350_spa_still: number; b350_ws_still: number; b350_hsk_spk: number; b350_ret_still: number; b350_ret_spk: number; b350_break: number;
   b250_tma_still: number; b250_break: number; b200_break: number;
   [key: string]: any; 
+};
+
+// SIMPLIFIED MILK RECORD
+type MilkRecord = {
+  dateStr: string;
+  day: number;
+  total_ml: number;
 };
 
 interface ColumnConfig {
@@ -36,6 +43,11 @@ const createDefaultRecord = (year: number, month: number, day: number): DailyRec
   b250_tma_still: 0, b250_break: 0, b200_break: 0,
 });
 
+const createDefaultMilkRecord = (year: number, month: number, day: number): MilkRecord => ({
+  dateStr: `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`, day: day,
+  total_ml: 0
+});
+
 const getDaysInMonth = (month: number, year: number) => new Date(year, month + 1, 0).getDate();
 const formatDateStr = (year: number, month: number, day: number) => `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
@@ -46,8 +58,10 @@ const hasRowData = (r: DailyRecord) => {
 
 export default function WaterProductionPage() {
   const [isMounted, setIsMounted] = useState(false);
+  const [activeTab, setActiveTab] = useState<'water' | 'milk'>('water');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [records, setRecords] = useState<DailyRecord[]>([]);
+  const [milkRecords, setMilkRecords] = useState<MilkRecord[]>([]);
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -68,40 +82,52 @@ export default function WaterProductionPage() {
   }, [selectedDate, isMounted]);
 
   useEffect(() => {
-    if (!isMounted || records.length === 0 || !isDirty.current) return;
+    if (!isMounted || (records.length === 0 && milkRecords.length === 0) || !isDirty.current) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     
     setSaveStatus("saving");
     autoSaveTimerRef.current = setTimeout(() => {
-        saveToDatabase(records);
+        saveToDatabase(records, milkRecords);
     }, 1500); 
     
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
-  }, [records, isMounted]);
+  }, [records, milkRecords, isMounted]);
 
   const fetchMonthData = async (targetDate: Date) => {
     const year = targetDate.getFullYear();
     const month = targetDate.getMonth();
     const daysInMonth = getDaysInMonth(month, year);
     const skeleton = Array.from({ length: daysInMonth }, (_, i) => createDefaultRecord(year, month, i + 1));
+    const milkSkeleton = Array.from({ length: daysInMonth }, (_, i) => createDefaultMilkRecord(year, month, i + 1));
     const startStr = formatDateStr(year, month, 1);
     const endStr = formatDateStr(year, month, daysInMonth);
     
-    const { data, error } = await supabase.from('water_records').select('*').gte('date', startStr).lte('date', endStr);
-    if (error) setErrorMessage("DB Connection Error: " + error.message);
+    const { data: waterData, error: wError } = await supabase.from('water_records').select('*').gte('date', startStr).lte('date', endStr);
+    const { data: milkData, error: mError } = await supabase.from('milk_records').select('*').gte('date', startStr).lte('date', endStr);
+    
+    if (wError) setErrorMessage("DB Connection Error: " + wError.message);
+    if (mError && mError.code !== '42P01') console.error("Milk DB warning: ", mError.message);
 
-    if (data) {
-      data.forEach((row: any) => {
+    if (waterData) {
+      waterData.forEach((row: any) => {
         const dayIndex = new Date(row.date).getDate() - 1;
         if (skeleton[dayIndex]) skeleton[dayIndex] = { ...skeleton[dayIndex], ...row }; 
       });
     }
+    if (milkData) {
+      milkData.forEach((row: any) => {
+        const dayIndex = new Date(row.date).getDate() - 1;
+        if (milkSkeleton[dayIndex]) milkSkeleton[dayIndex] = { ...milkSkeleton[dayIndex], ...row }; 
+      });
+    }
+
     setRecords(skeleton);
+    setMilkRecords(milkSkeleton);
     setSaveStatus("saved");
     isDirty.current = false;
   };
 
-  const saveToDatabase = async (dataToSave: DailyRecord[]) => {
+  const saveToDatabase = async (dataToSave: DailyRecord[], milkDataToSave: MilkRecord[]) => {
     const payload = dataToSave.map(r => ({
         date: r.dateStr,
         b1000_fnb_still: r.b1000_fnb_still, b1000_fnb_spk: r.b1000_fnb_spk, b1000_ret_still: r.b1000_ret_still, b1000_ret_spk: r.b1000_ret_spk, b1000_break: r.b1000_break,
@@ -110,10 +136,16 @@ export default function WaterProductionPage() {
         b250_tma_still: r.b250_tma_still, b250_break: r.b250_break, b200_break: r.b200_break
     }));
 
-    const { error } = await supabase.from('water_records').upsert(payload, { onConflict: 'date' });
+    const milkPayload = milkDataToSave.map(r => ({
+        date: r.dateStr,
+        total_ml: r.total_ml
+    }));
 
-    if (error) {
-      setErrorMessage("Save Failed: " + error.message);
+    const { error: wError } = await supabase.from('water_records').upsert(payload, { onConflict: 'date' });
+    const { error: mError } = await supabase.from('milk_records').upsert(milkPayload, { onConflict: 'date' });
+
+    if (wError || (mError && mError.code !== '42P01')) {
+      setErrorMessage("Save Failed: " + (wError?.message || mError?.message));
       setSaveStatus("error");
     } else {
       isDirty.current = false;
@@ -128,6 +160,14 @@ export default function WaterProductionPage() {
     const newRecords = [...records];
     newRecords[dayIndex] = { ...newRecords[dayIndex], [field]: isNaN(val) ? 0 : val };
     setRecords(newRecords);
+  };
+
+  const handleMilkChange = (dayIndex: number, field: keyof MilkRecord, value: string) => {
+    isDirty.current = true;
+    const val = value === '' ? 0 : parseInt(value);
+    const newRecords = [...milkRecords];
+    newRecords[dayIndex] = { ...newRecords[dayIndex], [field]: isNaN(val) ? 0 : val };
+    setMilkRecords(newRecords);
   };
 
   const changeMonth = (offset: number) => {
@@ -173,6 +213,30 @@ export default function WaterProductionPage() {
     return totals;
   }, [records]);
 
+  const milkStats = useMemo(() => {
+    let totalML = 0;
+    let daysWithWaste = 0;
+    let maxWasteML = 0;
+    let maxWasteDay = 0;
+
+    milkRecords.forEach(r => {
+        if (r.total_ml > 0) {
+            totalML += r.total_ml;
+            daysWithWaste++;
+            if (r.total_ml > maxWasteML) {
+                maxWasteML = r.total_ml;
+                maxWasteDay = r.day;
+            }
+        }
+    });
+
+    const totalLiters = totalML / 1000;
+    const avgDailyLiters = daysWithWaste > 0 ? (totalLiters / daysWithWaste) : 0;
+    const maxWasteLiters = maxWasteML / 1000;
+
+    return { totalLiters, avgDailyLiters, maxWasteLiters, maxWasteDay, maxWasteML };
+  }, [milkRecords]);
+
   const chartData = useMemo(() => {
     const totalS = stats.l_still || 1;
     const totalSpk = stats.l_spk || 1;
@@ -215,20 +279,36 @@ export default function WaterProductionPage() {
     if (!manualDateStr) { alert("Invalid date in report."); return; }
 
     const newRecord: any = { date: manualDateStr };
+    const newMilkRecord: any = { date: manualDateStr, total_ml: 0 };
     let currentSection = "";
 
     lines.forEach(line => {
-        const valMatch = line.match(/(\d+)/);
-        const val = valMatch ? parseInt(valMatch[1]) : 0;
-        
-        if(line.includes("1000 ml")) currentSection = "1000";
-        else if(line.includes("500 ml")) currentSection = "500";
-        else if(line.includes("350 ml")) currentSection = "350";
-        else if(line.includes("200 ml")) currentSection = "200";
-        else if(line.includes("seaplane") || line.includes("tma")) currentSection = "TMA";
+        // If we hit the milk section, lock it into MILK mode for the rest of the message
+        if(line.includes("waste milk") || line.includes("milk waste")) { 
+            currentSection = "MILK"; 
+            return; 
+        }
+
+        // Only switch to water sections if we haven't reached milk yet
+        if (currentSection !== "MILK") {
+            if(line.includes("1000 ml") || line.includes("1000ml")) { currentSection = "1000"; return; }
+            else if(line.includes("500 ml") || line.includes("500ml")) { currentSection = "500"; return; }
+            else if(line.includes("350 ml") || line.includes("350ml")) { currentSection = "350"; return; }
+            else if(line.includes("200 ml") || line.includes("200ml")) { currentSection = "200"; return; }
+            else if(line.includes("seaplane") || line.includes("tma")) { currentSection = "TMA"; return; }
+        }
 
         const isBreak = line.includes("breakage") || line.includes("damaged") || line.includes("~");
 
+        let val = 0;
+        if (line.includes(':')) {
+            const parts = line.split(':');
+            val = parseInt(parts[1].replace(/\D/g, '')) || 0;
+        } else {
+            const valMatch = line.match(/(\d+)/);
+            val = valMatch ? parseInt(valMatch[1]) : 0;
+        }
+        
         if (currentSection === "1000") {
             if (isBreak) newRecord.b1000_break = val;
             else if (line.includes("still")) newRecord.b1000_fnb_still = val;
@@ -256,11 +336,17 @@ export default function WaterProductionPage() {
         } else if (currentSection === "TMA") {
              if (isBreak) newRecord.b250_break = val;
              else if (val > 0) newRecord.b250_tma_still = val; 
+        } else if (currentSection === "MILK") {
+             if (line.includes("250")) newMilkRecord.total_ml += (val * 250);
+             else if (line.includes("500")) newMilkRecord.total_ml += (val * 500);
+             else if (line.includes("1000") || line.includes("1 l") || line.includes("1l")) newMilkRecord.total_ml += (val * 1000);
         }
     });
 
-    const { error } = await supabase.from('water_records').upsert(newRecord, { onConflict: 'date' });
-    if (error) { alert("Failed to save: " + error.message); } 
+    const { error: wErr } = await supabase.from('water_records').upsert(newRecord, { onConflict: 'date' });
+    const { error: mErr } = await supabase.from('milk_records').upsert(newMilkRecord, { onConflict: 'date' });
+    
+    if (wErr || (mErr && mErr.code !== '42P01')) { alert("Failed to save: " + (wErr?.message || mErr?.message)); } 
     else {
         setIsPasteModalOpen(false); setPasteText(""); setSavedDate(manualDateStr || "");
         setSelectedDate(new Date(targetYear, targetMonth, 1)); fetchMonthData(new Date(targetYear, targetMonth, 1));
@@ -333,17 +419,21 @@ export default function WaterProductionPage() {
 
       {errorMessage && <div className="bg-red-500 text-white text-center py-1 font-bold flex justify-center items-center gap-2"><AlertTriangle size={12}/> {errorMessage}</div>}
 
-      <div className="bg-white border-b border-slate-300 shadow-sm shrink-0 z-40">
+      <div className="bg-white shadow-sm shrink-0 z-40">
         <div className="px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 mt-8 md:mt-0">
             <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
                 <div className="flex items-center gap-3">
-                    <div className="bg-[#6D2158] p-2 rounded-lg text-white shadow-md"><Droplets size={20} /></div>
+                    <div className={`p-2 rounded-lg text-white shadow-md ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-500'}`}>
+                        {activeTab === 'water' ? <Droplets size={20} /> : <Coffee size={20} />}
+                    </div>
                     <div>
-                        <h1 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight">Water Production</h1>
+                        <h1 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight">
+                            {activeTab === 'water' ? 'Water Production' : 'Milk Waste Tracker'}
+                        </h1>
                         <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
-                            <button onClick={() => changeMonth(-1)} className="hover:text-blue-600"><ChevronLeft size={16}/></button>
+                            <button onClick={() => changeMonth(-1)} className={`hover:text-[#6D2158] ${activeTab === 'milk' ? 'hover:text-red-500' : ''}`}><ChevronLeft size={16}/></button>
                             <span className="w-28 text-center">{selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
-                            <button onClick={() => changeMonth(1)} className="hover:text-blue-600"><ChevronRight size={16}/></button>
+                            <button onClick={() => changeMonth(1)} className={`hover:text-[#6D2158] ${activeTab === 'milk' ? 'hover:text-red-500' : ''}`}><ChevronRight size={16}/></button>
                         </div>
                     </div>
                 </div>
@@ -354,173 +444,306 @@ export default function WaterProductionPage() {
                     {saveStatus === 'saving' && <span className="text-blue-500 flex items-center justify-end gap-1"><Loader2 size={10} className="animate-spin"/> Saving...</span>}
                     {saveStatus === 'saved' && <span className="text-emerald-600 flex items-center justify-end gap-1"><Check size={10}/> Saved</span>}
                 </div>
-                <button onClick={() => setIsPasteModalOpen(true)} className="btn-secondary"><ClipboardPaste size={16}/> <span className="hidden md:inline">Paste</span></button>
-                <button onClick={handleExportCSV} className="btn-secondary"><Download size={16}/> <span className="hidden md:inline">CSV</span></button>
-                <button onClick={handleDownloadPDF} className="btn-secondary text-[#6D2158] border-[#6D2158]/30 hover:bg-[#6D2158]/5"><FileText size={16}/> <span className="hidden md:inline">PDF</span></button>
+                <button onClick={() => setIsPasteModalOpen(true)} className="btn-secondary"><ClipboardPaste size={16}/> <span className="hidden md:inline">Paste Log</span></button>
+                {activeTab === 'water' && (
+                    <>
+                        <button onClick={handleExportCSV} className="btn-secondary"><Download size={16}/> <span className="hidden md:inline">CSV</span></button>
+                        <button onClick={handleDownloadPDF} className="btn-secondary text-[#6D2158] border-[#6D2158]/30 hover:bg-[#6D2158]/5"><FileText size={16}/> <span className="hidden md:inline">PDF</span></button>
+                    </>
+                )}
             </div>
+        </div>
+
+        {/* TABS */}
+        <div className="flex gap-4 px-4 md:px-6 bg-slate-50 border-t border-b border-slate-300">
+            <button 
+                onClick={() => setActiveTab('water')} 
+                className={`py-3 font-black text-xs uppercase tracking-widest border-b-2 transition-all ${activeTab === 'water' ? 'border-[#6D2158] text-[#6D2158]' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+            >
+                💧 Water Production
+            </button>
+            <button 
+                onClick={() => setActiveTab('milk')} 
+                className={`py-3 font-black text-xs uppercase tracking-widest border-b-2 transition-all ${activeTab === 'milk' ? 'border-red-500 text-red-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+            >
+                🥛 Milk Waste
+            </button>
         </div>
         
-        {/* STATS AREA */}
-        <div className="flex gap-6 px-6 py-4 bg-slate-50 border-t border-slate-200 overflow-x-auto no-scrollbar">
-            <div className="flex gap-3 min-w-max">
-                <StatCard label="Total L" val={(stats.l_still + stats.l_spk).toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
-                <StatCard label="Still L" val={stats.l_still.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
-                <StatCard label="Sparkling L" val={stats.l_spk.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
-                <StatCard label="Bottles Filled" val={stats.bottles.toLocaleString()} unit="Qty" color="text-emerald-700" bg="bg-emerald-100" />
-                <StatCard label="Breakage" val={stats.breakage} unit="Qty" color="text-red-700" bg="bg-red-100" />
-            </div>
-            
-            {/* GRAPHS */}
-            <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 min-w-[300px]">
-                <div className="flex-1 flex flex-col justify-center gap-2">
-                    <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Still Breakdown</span></div>
-                    <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                        {chartData.still.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
+        {/* STATS AREA (Water) */}
+        {activeTab === 'water' && (
+            <div className="flex gap-6 px-6 py-4 bg-slate-50 border-b border-slate-200 overflow-x-auto no-scrollbar">
+                <div className="flex gap-3 min-w-max">
+                    <StatCard label="Total L" val={(stats.l_still + stats.l_spk).toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
+                    <StatCard label="Still L" val={stats.l_still.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
+                    <StatCard label="Sparkling L" val={stats.l_spk.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
+                    <StatCard label="Bottles Filled" val={stats.bottles.toLocaleString()} unit="Qty" color="text-emerald-700" bg="bg-emerald-100" />
+                    <StatCard label="Breakage" val={stats.breakage} unit="Qty" color="text-red-700" bg="bg-red-100" />
+                </div>
+                
+                {/* GRAPHS */}
+                <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 min-w-[300px]">
+                    <div className="flex-1 flex flex-col justify-center gap-2">
+                        <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Still Breakdown</span></div>
+                        <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
+                            {chartData.still.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
+                            {chartData.still.map((item, i) => (
+                                <div key={i} className="flex items-center gap-1">
+                                    <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
+                                    {item.label} 
+                                    <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
+                                </div>
+                            ))}
+                        </div>
                     </div>
-                    <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
-                        {chartData.still.map((item, i) => (
-                            <div key={i} className="flex items-center gap-1">
-                                <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
-                                {item.label} 
-                                <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
-                            </div>
-                        ))}
+                    <div className="flex-1 flex flex-col justify-center gap-2 border-l border-slate-200 pl-6">
+                        <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Sparkling Breakdown</span></div>
+                        <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
+                            {chartData.spk.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
+                            {chartData.spk.map((item, i) => (
+                                <div key={i} className="flex items-center gap-1">
+                                    <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
+                                    {item.label}
+                                    <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
-                <div className="flex-1 flex flex-col justify-center gap-2 border-l border-slate-200 pl-6">
-                    <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Sparkling Breakdown</span></div>
-                    <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                        {chartData.spk.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
-                        {chartData.spk.map((item, i) => (
-                            <div key={i} className="flex items-center gap-1">
-                                <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
-                                {item.label}
-                                <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
+            </div>
+        )}
+
+        {/* MILK DASHBOARD */}
+        {activeTab === 'milk' && (
+            <div className="flex flex-col gap-6 px-6 py-4 bg-red-50/30 border-b border-red-100">
+                <div className="flex gap-4">
+                    <div className="flex-1 flex gap-3 min-w-max">
+                        <div className="flex flex-col p-4 rounded-2xl bg-white border border-red-100 shadow-sm flex-1">
+                            <span className="flex items-center gap-2 text-[10px] uppercase font-black text-red-400"><TrendingUp size={14}/> Total Waste (Liters)</span>
+                            <span className="text-3xl font-black text-red-600 mt-1">{milkStats.totalLiters.toFixed(1)} <span className="text-sm text-red-300">L</span></span>
+                        </div>
+                        <div className="flex flex-col p-4 rounded-2xl bg-white border border-red-100 shadow-sm flex-1">
+                            <span className="flex items-center gap-2 text-[10px] uppercase font-black text-orange-400"><TrendingDown size={14}/> Daily Average</span>
+                            <span className="text-3xl font-black text-orange-500 mt-1">{milkStats.avgDailyLiters.toFixed(1)} <span className="text-sm text-orange-300">L/day</span></span>
+                        </div>
+                        <div className="flex flex-col p-4 rounded-2xl bg-red-500 text-white shadow-md flex-1">
+                            <span className="flex items-center gap-2 text-[10px] uppercase font-black text-red-200"><AlertOctagon size={14}/> Highest Waste Day</span>
+                            <div className="flex items-baseline gap-2 mt-1">
+                                <span className="text-3xl font-black text-white">{milkStats.maxWasteLiters.toFixed(1)} <span className="text-sm text-red-200">L</span></span>
+                                <span className="text-xs font-bold text-red-100 bg-red-600 px-2 py-0.5 rounded-full">Day {milkStats.maxWasteDay}</span>
                             </div>
-                        ))}
+                        </div>
+                    </div>
+                </div>
+                
+                {/* 31-Day Bar Chart */}
+                <div className="bg-white p-5 rounded-2xl border border-red-100 shadow-sm">
+                    <h3 className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Daily Waste Trend (Liters)</h3>
+                    <div className="flex items-end gap-1 h-32 w-full">
+                        {milkRecords.map((r, i) => {
+                            const maxVal = milkStats.maxWasteML > 0 ? milkStats.maxWasteML : 1000;
+                            const heightPct = (r.total_ml / maxVal) * 100;
+                            const liters = (r.total_ml / 1000).toFixed(1);
+                            return (
+                                <div key={i} className="flex-1 flex flex-col items-center gap-2 group relative">
+                                    {r.total_ml > 0 && (
+                                        <div className="opacity-0 group-hover:opacity-100 absolute -top-8 bg-slate-800 text-white text-[10px] font-bold py-1 px-2 rounded whitespace-nowrap z-10 transition-opacity pointer-events-none">
+                                            Day {r.day}: {liters} L
+                                        </div>
+                                    )}
+                                    <div className="w-full bg-red-50 rounded-t-sm flex items-end h-full">
+                                        <div 
+                                            className={`w-full rounded-t-sm transition-all duration-500 ${r.day === milkStats.maxWasteDay && r.total_ml > 0 ? 'bg-red-500' : 'bg-orange-300 group-hover:bg-orange-400'}`} 
+                                            style={{ height: `${Math.max(heightPct, r.total_ml > 0 ? 5 : 0)}%` }}
+                                        ></div>
+                                    </div>
+                                    <span className={`text-[8px] font-bold ${r.day % 5 === 0 || r.day === 1 ? 'text-slate-400' : 'text-transparent'}`}>{r.day}</span>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             </div>
-        </div>
+        )}
       </div>
 
       {/* --- DESKTOP VIEW: SPREADSHEET --- */}
       <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4">
-        <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
-            <div className="overflow-auto flex-1 custom-scrollbar">
-                <table className="w-full table-fixed border-collapse text-[10px]">
-                    <thead className="bg-slate-50 border-b-2 border-slate-300">
+        {activeTab === 'water' ? (
+            <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
+                <div className="overflow-auto flex-1 custom-scrollbar">
+                    <table className="w-full table-fixed border-collapse text-[10px]">
+                        <thead className="bg-slate-50 border-b-2 border-slate-300">
+                            <tr>
+                                <th rowSpan={3} className="sticky left-0 z-20 bg-slate-100 border-r border-slate-300 w-8 p-1 text-xs font-bold text-slate-500 uppercase">Day</th>
+                                <GroupHeader label="1000 ML" color="bg-emerald-50 text-emerald-900 border-emerald-200" span={5} />
+                                <GroupHeader label="500 ML" color="bg-blue-50 text-blue-900 border-blue-200" span={4} />
+                                <GroupHeader label="350 ML" color="bg-purple-50 text-purple-900 border-purple-200" span={6} />
+                                <GroupHeader label="250 / 200 ML" color="bg-amber-50 text-amber-900 border-amber-200" span={3} />
+                                <GroupHeader label="DAILY TOTALS (L)" color="bg-indigo-50 text-indigo-900 border-indigo-200" span={4} />
+                            </tr>
+                            <tr className="text-[9px] font-bold text-slate-600 uppercase">
+                                <SubGroupHeader label="F&B" span={2} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
+                                <SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="TROPIC" span={1} /><SubGroupHeader label="RETURN" span={1} dim /><SubGroupHeader label="BRK" span={1} end isRed />
+                                <SubGroupHeader label="SPA" span={1} /><SubGroupHeader label="WS" span={1} /><SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
+                                <SubGroupHeader label="TMA" span={1} /><SubGroupHeader label="BRK" span={2} end isRed />
+                                <SubGroupHeader label="STILL" span={2} />
+                                <SubGroupHeader label="SPARK" span={2} end />
+                            </tr>
+                            <tr className="text-[9px] font-bold text-slate-500 uppercase">
+                                <ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="SPK" dim /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
+                                <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
+                                <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="STILL" dim /><ColHeader label="SPK" dim /><ColHeader label="-" brk end />
+                                <ColHeader label="250" /><ColHeader label="250" brk /><ColHeader label="200" brk end />
+                                <ColHeader label="PROD" highlight />
+                                <ColHeader label="RET" dim />
+                                <ColHeader label="PROD" highlight />
+                                <ColHeader label="RET" dim end />
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {records.map((r, i) => {
+                                const hasData = hasRowData(r);
+                                
+                                const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
+                                const stillRetL = (r.b1000_ret_still * 1) + (r.b500_ret_still * 0.5) + (r.b350_ret_still * 0.35);
+                                const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
+                                const spkRetL = (r.b1000_ret_spk * 1) + (r.b350_ret_spk * 0.35);
+
+                                return (
+                                    <tr key={i} className="hover:bg-blue-50 transition-colors">
+                                        <td className="sticky left-0 z-10 border-r border-slate-300 p-1 text-center font-bold text-slate-600 bg-slate-50">{r.day}</td>
+                                        {COLUMN_CONFIG.map((col, idx) => (
+                                            <Cell key={idx} val={r[col.key]} onChange={(v) => handleChange(i, col.key as string, v)} bg={col.bg} isBreak={col.isBreak} dim={col.dim} end={col.end} showDash={hasRowData(r)} />
+                                        ))}
+                                        
+                                        <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
+                                            <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
+                                                {stillProdL > 0 ? stillProdL.toFixed(1) : (hasData ? '0.0' : '')}
+                                            </div>
+                                        </td>
+                                        <td className="border-b border-slate-300 p-0 h-7 bg-white border-l border-slate-200">
+                                            <div className="w-full h-full flex items-center justify-center font-medium text-[10px] text-slate-400">
+                                                {stillRetL > 0 ? stillRetL.toFixed(1) : (hasData ? '0.0' : '')}
+                                            </div>
+                                        </td>
+                                        <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
+                                            <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
+                                                {spkProdL > 0 ? spkProdL.toFixed(1) : (hasData ? '0.0' : '')}
+                                            </div>
+                                        </td>
+                                        <td className="border-b border-slate-300 border-r-2 border-slate-300 border-l border-slate-200 p-0 h-7 bg-white">
+                                            <div className="w-full h-full flex items-center justify-center font-medium text-[10px] text-slate-400">
+                                                {spkRetL > 0 ? spkRetL.toFixed(1) : (hasData ? '0.0' : '')}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        ) : (
+            // MILK DESKTOP TABLE
+            <div className="bg-white shadow rounded-lg overflow-hidden border border-red-200 max-w-lg mx-auto mt-4">
+                <table className="w-full table-fixed border-collapse text-sm">
+                    <thead className="bg-red-50 border-b-2 border-red-200">
                         <tr>
-                            <th rowSpan={3} className="sticky left-0 z-20 bg-slate-100 border-r border-slate-300 w-8 p-1 text-xs font-bold text-slate-500 uppercase">Day</th>
-                            <GroupHeader label="1000 ML" color="bg-emerald-50 text-emerald-900 border-emerald-200" span={5} />
-                            <GroupHeader label="500 ML" color="bg-blue-50 text-blue-900 border-blue-200" span={4} />
-                            <GroupHeader label="350 ML" color="bg-purple-50 text-purple-900 border-purple-200" span={6} />
-                            <GroupHeader label="250 / 200 ML" color="bg-amber-50 text-amber-900 border-amber-200" span={3} />
-                            <GroupHeader label="DAILY TOTALS (L)" color="bg-indigo-50 text-indigo-900 border-indigo-200" span={4} />
-                        </tr>
-                        <tr className="text-[9px] font-bold text-slate-600 uppercase">
-                            <SubGroupHeader label="F&B" span={2} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
-                            <SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="TROPIC" span={1} /><SubGroupHeader label="RETURN" span={1} dim /><SubGroupHeader label="BRK" span={1} end isRed />
-                            <SubGroupHeader label="SPA" span={1} /><SubGroupHeader label="WS" span={1} /><SubGroupHeader label="HSK" span={1} /><SubGroupHeader label="RETURN" span={2} dim /><SubGroupHeader label="BRK" span={1} end isRed />
-                            <SubGroupHeader label="TMA" span={1} /><SubGroupHeader label="BRK" span={2} end isRed />
-                            <SubGroupHeader label="STILL" span={2} />
-                            <SubGroupHeader label="SPARK" span={2} end />
-                        </tr>
-                        <tr className="text-[9px] font-bold text-slate-500 uppercase">
-                            <ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="SPK" dim /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
-                            <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="STILL" dim /><ColHeader label="-" brk end />
-                            <ColHeader label="STILL" /><ColHeader label="STILL" /><ColHeader label="SPK" /><ColHeader label="STILL" dim /><ColHeader label="SPK" dim /><ColHeader label="-" brk end />
-                            <ColHeader label="250" /><ColHeader label="250" brk /><ColHeader label="200" brk end />
-                            <ColHeader label="PROD" highlight />
-                            <ColHeader label="RET" dim />
-                            <ColHeader label="PROD" highlight />
-                            <ColHeader label="RET" dim end />
+                            <th className="p-4 text-center w-24 text-red-800 font-black uppercase tracking-wider border-r border-red-200">Day</th>
+                            <th className="p-4 text-center text-red-600 font-black uppercase tracking-wider">Total Waste Logged (ML)</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {records.map((r, i) => {
-                            const hasData = hasRowData(r);
-                            
-                            const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
-                            const stillRetL = (r.b1000_ret_still * 1) + (r.b500_ret_still * 0.5) + (r.b350_ret_still * 0.35);
-                            const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
-                            const spkRetL = (r.b1000_ret_spk * 1) + (r.b350_ret_spk * 0.35);
-
-                            return (
-                                <tr key={i} className="hover:bg-blue-50 transition-colors">
-                                    <td className="sticky left-0 z-10 border-r border-slate-300 p-1 text-center font-bold text-slate-600 bg-slate-50">{r.day}</td>
-                                    {COLUMN_CONFIG.map((col, idx) => (
-                                        <Cell key={idx} val={r[col.key]} onChange={(v) => handleChange(i, col.key as string, v)} bg={col.bg} isBreak={col.isBreak} dim={col.dim} end={col.end} showDash={hasRowData(r)} />
-                                    ))}
-                                    
-                                    <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
-                                        <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
-                                            {stillProdL > 0 ? stillProdL.toFixed(1) : (hasData ? '0.0' : '')}
-                                        </div>
-                                    </td>
-                                    <td className="border-b border-slate-300 p-0 h-7 bg-white border-l border-slate-200">
-                                        <div className="w-full h-full flex items-center justify-center font-medium text-[10px] text-slate-400">
-                                            {stillRetL > 0 ? stillRetL.toFixed(1) : (hasData ? '0.0' : '')}
-                                        </div>
-                                    </td>
-                                    <td className="border-b border-slate-300 border-l border-indigo-200 p-0 h-7 bg-indigo-50/30">
-                                        <div className="w-full h-full flex items-center justify-center font-bold text-[10px] text-indigo-700">
-                                            {spkProdL > 0 ? spkProdL.toFixed(1) : (hasData ? '0.0' : '')}
-                                        </div>
-                                    </td>
-                                    <td className="border-b border-slate-300 border-r-2 border-slate-300 border-l border-slate-200 p-0 h-7 bg-white">
-                                        <div className="w-full h-full flex items-center justify-center font-medium text-[10px] text-slate-400">
-                                            {spkRetL > 0 ? spkRetL.toFixed(1) : (hasData ? '0.0' : '')}
-                                        </div>
-                                    </td>
-                                </tr>
-                            );
-                        })}
+                        {milkRecords.map((r, i) => (
+                            <tr key={i} className="hover:bg-red-50/50 transition-colors">
+                                <td className="p-3 text-center font-bold text-slate-600 bg-slate-50 border-r border-slate-200">{r.day}</td>
+                                <td className="p-0 h-12 bg-white">
+                                    <input 
+                                        type="number" 
+                                        value={r.total_ml === 0 ? '' : r.total_ml} 
+                                        placeholder={r.total_ml > 0 ? '0' : 'No waste logged'}
+                                        onChange={(e) => handleMilkChange(i, 'total_ml', e.target.value)} 
+                                        className="w-full h-full text-center outline-none bg-transparent font-bold text-slate-800 focus:bg-red-50 focus:text-red-700 placeholder:text-slate-300 transition-colors"
+                                    />
+                                </td>
+                            </tr>
+                        ))}
                     </tbody>
                 </table>
             </div>
-        </div>
+        )}
       </div>
 
       {/* --- MOBILE VIEW: CARD LIST --- */}
       <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3 pb-24 custom-scrollbar">
-        {records.map((r, i) => {
-            const hasData = hasRowData(r);
-            const totalBottles = (r.b1000_fnb_still + r.b1000_fnb_spk + r.b500_hsk_still + r.b500_tropic_still + r.b350_spa_still + r.b350_ws_still + r.b350_hsk_spk + r.b250_tma_still);
-            
-            const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
-            const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
+        {activeTab === 'water' ? (
+            records.map((r, i) => {
+                const hasData = hasRowData(r);
+                const totalBottles = (r.b1000_fnb_still + r.b1000_fnb_spk + r.b500_hsk_still + r.b500_tropic_still + r.b350_spa_still + r.b350_ws_still + r.b350_hsk_spk + r.b250_tma_still);
+                
+                const stillProdL = (r.b1000_fnb_still * 1) + (r.b500_hsk_still * 0.5) + (r.b500_tropic_still * 0.5) + (r.b350_spa_still * 0.35) + (r.b350_ws_still * 0.35) + (r.b250_tma_still * 0.25);
+                const spkProdL = (r.b1000_fnb_spk * 1) + (r.b350_hsk_spk * 0.35);
 
-            return (
-                <div key={i} onClick={() => setMobileEditIndex(i)} className={`bg-white rounded-xl p-4 shadow-sm border border-slate-200 active:scale-95 transition-transform ${hasData ? 'border-l-4 border-l-[#6D2158]' : 'opacity-70'}`}>
-                    <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-3">
-                            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${hasData ? 'bg-[#6D2158] text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                {r.day}
+                return (
+                    <div key={i} onClick={() => setMobileEditIndex(i)} className={`bg-white rounded-xl p-4 shadow-sm border border-slate-200 active:scale-95 transition-transform ${hasData ? 'border-l-4 border-l-[#6D2158]' : 'opacity-70'}`}>
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${hasData ? 'bg-[#6D2158] text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                    {r.day}
+                                </div>
+                                <div>
+                                    <div className="text-xs font-bold text-slate-700">{selectedDate.toLocaleString('default', { month: 'short' })} {r.day}</div>
+                                    <div className="text-[10px] text-slate-400">{hasData ? `${totalBottles} bottles logged` : 'No data'}</div>
+                                    {hasData && (
+                                        <div className="text-[9px] font-bold text-indigo-600 mt-0.5">
+                                            {stillProdL.toFixed(1)}L Still | {spkProdL.toFixed(1)}L Spk
+                                        </div>
+                                    )}
+                                </div>
                             </div>
-                            <div>
-                                <div className="text-xs font-bold text-slate-700">{selectedDate.toLocaleString('default', { month: 'short' })} {r.day}</div>
-                                <div className="text-[10px] text-slate-400">{hasData ? `${totalBottles} bottles logged` : 'No data'}</div>
-                                {hasData && (
-                                    <div className="text-[9px] font-bold text-indigo-600 mt-0.5">
-                                        {stillProdL.toFixed(1)}L Still | {spkProdL.toFixed(1)}L Spk
-                                    </div>
-                                )}
-                            </div>
+                            <ChevronRight size={16} className="text-slate-300"/>
                         </div>
-                        <ChevronRight size={16} className="text-slate-300"/>
                     </div>
-                </div>
-            )
-        })}
+                )
+            })
+        ) : (
+            milkRecords.map((r, i) => {
+                const hasData = r.total_ml > 0;
+
+                return (
+                    <div key={i} onClick={() => setMobileEditIndex(i)} className={`bg-white rounded-xl p-4 shadow-sm border border-slate-200 active:scale-95 transition-transform ${hasData ? 'border-l-4 border-l-red-500' : 'opacity-70'}`}>
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm ${hasData ? 'bg-red-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                    {r.day}
+                                </div>
+                                <div>
+                                    <div className="text-xs font-bold text-slate-700">{selectedDate.toLocaleString('default', { month: 'short' })} {r.day}</div>
+                                    <div className="text-[10px] text-slate-400">{hasData ? 'Waste logged' : 'No data'}</div>
+                                    {hasData && (
+                                        <div className="text-[9px] font-bold text-red-600 mt-0.5">
+                                            {(r.total_ml / 1000).toFixed(2)} Liters Wasted
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <ChevronRight size={16} className="text-slate-300"/>
+                        </div>
+                    </div>
+                )
+            })
+        )}
       </div>
 
       {/* --- MOBILE EDIT MODAL --- */}
       {mobileEditIndex !== null && (
         <div className="fixed inset-0 z-50 bg-white flex flex-col md:hidden animate-in slide-in-from-bottom-full duration-200">
-            <div className="bg-[#6D2158] text-white p-4 flex justify-between items-center shrink-0 pt-12">
+            <div className={`text-white p-4 flex justify-between items-center shrink-0 pt-12 ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-600'}`}>
                 <div className="flex items-center gap-2">
                     <Calendar size={18}/>
                     <span className="font-bold text-lg">{selectedDate.toLocaleString('default', { month: 'long' })} {records[mobileEditIndex].day}</span>
@@ -529,51 +752,62 @@ export default function WaterProductionPage() {
             </div>
             
             <div className="flex-1 overflow-y-auto p-4 space-y-6 pb-20 custom-scrollbar">
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                    <h3 className="font-bold text-emerald-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 1000 ML</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                        <MobileInput label="F&B Still" val={records[mobileEditIndex].b1000_fnb_still} onChange={(v) => handleChange(mobileEditIndex, 'b1000_fnb_still', v)} />
-                        <MobileInput label="F&B Spk" val={records[mobileEditIndex].b1000_fnb_spk} onChange={(v) => handleChange(mobileEditIndex, 'b1000_fnb_spk', v)} />
-                        <MobileInput label="Return Still" val={records[mobileEditIndex].b1000_ret_still} onChange={(v) => handleChange(mobileEditIndex, 'b1000_ret_still', v)} dim />
-                        <MobileInput label="Return Spk" val={records[mobileEditIndex].b1000_ret_spk} onChange={(v) => handleChange(mobileEditIndex, 'b1000_ret_spk', v)} dim />
-                        <MobileInput label="Breakage" val={records[mobileEditIndex].b1000_break} onChange={(v) => handleChange(mobileEditIndex, 'b1000_break', v)} isRed />
-                    </div>
-                </div>
+                {activeTab === 'water' ? (
+                    <>
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <h3 className="font-bold text-emerald-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 1000 ML</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <MobileInput label="F&B Still" val={records[mobileEditIndex].b1000_fnb_still} onChange={(v) => handleChange(mobileEditIndex, 'b1000_fnb_still', v)} />
+                                <MobileInput label="F&B Spk" val={records[mobileEditIndex].b1000_fnb_spk} onChange={(v) => handleChange(mobileEditIndex, 'b1000_fnb_spk', v)} />
+                                <MobileInput label="Return Still" val={records[mobileEditIndex].b1000_ret_still} onChange={(v) => handleChange(mobileEditIndex, 'b1000_ret_still', v)} dim />
+                                <MobileInput label="Return Spk" val={records[mobileEditIndex].b1000_ret_spk} onChange={(v) => handleChange(mobileEditIndex, 'b1000_ret_spk', v)} dim />
+                                <MobileInput label="Breakage" val={records[mobileEditIndex].b1000_break} onChange={(v) => handleChange(mobileEditIndex, 'b1000_break', v)} isRed />
+                            </div>
+                        </div>
 
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                    <h3 className="font-bold text-blue-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 500 ML</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                        <MobileInput label="HSK Still" val={records[mobileEditIndex].b500_hsk_still} onChange={(v) => handleChange(mobileEditIndex, 'b500_hsk_still', v)} />
-                        <MobileInput label="Tropic Still" val={records[mobileEditIndex].b500_tropic_still} onChange={(v) => handleChange(mobileEditIndex, 'b500_tropic_still', v)} />
-                        <MobileInput label="Return" val={records[mobileEditIndex].b500_ret_still} onChange={(v) => handleChange(mobileEditIndex, 'b500_ret_still', v)} dim />
-                        <MobileInput label="Breakage" val={records[mobileEditIndex].b500_break} onChange={(v) => handleChange(mobileEditIndex, 'b500_break', v)} isRed />
-                    </div>
-                </div>
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <h3 className="font-bold text-blue-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 500 ML</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <MobileInput label="HSK Still" val={records[mobileEditIndex].b500_hsk_still} onChange={(v) => handleChange(mobileEditIndex, 'b500_hsk_still', v)} />
+                                <MobileInput label="Tropic Still" val={records[mobileEditIndex].b500_tropic_still} onChange={(v) => handleChange(mobileEditIndex, 'b500_tropic_still', v)} />
+                                <MobileInput label="Return" val={records[mobileEditIndex].b500_ret_still} onChange={(v) => handleChange(mobileEditIndex, 'b500_ret_still', v)} dim />
+                                <MobileInput label="Breakage" val={records[mobileEditIndex].b500_break} onChange={(v) => handleChange(mobileEditIndex, 'b500_break', v)} isRed />
+                            </div>
+                        </div>
 
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                    <h3 className="font-bold text-purple-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 350 ML</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                        <MobileInput label="SPA Still" val={records[mobileEditIndex].b350_spa_still} onChange={(v) => handleChange(mobileEditIndex, 'b350_spa_still', v)} />
-                        <MobileInput label="WS Still" val={records[mobileEditIndex].b350_ws_still} onChange={(v) => handleChange(mobileEditIndex, 'b350_ws_still', v)} />
-                        <MobileInput label="HSK Spk" val={records[mobileEditIndex].b350_hsk_spk} onChange={(v) => handleChange(mobileEditIndex, 'b350_hsk_spk', v)} />
-                        <MobileInput label="Return Still" val={records[mobileEditIndex].b350_ret_still} onChange={(v) => handleChange(mobileEditIndex, 'b350_ret_still', v)} dim />
-                        <MobileInput label="Return Spk" val={records[mobileEditIndex].b350_ret_spk} onChange={(v) => handleChange(mobileEditIndex, 'b350_ret_spk', v)} dim />
-                        <MobileInput label="Breakage" val={records[mobileEditIndex].b350_break} onChange={(v) => handleChange(mobileEditIndex, 'b350_break', v)} isRed />
-                    </div>
-                </div>
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <h3 className="font-bold text-purple-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> 350 ML</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <MobileInput label="SPA Still" val={records[mobileEditIndex].b350_spa_still} onChange={(v) => handleChange(mobileEditIndex, 'b350_spa_still', v)} />
+                                <MobileInput label="WS Still" val={records[mobileEditIndex].b350_ws_still} onChange={(v) => handleChange(mobileEditIndex, 'b350_ws_still', v)} />
+                                <MobileInput label="HSK Spk" val={records[mobileEditIndex].b350_hsk_spk} onChange={(v) => handleChange(mobileEditIndex, 'b350_hsk_spk', v)} />
+                                <MobileInput label="Return Still" val={records[mobileEditIndex].b350_ret_still} onChange={(v) => handleChange(mobileEditIndex, 'b350_ret_still', v)} dim />
+                                <MobileInput label="Return Spk" val={records[mobileEditIndex].b350_ret_spk} onChange={(v) => handleChange(mobileEditIndex, 'b350_ret_spk', v)} dim />
+                                <MobileInput label="Breakage" val={records[mobileEditIndex].b350_break} onChange={(v) => handleChange(mobileEditIndex, 'b350_break', v)} isRed />
+                            </div>
+                        </div>
 
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                    <h3 className="font-bold text-amber-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> TMA / 200ML</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                        <MobileInput label="TMA 250ml" val={records[mobileEditIndex].b250_tma_still} onChange={(v) => handleChange(mobileEditIndex, 'b250_tma_still', v)} />
-                        <MobileInput label="Break 250ml" val={records[mobileEditIndex].b250_break} onChange={(v) => handleChange(mobileEditIndex, 'b250_break', v)} isRed />
-                        <MobileInput label="Break 200ml" val={records[mobileEditIndex].b200_break} onChange={(v) => handleChange(mobileEditIndex, 'b200_break', v)} isRed />
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                            <h3 className="font-bold text-amber-700 mb-3 border-b pb-2 flex items-center gap-2"><Droplets size={14}/> TMA / 200ML</h3>
+                            <div className="grid grid-cols-2 gap-4">
+                                <MobileInput label="TMA 250ml" val={records[mobileEditIndex].b250_tma_still} onChange={(v) => handleChange(mobileEditIndex, 'b250_tma_still', v)} />
+                                <MobileInput label="Break 250ml" val={records[mobileEditIndex].b250_break} onChange={(v) => handleChange(mobileEditIndex, 'b250_break', v)} isRed />
+                                <MobileInput label="Break 200ml" val={records[mobileEditIndex].b200_break} onChange={(v) => handleChange(mobileEditIndex, 'b200_break', v)} isRed />
+                            </div>
+                        </div>
+                    </>
+                ) : (
+                    <div className="bg-red-50 p-4 rounded-xl border border-red-200">
+                        <h3 className="font-bold text-red-700 mb-3 border-b border-red-200 pb-2 flex items-center gap-2"><Coffee size={14}/> Milk Waste</h3>
+                        <div className="grid grid-cols-1 gap-4">
+                            <MobileInput label="Total Waste Logged (ML)" val={milkRecords[mobileEditIndex].total_ml} onChange={(v) => handleMilkChange(mobileEditIndex, 'total_ml', v)} isRed />
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200 shrink-0">
-                <button onClick={() => { saveToDatabase(records); setMobileEditIndex(null); }} className="w-full bg-[#6D2158] text-white py-3 rounded-xl font-bold text-sm shadow-lg active:scale-95 transition-transform">
+                <button onClick={() => { saveToDatabase(records, milkRecords); setMobileEditIndex(null); }} className={`w-full text-white py-3 rounded-xl font-bold text-sm shadow-lg active:scale-95 transition-transform ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-600'}`}>
                     Save & Close
                 </button>
             </div>
@@ -590,10 +824,18 @@ export default function WaterProductionPage() {
 
       {isPasteModalOpen && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden">
-                <div className="p-4 border-b flex justify-between items-center bg-slate-50"><h3 className="font-bold text-slate-700">Paste Report</h3><button onClick={() => setIsPasteModalOpen(false)}><X size={18}/></button></div>
-                <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} className="w-full h-48 p-4 text-sm outline-none resize-none font-mono" placeholder="WATER FILLING RECORD..." />
-                <div className="p-3 border-t bg-slate-50 flex justify-end"><button onClick={handleParseAndApply} className="bg-blue-600 text-white px-4 py-2 rounded font-bold text-sm">Apply</button></div>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95">
+                <div className="p-5 border-b flex justify-between items-center bg-slate-50">
+                    <div>
+                        <h3 className="font-black text-slate-800 uppercase tracking-tight">Paste Daily Report</h3>
+                        <p className="text-[10px] font-bold text-slate-400">Includes Water & Milk Data</p>
+                    </div>
+                    <button onClick={() => setIsPasteModalOpen(false)} className="p-2 hover:bg-white rounded-xl transition-colors"><X size={20} className="text-slate-400"/></button>
+                </div>
+                <textarea value={pasteText} onChange={(e) => setPasteText(e.target.value)} className="w-full h-64 p-5 text-sm outline-none resize-none font-mono focus:bg-slate-50 transition-colors" placeholder="WATER FILLING RECORD..." />
+                <div className="p-5 border-t bg-slate-50 flex justify-end">
+                    <button onClick={handleParseAndApply} className="bg-[#6D2158] text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:opacity-90 shadow-md shadow-[#6D2158]/20 transition-all">Apply to Log</button>
+                </div>
             </div>
         </div>
       )}
@@ -644,4 +886,4 @@ const MobileInput = ({ label, val, onChange, dim, isRed }: MobileInputProps) => 
             className={`w-full p-3 rounded-lg border outline-none font-bold text-lg text-center transition-all focus:border-[#6D2158] focus:bg-[#6D2158]/5 ${isRed ? 'bg-red-50 border-red-100 text-red-600' : 'bg-white border-slate-200 text-slate-800'}`}
         />
     </div>
-);  
+);

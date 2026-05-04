@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -48,6 +48,7 @@ const TEAM_ITEMS = [
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
+  { name: "Leave Clearance", icon: ShieldCheck, path: "/attendance/clearance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Leave Planner", icon: Plane, path: "/leave-planner" },
   { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },

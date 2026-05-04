@@ -284,8 +284,9 @@ export default function LinenMasterInventory() {
             toast.success(`New Stock recorded successfully`);
             setIsNewStockModalOpen(false);
             loadLinenData();
-        } catch (err) {
-            toast.error("Error saving new stock");
+        } catch (err: any) {
+            console.error("New Stock Save Error:", err);
+            toast.error(`Error: ${err?.message || "Failed to save new stock"}`);
         } finally {
             setIsSaving(false);
         }
@@ -337,8 +338,9 @@ export default function LinenMasterInventory() {
             toast.success(`Discarded items recorded successfully`);
             setIsDiscardModalOpen(false);
             loadLinenData();
-        } catch (err) {
-            toast.error("Error saving discarded items");
+        } catch (err: any) {
+            console.error("Discard Save Error:", err);
+            toast.error(`Error: ${err?.message || "Failed to save discarded items"}`);
         } finally {
             setIsSaving(false);
         }
@@ -388,8 +390,9 @@ export default function LinenMasterInventory() {
             toast.success(`Updated ${editingLocation} successfully`);
             setIsEditModalOpen(false);
             loadLinenData();
-        } catch (err) {
-            toast.error("Error saving updates");
+        } catch (err: any) {
+            console.error("Edit Save Error:", err);
+            toast.error(`Error: ${err?.message || "Failed to save inventory updates"}`);
         } finally {
             setIsSaving(false);
         }
