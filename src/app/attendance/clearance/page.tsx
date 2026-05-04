@@ -283,22 +283,23 @@ export default function LeaveClearancePage() {
           
           const hostJoinStr = host.joining_date ? String(host.joining_date).split('T')[0] : '2026-01-01';
 
-          // Find taken PHs
+          // 1. ADD BROUGHT FORWARD PHS TO THE EARNED ARRAY
+          const cfPH = Math.round(parseFloat(host.calcCfPH) || 0);
+          for (let i = 0; i < cfPH; i++) {
+              earned.push(`${selectedYear}-01-01`); // Dummy date to represent B/F at start of year
+          }
+
+          // 2. FIND TAKEN PHS
           attendance.forEach(a => {
               if (a.host_id === host.host_id && a.status_code === 'PH') taken.push(a.date);
           });
 
-          // Find earned PHs
+          // 3. FIND EARNED PHS (Now perfectly mirrors payrollMath: counts all PHs after join date!)
           publicHolidays.forEach(ph => {
               if (ph.date > todayStr) return; // Only past/current PHs
               if (ph.date < hostJoinStr) return; // Not eligible if joined after the PH
               
-              const att = attendance.find(a => a.host_id === host.host_id && a.date === ph.date);
-              const status = att?.status_code;
-              const leaveCodes = ['O', 'OFF', 'AL', 'VAC', 'PH', 'SL', 'NP', 'MA', 'EL', 'A'];
-              if (!leaveCodes.includes(status || '')) {
-                  earned.push(ph.date);
-              }
+              earned.push(ph.date); // Push immediately, NO exclusions for AL/OFF
           });
 
           earned.sort();
@@ -311,20 +312,25 @@ export default function LeaveClearancePage() {
               if (takenCount > 0) {
                   takenCount--;
               } else {
+                  const isCF = earnedDate === `${selectedYear}-01-01` && cfPH > 0;
                   const expiry = addDays(parseISO(earnedDate), 60);
                   const daysLeft = differenceInDays(expiry, new Date());
-                  pendingPHs.push({ date: earnedDate, expiry: format(expiry, 'yyyy-MM-dd'), daysLeft });
+                  
+                  // ONLY push if it hasn't expired yet
+                  if (daysLeft > 0) {
+                      pendingPHs.push({ date: earnedDate, expiry: format(expiry, 'yyyy-MM-dd'), daysLeft, isCF });
+                  }
               }
           });
 
           if (pendingPHs.length > 0) {
               const mostUrgent = Math.min(...pendingPHs.map(p => p.daysLeft));
-              results.push({ ...host, pendingPHs, mostUrgent });
+              results.push({ ...host, pendingPHs, mostUrgent, actualBal: pendingPHs.length });
           }
       });
 
       return results.sort((a, b) => a.mostUrgent - b.mostUrgent);
-  }, [filteredHosts, attendance, publicHolidays]);
+  }, [filteredHosts, attendance, publicHolidays, selectedYear]);
 
   // --- EXCEL EXPORT ---
   const handleExportAL = () => {
@@ -628,29 +634,31 @@ export default function LeaveClearancePage() {
                                                       <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mt-0.5">{host.host_id} • {host.role}</p>
                                                   </div>
                                                   <div className="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-lg text-[10px] font-black shadow-sm shrink-0 border border-blue-100">
-                                                      {host.pendingPHs.length} PH
+                                                      {host.actualBal} PH
                                                   </div>
                                               </div>
                                               <div className="space-y-3 flex-1">
                                                   {host.pendingPHs.map((ph: any, i: number) => {
                                                       const isDanger = ph.daysLeft <= 14;
-                                                      const isExpired = ph.daysLeft <= 0;
-                                                      const barColor = isExpired ? 'bg-slate-300' : isDanger ? 'bg-rose-500' : 'bg-emerald-500';
-                                                      const pct = isExpired ? 0 : Math.max(0, Math.min(100, (ph.daysLeft / 60) * 100));
+                                                      const barColor = isDanger ? 'bg-rose-500' : 'bg-emerald-500';
+                                                      const pct = Math.max(0, Math.min(100, (ph.daysLeft / 60) * 100));
 
                                                       return (
                                                           <div key={i} className="flex flex-col gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-100">
                                                               <div className="flex justify-between text-[10px] font-bold items-center">
-                                                                  <span className="text-slate-600 flex items-center gap-1.5"><CalendarDays size={10} className="text-slate-400"/> {format(parseISO(ph.date), 'dd MMM yyyy')}</span>
-                                                                  <span className={`px-2 py-0.5 rounded border uppercase tracking-widest text-[8px] ${isExpired ? 'bg-rose-50 border-rose-100 text-rose-700' : isDanger ? 'bg-red-50 border-red-100 text-red-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
-                                                                      {isExpired ? 'EXPIRED' : `${ph.daysLeft} days`}
+                                                                  <span className="text-slate-600 flex items-center gap-1.5">
+                                                                      <CalendarDays size={10} className="text-slate-400"/> 
+                                                                      {ph.isCF ? 'Brought Forward' : format(parseISO(ph.date), 'dd MMM yyyy')}
+                                                                  </span>
+                                                                  <span className={`px-2 py-0.5 rounded border uppercase tracking-widest text-[8px] ${isDanger ? 'bg-red-50 border-red-100 text-red-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
+                                                                      {ph.daysLeft} days
                                                                   </span>
                                                               </div>
                                                               <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden shadow-inner">
                                                                   <div className={`h-full ${barColor} transition-all duration-1000 ease-out`} style={{ width: `${pct}%` }}></div>
                                                               </div>
                                                               <div className="text-[8px] font-bold text-slate-400 text-right uppercase tracking-widest">
-                                                                  Expires: <span className={isExpired ? 'text-rose-500' : 'text-slate-500'}>{format(parseISO(ph.expiry), 'dd MMM yyyy')}</span>
+                                                                  Expires: <span className="text-slate-500">{format(parseISO(ph.expiry), 'dd MMM yyyy')}</span>
                                                               </div>
                                                           </div>
                                                       );
