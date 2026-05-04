@@ -102,7 +102,8 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
         pathname?.includes('/inventory/store') ||
         pathname?.includes('/mobile') ||
         pathname?.includes('/eng-ac') ||
-        pathname?.includes('/guests'); 
+        pathname?.includes('/guests') ||
+        pathname?.includes('/share'); 
 
     if (isPublicRoute) {
         setIsAuthenticated(true);

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Plus, X, Pointer, RefreshCw, Users } from "lucide-react";
+import { Search, Plus, X, Pointer, RefreshCw, Users, Share2 } from "lucide-react";
 import toast from 'react-hot-toast';
 import { 
     AREAS, TOTAL_VILLAS, JETTY_A, JETTY_B, JETTY_C, BEACH, 
@@ -60,6 +60,15 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
     const [typingState, setTypingState] = useState<Record<string, string>>({});
     const [isAddHostModalOpen, setIsAddHostModalOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+
+    const handleShareLink = () => {
+        const url = `${window.location.origin}/share/allocation`;
+        navigator.clipboard.writeText(url).then(() => {
+            toast.success('Public link copied to clipboard!');
+        }).catch(() => {
+            toast.error('Failed to copy link.');
+        });
+    };
 
     const currentAreaHosts = hosts.filter((h: any) => {
         const existingAlloc = allocations.find((a: any) => String(a.host_id) === String(h.id));
@@ -259,7 +268,7 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
     const allAllocatedVillas = new Set<number>();
 
     allocations.filter((a: any) => a.area === 'villa').forEach((a: any) => {
-        parseVillas(a.task_details).forEach(v => allAllocatedVillas.add(v));
+        parseVillas(a.task_details).forEach((v: any) => allAllocatedVillas.add(v));
     });
 
     currentAreaHosts.forEach((host: any) => {
@@ -473,6 +482,15 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
 
             {/* RIGHT SIDEBAR */}
             <div className="w-full xl:w-48 shrink-0 flex flex-col gap-4 relative xl:sticky xl:top-6 z-20">
+                
+                {/* SHARE BUTTON ADDED HERE */}
+                <button 
+                    onClick={handleShareLink} 
+                    className="w-full py-3 bg-[#6D2158] hover:bg-[#902468] text-white rounded-xl font-black uppercase tracking-widest text-[10px] shadow-sm active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                    <Share2 size={14} /> Copy Public Link
+                </button>
+
                 <div className="bg-white p-3 rounded-xl border border-slate-300 shadow-sm">
                     <h3 className="text-[10px] font-black uppercase text-slate-700 tracking-widest mb-2 flex items-center gap-1.5"><Search size={12}/> Find Villa</h3>
                     <input type="number" placeholder="Villa No..." className="w-full bg-slate-50 border border-slate-300 text-xs font-bold rounded p-2 outline-none focus:border-[#6D2158] mb-2 text-center" value={villaSearchQuery} onChange={e => setVillaSearchQuery(e.target.value)} />
@@ -521,7 +539,7 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
                         </div>
                         <div className="p-0 flex-1 overflow-y-auto custom-scrollbar">
                             <div className="pb-4">
-                                {AREAS.map(area => {
+                                {AREAS.map((area: any) => {
                                     const hostsInGroup = hosts.filter((h: any) => {
                                         const hasAlloc = allocations.some((a: any) => String(a.host_id) === String(h.id));
                                         if (hasAlloc) return false;
