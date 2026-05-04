@@ -11,10 +11,33 @@ import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
 import { computeLeaveBalancesRPC } from '@/lib/payrollMath';
 
+// Helper to count Fridays for the OFF tab
+const countFridaysLocal = (start: Date, end: Date) => {
+    let count = 0;
+    let curr = new Date(start);
+    while (curr <= end) {
+        if (curr.getDay() === 5) count++;
+        curr.setDate(curr.getDate() + 1);
+    }
+    return count;
+};
+
 export default function LeaveClearancePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'AL' | 'OFF' | 'PH'>('AL');
+  
+  // Year selector for AL and PH
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  
+  // Dedicated Cycle Selector for Pending OFFs
+  const [offCycleMonth, setOffCycleMonth] = useState(() => {
+      const d = new Date();
+      return d.getDate() >= 21 ? (d.getMonth() + 1) % 12 : d.getMonth();
+  });
+  const [offCycleYear, setOffCycleYear] = useState(() => {
+      const d = new Date();
+      return (d.getDate() >= 21 && d.getMonth() === 11) ? d.getFullYear() + 1 : d.getFullYear();
+  });
   
   const [hosts, setHosts] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
@@ -24,28 +47,6 @@ export default function LeaveClearancePage() {
   const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, nicknames: {}, excludeAttendance: {} });
   const [selectedDepartment, setSelectedDepartment] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Payroll Cycle Calculation (For Pending Offs)
-  const today = new Date();
-  const cycleStart = useMemo(() => {
-      let start = new Date(today.getFullYear(), today.getMonth(), 21);
-      if (today.getDate() < 21) {
-          start = new Date(today.getFullYear(), today.getMonth() - 1, 21);
-      }
-      return start;
-  }, [today]);
-  
-  const cycleEnd = useMemo(() => new Date(cycleStart.getFullYear(), cycleStart.getMonth() + 1, 20), [cycleStart]);
-
-  const totalFridaysInCycle = useMemo(() => {
-      let count = 0;
-      let curr = new Date(cycleStart);
-      while (curr <= cycleEnd) {
-          if (curr.getDay() === 5) count++;
-          curr.setDate(curr.getDate() + 1);
-      }
-      return count;
-  }, [cycleStart, cycleEnd]);
 
   useEffect(() => {
       fetchData();
@@ -61,7 +62,8 @@ export default function LeaveClearancePage() {
           const { data, error } = await supabase
               .from('hsk_attendance')
               .select('id, host_id, date, status_code')
-              .gte('date', `${selectedYear}-01-01`)
+              // Fetch from Dec 1 of prev year to handle January payroll cycles
+              .gte('date', `${selectedYear - 1}-12-01`)
               .lte('date', `${selectedYear}-12-31`)
               .range(from, from + step - 1);
 
@@ -81,12 +83,14 @@ export default function LeaveClearancePage() {
 
   const fetchData = async () => {
       setIsLoading(true);
-      const targetDateStr = format(new Date(), 'yyyy-MM-dd'); // Live balances as of today
+      
+      // Target the exact end of the payroll year (Dec 20th) for AL EOY projections
+      const eoyDateStr = `${selectedYear}-12-20`; 
 
       const [constRes, hostRes, rpcRes] = await Promise.all([
           supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank', 'team_viewer_config']),
           supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
-          supabase.rpc('get_all_attendance_stats', { p_target_date: targetDateStr })
+          supabase.rpc('get_all_attendance_stats', { p_target_date: eoyDateStr })
       ]);
       
       let ranks: Record<string, number> = {};
@@ -128,8 +132,14 @@ export default function LeaveClearancePage() {
       setAttendance(rawAtt);
 
       const hostsWithBals = sortedHosts.map(h => {
-           const b = computeLeaveBalancesRPC(h, rawAtt, rpcRes.data || [], targetDateStr, phs, []);
-           return { ...h, ...(b || {}) };
+           // EOY Projection for Annual Leave
+           const eoyBals = computeLeaveBalancesRPC(h, rawAtt, rpcRes.data || [], eoyDateStr, phs, []);
+           
+           return { 
+               ...h, 
+               projectedAL: parseFloat(eoyBals?.balAL || '0') || 0,
+               ...eoyBals 
+           };
       });
 
       setHosts(hostsWithBals);
@@ -169,7 +179,7 @@ export default function LeaveClearancePage() {
 
   // --- DATA PROCESSING LOGIC ---
 
-  // 1. Annual Leave Data (Projected EOY Balance)
+  // 1. Annual Leave Data (Projected EOY Balance mirrored from payrollMath)
   const alData = useMemo(() => {
       return filteredHosts.map(host => {
           const monthly = Array(12).fill(0);
@@ -183,22 +193,9 @@ export default function LeaveClearancePage() {
               }
           });
 
-          // Calculate Projected EOY Balance
-          let yearlyEarned = 30; // Standard 30 days AL
-          const joinDate = host.joining_date ? parseISO(host.joining_date) : null;
-          
-          if (joinDate && joinDate.getFullYear() === selectedYear) {
-              const joinMonth = joinDate.getMonth();
-              yearlyEarned = (12 - joinMonth) * 2.5; // Prorate if joined this year
-          } else if (joinDate && joinDate.getFullYear() > selectedYear) {
-              yearlyEarned = 0; // Hasn't joined yet in the selected year
-          }
-
-          const projectedAL = (host.cf_al || 0) + yearlyEarned - totalTaken;
-
-          return { ...host, monthly, totalTaken, projectedAL };
+          return { ...host, monthly, totalTaken };
       });
-  }, [filteredHosts, attendance, selectedYear]);
+  }, [filteredHosts, attendance]);
 
   // AL Footer Stats
   const alTotals = useMemo(() => {
@@ -209,35 +206,71 @@ export default function LeaveClearancePage() {
       alData.forEach(h => {
           h.monthly.forEach((val: number, i: number) => monthlyTotals[i] += val);
           grandTotalTaken += h.totalTaken;
-          grandTotalBalance += h.projectedAL;
+          grandTotalBalance += (Number(h.projectedAL) || 0);
       });
 
-      const avgBalance = alData.length > 0 ? (grandTotalBalance / alData.length).toFixed(1) : 0;
+      const avgBalance = alData.length > 0 ? (grandTotalBalance / alData.length).toFixed(2) : 0;
       return { monthlyTotals, grandTotalTaken, grandTotalBalance, avgBalance };
   }, [alData]);
 
-  // 2. Pending OFF Data (21st to 20th)
-  const offData = useMemo(() => {
-      const startStr = format(cycleStart, 'yyyy-MM-dd');
-      const endStr = format(cycleEnd, 'yyyy-MM-dd');
+  // 2. Pending OFF Data (Dynamically calculates based on selected Off Cycle)
+  const offCycleParams = useMemo(() => {
+      const start = new Date(offCycleYear, offCycleMonth - 1, 21);
+      const end = new Date(offCycleYear, offCycleMonth, 20);
+      const prevEnd = new Date(offCycleYear, offCycleMonth - 1, 20);
+      const totalFridays = countFridaysLocal(start, end);
 
-      return filteredHosts.map(host => {
+      return {
+          start, end, prevEnd, totalFridays,
+          startStr: format(start, 'yyyy-MM-dd'),
+          endStr: format(end, 'yyyy-MM-dd'),
+          prevEndStr: format(prevEnd, 'yyyy-MM-dd')
+      };
+  }, [offCycleMonth, offCycleYear]);
+
+  const offData = useMemo(() => {
+      const { startStr, endStr, prevEndStr, totalFridays } = offCycleParams;
+
+      const results = filteredHosts.map(host => {
           let takenInCycle = 0;
+          let lastTakenDate: string | null = null;
+
           attendance.forEach(a => {
               if (a.host_id === host.host_id && ['O', 'OFF'].includes(a.status_code)) {
                   if (a.date >= startStr && a.date <= endStr) {
                       takenInCycle++;
+                      if (!lastTakenDate || a.date > lastTakenDate) {
+                          lastTakenDate = a.date;
+                      }
                   }
               }
           });
 
+          // Run math logic exactly for the cycle boundaries to ensure identical numbers to attendance sheet
+          const prevBals = computeLeaveBalancesRPC(host, attendance, historicalStats, prevEndStr, publicHolidays, []);
+          const currBals = computeLeaveBalancesRPC(host, attendance, historicalStats, endStr, publicHolidays, []);
+
+          const prevPending = parseInt(prevBals?.balOff || '0', 10);
+          const totalPending = parseInt(currBals?.balOff || '0', 10);
+          const earnedInCycle = totalPending - prevPending + takenInCycle;
+          
+          // Outstanding balance to clear ONLY looks at previous debt minus what they've taken this cycle
+          const uncleared = prevPending - takenInCycle;
+
           return { 
               ...host, 
               takenInCycle, 
-              earnedFridays: totalFridaysInCycle 
+              earnedInCycle,
+              prevPending,
+              totalPending,
+              uncleared,
+              lastTakenDate
           };
       });
-  }, [filteredHosts, attendance, cycleStart, cycleEnd, totalFridaysInCycle]);
+
+      // Filter: ONLY show staff who came into this cycle with a Brought Forward balance > 0
+      return results.filter(h => h.prevPending > 0).sort((a, b) => b.prevPending - a.prevPending);
+  }, [filteredHosts, attendance, historicalStats, publicHolidays, offCycleParams]);
 
   // 3. Public Holiday Data (FIFO 60-Day Expiry)
   const phData = useMemo(() => {
@@ -247,6 +280,8 @@ export default function LeaveClearancePage() {
       filteredHosts.forEach(host => {
           const earned: string[] = [];
           const taken: string[] = [];
+          
+          const hostJoinStr = host.joining_date ? String(host.joining_date).split('T')[0] : '2026-01-01';
 
           // Find taken PHs
           attendance.forEach(a => {
@@ -256,6 +291,8 @@ export default function LeaveClearancePage() {
           // Find earned PHs
           publicHolidays.forEach(ph => {
               if (ph.date > todayStr) return; // Only past/current PHs
+              if (ph.date < hostJoinStr) return; // Not eligible if joined after the PH
+              
               const att = attendance.find(a => a.host_id === host.host_id && a.date === ph.date);
               const status = att?.status_code;
               const leaveCodes = ['O', 'OFF', 'AL', 'VAC', 'PH', 'SL', 'NP', 'MA', 'EL', 'A'];
@@ -291,19 +328,19 @@ export default function LeaveClearancePage() {
 
   // --- EXCEL EXPORT ---
   const handleExportAL = () => {
-      const headers = ['SSL No', 'Name', 'Designation', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Total Taken', 'Projected EOY Balance'];
+      const headers = ['SSL No', 'Name', 'Designation', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Total Taken', `EOY Balance (Dec 20)`];
       const rows = alData.map(h => [
           h.host_id, h.full_name, h.role,
           ...h.monthly,
           h.totalTaken,
-          h.projectedAL.toFixed(1)
+          (Number(h.projectedAL) || 0).toFixed(2)
       ]);
 
       rows.push([
           '', 'DEPARTMENT TOTALS', '',
           ...alTotals.monthlyTotals,
           alTotals.grandTotalTaken,
-          alTotals.grandTotalBalance.toFixed(1)
+          alTotals.grandTotalBalance.toFixed(2)
       ]);
       rows.push([ '', `Average AL Balance per Staff: ${alTotals.avgBalance}`, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '' ]);
 
@@ -335,11 +372,28 @@ export default function LeaveClearancePage() {
                       <input type="text" placeholder="Search Host..." className="w-full pl-7 pr-2 py-1.5 border border-slate-200 rounded-full font-bold text-[10px] bg-slate-50 focus:bg-white focus:border-[#6D2158] outline-none shadow-inner transition-colors" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                   </div>
                   
-                  {activeTab === 'AL' && (
+                  {/* Dynamic Header Controls based on Tab */}
+                  {(activeTab === 'AL' || activeTab === 'PH') && (
                       <div className="flex items-center bg-slate-50 p-0.5 rounded-full border border-slate-200 shadow-inner">
                           <button onClick={() => setSelectedYear(y => y - 1)} className="p-1 hover:bg-white rounded-full text-slate-500 transition-colors"><ChevronLeft size={14}/></button>
                           <div className="w-10 text-center font-black text-[10px] text-[#6D2158]">{selectedYear}</div>
                           <button onClick={() => setSelectedYear(y => y + 1)} className="p-1 hover:bg-white rounded-full text-slate-500 transition-colors"><ChevronRight size={14}/></button>
+                      </div>
+                  )}
+
+                  {activeTab === 'OFF' && (
+                      <div className="flex items-center bg-amber-50 p-0.5 rounded-full border border-amber-200 shadow-inner">
+                          <button onClick={() => {
+                              if (offCycleMonth === 0) { setOffCycleMonth(11); setOffCycleYear(y => y - 1); }
+                              else setOffCycleMonth(m => m - 1);
+                          }} className="p-1 hover:bg-white rounded-full text-amber-600 transition-colors"><ChevronLeft size={14}/></button>
+                          <div className="w-20 text-center font-black text-[10px] text-amber-700 uppercase tracking-widest">
+                              {format(new Date(offCycleYear, offCycleMonth, 1), 'MMM yyyy')}
+                          </div>
+                          <button onClick={() => {
+                              if (offCycleMonth === 11) { setOffCycleMonth(0); setOffCycleYear(y => y + 1); }
+                              else setOffCycleMonth(m => m + 1);
+                          }} className="p-1 hover:bg-white rounded-full text-amber-600 transition-colors"><ChevronRight size={14}/></button>
                       </div>
                   )}
 
@@ -405,7 +459,7 @@ export default function LeaveClearancePage() {
                                       ))}
                                       
                                       <th className="p-2 text-center text-rose-500 w-16">Taken</th>
-                                      <th className="p-2 text-center text-cyan-600 w-20 pr-4" title="Projected End of Year Balance">EOY Bal</th>
+                                      <th className="p-2 text-center text-cyan-600 w-20 pr-4" title={`Projected Balance as of Dec 20, ${selectedYear}`}>EOY Bal</th>
                                   </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-50 font-medium">
@@ -427,13 +481,13 @@ export default function LeaveClearancePage() {
                                           </td>
                                           <td className="p-2 text-center pr-4">
                                               <div className="bg-[#6D2158] text-white px-2 py-1 rounded font-black inline-block min-w-[32px] shadow-sm text-[10px]">
-                                                  {host.projectedAL.toFixed(1)}
+                                                  {(Number(host.projectedAL) || 0).toFixed(2)}
                                               </div>
                                           </td>
                                       </tr>
                                   ))}
                               </tbody>
-                              <tfoot className="bg-slate-50 sticky bottom-0 z-20 shadow-[0_-4px_12px_rgba(0,0,0,0.03)] font-black uppercase tracking-widest text-[9px]">
+                              <tfoot className="bg-slate-50 sticky bottom-0 z-20 shadow-[0_-4px_12px_rgba(0,0,0,0.03)] font-black uppercase tracking-widest text-xs">
                                   <tr>
                                       <td colSpan={4} className="p-3 text-right text-slate-500 sticky left-0 bg-slate-50 z-30">Dept. Totals:</td>
                                       {alTotals.monthlyTotals.map((val: number, i: number) => (
@@ -441,8 +495,8 @@ export default function LeaveClearancePage() {
                                       ))}
                                       <td className="p-3 text-center text-rose-700">{alTotals.grandTotalTaken}</td>
                                       <td className="p-3 text-center text-[#6D2158] pr-4">
-                                          <div className="text-xs">{alTotals.grandTotalBalance.toFixed(1)}</div>
-                                          <div className="text-[7px] text-slate-400 mt-0.5 lowercase tracking-normal">avg {alTotals.avgBalance} / host</div>
+                                          <div className="text-sm">{alTotals.grandTotalBalance.toFixed(2)}</div>
+                                          <div className="text-[10px] text-slate-400 mt-0.5 lowercase tracking-normal">avg {alTotals.avgBalance} / host</div>
                                       </td>
                                   </tr>
                               </tfoot>
@@ -458,62 +512,82 @@ export default function LeaveClearancePage() {
                                           <AlertTriangle size={20}/>
                                       </div>
                                       <div>
-                                          <h3 className="font-black text-amber-800 uppercase tracking-widest text-xs">Payroll Cycle</h3>
-                                          <p className="text-[10px] font-bold text-amber-600 mt-0.5">{format(cycleStart, 'dd MMM yyyy')} to {format(cycleEnd, 'dd MMM yyyy')}</p>
+                                          <h3 className="font-black text-amber-800 uppercase tracking-widest text-xs">Payroll Cycle Insights</h3>
+                                          <p className="text-[10px] font-bold text-amber-600 mt-0.5">{format(offCycleParams.start, 'dd MMM yyyy')} to {format(offCycleParams.end, 'dd MMM yyyy')}</p>
                                       </div>
                                   </div>
-                                  <div className="text-right bg-white px-4 py-2 rounded-xl shadow-sm border border-amber-100">
-                                      <p className="text-2xl font-black text-amber-600">{totalFridaysInCycle}</p>
-                                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Fridays to clear</p>
+                                  <div className="text-right bg-white px-4 py-2 rounded-xl shadow-sm border border-amber-100 w-full md:w-auto flex justify-between md:block items-center">
+                                      <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest md:mb-0.5">Staff with B/F Offs</p>
+                                      <p className="text-2xl font-black text-amber-600">{offData.length}</p>
                                   </div>
                               </div>
 
-                              <div className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
-                                  <table className="w-full text-left border-collapse text-[10px] select-none">
-                                      <thead className="bg-slate-50/50 uppercase tracking-widest text-slate-400 font-black border-b border-slate-100">
-                                          <tr>
-                                              <th className="p-3 w-12 text-center">#</th>
-                                              <th className="p-3">Host Identity</th>
-                                              <th className="p-3 text-center text-amber-600">Fridays Earned</th>
-                                              <th className="p-3 text-center text-emerald-600">Offs Taken</th>
-                                              <th className="p-3 text-center text-[#6D2158]">Pending Balance</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody className="divide-y divide-slate-50 font-medium">
-                                          {offData.map((host, idx) => {
-                                              const pending = host.earnedFridays - host.takenInCycle;
-                                              const hasPending = pending > 0;
-                                              return (
-                                                  <tr key={host.host_id} className="hover:bg-slate-50/50 transition-colors">
-                                                      <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
-                                                      <td className="p-3">
-                                                          <div className="flex items-center gap-2.5">
-                                                              <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center font-black text-[9px] shrink-0">
-                                                                  <UserCheck size={12}/>
+                              {offData.length === 0 ? (
+                                  <div className="text-center py-16 bg-white border border-slate-100 rounded-2xl shadow-sm max-w-lg mx-auto">
+                                      <div className="w-16 h-16 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                                          <AlertTriangle size={32} className="text-emerald-500"/>
+                                      </div>
+                                      <p className="text-lg font-black text-slate-700 uppercase tracking-tight">All Clear!</p>
+                                      <p className="text-xs font-bold text-slate-400 mt-1">No staff brought forward any pending off days into this payroll cycle.</p>
+                                  </div>
+                              ) : (
+                                  <div className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
+                                      <table className="w-full text-left border-collapse text-[10px] select-none">
+                                          <thead className="bg-slate-50/50 uppercase tracking-widest text-slate-400 font-black border-b border-slate-100">
+                                              <tr>
+                                                  <th className="p-3 w-12 text-center">#</th>
+                                                  <th className="p-3">Host Identity</th>
+                                                  <th className="p-3 text-center text-slate-500">B/F Bal</th>
+                                                  <th className="p-3 text-center text-amber-600">Earned (Cycle)</th>
+                                                  <th className="p-3 text-center text-emerald-600">Taken (Cycle)</th>
+                                                  <th className="p-3 text-center text-[#6D2158]">To Clear</th>
+                                              </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-slate-50 font-medium">
+                                              {offData.map((host, idx) => {
+                                                  const isCleared = host.uncleared <= 0;
+                                                  return (
+                                                      <tr key={host.host_id} className={`transition-colors ${isCleared ? 'bg-slate-50/30' : 'hover:bg-slate-50/50'}`}>
+                                                          <td className="p-3 text-center font-bold text-slate-400">{idx + 1}</td>
+                                                          <td className="p-3">
+                                                              <div className="flex items-center gap-2.5">
+                                                                  <div className={`w-6 h-6 rounded-full flex items-center justify-center font-black text-[9px] shrink-0 ${isCleared ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>
+                                                                      <UserCheck size={12}/>
+                                                                  </div>
+                                                                  <div>
+                                                                      <div className={`font-bold text-xs ${isCleared ? 'text-slate-500' : 'text-slate-800'}`}>{host.full_name}</div>
+                                                                      <div className="text-[8px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
+                                                                  </div>
                                                               </div>
-                                                              <div>
-                                                                  <div className="font-bold text-slate-800 text-xs">{host.full_name}</div>
-                                                                  <div className="text-[8px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
-                                                              </div>
-                                                          </div>
-                                                      </td>
-                                                      <td className="p-3 text-center">
-                                                          <span className="font-black text-amber-600 bg-amber-50 px-2.5 py-1 rounded-md border border-amber-100">{host.earnedFridays}</span>
-                                                      </td>
-                                                      <td className="p-3 text-center">
-                                                          <span className="font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-100">{host.takenInCycle}</span>
-                                                      </td>
-                                                      <td className="p-3 text-center">
-                                                          <span className={`px-3 py-1.5 rounded-lg font-black text-xs shadow-sm inline-block min-w-[40px] ${hasPending ? 'bg-[#6D2158] text-white' : 'bg-slate-100 text-slate-400 shadow-none'}`}>
-                                                              {pending > 0 ? `+${pending}` : '0'}
-                                                          </span>
-                                                      </td>
-                                                  </tr>
-                                              )
-                                          })}
-                                      </tbody>
-                                  </table>
-                              </div>
+                                                          </td>
+                                                          <td className="p-3 text-center">
+                                                              <span className="font-bold text-slate-500">{host.prevPending}</span>
+                                                          </td>
+                                                          <td className="p-3 text-center">
+                                                              <span className={`font-black px-2.5 py-1 rounded-md border ${isCleared ? 'text-slate-400 bg-slate-50 border-slate-100' : 'text-amber-600 bg-amber-50 border-amber-100'}`}>{host.earnedInCycle}</span>
+                                                          </td>
+                                                          <td className="p-3 text-center">
+                                                              <span className={`font-black px-2.5 py-1 rounded-md border ${isCleared ? 'text-slate-400 bg-slate-50 border-slate-100' : 'text-emerald-600 bg-emerald-50 border-emerald-100'}`}>{host.takenInCycle}</span>
+                                                          </td>
+                                                          <td className="p-3 text-center">
+                                                              {isCleared ? (
+                                                                  <div className="flex flex-col items-center justify-center">
+                                                                      <span className="bg-emerald-50 text-emerald-600 px-2 py-0.5 rounded font-black text-[8px] uppercase tracking-widest border border-emerald-100">Cleared</span>
+                                                                      {host.lastTakenDate && <span className="text-[8px] text-slate-400 mt-1 font-bold">Last: {format(parseISO(host.lastTakenDate), 'dd MMM')}</span>}
+                                                                  </div>
+                                                              ) : (
+                                                                  <span className="bg-[#6D2158] text-white px-2 py-1.5 rounded-lg font-black text-xs shadow-sm inline-block min-w-[50px]">
+                                                                      +{host.uncleared}
+                                                                  </span>
+                                                              )}
+                                                          </td>
+                                                      </tr>
+                                                  )
+                                              })}
+                                          </tbody>
+                                      </table>
+                                  </div>
+                              )}
                           </div>
                       )}
 
