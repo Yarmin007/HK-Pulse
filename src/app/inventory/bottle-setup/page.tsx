@@ -4,7 +4,8 @@ import { supabase } from '@/lib/supabase';
 import { 
     Sparkles, Container, Lock, Unlock, AlertTriangle, Users, 
     ShieldCheck, MapPin, Plus, Trash2, DownloadCloud, EyeOff, 
-    X, Search, Calendar, Loader2, Save, Droplets, Utensils, Ship, PlaneTakeoff, Link as LinkIcon
+    X, Search, Calendar, Loader2, Save, Droplets, Utensils, Ship, PlaneTakeoff, Link as LinkIcon,
+    ListOrdered, ImageIcon
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import toast from 'react-hot-toast';
@@ -203,6 +204,16 @@ export default function BottleSetupPage() {
         }
     };
 
+    const updateSortOrder = async (articleNo: string, val: number | null) => {
+        const { error } = await supabase.from('hsk_master_catalog').update({ sort_order: val }).eq('article_number', articleNo);
+        if (!error) {
+            setBottleItems(prev => prev.map(i => i.article_number === articleNo ? { ...i, sort_order: val } : i));
+            toast.success("Sort order saved");
+        } else {
+            toast.error("Failed to save sort order");
+        }
+    };
+
     // Helper to generate the exact link and copy to clipboard
     const handleCopyOutletLink = (outletName: string) => {
         const url = `${window.location.origin}/share/bottle?outlet=${encodeURIComponent(outletName)}&month=${selectedMonth}`;
@@ -229,79 +240,115 @@ export default function BottleSetupPage() {
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-                    {/* ALLOCATION TABLE */}
-                    <div className="xl:col-span-2 bg-white rounded-3xl shadow-sm border border-slate-100 flex flex-col h-[80vh]">
-                        <div className="p-6 border-b bg-slate-50/50 flex flex-col gap-4">
-                            <h3 className="font-black text-lg flex items-center gap-2"><Users size={20} className="text-[#6D2158]"/> Villa Attendant Allocation</h3>
-                            <div className="flex flex-wrap gap-3 items-center justify-between bg-white p-2 rounded-2xl border border-slate-100 shadow-sm">
-                                <div className="flex gap-2">
-                                    <input type="date" className="p-2 border rounded-xl text-sm font-bold bg-slate-50" value={extractDate} onChange={e => setExtractDate(e.target.value)} />
-                                    <button onClick={handleExtractAllocations} className="bg-[#6D2158] text-white px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest flex items-center gap-2"><DownloadCloud size={14}/> Extract</button>
+                    
+                    {/* WIDER LEFT COLUMN: Allocations & Sorting */}
+                    <div className="xl:col-span-2 flex flex-col gap-6">
+                        
+                        {/* ALLOCATION TABLE */}
+                        <div className="bg-white rounded-3xl shadow-sm border border-slate-100 flex flex-col min-h-[400px]">
+                            <div className="p-6 border-b bg-slate-50/50 flex flex-col gap-4 rounded-t-3xl">
+                                <h3 className="font-black text-lg flex items-center gap-2"><Users size={20} className="text-[#6D2158]"/> Villa Attendant Allocation</h3>
+                                <div className="flex flex-wrap gap-3 items-center justify-between bg-white p-2 rounded-2xl border border-slate-100 shadow-sm">
+                                    <div className="flex gap-2">
+                                        <input type="date" className="p-2 border rounded-xl text-sm font-bold bg-slate-50" value={extractDate} onChange={e => setExtractDate(e.target.value)} />
+                                        <button onClick={handleExtractAllocations} className="bg-[#6D2158] text-white px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest flex items-center gap-2"><DownloadCloud size={14}/> Extract</button>
+                                    </div>
+                                    <button onClick={handleSaveLayout} className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest"><Save size={14} className="inline mr-1"/> Save Layout</button>
                                 </div>
-                                <button onClick={handleSaveLayout} className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest"><Save size={14} className="inline mr-1"/> Save Layout</button>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto p-6 custom-scrollbar max-h-[500px]">
+                                <table className="w-full text-left border-separate border-spacing-y-2">
+                                    <thead className="text-[10px] uppercase text-slate-400 font-black">
+                                        <tr>
+                                            <th className="px-4 py-2">Attendant</th>
+                                            <th className="px-4 py-2">Assigned Villas (Bottle Counting)</th>
+                                            <th className="px-4 py-2 text-right"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {parsedAllocations.map((alloc, idx) => (
+                                            <tr key={idx} className="bg-white shadow-sm border rounded-xl">
+                                                <td className="p-3 font-bold text-sm text-slate-800 border-l rounded-l-xl whitespace-nowrap">
+                                                    {alloc.host_name} <div className="text-[9px] text-slate-400">SSL {alloc.host_id}</div>
+                                                </td>
+                                                <td className="p-2 w-full">
+                                                    <TagInput values={alloc.assigned_villas} onChange={(v) => {
+                                                        const updated = [...parsedAllocations];
+                                                        updated[idx].assigned_villas = v;
+                                                        setParsedAllocations(updated);
+                                                    }} placeholder="Villas..." />
+                                                </td>
+                                                <td className="p-3 text-right border-r rounded-r-xl">
+                                                    <button onClick={() => {
+                                                        const updated = [...parsedAllocations];
+                                                        updated.splice(idx, 1);
+                                                        setParsedAllocations(updated);
+                                                    }} className="text-slate-300 hover:text-rose-500"><Trash2 size={16}/></button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div className="p-6 border-t bg-white rounded-b-3xl">
+                                <button onClick={handleAutoAllocateBottles} disabled={isLocked || parsedAllocations.length === 0} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-sm flex justify-center items-center gap-2 disabled:opacity-50">
+                                    <Sparkles size={18} /> Dispatch Bottle Tasks
+                                </button>
                             </div>
                         </div>
 
-                        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-                            <table className="w-full text-left border-separate border-spacing-y-2">
-                                <thead className="text-[10px] uppercase text-slate-400 font-black">
-                                    <tr>
-                                        <th className="px-4 py-2">Attendant</th>
-                                        <th className="px-4 py-2">Assigned Villas (Bottle Counting)</th>
-                                        <th className="px-4 py-2 text-right"></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {parsedAllocations.map((alloc, idx) => (
-                                        <tr key={idx} className="bg-white shadow-sm border rounded-xl">
-                                            <td className="p-3 font-bold text-sm text-slate-800 border-l rounded-l-xl">
-                                                {alloc.host_name} <div className="text-[9px] text-slate-400">SSL {alloc.host_id}</div>
-                                            </td>
-                                            <td className="p-2">
-                                                <TagInput values={alloc.assigned_villas} onChange={(v) => {
-                                                    const updated = [...parsedAllocations];
-                                                    updated[idx].assigned_villas = v;
-                                                    setParsedAllocations(updated);
-                                                }} placeholder="Villas..." />
-                                            </td>
-                                            <td className="p-3 text-right border-r rounded-r-xl">
-                                                <button onClick={() => {
-                                                    const updated = [...parsedAllocations];
-                                                    updated.splice(idx, 1);
-                                                    setParsedAllocations(updated);
-                                                }} className="text-slate-300 hover:text-rose-500"><Trash2 size={16}/></button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                        {/* SORTING LIST (MOVED HERE FOR MORE WIDTH) */}
+                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col">
+                            <h3 className="font-black text-lg flex items-center gap-2 text-[#6D2158] mb-1"><ListOrdered size={20}/> Custom Sort Order</h3>
+                            <p className="text-[10px] text-slate-400 font-bold uppercase mb-4 tracking-widest">Set the exact order items appear in the counting forms</p>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                                {bottleItems.sort((a,b) => (a.sort_order || 999) - (b.sort_order || 999)).map(item => (
+                                    <div key={item.article_number} className="flex items-center bg-slate-50 p-3 rounded-2xl border border-slate-100 shadow-sm gap-3">
+                                        <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shrink-0 border border-slate-200 overflow-hidden p-1">
+                                            {item.image_url ? <img src={item.image_url} className="w-full h-full object-contain rounded"/> : <ImageIcon size={16} className="text-slate-300"/>}
+                                        </div>
+                                        <div className="flex-1">
+                                            {/* Removed truncate, added leading-tight line-clamp-2 to allow text to wrap beautifully! */}
+                                            <div className="text-xs font-black text-slate-700 leading-tight line-clamp-2" title={item.generic_name || item.article_name}>{item.generic_name || item.article_name}</div>
+                                            <div className="text-[9px] font-bold text-slate-400 mt-0.5">{item.article_number}</div>
+                                        </div>
+                                        <input 
+                                            type="number" 
+                                            className="w-16 p-2 bg-white border border-slate-200 rounded-xl text-sm font-black text-center outline-none focus:border-[#6D2158] shadow-inner shrink-0"
+                                            placeholder="--"
+                                            value={item.sort_order === null ? '' : item.sort_order}
+                                            onChange={(e) => setBottleItems(prev => prev.map(i => i.article_number === item.article_number ? { ...i, sort_order: e.target.value === '' ? null : parseInt(e.target.value) } : i))}
+                                            onBlur={(e) => updateSortOrder(item.article_number, e.target.value === '' ? null : parseInt(e.target.value))}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
                         </div>
-                        
-                        <div className="p-6 border-t bg-white">
-                            <button onClick={handleAutoAllocateBottles} disabled={isLocked || parsedAllocations.length === 0} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-sm flex justify-center items-center gap-2 disabled:opacity-50">
-                                <Sparkles size={18} /> Dispatch Bottle Tasks
-                            </button>
-                        </div>
+
                     </div>
 
-                    {/* SETTINGS SIDEBAR */}
+                    {/* NARROWER RIGHT SIDEBAR: Settings & Links */}
                     <div className="space-y-6">
+                        
                         {/* PA LOCATIONS */}
                         <div className="bg-indigo-50/50 p-6 rounded-3xl border border-indigo-100/50">
                             <h3 className="font-black text-lg flex items-center gap-2 text-indigo-900"><MapPin size={18}/> Bottle PA Locations</h3>
                             <div className="flex gap-2 mt-4">
-                                <input type="text" placeholder="Location Name" className="flex-1 p-2.5 border rounded-lg font-bold text-xs" value={newPaLocation} onChange={e => setNewPaLocation(e.target.value)} />
+                                <input type="text" placeholder="Location Name" className="flex-1 p-2.5 border rounded-lg font-bold text-xs outline-none" value={newPaLocation} onChange={e => setNewPaLocation(e.target.value)} />
                                 <button onClick={async () => {
                                     await supabase.from('hsk_constants').insert({ type: 'pa_bottle_location', label: newPaLocation });
                                     setNewPaLocation('');
                                     fetchControlData();
-                                }} className="bg-indigo-600 text-white p-2 rounded-lg"><Plus size={16}/></button>
+                                }} className="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700 transition-colors"><Plus size={16}/></button>
                             </div>
                             <div className="mt-4 space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
                                 {paLocations.map(loc => (
-                                    <div key={loc.id} className="flex justify-between items-center p-2 bg-white rounded-lg shadow-sm">
+                                    <div key={loc.id} className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-indigo-50">
                                         <span className="text-xs font-bold text-slate-700">{loc.label}</span>
-                                        <button onClick={async () => { await supabase.from('hsk_constants').delete().eq('id', loc.id); fetchControlData(); }} className="text-slate-300 hover:text-rose-500"><Trash2 size={14}/></button>
+                                        <button onClick={async () => { await supabase.from('hsk_constants').delete().eq('id', loc.id); fetchControlData(); }} className="text-slate-300 hover:text-rose-500 transition-colors"><Trash2 size={16}/></button>
                                     </div>
                                 ))}
                             </div>
@@ -310,40 +357,45 @@ export default function BottleSetupPage() {
                         {/* OUTLETS INFO & LINKS */}
                         <div className="bg-amber-50/50 p-6 rounded-3xl border border-amber-100/50">
                             <h3 className="font-black text-lg flex items-center gap-2 text-amber-900"><Utensils size={18}/> External Outlets</h3>
-                            <p className="text-[10px] text-amber-600/70 mt-1 font-bold uppercase">Click to copy submission link</p>
+                            <p className="text-[10px] text-amber-600/70 mt-1 font-bold uppercase tracking-widest">Click to copy submission link</p>
                             
                             <div className="mt-4 flex flex-col gap-2">
                                 {BOTTLE_OUTLETS.map(outletName => (
                                     <button 
                                         key={outletName} 
                                         onClick={() => handleCopyOutletLink(outletName)}
-                                        className="bg-white p-3 rounded-xl flex items-center justify-between group hover:bg-amber-100/50 transition-colors border border-amber-100"
+                                        className="bg-white p-3.5 rounded-xl flex items-center justify-between group hover:bg-amber-100/50 transition-colors border border-amber-100/50 shadow-sm"
                                     >
-                                        <span className="text-xs font-bold text-amber-900">{outletName}</span>
-                                        <LinkIcon size={14} className="text-amber-500 group-hover:text-amber-700"/>
+                                        <span className="text-xs font-black text-amber-900">{outletName}</span>
+                                        <LinkIcon size={14} className="text-amber-400 group-hover:text-amber-600"/>
                                     </button>
                                 ))}
                             </div>
                         </div>
 
-                        {/* ITEM CONFIGS */}
+                        {/* VISIBILITY TOGGLES */}
                         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-6">
                             <div>
                                 <h3 className="font-black text-sm mb-2 flex items-center gap-2 text-emerald-600"><ShieldCheck size={16}/> PA Bottle List</h3>
-                                <select className="w-full p-2 border rounded-xl text-xs font-bold bg-slate-50" onChange={e => toggleItemFlag(e.target.value, 'is_pa_applicable', true)} value="">
-                                    <option value="">Add to PA List...</option>
-                                    {bottleItems.filter(i => !i.is_pa_applicable).map(i => <option key={i.article_number} value={i.article_number}>{i.generic_name}</option>)}
+                                <p className="text-[10px] text-slate-400 font-bold uppercase mb-2 tracking-widest">Items tracked by PA Attendants</p>
+                                <select className="w-full p-3 border border-slate-200 rounded-xl text-xs font-bold bg-slate-50 outline-none focus:border-emerald-400" onChange={e => toggleItemFlag(e.target.value, 'is_pa_applicable', true)} value="">
+                                    <option value="">Select item to add...</option>
+                                    {bottleItems.filter(i => !i.is_pa_applicable).map(i => <option key={i.article_number} value={i.article_number}>{i.generic_name || i.article_name}</option>)}
                                 </select>
                             </div>
 
+                            <div className="h-px bg-slate-100 w-full"></div>
+
                             <div>
                                 <h3 className="font-black text-sm mb-2 flex items-center gap-2 text-rose-500"><EyeOff size={16}/> VA Exclude List</h3>
-                                <select className="w-full p-2 border rounded-xl text-xs font-bold bg-slate-50" onChange={e => toggleItemFlag(e.target.value, 'is_va_excluded', true)} value="">
-                                    <option value="">Hide from VA...</option>
-                                    {bottleItems.filter(i => !i.is_va_excluded).map(i => <option key={i.article_number} value={i.article_number}>{i.generic_name}</option>)}
+                                <p className="text-[10px] text-slate-400 font-bold uppercase mb-2 tracking-widest">Hide these items from Villas</p>
+                                <select className="w-full p-3 border border-slate-200 rounded-xl text-xs font-bold bg-slate-50 outline-none focus:border-rose-400" onChange={e => toggleItemFlag(e.target.value, 'is_va_excluded', true)} value="">
+                                    <option value="">Select item to hide...</option>
+                                    {bottleItems.filter(i => !i.is_va_excluded).map(i => <option key={i.article_number} value={i.article_number}>{i.generic_name || i.article_name}</option>)}
                                 </select>
                             </div>
                         </div>
+
                     </div>
                 </div>
             </div>
