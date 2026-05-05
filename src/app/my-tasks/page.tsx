@@ -19,7 +19,7 @@ import LinenInventoryGrid from './_components/LinenInventoryGrid';
 import BottleInventoryGrid from './_components/BottleInventoryGrid';
 
 export type Host = { id: string; full_name: string; host_id: string; role?: string; };
-export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; };
+export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; sort_order?: number; };
 
 export type UniversalTask = {
     schedule_id: string;
@@ -740,7 +740,7 @@ export default function MyTasksHub() {
             
             return {
                 month_year: getDhakaDateStr().substring(0, 7),
-                host_id: currentHost?.host_id,
+                // Removed host_id to prevent database rejection for Villa Attendants
                 article_number: artNo,
                 location_type: activeBottleTaskLocation.location_type,
                 location_name: activeBottleTaskLocation.location_name,
@@ -751,14 +751,14 @@ export default function MyTasksHub() {
             };
         });
 
-        await supabase.from('hsk_bottle_counts').delete()
-            .eq('month_year', getDhakaDateStr().substring(0, 7))
-            .eq('location_type', activeBottleTaskLocation.location_type)
-            .eq('location_name', activeBottleTaskLocation.location_name);
+        // Use upsert instead of delete+insert to fix the permission issue
+        const { error: insErr } = await supabase.from('hsk_bottle_counts')
+            .upsert(recordsToInsert, { onConflict: 'month_year,location_name,article_number' });
 
-        if (recordsToInsert.length > 0) {
-            const { error: insErr } = await supabase.from('hsk_bottle_counts').insert(recordsToInsert);
-            if (insErr) { toast.error("Failed to save bottle count."); setIsSaving(false); return; }
+        if (insErr) { 
+            toast.error("Failed to save bottle count: " + insErr.message); 
+            setIsSaving(false); 
+            return; 
         }
         
         setBottleAssignments(prev => prev.map(a => a.id === activeBottleTaskLocation.id ? {...a, is_submitted: true} : a));
@@ -909,6 +909,15 @@ export default function MyTasksHub() {
           const q = searchQuery.toLowerCase();
           list = list.filter(i => (i.article_name || '').toLowerCase().includes(q) || (i.generic_name || '').toLowerCase().includes(q) || (i.article_number || '').includes(q));
       }
+
+      // --- APPLY CUSTOM SORT ORDER HERE ---
+      list.sort((a, b) => {
+          const orderA = a.sort_order ?? 9999;
+          const orderB = b.sort_order ?? 9999;
+          if (orderA !== orderB) return orderA - orderB;
+          return (a.generic_name || a.article_name).localeCompare(b.generic_name || b.article_name);
+      });
+
       return list;
   }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery, hiddenMbItems, activeTaskType, activeLinenTaskLocation, activeBottleTaskLocation]);
 
@@ -1131,9 +1140,9 @@ export default function MyTasksHub() {
             </div>
         )}
 
-        {/* ⚡ GREEN TIMER PILL HAS BEEN PUSHED UP DYNAMICALLY HERE */}
+        {/* ⚡ GREEN TIMER PILL - Fixed slightly above the bottom Nav Bar */}
         {activeCleaningVilla && (
-            <div className={`fixed ${step === 3 ? 'bottom-40' : 'bottom-24'} left-1/2 -translate-x-1/2 z-[120] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.3)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-all duration-300 ${
+            <div className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[120] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.3)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-all duration-300 ${
                 cleaningElapsedSeconds > 2700 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'
             }`}>
                 <div className="flex flex-col min-w-0">
