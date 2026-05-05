@@ -57,7 +57,8 @@ export default function BottleInventoryGrid({
             </div>
 
             {/* List of Items */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar pb-24 md:pb-32">
+            {/* Added pb-40 here so you can scroll far enough to see the button */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar pb-40">
                 {displayCatalog.length === 0 ? (
                     <div className="text-center py-12 md:py-20 bg-white rounded-3xl border border-slate-100 shadow-sm mx-2">
                         <Droplet size={40} className="mx-auto text-slate-200 mb-4"/>
@@ -140,8 +141,8 @@ export default function BottleInventoryGrid({
                 )}
             </div>
 
-            {/* Sticky Save Button */}
-            <div className="fixed bottom-0 left-0 right-0 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-[80] pb-safe flex justify-center">
+            {/* Sticky Save Button - Changed from fixed to sticky and adjusted z-index/bottom margin */}
+            <div className="sticky bottom-4 left-0 right-0 p-4 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-[100] mt-auto flex justify-center shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
                 <button 
                     onClick={requestSaveInventory} 
                     disabled={isSaving}

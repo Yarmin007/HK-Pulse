@@ -1131,8 +1131,9 @@ export default function MyTasksHub() {
             </div>
         )}
 
+        {/* ⚡ GREEN TIMER PILL HAS BEEN PUSHED UP DYNAMICALLY HERE */}
         {activeCleaningVilla && (
-            <div className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-colors ${
+            <div className={`fixed ${step === 3 ? 'bottom-40' : 'bottom-24'} left-1/2 -translate-x-1/2 z-[120] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.3)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-all duration-300 ${
                 cleaningElapsedSeconds > 2700 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'
             }`}>
                 <div className="flex flex-col min-w-0">
