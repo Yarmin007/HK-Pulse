@@ -2,7 +2,7 @@
 import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { Droplet, Save, Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Droplet, Save, Loader2, CheckCircle, AlertTriangle, Lock as LockIcon } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 function BottleCountForm() {
@@ -105,7 +105,7 @@ function BottleCountForm() {
     if (isLocked) {
         return (
             <div className="flex flex-col items-center justify-center h-screen px-6 text-center bg-[#FDFBFD]">
-                <Lock size={40} className="text-rose-500 mb-4" />
+                <LockIcon size={40} className="text-rose-500 mb-4" />
                 <h2 className="text-2xl font-black text-slate-800">Inventory Locked</h2>
                 <p className="text-slate-500 font-bold mt-2">The inventory period for {monthYear} has been closed by Housekeeping.</p>
             </div>
