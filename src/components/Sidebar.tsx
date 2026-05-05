@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -32,6 +32,8 @@ const INVENTORY_ITEMS = [
   { name: "Housekeeping Store", icon: Warehouse, path: "/inventory/store" },
   { name: "Linen Setup", icon: ClipboardCheck, path: "/inventory/linen-setup" },
   { name: "Linen Inventory", icon: Layers, path: "/inventory/linen" },
+  { name: "Bottle Setup", icon: ClipboardCheck, path: "/inventory/bottle-setup" },
+  { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle" },
 ];
 
 const MENU_ITEMS = [
@@ -76,9 +78,9 @@ const STAFF_PROFILE_ITEMS = [
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
-// ⚡ FIX: ADDED GUEST LIST HERE FOR NORMAL STAFF
 const STAFF_MENU_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests" }, 
+  { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle" },
   { name: "My Schedule", icon: Calendar, path: "/schedule" },
   { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
   { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },

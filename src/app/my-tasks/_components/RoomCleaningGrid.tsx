@@ -1,6 +1,5 @@
-"use client";
 import React from 'react';
-import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch, Layers, Building, WashingMachine } from 'lucide-react';
+import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch, Layers, Building, WashingMachine, Droplet } from 'lucide-react';
 
 export type UniversalTask = { schedule_id: string; inventory_type: string; villa_number: string; status: string; };
 export type CleaningTask = { villa_number: string; status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused'; start_time?: string; raw_start_time?: string; end_time?: string; time_spent?: string; reenter_reason?: string; session_history: any[]; };
@@ -30,19 +29,25 @@ interface RoomCleaningGridProps {
     // NEW LINEN PROPS
     linenAssignments: any[];
     startLinenAudit: (taskObj: any) => void;
+
+    // NEW BOTTLE PROPS
+    bottleAssignments: any[];
+    startBottleAudit: (taskObj: any) => void;
 }
 
 export default function RoomCleaningGrid({
     displayVillas, myCleaningVillas, cleaningTasks, activeCleaningVilla, getVillaCardData, handleAcStatusChange,
     startAudit, handleFinishRoom, setReenterModal, handleDND, handleRefused, confirmResetRoom, openEditModal,
     isNightShift, universalTasks, cleaningElapsedSeconds, formatTimer, expiryAssignedVillas, expiryVillaData, startExpiryAudit,
-    linenAssignments, startLinenAudit
+    linenAssignments, startLinenAudit,
+    bottleAssignments, startBottleAudit
 }: RoomCleaningGridProps) {
 
-    // Separate Non-Villa Linen Tasks (Pantries, Laundry, PA) from Villa Tasks
+    // Separate Non-Villa Tasks (Pantries, Laundry, Water Room, Outlets, PA) from Villa Tasks
     const nonVillaLinenTasks = linenAssignments.filter(a => a.location_type !== 'Villa');
+    const nonVillaBottleTasks = bottleAssignments.filter(a => a.location_type !== 'Villa');
 
-    if (displayVillas.length === 0 && nonVillaLinenTasks.length === 0) return null;
+    if (displayVillas.length === 0 && nonVillaLinenTasks.length === 0 && nonVillaBottleTasks.length === 0) return null;
 
     return (
         <div className="bg-white p-4 md:p-6 rounded-3xl shadow-sm border border-slate-100 animate-in slide-in-from-bottom-4">
@@ -99,6 +104,45 @@ export default function RoomCleaningGrid({
                     );
                 })}
 
+                {/* RENDER NON-VILLA BOTTLE TASKS (Pantry, Water Room, PA, Outlets) */}
+                {nonVillaBottleTasks.map(task => {
+                    const isDone = task.is_submitted;
+
+                    return (
+                        <div key={task.id} className={`p-4 md:p-5 rounded-2xl border-2 shadow-sm transition-all duration-300 flex flex-col ${isDone ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-white border-cyan-200'}`}>
+                            <div className="flex justify-between items-start mb-4">
+                                <div>
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <h3 className={`text-xl md:text-2xl font-black tracking-tighter ${isDone ? 'text-slate-400' : 'text-cyan-600'}`}>
+                                            {task.location_name}
+                                        </h3>
+                                    </div>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                        <Droplet size={10}/> {task.location_type} Inventory
+                                    </p>
+                                </div>
+                                <div className="flex flex-col items-end gap-2">
+                                    <div className="px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest text-white shadow-sm bg-cyan-500">
+                                        Bottle Task
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
+                                <button 
+                                    onClick={() => startBottleAudit(task)}
+                                    className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 text-[10px] md:text-xs font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                        isDone ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-cyan-50 border-cyan-200 text-cyan-700 hover:bg-cyan-100'
+                                    }`}
+                                >
+                                    <Droplet size={14} className="shrink-0" />
+                                    <span className="truncate">{isDone ? `Bottles Counted` : `Count Bottles`}</span>
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
+
                 {/* RENDER VILLA CARDS */}
                 {displayVillas.map(v => {
                     const isCleaningAssigned = myCleaningVillas.includes(v);
@@ -126,14 +170,19 @@ export default function RoomCleaningGrid({
                         .filter(([key]) => key !== 'Legacy Minibar')
                         .flatMap(([key, tasks]) => tasks.filter(t => t.villa_number === v || t.villa_number === `${v}-1` || t.villa_number === `${v}-2`).map(t => ({...t, taskType: key})));
 
-                    // Linen Task
+                    // Linen & Bottle Tasks
                     const linenTaskForVilla = linenAssignments.find(a => a.location_type === 'Villa' && a.location_name === v);
+                    const bottleTaskForVilla = bottleAssignments.find(a => a.location_type === 'Villa' && a.location_name === v);
 
                     let cardStyle = "bg-white border-slate-200";
                     if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
                     else if (isCleaningAssigned && isCompleted) cardStyle = "bg-slate-50 border-slate-200 opacity-60";
                     else if (isCleaningAssigned && (isDND || isRefused)) cardStyle = "bg-rose-50 border-rose-200";
                     else if (!isCleaningAssigned) cardStyle = "bg-slate-50 border-dashed border-slate-300";
+
+                    const hasAnyTasks = isCleaningAssigned || linenTaskForVilla || bottleTaskForVilla || hasExpiry || minibarTasksForVilla.length > 0 || otherInventoryTasks.length > 0;
+                    
+                    if (!hasAnyTasks) return null;
 
                     return (
                         <div key={v} className={`p-4 md:p-5 rounded-2xl border-2 shadow-sm transition-all duration-300 flex flex-col ${cardStyle}`}>
@@ -167,7 +216,7 @@ export default function RoomCleaningGrid({
                             {/* ACTION AREA */}
                             <div className="mt-auto pt-3 border-t border-slate-100 flex flex-col gap-2.5">
                                 
-                                {/* Utilities Row: AC, Minibar, Expiry, Asset Inventory, LINEN */}
+                                {/* Utilities Row: AC, Minibar, Expiry, Asset Inventory, LINEN, BOTTLE */}
                                 <div className="flex flex-wrap gap-2">
                                     <button 
                                         onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
@@ -189,6 +238,19 @@ export default function RoomCleaningGrid({
                                         >
                                             <Layers size={12} className="shrink-0" />
                                             <span className="truncate">{linenTaskForVilla.is_submitted ? `Linen Done` : `Count Linen`}</span>
+                                        </button>
+                                    )}
+
+                                    {/* BOTTLE VILLA TASK */}
+                                    {bottleTaskForVilla && (
+                                        <button 
+                                            onClick={() => startBottleAudit(bottleTaskForVilla)}
+                                            className={`flex-1 min-w-[100px] py-2 rounded-xl flex items-center justify-center gap-1.5 md:gap-2 text-[9px] md:text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
+                                                bottleTaskForVilla.is_submitted ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-cyan-50 border-cyan-200 text-cyan-700 hover:bg-cyan-100'
+                                            }`}
+                                        >
+                                            <Droplet size={12} className="shrink-0" />
+                                            <span className="truncate">{bottleTaskForVilla.is_submitted ? `Bottle Done` : `Count Bottle`}</span>
                                         </button>
                                     )}
 

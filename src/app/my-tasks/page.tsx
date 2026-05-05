@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
-  Save, CheckCircle2, Loader2, ChevronLeft, RefreshCw, CheckCircle, CheckSquare
+  Save, CheckCircle2, Loader2, ChevronLeft, RefreshCw, CheckCircle, CheckSquare, Droplet
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO, startOfMonth } from 'date-fns';
@@ -16,6 +16,7 @@ import ExpiryAuditGrid from './_components/ExpiryAuditGrid';
 import AssetInventoryGrid from './_components/AssetInventoryGrid';
 import MinibarInventoryGrid from './_components/MinibarInventoryGrid';
 import LinenInventoryGrid from './_components/LinenInventoryGrid';
+import BottleInventoryGrid from './_components/BottleInventoryGrid';
 
 export type Host = { id: string; full_name: string; host_id: string; role?: string; };
 export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; };
@@ -123,17 +124,24 @@ export default function MyTasksHub() {
   const [activeScheduleId, setActiveScheduleId] = useState<string>('');
   const [masterCatalog, setMasterCatalog] = useState<MasterItem[]>([]);
   
+  // LINEN
   const [linenAssignments, setLinenAssignments] = useState<any[]>([]);
   const [activeLinenTaskLocation, setActiveLinenTaskLocation] = useState<any>(null);
   const [isLinenLocked, setIsLinenLocked] = useState(true);
 
+  // BOTTLES
+  const [bottleAssignments, setBottleAssignments] = useState<any[]>([]);
+  const [activeBottleTaskLocation, setActiveBottleTaskLocation] = useState<any>(null);
+  const [isBottleLocked, setIsBottleLocked] = useState(true);
+
   const [selectedVilla, setSelectedVilla] = useState('');
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [counts, setCounts] = useState<Record<string, number | string>>({}); 
   const [activeLocation, setActiveLocation] = useState('All');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [sharedAssignments, setSharedAssignments] = useState<string[]>([]);
 
+  // EXPIRY
   const [isExpiryMode, setIsExpiryMode] = useState(false);
   const [expiryTargets, setExpiryTargets] = useState<any[]>([]);
   const [expiryAssignedVillas, setExpiryAssignedVillas] = useState<string[]>([]);
@@ -272,32 +280,30 @@ export default function MyTasksHub() {
       const { data: aData } = await supabase.from('hsk_ac_tracker').select('villa_number, status');
       if (aData) setAcData(aData);
 
-      // --- LINEN ASSIGNMENTS (FIXED REFRESH BUG) ---
-      const { data: periodData } = await supabase.from('hsk_inventory_periods').select('is_locked').eq('month_year', currentMonth).single();
+      // --- FETCH LOCKS ---
+      const { data: periodData } = await supabase.from('hsk_inventory_periods').select('is_locked, bottle_is_locked').eq('month_year', currentMonth).maybeSingle();
       const isLinenLoc = periodData ? periodData.is_locked : true;
+      const isBottleLoc = periodData ? periodData.bottle_is_locked : true;
+      
       setIsLinenLocked(isLinenLoc);
+      setIsBottleLocked(isBottleLoc);
 
+      const role = (host.role || '').toLowerCase();
+      const isPA = role.includes('public area') || role === 'pa';
+      const isLaundry = role.includes('laundry');
+      const isRunner = role.includes('runner');
+      const isWaterRoom = role.includes('water room') || role.includes('pool');
+
+      // --- LINEN ASSIGNMENTS ---
       if (!isLinenLoc) {
-          const role = (host.role || '').toLowerCase();
-          const isPA = role.includes('public area') || role === 'pa';
-          const isLaundry = role.includes('laundry');
-
           let query = supabase.from('hsk_linen_assignments').select('*').eq('month_year', currentMonth);
-
-          if (isPA) {
-              query = query.eq('location_type', 'PA');
-          } else if (isLaundry) {
-              query = query.eq('location_type', 'Laundry');
-          } else {
-              query = query.eq('host_id', host.host_id);
-          }
+          if (isPA) query = query.eq('location_type', 'PA');
+          else if (isLaundry) query = query.eq('location_type', 'Laundry');
+          else query = query.or(`host_id.eq.${host.host_id},host_id.eq.${host.id}`);
 
           const { data: lData } = await query;
-          
           if (lData && lData.length > 0) {
               const myLocations = lData.map(a => a.location_name);
-              
-              // We target specifically the locations assigned to this staff member, and override the 1000 limit.
               const { data: lRecords } = await supabase.from('hsk_linen_records')
                   .select('location_name')
                   .eq('month_year', currentMonth)
@@ -305,17 +311,31 @@ export default function MyTasksHub() {
                   .limit(10000); 
               
               const completedLocations = new Set((lRecords || []).map(r => r.location_name));
-              const enrichedAssignments = lData.map(a => ({
-                  ...a,
-                  is_submitted: completedLocations.has(a.location_name)
-              }));
-              setLinenAssignments(enrichedAssignments);
-          } else {
-              setLinenAssignments([]);
-          }
-      } else {
-          setLinenAssignments([]);
-      }
+              setLinenAssignments(lData.map(a => ({ ...a, is_submitted: completedLocations.has(a.location_name) })));
+          } else { setLinenAssignments([]); }
+      } else { setLinenAssignments([]); }
+
+      // --- BOTTLE ASSIGNMENTS ---
+      if (!isBottleLoc) {
+          let bQuery = supabase.from('hsk_bottle_assignments').select('*').eq('month_year', currentMonth);
+          if (isPA) bQuery = bQuery.eq('location_type', 'PA');
+          else if (isRunner) bQuery = bQuery.eq('location_type', 'Pantry');
+          else if (isWaterRoom) bQuery = bQuery.eq('location_type', 'Water Room');
+          else bQuery = bQuery.or(`host_id.eq.${host.host_id},host_id.eq.${host.id}`);
+
+          const { data: bData } = await bQuery;
+          if (bData && bData.length > 0) {
+              const myLocs = bData.map(a => a.location_name);
+              const { data: bRecords } = await supabase.from('hsk_bottle_counts')
+                  .select('location_name')
+                  .eq('month_year', currentMonth)
+                  .in('location_name', myLocs)
+                  .limit(10000); 
+              
+              const completedLocs = new Set((bRecords || []).map(r => r.location_name));
+              setBottleAssignments(bData.map(a => ({ ...a, is_submitted: completedLocs.has(a.location_name) })));
+          } else { setBottleAssignments([]); }
+      } else { setBottleAssignments([]); }
 
       // --- ASSET/MINIBAR SCHEDULES ---
       const { data: activeSchedules } = await supabase.from('hsk_inventory_schedules').select('id, inventory_type').eq('status', 'Active');
@@ -554,7 +574,7 @@ export default function MyTasksHub() {
   }, [step, isExpiryMode, selectedVilla, expiryVillaData]);
 
   const startAudit = async (villa: string, taskType: string, scheduleId: string) => {
-    setIsLoading(true); setSelectedVilla(villa); setActiveTaskType(taskType); setActiveScheduleId(scheduleId); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveLocation('All'); setSearchQuery('');
+    setIsLoading(true); setSelectedVilla(villa); setActiveTaskType(taskType); setActiveScheduleId(scheduleId); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveBottleTaskLocation(null); setActiveLocation('All'); setSearchQuery('');
     const { data: allAssigned } = await supabase.from('hsk_inventory_assignments').select('host_id').match({ schedule_id: scheduleId, villa_number: villa }).order('host_id');
     if (allAssigned) setSharedAssignments(allAssigned.map(a => a.host_id));
     
@@ -576,7 +596,7 @@ export default function MyTasksHub() {
   };
 
   const startExpiryAudit = (villa: string) => {
-      setSelectedVilla(villa); setIsExpiryMode(true); setActiveTaskType(''); setActiveLinenTaskLocation(null);
+      setSelectedVilla(villa); setIsExpiryMode(true); setActiveTaskType(''); setActiveLinenTaskLocation(null); setActiveBottleTaskLocation(null);
       const initialCounts: Record<string, number> = {};
       groupedTargets.expiry.forEach((t: any) => { initialCounts[t.article_number] = 0; });
       groupedTargets.refill.forEach((t: any) => { initialCounts[t.article_number] = 0; });
@@ -589,12 +609,13 @@ export default function MyTasksHub() {
       setIsLoading(true);
       setActiveTaskType('Linen');
       setActiveLinenTaskLocation(taskObj);
+      setActiveBottleTaskLocation(null);
       setSelectedVilla(taskObj.location_name);
       setIsExpiryMode(false);
       setActiveLocation('All');
       setSearchQuery('');
 
-      const initialCounts: Record<string, number> = {};
+      const initialCounts: Record<string, number | string> = {};
       
       const { data: existingRecords } = await supabase.from('hsk_linen_records')
           .select('article_number, counted_qty_used, counted_qty_new')
@@ -605,7 +626,7 @@ export default function MyTasksHub() {
       if (existingRecords) {
           existingRecords.forEach(r => { 
               if (taskObj.location_type === 'Laundry') {
-                  initialCounts[r.article_number] = JSON.stringify({ used: r.counted_qty_used, new: r.counted_qty_new }) as any;
+                  initialCounts[r.article_number] = JSON.stringify({ used: r.counted_qty_used, new: r.counted_qty_new });
               } else {
                   initialCounts[r.article_number] = r.counted_qty_used; 
               }
@@ -615,7 +636,48 @@ export default function MyTasksHub() {
       if (taskObj.assigned_items && Array.isArray(taskObj.assigned_items)) {
           taskObj.assigned_items.forEach((artNo: string) => {
               if (initialCounts[artNo] === undefined) {
-                  initialCounts[artNo] = taskObj.location_type === 'Laundry' ? JSON.stringify({used: 0, new: 0}) as any : 0;
+                  initialCounts[artNo] = taskObj.location_type === 'Laundry' ? JSON.stringify({used: 0, new: 0}) : 0;
+              }
+          });
+      }
+
+      setCounts(initialCounts);
+      setStep(3);
+      setIsLoading(false);
+  };
+
+  const startBottleAudit = async (taskObj: any) => {
+      setIsLoading(true);
+      setActiveTaskType('Bottle');
+      setActiveBottleTaskLocation(taskObj);
+      setActiveLinenTaskLocation(null);
+      setSelectedVilla(taskObj.location_name);
+      setIsExpiryMode(false);
+      setActiveLocation('All');
+      setSearchQuery('');
+
+      const initialCounts: Record<string, number | string> = {};
+      
+      const { data: existingRecords } = await supabase.from('hsk_bottle_counts')
+          .select('article_number, in_circulation, new_stock')
+          .eq('month_year', getDhakaDateStr().substring(0, 7))
+          .eq('location_type', taskObj.location_type)
+          .eq('location_name', taskObj.location_name);
+
+      if (existingRecords) {
+          existingRecords.forEach(r => { 
+              if (taskObj.location_type === 'Water Room') {
+                  initialCounts[r.article_number] = JSON.stringify({ in_circulation: r.in_circulation, new_stock: r.new_stock });
+              } else {
+                  initialCounts[r.article_number] = r.in_circulation; 
+              }
+          });
+      }
+
+      if (taskObj.assigned_items && Array.isArray(taskObj.assigned_items)) {
+          taskObj.assigned_items.forEach((artNo: string) => {
+              if (initialCounts[artNo] === undefined) {
+                  initialCounts[artNo] = taskObj.location_type === 'Water Room' ? JSON.stringify({in_circulation: 0, new_stock: 0}) : 0;
               }
           });
       }
@@ -626,7 +688,7 @@ export default function MyTasksHub() {
   };
 
   const updateCount = (article_number: string, delta: number) => {
-    setCounts(prev => { const next = (prev[article_number] || 0) + delta; return { ...prev, [article_number]: next < 0 ? 0 : next }; });
+    setCounts(prev => { const next = (Number(prev[article_number]) || 0) + delta; return { ...prev, [article_number]: next < 0 ? 0 : next }; });
   };
   const updateExpiryCount = (artNo: string, delta: number) => {
       setExpiryCounts(prev => { const next = (prev[artNo] || 0) + delta; return { ...prev, [artNo]: next < 0 ? 0 : next }; });
@@ -639,13 +701,11 @@ export default function MyTasksHub() {
     setIsSaving(true);
     
     if (activeTaskType === 'Linen' && activeLinenTaskLocation) {
-        // FIX: We no longer filter out zero counts. This ensures a record is explicitly saved
-        // so the database knows this room/location was successfully audited.
         const recordsToInsert = Object.entries(counts).map(([artNo, val]) => {
             let used = 0; let newQty = 0;
             if (typeof val === 'string') {
                 try { const p = JSON.parse(val); used = p.used || 0; newQty = p.new || 0; } catch(e){}
-            } else { used = val || 0; }
+            } else { used = Number(val) || 0; }
             
             return {
                 month_year: getDhakaDateStr().substring(0, 7),
@@ -671,9 +731,41 @@ export default function MyTasksHub() {
         
         setLinenAssignments(prev => prev.map(a => a.id === activeLinenTaskLocation.id ? {...a, is_submitted: true} : a));
     } 
+    else if (activeTaskType === 'Bottle' && activeBottleTaskLocation) {
+        const recordsToInsert = Object.entries(counts).map(([artNo, val]) => {
+            let circ = 0; let newQty = 0;
+            if (typeof val === 'string') {
+                try { const p = JSON.parse(val); circ = p.in_circulation || 0; newQty = p.new_stock || 0; } catch(e){}
+            } else { circ = Number(val) || 0; }
+            
+            return {
+                month_year: getDhakaDateStr().substring(0, 7),
+                host_id: currentHost?.host_id,
+                article_number: artNo,
+                location_type: activeBottleTaskLocation.location_type,
+                location_name: activeBottleTaskLocation.location_name,
+                in_circulation: circ,
+                new_stock: newQty,
+                counted_by: currentHost?.full_name,
+                updated_at: new Date().toISOString()
+            };
+        });
+
+        await supabase.from('hsk_bottle_counts').delete()
+            .eq('month_year', getDhakaDateStr().substring(0, 7))
+            .eq('location_type', activeBottleTaskLocation.location_type)
+            .eq('location_name', activeBottleTaskLocation.location_name);
+
+        if (recordsToInsert.length > 0) {
+            const { error: insErr } = await supabase.from('hsk_bottle_counts').insert(recordsToInsert);
+            if (insErr) { toast.error("Failed to save bottle count."); setIsSaving(false); return; }
+        }
+        
+        setBottleAssignments(prev => prev.map(a => a.id === activeBottleTaskLocation.id ? {...a, is_submitted: true} : a));
+    }
     else if (activeTaskType === 'Legacy Minibar') {
-        const countedItems = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => {
-                const item = masterCatalog.find(c => c.article_number === artNo); return { article_number: artNo, name: item?.generic_name || item?.article_name, qty };
+        const countedItems = Object.entries(counts).filter(([_, qty]) => Number(qty) > 0).map(([artNo, qty]) => {
+                const item = masterCatalog.find(c => c.article_number === artNo); return { article_number: artNo, name: item?.generic_name || item?.article_name, qty: Number(qty) };
         });
         const payload = { villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name, inventory_data: countedItems, logged_at: new Date().toISOString() };
         const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
@@ -681,7 +773,7 @@ export default function MyTasksHub() {
         setUniversalTasks(prev => { const updated = { ...prev }; if (updated['Legacy Minibar']) { updated['Legacy Minibar'] = updated['Legacy Minibar'].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t); } return updated; });
     } 
     else {
-        const recordsToInsert = Object.entries(counts).filter(([_, qty]) => qty > 0).map(([artNo, qty]) => ({ schedule_id: activeScheduleId, villa_number: selectedVilla, article_number: artNo, counted_qty: qty, inventory_type: activeTaskType }));
+        const recordsToInsert = Object.entries(counts).filter(([_, qty]) => Number(qty) > 0).map(([artNo, qty]) => ({ schedule_id: activeScheduleId, villa_number: selectedVilla, article_number: artNo, counted_qty: Number(qty), inventory_type: activeTaskType }));
         const { error: delErr } = await supabase.from('hsk_inventory_records').delete().match({ schedule_id: activeScheduleId, villa_number: selectedVilla });
         if (delErr) { toast.error("Database error (Clear): " + delErr.message); setIsSaving(false); return; }
         if (recordsToInsert.length > 0) {
@@ -740,7 +832,7 @@ export default function MyTasksHub() {
       }
   };
 
-  const resetFlow = () => { setShowSuccess(false); setSelectedVilla(''); setIsExpiryMode(false); setActiveTaskType(''); setActiveLinenTaskLocation(null); setStep(2); };
+  const resetFlow = () => { setShowSuccess(false); setSelectedVilla(''); setIsExpiryMode(false); setActiveTaskType(''); setActiveLinenTaskLocation(null); setActiveBottleTaskLocation(null); setStep(2); };
 
   const getVillaCardData = (vNum: string) => {
       const match = guestData.find(r => r.villa_number === vNum);
@@ -773,11 +865,17 @@ export default function MyTasksHub() {
               if (a.location_type === 'Villa') s.add(a.location_name);
           });
       }
+      if (!isBottleLocked) {
+          bottleAssignments.forEach(a => {
+              if (a.location_type === 'Villa') s.add(a.location_name);
+          });
+      }
       return Array.from(s).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
-  }, [myCleaningVillas, expiryAssignedVillas, universalTasks, linenAssignments, isLinenLocked]);
+  }, [myCleaningVillas, expiryAssignedVillas, universalTasks, linenAssignments, isLinenLocked, bottleAssignments, isBottleLocked]);
 
   const activeCatalog = activeTaskType === 'Legacy Minibar' ? masterCatalog.filter(i => i.is_minibar_item) : 
                         activeTaskType === 'Linen' ? masterCatalog.filter(i => i.category === 'Linen') :
+                        activeTaskType === 'Bottle' ? masterCatalog.filter(i => i.category === 'Bottle') :
                         masterCatalog.filter(i => i.inventory_type === activeTaskType);
       
   const displayCatalog = useMemo(() => {
@@ -788,10 +886,13 @@ export default function MyTasksHub() {
       } else if (activeTaskType === 'Linen' && activeLinenTaskLocation) {
           const assignedIds = activeLinenTaskLocation.assigned_items || [];
           list = list.filter(i => assignedIds.includes(i.article_number));
+      } else if (activeTaskType === 'Bottle' && activeBottleTaskLocation) {
+          const assignedIds = activeBottleTaskLocation.assigned_items || [];
+          list = list.filter(i => assignedIds.includes(i.article_number));
       }
 
       const isVilla = /^\d+$/.test(selectedVilla) || selectedVilla.includes('-');
-      if (!isVilla && sharedAssignments.length > 1 && currentHost && activeTaskType !== 'Linen') {
+      if (!isVilla && sharedAssignments.length > 1 && currentHost && activeTaskType !== 'Linen' && activeTaskType !== 'Bottle') {
           const myIndex = sharedAssignments.indexOf(currentHost.host_id);
           if (myIndex !== -1) {
               const itemsPerPerson = Math.ceil(list.length / sharedAssignments.length);
@@ -800,7 +901,7 @@ export default function MyTasksHub() {
           }
       }
       
-      if (activeLocation !== 'All' && activeTaskType !== 'Linen') {
+      if (activeLocation !== 'All' && activeTaskType !== 'Linen' && activeTaskType !== 'Bottle') {
           if (activeLocation === 'Unassigned') list = list.filter(i => !i.villa_location);
           else list = list.filter(i => i.villa_location === activeLocation);
       }
@@ -809,7 +910,7 @@ export default function MyTasksHub() {
           list = list.filter(i => (i.article_name || '').toLowerCase().includes(q) || (i.generic_name || '').toLowerCase().includes(q) || (i.article_number || '').includes(q));
       }
       return list;
-  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery, hiddenMbItems, activeTaskType, activeLinenTaskLocation]);
+  }, [activeCatalog, selectedVilla, sharedAssignments, currentHost, activeLocation, searchQuery, hiddenMbItems, activeTaskType, activeLinenTaskLocation, activeBottleTaskLocation]);
 
   const uniqueLocations = Array.from(new Set(activeCatalog.map(i => i.villa_location).filter(Boolean))) as string[];
   const hasUnassignedLocations = activeCatalog.some(i => !i.villa_location);
@@ -862,9 +963,11 @@ export default function MyTasksHub() {
                             startExpiryAudit={startExpiryAudit}
                             linenAssignments={linenAssignments}
                             startLinenAudit={startLinenAudit}
+                            bottleAssignments={bottleAssignments}
+                            startBottleAudit={startBottleAudit}
                         />
 
-                        {displayVillas.length === 0 && linenAssignments.filter(a => a.location_type !== 'Villa').length === 0 && (
+                        {displayVillas.length === 0 && linenAssignments.filter(a => a.location_type !== 'Villa').length === 0 && bottleAssignments.filter(a => a.location_type !== 'Villa').length === 0 && (
                             <div className="text-center py-16 bg-white rounded-3xl border border-slate-100 shadow-sm max-w-lg mx-auto mt-10">
                                 <CheckCircle size={40} className="mx-auto text-emerald-300 mb-3"/>
                                 <p className="font-bold text-slate-500">You have no active tasks right now.</p>
@@ -880,11 +983,11 @@ export default function MyTasksHub() {
                 <div className={`${isExpiryMode ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-white border-slate-100'} p-4 md:p-6 rounded-3xl shadow-sm border mb-4 md:mb-6 flex flex-col gap-4`}>
                     <div className="flex items-center justify-between gap-4">
                         <div className="flex items-center gap-3">
-                            <button onClick={() => { setStep(2); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveTaskType(''); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
+                            <button onClick={() => { setStep(2); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveBottleTaskLocation(null); setActiveTaskType(''); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
                             <div>
                                 <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
                                 <p className={`text-[10px] md:text-xs font-bold uppercase tracking-widest mt-0.5 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>
-                                    {isExpiryMode ? 'Targeted Tasks' : (activeTaskType === 'Legacy Minibar' ? `${format(getDhakaTime(), 'MMMM')} Minibar Inventory` : activeTaskType === 'Linen' ? 'Linen Inventory Count' : `${activeTaskType} Audit`)}
+                                    {isExpiryMode ? 'Targeted Tasks' : (activeTaskType === 'Legacy Minibar' ? `${format(getDhakaTime(), 'MMMM')} Minibar Inventory` : activeTaskType === 'Linen' ? 'Linen Inventory Count' : activeTaskType === 'Bottle' ? 'Bottle Inventory Count' : `${activeTaskType} Audit`)}
                                 </p>
                             </div>
                         </div>
@@ -917,6 +1020,17 @@ export default function MyTasksHub() {
                         requestSaveInventory={() => setConfirmModal({ isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this linen record?", confirmText: "Submit Linen", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); } })}
                         isSaving={isSaving}
                         locationType={activeLinenTaskLocation?.location_type}
+                    />
+                ) : activeTaskType === 'Bottle' ? (
+                    <BottleInventoryGrid 
+                        searchQuery={searchQuery}
+                        setSearchQuery={setSearchQuery}
+                        displayCatalog={displayCatalog}
+                        counts={counts}
+                        updateCount={(artNo: string, val: any) => setCounts(prev => ({...prev, [artNo]: val}))}
+                        requestSaveInventory={() => setConfirmModal({ isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this bottle record?", confirmText: "Submit Bottle Count", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); } })}
+                        isSaving={isSaving}
+                        locationType={activeBottleTaskLocation?.location_type}
                     />
                 ) : activeTaskType === 'Legacy Minibar' ? (
                     <MinibarInventoryGrid 
