@@ -382,6 +382,16 @@ export default function BottleSetupPage() {
                                     <option value="">Select item to add...</option>
                                     {bottleItems.filter(i => !i.is_pa_applicable).map(i => <option key={i.article_number} value={i.article_number}>{i.generic_name || i.article_name}</option>)}
                                 </select>
+                                <div className="mt-3 flex flex-col gap-2 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                                    {bottleItems.filter(i => i.is_pa_applicable).map(i => (
+                                        <div key={i.article_number} className="flex items-center justify-between bg-emerald-50/50 p-2 rounded-lg border border-emerald-100">
+                                            <span className="text-xs font-bold text-slate-700">{i.generic_name || i.article_name}</span>
+                                            <button onClick={() => toggleItemFlag(i.article_number, 'is_pa_applicable', false)} className="text-slate-400 hover:text-rose-500 transition-colors">
+                                                <X size={14} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
 
                             <div className="h-px bg-slate-100 w-full"></div>
@@ -393,6 +403,16 @@ export default function BottleSetupPage() {
                                     <option value="">Select item to hide...</option>
                                     {bottleItems.filter(i => !i.is_va_excluded).map(i => <option key={i.article_number} value={i.article_number}>{i.generic_name || i.article_name}</option>)}
                                 </select>
+                                <div className="mt-3 flex flex-col gap-2 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                                    {bottleItems.filter(i => i.is_va_excluded).map(i => (
+                                        <div key={i.article_number} className="flex items-center justify-between bg-rose-50/50 p-2 rounded-lg border border-rose-100">
+                                            <span className="text-xs font-bold text-slate-700">{i.generic_name || i.article_name}</span>
+                                            <button onClick={() => toggleItemFlag(i.article_number, 'is_va_excluded', false)} className="text-slate-400 hover:text-rose-500 transition-colors">
+                                                <X size={14} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
                         </div>
 

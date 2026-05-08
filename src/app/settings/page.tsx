@@ -697,6 +697,31 @@ export default function SettingsPage() {
       ? MINIBAR_CATEGORIES 
       : constants.filter(c => c.type === 'category').map(c => c.label);
 
+  const handleExportCSV = () => {
+      const headers = ["#", "HK_no", "Name of item", "Category", "Sub category"];
+      const rows = filteredList.map((item, index) => {
+          const escapeCSV = (str: string) => `"${(str || '').toString().replace(/"/g, '""')}"`;
+          return [
+              index + 1,
+              escapeCSV(item.hk_no || ''),
+              escapeCSV(item.generic_name || item.article_name || ''),
+              escapeCSV(item.category || ''),
+              escapeCSV(item.sub_category || '')
+          ].join(',');
+      });
+
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `${activeTab.replace(/\s+/g, '_')}_List.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      toast.success(`${activeTab} exported as CSV!`);
+  };
+
   return (
     <div className="h-screen w-full overflow-hidden flex flex-col bg-[#FDFBFD] font-antiqua text-[#6D2158]">
       
@@ -878,6 +903,14 @@ export default function SettingsPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
+                     
+                     {/* EXPORT LIST BUTTON */}
+                     {['Master List', 'Minibar Menu', 'Linen Catalog', 'Bottle Catalog'].includes(activeTab) && !isFormOpen && (
+                         <button onClick={handleExportCSV} className="bg-slate-100 text-slate-600 px-4 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-sm border border-slate-200 transition-all hover:bg-slate-200 mr-2" title="Export Current List to CSV">
+                             <FileSpreadsheet size={16}/> Export CSV
+                         </button>
+                     )}
+
                      {/* CSV BULK UPLOAD BUTTONS */}
                      {activeTab === 'Master List' && !isFormOpen && (
                          <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mr-2">
@@ -1051,7 +1084,7 @@ export default function SettingsPage() {
                                );
                             })}
                          </tbody>
-                     </table>
+                      </table>
                   </div>
                </div>
             </div>

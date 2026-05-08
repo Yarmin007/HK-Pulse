@@ -182,7 +182,7 @@ export default function OrgChartPage() {
   // 1. DA LEVEL
   const execHK = safeFind(h => h.role.toLowerCase().includes('executive housekeeper') && !h.role.toLowerCase().includes('asst'), 'Executive Housekeeper', 'DA');
   const asstExec = safeFind(h => h.role.toLowerCase().includes('asst') && h.role.toLowerCase().includes('executive'), 'Asst. Executive Housekeeper', 'DA');
-  const landuseMgr = safeFind(h => h.role.toLowerCase().includes('landuse') || h.role.toLowerCase().includes('garden') || h.full_name.toLowerCase().includes('adam thalhath'), 'Landuse Manager', 'DA');
+  const landuseMgr = safeFind(h => h.role.toLowerCase().includes('landuse') || h.role.toLowerCase().includes('sustainab') || h.full_name.toLowerCase().includes('adam thalhath'), 'Sustainability Manager', 'DA');
   
   // 2. DB LEVEL
   const laundrySup = safeFind(h => h.host_level === 'DB' && h.role.toLowerCase().includes('laundry'), 'Laundry Supervisor', 'DB');
