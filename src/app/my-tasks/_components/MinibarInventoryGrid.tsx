@@ -48,15 +48,22 @@ export default function MinibarInventoryGrid({
     };
 
     const handleKeypadPress = (val: string) => {
-        if (val === 'DEL') setKeypadValue(prev => prev.length > 1 ? prev.slice(0, -1) : '0');
-        else if (val === 'CLR') setKeypadValue('0');
-        else setKeypadValue(prev => prev === '0' ? val : prev + val);
+        if (val === 'DEL') {
+            setKeypadValue(prev => prev.length > 1 ? prev.slice(0, -1) : '0');
+        } else if (val === 'CLR') {
+            setKeypadValue('0');
+        } else {
+            setKeypadValue(prev => prev === '0' ? val : prev + val);
+        }
     };
 
     const saveKeypadValue = () => {
         if (keypadTarget) {
-            const num = parseInt(keypadValue, 10);
-            updateCount(keypadTarget, isNaN(num) ? -counts[keypadTarget] : num - (counts[keypadTarget] || 0));
+            const targetNum = parseInt(keypadValue, 10);
+            const sanitizedTarget = isNaN(targetNum) ? 0 : targetNum;
+            
+            // Pass the absolute target value directly, because the parent overrides set counts explicitly
+            updateCount(keypadTarget, sanitizedTarget);
         }
         setKeypadTarget(null);
     };
@@ -127,7 +134,7 @@ export default function MinibarInventoryGrid({
                         </div>
 
                         <div className="flex items-center justify-between bg-slate-50 rounded-lg p-1 border border-slate-200 mt-auto">
-                            <button onClick={() => updateCount(item.article_number, -1)} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
+                            <button onClick={() => updateCount(item.article_number, Math.max(0, qty - 1))} className="w-8 h-8 flex items-center justify-center bg-white rounded-md shadow-sm text-slate-500 hover:text-rose-500 active:scale-95 transition-all">
                                 <Minus size={14}/>
                             </button>
                             
@@ -138,7 +145,7 @@ export default function MinibarInventoryGrid({
                                 {qty}
                             </button>
 
-                            <button onClick={() => updateCount(item.article_number, 1)} className="w-8 h-8 flex items-center justify-center bg-[#6D2158] rounded-md shadow-sm text-white active:scale-95 transition-all">
+                            <button onClick={() => updateCount(item.article_number, qty + 1)} className="w-8 h-8 flex items-center justify-center bg-[#6D2158] rounded-md shadow-sm text-white active:scale-95 transition-all">
                                 <Plus size={14}/>
                             </button>
                         </div>
