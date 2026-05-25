@@ -176,12 +176,30 @@ export default function LeaveRequestMode() {
               }
           });
 
+          // Fetch prints and ignored leaves from remote database tables
+          const { data: dbIgnored } = await supabase.from('hsk_ignored_leaves').select('hash');
+          const { data: dbHistory } = await supabase.from('hsk_leave_print_history').select('*').order('created_at', { ascending: false });
+
+          const ignoredHashes = dbIgnored ? dbIgnored.map((i: any) => i.hash) : [];
+          const printedHashes = dbHistory ? dbHistory.map((h: any) => h.hash) : [];
+
+          if (dbHistory && dbHistory.length > 0) {
+              const formattedDbHistory = dbHistory.map((h: any) => ({
+                  ...h,
+                  printed_at: h.printed_at || (h.created_at ? new Date(h.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')
+              }));
+              setLeaveHistory(formattedDbHistory);
+          }
+
           const ignored = JSON.parse(localStorage.getItem('ignored_leaves') || '[]');
           const printed = JSON.parse(localStorage.getItem('printed_leaves') || '[]');
           
+          const allIgnored = Array.from(new Set([...ignored, ...ignoredHashes]));
+          const allPrinted = Array.from(new Set([...printed, ...printedHashes]));
+
           // Apply hard cutoff filter (March 31, 2026 onwards) and remove ignored/printed blocks
           setDetectedLeaves(
-              detected.filter(d => d.start_date >= HARD_CUTOFF_DATE && !ignored.includes(d.hash) && !printed.includes(d.hash))
+              detected.filter(d => d.start_date >= HARD_CUTOFF_DATE && !allIgnored.includes(d.hash) && !allPrinted.includes(d.hash))
           );
 
       } catch (e) {
@@ -190,7 +208,13 @@ export default function LeaveRequestMode() {
       setIsLoadingLeaves(false);
   };
 
-  const ignoreLeaveBlock = (hash: string) => {
+  const ignoreLeaveBlock = async (hash: string) => {
+      try {
+          await supabase.from('hsk_ignored_leaves').insert([{ hash }]);
+      } catch (e) {
+          console.error("Failed to save ignore to database:", e);
+      }
+
       const ignored = JSON.parse(localStorage.getItem('ignored_leaves') || '[]');
       if (!ignored.includes(hash)) {
           ignored.push(hash);
@@ -410,6 +434,26 @@ export default function LeaveRequestMode() {
               printed_at: new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
           };
 
+          try {
+              await supabase.from('hsk_leave_print_history').insert([{
+                  hash: currentHash,
+                  name: leaveData.name,
+                  host_id: leaveData.host_id,
+                  designation: leaveData.designation,
+                  department: leaveData.department,
+                  joining_date: leaveData.joining_date,
+                  contact_no: leaveData.contact_no,
+                  total_days: typeof leaveData.total_days === 'number' ? leaveData.total_days : parseInt(leaveData.total_days as string, 10) || 0,
+                  start_date: leaveData.start_date,
+                  end_date: leaveData.end_date,
+                  duty_date: leaveData.duty_date,
+                  breakdown: leaveData.breakdown,
+                  printed_at: historyRecord.printed_at
+              }]);
+          } catch (e) {
+              console.error("Failed to save history to database:", e);
+          }
+
           const updatedHistory = JSON.parse(localStorage.getItem('leave_print_history') || '[]');
           updatedHistory.unshift(historyRecord);
           localStorage.setItem('leave_print_history', JSON.stringify(updatedHistory));
@@ -595,7 +639,7 @@ export default function LeaveRequestMode() {
                     <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">SSL No</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={leaveData.host_id} onChange={e=>setLeaveData({...leaveData, host_id: e.target.value})}/></div>
                     <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Contact No</label><input className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={leaveData.contact_no} onChange={e=>setLeaveData({...leaveData, contact_no: e.target.value})}/></div>
                     <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Start Date</label><input type="date" className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors text-slate-700" value={leaveData.start_date} onChange={e=>setLeaveData({...leaveData, start_date: e.target.value})}/></div>
-                    <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">End Date</label><input type="date" className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors text-slate-700" value={leaveData.end_date} onChange={e=>setLeaveData({...leaveData, end_date: e.target.value})}/></div>
+                    <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">End Date</label><input type="date" min={leaveData.start_date} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors text-slate-700" value={leaveData.end_date} onChange={e=>setLeaveData({...leaveData, end_date: e.target.value})}/></div>
                     <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Total Days</label><input type="number" className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors" value={leaveData.total_days} onChange={e=>setLeaveData({...leaveData, total_days: e.target.value})}/></div>
                     <div><label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Duty Date (Return)</label><input type="date" className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:border-[#6D2158] outline-none transition-colors text-slate-700" value={leaveData.duty_date} onChange={e=>setLeaveData({...leaveData, duty_date: e.target.value})}/></div>
                 </div>
