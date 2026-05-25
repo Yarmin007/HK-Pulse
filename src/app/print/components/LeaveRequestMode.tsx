@@ -68,8 +68,6 @@ export default function LeaveRequestMode() {
   useEffect(() => {
       loadFont();
       fetchLeaveDetectionData();
-      const storedHistory = JSON.parse(localStorage.getItem('leave_print_history') || '[]');
-      setLeaveHistory(storedHistory);
   }, []);
 
   const addToLog = (msg: string) => setLogs(prev => [msg, ...prev]);
@@ -176,30 +174,19 @@ export default function LeaveRequestMode() {
               }
           });
 
-          // Fetch prints and ignored leaves from remote database tables
           const { data: dbIgnored } = await supabase.from('hsk_ignored_leaves').select('hash');
           const { data: dbHistory } = await supabase.from('hsk_leave_print_history').select('*').order('created_at', { ascending: false });
 
           const ignoredHashes = dbIgnored ? dbIgnored.map((i: any) => i.hash) : [];
           const printedHashes = dbHistory ? dbHistory.map((h: any) => h.hash) : [];
 
-          if (dbHistory && dbHistory.length > 0) {
-              const formattedDbHistory = dbHistory.map((h: any) => ({
-                  ...h,
-                  printed_at: h.printed_at || (h.created_at ? new Date(h.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')
-              }));
-              setLeaveHistory(formattedDbHistory);
+          if (dbHistory) {
+              setLeaveHistory(dbHistory);
           }
-
-          const ignored = JSON.parse(localStorage.getItem('ignored_leaves') || '[]');
-          const printed = JSON.parse(localStorage.getItem('printed_leaves') || '[]');
           
-          const allIgnored = Array.from(new Set([...ignored, ...ignoredHashes]));
-          const allPrinted = Array.from(new Set([...printed, ...printedHashes]));
-
           // Apply hard cutoff filter (March 31, 2026 onwards) and remove ignored/printed blocks
           setDetectedLeaves(
-              detected.filter(d => d.start_date >= HARD_CUTOFF_DATE && !allIgnored.includes(d.hash) && !allPrinted.includes(d.hash))
+              detected.filter(d => d.start_date >= HARD_CUTOFF_DATE && !ignoredHashes.includes(d.hash) && !printedHashes.includes(d.hash))
           );
 
       } catch (e) {
@@ -209,17 +196,7 @@ export default function LeaveRequestMode() {
   };
 
   const ignoreLeaveBlock = async (hash: string) => {
-      try {
-          await supabase.from('hsk_ignored_leaves').insert([{ hash }]);
-      } catch (e) {
-          console.error("Failed to save ignore to database:", e);
-      }
-
-      const ignored = JSON.parse(localStorage.getItem('ignored_leaves') || '[]');
-      if (!ignored.includes(hash)) {
-          ignored.push(hash);
-          localStorage.setItem('ignored_leaves', JSON.stringify(ignored));
-      }
+      await supabase.from('hsk_ignored_leaves').insert([{ hash }]);
       setDetectedLeaves(prev => prev.filter(d => d.hash !== hash));
       toast.success("Leave alert ignored.");
   };
@@ -410,15 +387,10 @@ export default function LeaveRequestMode() {
 
           // Save tracking data to remove from the Active alerts view
           const currentHash = `${leaveData.host_id}_${leaveData.start_date}_${leaveData.end_date}_${leaveData.total_days}`;
-          const printed = JSON.parse(localStorage.getItem('printed_leaves') || '[]');
-          if (!printed.includes(currentHash)) {
-              printed.push(currentHash);
-              localStorage.setItem('printed_leaves', JSON.stringify(printed));
-          }
 
           // Build a permanent History logger object
           const historyRecord = {
-              id: 'leave_' + Date.now(),
+              id: Date.now(),
               hash: currentHash,
               name: leaveData.name,
               host_id: leaveData.host_id,
@@ -426,7 +398,7 @@ export default function LeaveRequestMode() {
               department: leaveData.department,
               joining_date: leaveData.joining_date,
               contact_no: leaveData.contact_no,
-              total_days: leaveData.total_days,
+              total_days: typeof leaveData.total_days === 'number' ? leaveData.total_days : parseInt(leaveData.total_days as string, 10) || 0,
               start_date: leaveData.start_date,
               end_date: leaveData.end_date,
               duty_date: leaveData.duty_date,
@@ -434,30 +406,23 @@ export default function LeaveRequestMode() {
               printed_at: new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
           };
 
-          try {
-              await supabase.from('hsk_leave_print_history').insert([{
-                  hash: currentHash,
-                  name: leaveData.name,
-                  host_id: leaveData.host_id,
-                  designation: leaveData.designation,
-                  department: leaveData.department,
-                  joining_date: leaveData.joining_date,
-                  contact_no: leaveData.contact_no,
-                  total_days: typeof leaveData.total_days === 'number' ? leaveData.total_days : parseInt(leaveData.total_days as string, 10) || 0,
-                  start_date: leaveData.start_date,
-                  end_date: leaveData.end_date,
-                  duty_date: leaveData.duty_date,
-                  breakdown: leaveData.breakdown,
-                  printed_at: historyRecord.printed_at
-              }]);
-          } catch (e) {
-              console.error("Failed to save history to database:", e);
-          }
+          await supabase.from('hsk_leave_print_history').insert([{
+              hash: historyRecord.hash,
+              name: historyRecord.name,
+              host_id: historyRecord.host_id,
+              designation: historyRecord.designation,
+              department: historyRecord.department,
+              joining_date: historyRecord.joining_date,
+              contact_no: historyRecord.contact_no,
+              total_days: historyRecord.total_days,
+              start_date: historyRecord.start_date,
+              end_date: historyRecord.end_date,
+              duty_date: historyRecord.duty_date,
+              breakdown: historyRecord.breakdown,
+              printed_at: historyRecord.printed_at
+          }]);
 
-          const updatedHistory = JSON.parse(localStorage.getItem('leave_print_history') || '[]');
-          updatedHistory.unshift(historyRecord);
-          localStorage.setItem('leave_print_history', JSON.stringify(updatedHistory));
-          setLeaveHistory(updatedHistory);
+          setLeaveHistory(prev => [historyRecord, ...prev]);
 
           // Hot-filter active lists instantly
           setDetectedLeaves(prev => prev.filter(d => d.hash !== currentHash));
