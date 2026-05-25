@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -41,6 +41,7 @@ const MENU_ITEMS = [
   { name: "Water Production", icon: Droplets, path: "/water" },
   { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
+  { name: "Cost Saving", icon: TrendingUp, path: "/cost-saving" },
   { name: "Print Hub", icon: Printer, path: "/print" },
   { name: "Settings", icon: Settings, path: "/settings" },
 ];
@@ -74,7 +75,7 @@ const STAFF_CORE_BASE = [
 
 const STAFF_PROFILE_ITEMS = [
   { name: "My Profile", icon: Contact, path: "/profile" },
-  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" },
+  { name: "HK Directory", icon: PhoneCall, text: "HK Directory", path: "/team/contacts" },
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
@@ -375,7 +376,7 @@ export default function Sidebar() {
                               className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
                                 isActive 
                                   ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
+                                  : "text-slate-500 hover:text-rose-600 hover:bg-rose-50"
                               }`}
                             >
                               <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />

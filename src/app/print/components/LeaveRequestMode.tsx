@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect } from 'react';
 import { 
-  Users, CalendarDays, Loader2, Scissors, EyeOff, Search, FileText
+  Users, CalendarDays, Loader2, Scissors, EyeOff, Search, FileText, History, Printer
 } from 'lucide-react';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { supabase } from '@/lib/supabase';
@@ -53,6 +53,10 @@ export default function LeaveRequestMode() {
 
   const [isLoadingLeaves, setIsLoadingLeaves] = useState(false);
   const [detectedLeaves, setDetectedLeaves] = useState<DetectedLeave[]>([]);
+  const [alertSearch, setAlertSearch] = useState('');
+  const [activeLeftTab, setActiveLeftTab] = useState<'ALERTS' | 'HISTORY'>('ALERTS');
+  const [leaveHistory, setLeaveHistory] = useState<any[]>([]);
+
   const [leaveData, setLeaveData] = useState<{
       name: string; host_id: string; designation: string; department: string; joining_date: string; contact_no: string;
       total_days: number | string; start_date: string; end_date: string; duty_date: string; breakdown: Record<string, number>
@@ -64,6 +68,8 @@ export default function LeaveRequestMode() {
   useEffect(() => {
       loadFont();
       fetchLeaveDetectionData();
+      const storedHistory = JSON.parse(localStorage.getItem('leave_print_history') || '[]');
+      setLeaveHistory(storedHistory);
   }, []);
 
   const addToLog = (msg: string) => setLogs(prev => [msg, ...prev]);
@@ -171,10 +177,11 @@ export default function LeaveRequestMode() {
           });
 
           const ignored = JSON.parse(localStorage.getItem('ignored_leaves') || '[]');
+          const printed = JSON.parse(localStorage.getItem('printed_leaves') || '[]');
           
-          // Apply hard cutoff filter (March 31, 2026 onwards) and remove ignored blocks
+          // Apply hard cutoff filter (March 31, 2026 onwards) and remove ignored/printed blocks
           setDetectedLeaves(
-              detected.filter(d => d.start_date >= HARD_CUTOFF_DATE && !ignored.includes(d.hash))
+              detected.filter(d => d.start_date >= HARD_CUTOFF_DATE && !ignored.includes(d.hash) && !printed.includes(d.hash))
           );
 
       } catch (e) {
@@ -208,6 +215,23 @@ export default function LeaveRequestMode() {
           breakdown: leave.breakdown
       });
       toast.success('Form pre-filled from roster data!');
+  };
+
+  const selectHistoryLeave = (entry: any) => {
+      setLeaveData({
+          name: entry.name || '',
+          host_id: entry.host_id || '',
+          designation: entry.designation || '',
+          department: entry.department || 'Housekeeping',
+          joining_date: entry.joining_date || '',
+          contact_no: entry.contact_no || '',
+          total_days: entry.total_days || '',
+          start_date: entry.start_date || '',
+          end_date: entry.end_date || '',
+          duty_date: entry.duty_date || '',
+          breakdown: entry.breakdown || {}
+      });
+      toast.success('Form populated from history entries! Modify freely to print extensions.');
   };
 
   const selectManualHostForLeave = (host: Host) => {
@@ -359,6 +383,41 @@ export default function LeaveRequestMode() {
           const url = URL.createObjectURL(blob);
           
           setPreviewUrl(url);
+
+          // Save tracking data to remove from the Active alerts view
+          const currentHash = `${leaveData.host_id}_${leaveData.start_date}_${leaveData.end_date}_${leaveData.total_days}`;
+          const printed = JSON.parse(localStorage.getItem('printed_leaves') || '[]');
+          if (!printed.includes(currentHash)) {
+              printed.push(currentHash);
+              localStorage.setItem('printed_leaves', JSON.stringify(printed));
+          }
+
+          // Build a permanent History logger object
+          const historyRecord = {
+              id: 'leave_' + Date.now(),
+              hash: currentHash,
+              name: leaveData.name,
+              host_id: leaveData.host_id,
+              designation: leaveData.designation,
+              department: leaveData.department,
+              joining_date: leaveData.joining_date,
+              contact_no: leaveData.contact_no,
+              total_days: leaveData.total_days,
+              start_date: leaveData.start_date,
+              end_date: leaveData.end_date,
+              duty_date: leaveData.duty_date,
+              breakdown: leaveData.breakdown,
+              printed_at: new Date().toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+          };
+
+          const updatedHistory = JSON.parse(localStorage.getItem('leave_print_history') || '[]');
+          updatedHistory.unshift(historyRecord);
+          localStorage.setItem('leave_print_history', JSON.stringify(updatedHistory));
+          setLeaveHistory(updatedHistory);
+
+          // Hot-filter active lists instantly
+          setDetectedLeaves(prev => prev.filter(d => d.hash !== currentHash));
+
           addToLog("✅ Leave Form Generated Successfully!");
           setIsProcessing(false);
 
@@ -369,57 +428,134 @@ export default function LeaveRequestMode() {
       }
   };
 
+  const filteredDetectedLeaves = detectedLeaves.filter(d => 
+      (d.host?.full_name || '').toLowerCase().includes(alertSearch.toLowerCase()) || 
+      (d.host?.host_id || '').toLowerCase().includes(alertSearch.toLowerCase())
+  );
+
+  const filteredHistoryLeaves = leaveHistory.filter(h => 
+      (h.name || '').toLowerCase().includes(alertSearch.toLowerCase()) || 
+      (h.host_id || '').toLowerCase().includes(alertSearch.toLowerCase())
+  );
+
   return (
     <div className="flex-1 flex flex-col md:flex-row gap-4 md:gap-6 overflow-y-auto md:overflow-hidden animate-in slide-in-from-bottom-4">
         
         {/* LEFT CONTROLS */}
         <div className="w-full md:w-[50%] lg:w-[45%] flex flex-col md:overflow-y-auto md:pr-3 pb-4 md:pb-10 custom-scrollbar space-y-4 shrink-0">
             
-            {/* 1. AUTO DETECTED ALERTS */}
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-                <h3 className="font-bold text-emerald-700 mb-3 text-sm flex items-center justify-between border-b border-slate-100 pb-3">
-                    <span className="flex items-center gap-2"><CalendarDays size={16}/> Roster Auto-Detection</span>
-                    {isLoadingLeaves && <Loader2 size={14} className="animate-spin text-emerald-500" />}
-                </h3>
+            {/* 1. CONTAINER PANEL FOR STREAMS (ALERTS & HISTORY) */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col min-h-[360px] max-h-[440px]">
                 
-                <div className="space-y-3 max-h-60 overflow-y-auto custom-scrollbar pr-2">
-                    {detectedLeaves.length === 0 && !isLoadingLeaves ? (
-                        <div className="text-center py-6">
-                            <p className="text-xs text-slate-400 italic font-bold">No unhandled leaves {"(>2 days)"} detected in the roster.</p>
-                        </div>
-                    ) : (
-                        detectedLeaves.map((leave) => (
-                            <div key={leave.hash} className="bg-emerald-50 border border-emerald-100 p-3 rounded-xl flex flex-col gap-2">
-                                <div className="flex justify-between items-start">
-                                    <div>
-                                        <p className="font-black text-emerald-900 text-sm">{leave.host.full_name}</p>
-                                        <p className="text-[10px] font-bold text-emerald-700 mt-0.5">{formatDateForPDF(leave.start_date)} - {formatDateForPDF(leave.end_date)}</p>
-                                    </div>
-                                    <div className="text-right">
-                                        <p className="font-black text-emerald-700 text-sm">{leave.total_days} Days</p>
-                                    </div>
-                                </div>
-                                
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                    {Object.entries(leave.breakdown).map(([code, count]) => {
-                                        const displayCode = code === 'O' ? 'OFF' : code;
-                                        return (
-                                        <span key={code} className="text-[9px] bg-white text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded font-bold uppercase">
-                                            {count} {displayCode}
-                                        </span>
-                                    )})}
-                                </div>
+                {/* DUAL HEADER NAVIGATION */}
+                <div className="flex border-b border-slate-100 bg-slate-50 rounded-t-xl p-1.5 gap-1 shrink-0">
+                    <button 
+                        onClick={() => setActiveLeftTab('ALERTS')}
+                        className={`flex-1 py-2 rounded-lg font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${activeLeftTab === 'ALERTS' ? 'bg-[#6D2158] text-white shadow-sm' : 'text-slate-400 hover:bg-slate-200/50'}`}
+                    >
+                        <CalendarDays size={14}/> Roster Alerts ({detectedLeaves.length})
+                    </button>
+                    <button 
+                        onClick={() => setActiveLeftTab('HISTORY')}
+                        className={`flex-1 py-2 rounded-lg font-black text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${activeLeftTab === 'HISTORY' ? 'bg-[#6D2158] text-white shadow-sm' : 'text-slate-400 hover:bg-slate-200/50'}`}
+                    >
+                        <History size={14}/> Print Log ({leaveHistory.length})
+                    </button>
+                </div>
 
-                                <div className="flex gap-2 mt-2 pt-2 border-t border-emerald-100/50">
-                                    <button onClick={() => selectDetectedLeave(leave)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition-colors">
-                                        Review & Print
-                                    </button>
-                                    <button onClick={() => ignoreLeaveBlock(leave.hash)} className="px-3 bg-white text-emerald-600 hover:text-rose-600 hover:bg-rose-50 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition-colors border border-emerald-100">
-                                        <EyeOff size={14}/>
-                                    </button>
+                {/* SEARCH STREAM CONTROL */}
+                <div className="p-3 border-b border-slate-100 shrink-0 relative">
+                    <Search className="absolute left-6 top-5.5 text-slate-400" size={14}/>
+                    <input 
+                        type="text"
+                        placeholder={activeLeftTab === 'ALERTS' ? "Search unhandled alerts by name..." : "Search past printed forms..."}
+                        className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-[#6D2158] focus:bg-white transition-all"
+                        value={alertSearch}
+                        onChange={(e) => setAlertSearch(e.target.value)}
+                    />
+                    {alertSearch && (
+                        <button onClick={() => setAlertSearch('')} className="absolute right-6 top-5.5 text-xs font-bold text-slate-300 hover:text-slate-500">Reset</button>
+                    )}
+                </div>
+                
+                {/* PANEL VIEW SCROLLABLE CONTEXT */}
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+                    {isLoadingLeaves && (
+                        <div className="flex items-center justify-center py-10 gap-2 font-bold text-xs text-slate-400">
+                            <Loader2 size={16} className="animate-spin text-[#6D2158]"/> Fetching attendance matrix records...
+                        </div>
+                    )}
+
+                    {!isLoadingLeaves && activeLeftTab === 'ALERTS' && (
+                        <>
+                            {filteredDetectedLeaves.length === 0 ? (
+                                <div className="text-center py-12">
+                                    <p className="text-xs text-slate-400 italic font-bold">No matching unhandled blocks found.</p>
                                 </div>
-                            </div>
-                        ))
+                            ) : (
+                                filteredDetectedLeaves.map((leave) => (
+                                    <div key={leave.hash} className="bg-emerald-50 border border-emerald-100 p-3 rounded-xl flex flex-col gap-2">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <p className="font-black text-emerald-900 text-sm">{leave.host.full_name}</p>
+                                                <p className="text-[10px] font-bold text-emerald-700 mt-0.5">{formatDateForPDF(leave.start_date)} - {formatDateForPDF(leave.end_date)}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="font-black text-emerald-700 text-sm">{leave.total_days} Days</p>
+                                            </div>
+                                        </div>
+                                        
+                                        <div className="flex flex-wrap gap-1 mt-1">
+                                            {Object.entries(leave.breakdown).map(([code, count]) => {
+                                                const displayCode = code === 'O' ? 'OFF' : code;
+                                                return (
+                                                <span key={code} className="text-[9px] bg-white text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded font-bold uppercase">
+                                                    {count} {displayCode}
+                                                </span>
+                                            )})}
+                                        </div>
+
+                                        <div className="flex gap-2 mt-2 pt-2 border-t border-emerald-100/50">
+                                            <button onClick={() => selectDetectedLeave(leave)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition-colors">
+                                                Review & Print
+                                            </button>
+                                            <button onClick={() => ignoreLeaveBlock(leave.hash)} className="px-3 bg-white text-emerald-600 hover:text-rose-600 hover:bg-rose-50 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition-colors border border-emerald-100">
+                                                <EyeOff size={14}/>
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </>
+                    )}
+
+                    {!isLoadingLeaves && activeLeftTab === 'HISTORY' && (
+                        <>
+                            {filteredHistoryLeaves.length === 0 ? (
+                                <div className="text-center py-12">
+                                    <p className="text-xs text-slate-400 italic font-bold">No past logs matched your filters.</p>
+                                </div>
+                            ) : (
+                                filteredHistoryLeaves.map((item) => (
+                                    <div key={item.id} className="bg-slate-50 border border-slate-200 p-3 rounded-xl flex flex-col gap-2">
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <p className="font-black text-slate-800 text-sm">{item.name}</p>
+                                                <p className="text-[10px] font-bold text-slate-500 mt-0.5">{formatDateForPDF(item.start_date)} - {formatDateForPDF(item.end_date)}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="font-black text-[#6D2158] text-sm">{item.total_days} Days</p>
+                                                <p className="text-[8px] text-slate-400 font-bold mt-1 uppercase tracking-wider">{item.printed_at}</p>
+                                            </div>
+                                        </div>
+
+                                        <button onClick={() => selectHistoryLeave(item)} className="w-full bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-sm">
+                                            <Printer size={12}/> Load Form Details
+                                        </button>
+                                    </div>
+                                ))
+                            )}
+                        </>
                     )}
                 </div>
             </div>
