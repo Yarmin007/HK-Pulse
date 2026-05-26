@@ -14,9 +14,10 @@ import toast from 'react-hot-toast';
 // --- IMPORTED LOGIC & COMPONENTS ---
 import { getPayrollPeriod, getUpcomingLeave, computeLeaveBalancesRPC, LEAVE_CODES } from '@/lib/payrollMath';
 import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
+import OccasionBanner from '@/components/OccasionBanner';
 
 // =========================================================================
-// ⚡ PERFORMANCE FIX: ISOLATED LIVE CLOCK
+// ⚡ PERFORMANCE FIX: LIVE CLOCK
 // =========================================================================
 const LiveClock = () => {
     const [time, setTime] = useState<Date>(getDhakaTime());
@@ -603,6 +604,8 @@ export default function Dashboard() {
       {/* Main Content Area */}
       <div className="p-0 md:p-8 space-y-6 md:space-y-8 pb-32">
           
+          <OccasionBanner />
+
           {/* USER BALANCES STRIP */}
           {userBalances && (
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-2 md:gap-3 animate-in slide-in-from-bottom-4 px-2 md:px-0 pt-2 md:pt-0">
@@ -745,9 +748,9 @@ export default function Dashboard() {
 
                      {/* RIGHT COLUMN STACK */}
                      <div className="space-y-6 flex flex-col">
-                         
-                         {/* DASHBOARD REMINDERS (MINI) */}
-                         <div className="bg-white md:rounded-[2rem] shadow-sm border-t border-b md:border border-slate-100 flex flex-col overflow-hidden relative">
+                        
+                        {/* DASHBOARD REMINDERS (MINI) */}
+                        <div className="bg-white md:rounded-[2rem] shadow-sm border-t border-b md:border border-slate-100 flex flex-col overflow-hidden relative">
                             <div className="p-5 md:p-6 border-b border-slate-50 flex justify-between items-center bg-purple-50/30">
                                 <div>
                                     <h3 className="text-sm font-black text-[#6D2158] uppercase tracking-widest flex items-center gap-2"><CheckSquare size={16}/> Daily Reminders</h3>
@@ -786,10 +789,10 @@ export default function Dashboard() {
                                     </div>
                                 )}
                             </div>
-                         </div>
-                         
-                         {/* EXPIRY ALERTS */}
-                         <div className={`p-5 md:p-6 mx-2 md:mx-0 rounded-3xl md:rounded-[2rem] shadow-xl flex flex-col relative overflow-hidden ${criticalItems.length > 0 ? 'bg-rose-600 text-white shadow-rose-200' : 'bg-emerald-600 text-white shadow-emerald-200'}`}>
+                        </div>
+                        
+                        {/* EXPIRY ALERTS */}
+                        <div className={`p-5 md:p-6 mx-2 md:mx-0 rounded-3xl md:rounded-[2rem] shadow-xl flex flex-col relative overflow-hidden ${criticalItems.length > 0 ? 'bg-rose-600 text-white shadow-rose-200' : 'bg-emerald-600 text-white shadow-emerald-200'}`}>
                             <div className="relative z-10">
                                 <h3 className="text-base md:text-lg font-black mb-1 flex items-center gap-2">
                                     {criticalItems.length > 0 ? <AlertTriangle size={20}/> : <CheckCircle2 size={20}/>} 
@@ -820,7 +823,7 @@ export default function Dashboard() {
                                 )}
                             </div>
                             <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-white/10 rounded-full blur-2xl"></div>
-                         </div>
+                        </div>
                      </div>
                   </div>
               </div>

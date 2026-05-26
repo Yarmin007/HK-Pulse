@@ -56,36 +56,73 @@ export default function CostSavingReportPage() {
   }, [bandSalaries]);
 
   useEffect(() => {
+    fetchMonthlyDatabaseData();
     fetchAttendanceWorkings();
-    const storedSalaries = localStorage.getItem('hk_pulse_band_salaries');
-    const storedManual = localStorage.getItem('hk_pulse_saving_manual');
-    const storedVacant = localStorage.getItem('hk_pulse_vacant_positions');
-    const storedProseccoPrice = localStorage.getItem('hk_pulse_prosecco_price');
-    const storedSteamPrice = localStorage.getItem('hk_pulse_steam_liter_price');
-    
-    if (storedSalaries) setBandSalaries(JSON.parse(storedSalaries));
-    if (storedManual) setManualInputs(JSON.parse(storedManual));
-    if (storedVacant) {
-      const parsed = JSON.parse(storedVacant);
-      const sanitized = parsed.map((p: any) => ({ ...p, weeks: p.weeks || [1, 2, 3, 4] }));
-      setVacantPositions(sanitized);
-    }
-    if (storedProseccoPrice) setProseccoPrice(parseFloat(storedProseccoPrice) || 11.5);
-    if (storedSteamPrice) setSteamLiterPrice(parseFloat(storedSteamPrice) || 1.2);
   }, [selectedMonth]);
+
+  // --- FETCH CONFIGS AND INPUTS FROM SUPABASE CLOUD ROW ---
+  const fetchMonthlyDatabaseData = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('hsk_cost_saving_reports')
+        .select('*')
+        .eq('month', selectedMonth)
+        .single();
+
+      if (data) {
+        if (data.band_salaries) setBandSalaries(data.band_salaries);
+        if (data.prosecco_price) setProseccoPrice(parseFloat(data.prosecco_price));
+        if (data.steam_liter_price) setSteamLiterPrice(parseFloat(data.steam_liter_price));
+        if (data.vacant_positions) setVacantPositions(data.vacant_positions);
+        if (data.manual_inputs) setManualInputs(data.manual_inputs);
+      } else {
+        // Fallback to initial defaults if no record exists yet for this target month
+        setBandSalaries({ DA: 3000, DB: 1800, ATM: 950 });
+        setProseccoPrice(11.5);
+        setSteamLiterPrice(1.2);
+        setVacantPositions([]);
+        setManualInputs({});
+      }
+    } catch (err) {
+      console.log("No cloud report row matches this month yet, presenting initial default layouts.");
+    }
+  };
+
+  // --- SAVE ALL CURRENT MODIFIED CONFIGS AND INPUT VALUES TO DATABASE ---
+  const saveReportToDatabase = async () => {
+    setIsLoading(true);
+    try {
+      const { error } = await supabase
+        .from('hsk_cost_saving_reports')
+        .upsert({
+          month: selectedMonth,
+          band_salaries: bandSalaries,
+          prosecco_price: proseccoPrice,
+          steam_liter_price: steamLiterPrice,
+          vacant_positions: vacantPositions,
+          manual_inputs: manualInputs,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'month' });
+
+      if (error) throw error;
+      toast.success("Cost-Saving report successfully saved and synced to database!");
+    } catch (err: any) {
+      console.error(err);
+      toast.error("Failed to sync to cloud: " + err.message);
+    }
+    setIsLoading(false);
+  };
 
   const handleSalaryChange = (level: HostLevel, val: string) => {
     const num = parseFloat(val) || 0;
     const updated = { ...bandSalaries, [level]: num };
     setBandSalaries(updated);
-    localStorage.setItem('hk_pulse_band_salaries', JSON.stringify(updated));
   };
 
   const handleManualInputChange = (cellKey: string, val: string) => {
     const num = parseFloat(val) || 0;
     const updated = { ...manualInputs, [`${selectedMonth}_${cellKey}`]: num };
     setManualInputs(updated);
-    localStorage.setItem('hk_pulse_saving_manual', JSON.stringify(updated));
   };
 
   const getManualValue = (cellKey: string): string => {
@@ -116,6 +153,7 @@ export default function CostSavingReportPage() {
         off_w1: { DA: 0, DB: 0, ATM: 0 }, off_w2: { DA: 0, DB: 0, ATM: 0 }, off_w3: { DA: 0, DB: 0, ATM: 0 }, off_w4: { DA: 0, DB: 0, ATM: 0 },
         ph_w1: { DA: 0, DB: 0, ATM: 0 }, ph_w2: { DA: 0, DB: 0, ATM: 0 }, ph_w3: { DA: 0, DB: 0, ATM: 0 }, ph_w4: { DA: 0, DB: 0, ATM: 0 },
         np_w1: { DA: 0, DB: 0, ATM: 0 }, np_w2: { DA: 0, DB: 0, ATM: 0 }, np_w3: { DA: 0, DB: 0, ATM: 0 }, np_w4: { DA: 0, DB: 0, ATM: 0 },
+        friday_w1: { DA: 0, DB: 0, ATM: 0 }, friday_w2: { DA: 0, DB: 0, ATM: 0 }, friday_w3: { DA: 0, DB: 0, ATM: 0 }, friday_w4: { DA: 0, DB: 0, ATM: 0 },
       };
 
       (attRes.data || []).forEach((att: any) => {
@@ -135,6 +173,12 @@ export default function CostSavingReportPage() {
         if (['O', 'OFF'].includes(code)) matrix[`off_w${weekKey}`][level]++;
         if (code === 'PH') matrix[`ph_w${weekKey}`][level]++;
         if (['NOP', 'LWP'].includes(code)) matrix[`np_w${weekKey}`][level]++;
+
+        // Friday Pay Clearance Checking (DB & ATM only lose Friday pay if not present)
+        const dateObj = new Date(att.date + 'T00:00:00');
+        if (dateObj.getDay() === 5 && ['AL', 'VAC', 'O', 'OFF', 'PH', 'NOP', 'LWP'].includes(code)) {
+          matrix[`friday_w${weekKey}`][level]++;
+        }
       });
 
       setWeeklyWorkings(matrix);
@@ -145,15 +189,21 @@ export default function CostSavingReportPage() {
   };
 
   // --- AUTOMATIC VALUE LOOKUPS BY ROW ENGINE ---
-  const getAutomatedRowWeeklyCost = (typeKey: 'al' | 'off' | 'ph' | 'np', weekIdx: number): number => {
+  const getAutomatedRowWeeklyCost = (typeKey: 'al' | 'off' | 'ph' | 'np' | 'friday', weekIdx: number): number => {
     const weekKey = `${typeKey}_w${weekIdx + 1}`;
     const data = weeklyWorkings[weekKey];
     if (!data) return 0;
 
     // Multiply days by band specific daily rate
-    const daCost = data.DA * dailyRates.DA;
-    const dbCost = data.DB * dailyRates.DB;
-    const atmCost = data.ATM * dailyRates.ATM;
+    let daCost = data.DA * dailyRates.DA;
+    let dbCost = data.DB * dailyRates.DB;
+    let atmCost = data.ATM * dailyRates.ATM;
+
+    if (typeKey === 'friday') {
+      daCost = 0; // DA is excluded completely as requested
+      dbCost = data.DB * dailyRates.DB * 1.5;
+      atmCost = data.ATM * dailyRates.ATM * 1.5;
+    }
 
     return daCost + dbCost + atmCost;
   };
@@ -174,7 +224,11 @@ export default function CostSavingReportPage() {
       al: [0, 1, 2, 3].map(w => getAutomatedRowWeeklyCost('al', w)),
       nopay: [0, 1, 2, 3].map(w => getAutomatedRowWeeklyCost('np', w)),
       ph: [0, 1, 2, 3].map(w => getAutomatedRowWeeklyCost('ph', w)),
-      friday: [0, 1, 2, 3].map(w => parseFloat(getManualValue(`payroll_friday_w${w+1}`)) || 0),
+      friday: [0, 1, 2, 3].map(w => {
+        const manual = parseFloat(getManualValue(`payroll_friday_w${w+1}`)) || 0;
+        const autoFriday = getAutomatedRowWeeklyCost('friday', w);
+        return manual + autoFriday;
+      }),
       off: [0, 1, 2, 3].map(w => getAutomatedRowWeeklyCost('off', w)),
     };
     return result;
@@ -232,6 +286,12 @@ export default function CostSavingReportPage() {
               onChange={(e) => setSelectedMonth(e.target.value)}
             />
           </div>
+          
+          {/* DATABASE SAVE REPORT ACTION BUTTON */}
+          <button onClick={saveReportToDatabase} disabled={isLoading} className="p-2 bg-[#6D2158] hover:bg-[#581a47] text-white rounded-xl transition-all flex items-center gap-1.5 text-xs font-black uppercase px-3 shadow-md border border-[#6D2158]/10 active:scale-95 disabled:opacity-50">
+            {isLoading ? <Loader2 className="animate-spin" size={14}/> : <Save size={14} />} Save Report
+          </button>
+
           <button onClick={fetchAttendanceWorkings} className="p-2 bg-slate-100 border rounded-xl hover:bg-slate-200 transition-colors" title="Sync Attendance Live">
             <RefreshCw size={14} className={isLoading ? "animate-spin text-[#6D2158]" : "text-slate-500"} />
           </button>
@@ -278,7 +338,6 @@ export default function CostSavingReportPage() {
                 onChange={(e) => {
                   const num = parseFloat(e.target.value) || 0;
                   setProseccoPrice(num);
-                  localStorage.setItem('hk_pulse_prosecco_price', String(num));
                 }}
               />
             </div>
@@ -300,7 +359,6 @@ export default function CostSavingReportPage() {
                 onChange={(e) => {
                   const num = parseFloat(e.target.value) || 0;
                   setSteamLiterPrice(num);
-                  localStorage.setItem('hk_pulse_steam_liter_price', String(num));
                 }}
               />
             </div>
@@ -336,10 +394,9 @@ export default function CostSavingReportPage() {
             const newPos = { id: 'vac_' + Date.now(), name, qty, basicPay, weeks: formWeeks };
             const updated = [...vacantPositions, newPos];
             setVacantPositions(updated);
-            localStorage.setItem('hk_pulse_vacant_positions', JSON.stringify(updated));
             form.reset();
             setFormWeeks([1, 2, 3, 4]);
-            toast.success("Vacant position added successfully!");
+            toast.success("Vacant position added locally. Save report to persist cloud-wide!");
           }} className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div>
@@ -402,8 +459,7 @@ export default function CostSavingReportPage() {
                       <button type="button" onClick={() => {
                         const updated = vacantPositions.filter(p => p.id !== pos.id);
                         setVacantPositions(updated);
-                        localStorage.setItem('hk_pulse_vacant_positions', JSON.stringify(updated));
-                        toast.success("Position removed.");
+                        toast.success("Position removed. Remember to click save report!");
                       }} className="text-rose-600 hover:text-rose-800 font-black text-[10px] uppercase tracking-wider">
                         Delete
                       </button>
@@ -439,7 +495,7 @@ export default function CostSavingReportPage() {
               <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
                 <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Payroll Cleared Value</span>
                 <p className="text-xl font-black text-purple-700 mt-1">
-                  ${([payrollSavings.vacant, payrollSavings.al, payrollSavings.nopay, payrollSavings.ph, payrollSavings.friday, payrollSavings.off].reduce((acc, row) => acc + row.reduce((a,b)=>a+b, 0), 0)).toFixed(2)}
+                  ${([payrollSavings.vacant, payrollSavings.al, payrollSavings.nopay, payrollSavings.ph, payrollSavings.friday, payrollSavings.off].reduce((acc, row) => acc + row.reduce((a,b)=>acc+b, 0), 0)).toFixed(2)}
                 </p>
               </div>
               <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
@@ -531,16 +587,25 @@ export default function CostSavingReportPage() {
                       <td className="p-3 text-right border-l-2 border-slate-200 bg-purple-50/40 font-black font-mono text-purple-900">${payrollSavings.ph.reduce((a,b)=>a+b, 0).toFixed(2)}</td>
                     </tr>
 
-                    {/* FRIDAY PAY */}
+                    {/* FRIDAY PAY Clearances */}
                     <tr className="hover:bg-slate-50/50 transition-colors">
-                      <td className="p-3 font-bold pl-5 flex items-center gap-2"><Layers size={14} className="text-slate-400"/> Friday Pay Clearances</td>
+                      <td className="p-3 font-bold pl-5 flex items-center gap-2">
+                        <Layers size={14} className="text-slate-400"/> Friday Pay Clearances
+                      </td>
                       {weeks.map((_, w) => (
-                        <td key={w} className="p-1 border-l border-slate-100">
-                          <input 
-                            type="number" placeholder="0.00" value={getManualValue(`payroll_friday_w${w+1}`)}
-                            onChange={(e) => handleManualInputChange(`payroll_friday_w${w+1}`, e.target.value)}
-                            className="w-full h-8 text-center bg-transparent border border-transparent hover:border-slate-200 focus:border-[#6D2158] focus:bg-white rounded-lg outline-none font-bold font-mono"
-                          />
+                        <td key={w} className="p-1 border-l border-slate-100 text-center font-mono font-bold">
+                          <div className="flex flex-col items-center justify-center space-y-0.5">
+                            {getAutomatedRowWeeklyCost('friday', w) > 0 && (
+                              <span className="text-[10px] text-[#6D2158] font-black">
+                                ${getAutomatedRowWeeklyCost('friday', w).toFixed(2)}
+                              </span>
+                            )}
+                            <input 
+                              type="number" placeholder="+ Manual Adj" value={getManualValue(`payroll_friday_w${w+1}`)}
+                              onChange={(e) => handleManualInputChange(`payroll_friday_w${w+1}`, e.target.value)}
+                              className="w-full h-6 text-center bg-transparent border border-transparent hover:border-slate-200 focus:border-[#6D2158] focus:bg-white roundedoutline-none font-bold font-mono text-[11px]"
+                            />
+                          </div>
                         </td>
                       ))}
                       <td className="p-3 text-right border-l-2 border-slate-200 bg-slate-50/40 font-black font-mono">${payrollSavings.friday.reduce((a,b)=>a+b, 0).toFixed(2)}</td>
@@ -675,9 +740,9 @@ export default function CostSavingReportPage() {
                 <HelpCircle size={16} className="text-[#6D2158]"/> Attendance Roster Workings Matrix (Days Cleared)
               </h3>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {['al', 'off', 'ph', 'np'].map(type => {
-                  const labelMap: Record<string, string> = { al: 'Annual Leave (AL)', off: 'Off Days (O)', ph: 'Public Holiday (PH)', np: 'No Pay Leave (NOP)' };
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                {['al', 'off', 'ph', 'np', 'friday'].map(type => {
+                  const labelMap: Record<string, string> = { al: 'Annual Leave (AL)', off: 'Off Days (O)', ph: 'Public Holiday (PH)', np: 'No Pay Leave (NOP)', friday: 'Friday Leaves (DB/ATM)' };
                   return (
                     <div key={type} className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col">
                       <h4 className="text-[11px] font-black uppercase text-[#6D2158] tracking-wide mb-2 border-b pb-1.5">{labelMap[type]}</h4>
@@ -734,12 +799,13 @@ export default function CostSavingReportPage() {
             </div>
 
             {/* DETAILED CATEGORY TRACE SCHEDULERS */}
-            {['al', 'off', 'ph', 'np', 'prosecco', 'steam'].map(type => {
+            {['al', 'off', 'ph', 'np', 'friday', 'prosecco', 'steam'].map(type => {
               const labelMap: Record<string, string> = { 
                 al: 'Annual Leave Clearance (AL) Row Multiplier Audit Traces', 
                 off: 'Weekly Off Days Cleared Row Multiplier Audit Traces', 
                 ph: 'Public Holiday Clearance (PH) Row Multiplier Audit Traces', 
                 np: 'No Pay Leave (LWP) Row Multiplier Audit Traces',
+                friday: 'Friday Pay Clearance (1.5x Rate Missed) Audit Traces',
                 prosecco: 'Unused Prosecco Bottles Cost Saving Configuration Inputs',
                 steam: 'Saved Steam Hrs from Laundry Data & Multiplier Calculation Logs'
               };
@@ -876,58 +942,11 @@ export default function CostSavingReportPage() {
                           const weekKey = `${type}_w${wIdx + 1}`;
                           const data = weeklyWorkings[weekKey] || { DA: 0, DB: 0, ATM: 0 };
                           
-                          const daCost = data.DA * dailyRates.DA;
-                          const dbCost = data.DB * dailyRates.DB;
-                          const atmCost = data.ATM * dailyRates.ATM;
+                          const daCost = type === 'friday' ? 0 : data.DA * dailyRates.DA;
+                          const dbCost = data.DB * dailyRates.DB * (type === 'friday' ? 1.5 : 1);
+                          const atmCost = data.ATM * dailyRates.ATM * (type === 'friday' ? 1.5 : 1);
                           const total = daCost + dbCost + atmCost;
                           
                           return (
                             <tr key={wIdx} className="hover:bg-slate-50/50 transition-colors">
                               <td className="p-3 pl-4 font-sans font-bold text-slate-800">Week {wIdx + 1}</td>
-                              <td className="p-3 text-center">
-                                <span className={data.DA > 0 ? "text-purple-700 font-bold" : "text-slate-400"}>
-                                  {data.DA} days × ${dailyRates.DA.toFixed(2)} = ${daCost.toFixed(2)}
-                                </span>
-                              </td>
-                              <td className="p-3 text-center">
-                                <span className={data.DB > 0 ? "text-indigo-700 font-bold" : "text-slate-400"}>
-                                  {data.DB} days × ${dailyRates.DB.toFixed(2)} = ${dbCost.toFixed(2)}
-                                </span>
-                              </td>
-                              <td className="p-3 text-center">
-                                <span className={data.ATM > 0 ? "text-pink-700 font-bold" : "text-slate-400"}>
-                                  {data.ATM} days × ${dailyRates.ATM.toFixed(2)} = ${atmCost.toFixed(2)}
-                                </span>
-                              </td>
-                              <td className="p-3 text-right text-[#6D2158] font-black bg-purple-50/20 pr-4">${total.toFixed(2)}</td>
-                            </tr>
-                          );
-                        })}
-                        <tr className="bg-slate-50 font-black text-slate-800">
-                          <td className="p-3 pl-4 font-sans uppercase tracking-wider text-[10px] text-slate-700">Monthly Column Summary</td>
-                          <td className="p-3 text-center text-purple-900">
-                            ${[0,1,2,3].reduce((sum, w) => sum + ((weeklyWorkings[`${type}_w${w+1}`]?.DA || 0) * dailyRates.DA), 0).toFixed(2)}
-                          </td>
-                          <td className="p-3 text-center text-indigo-900">
-                            ${[0,1,2,3].reduce((sum, w) => sum + ((weeklyWorkings[`${type}_w${w+1}`]?.DB || 0) * dailyRates.DB), 0).toFixed(2)}
-                          </td>
-                          <td className="p-3 text-center text-pink-900">
-                            ${[0,1,2,3].reduce((sum, w) => sum + ((weeklyWorkings[`${type}_w${w+1}`]?.ATM || 0) * dailyRates.ATM), 0).toFixed(2)}
-                          </td>
-                          <td className="p-3 text-right text-[#6D2158] text-sm pr-4 bg-purple-100/40">
-                            ${[0,1,2,3].map(w => getAutomatedRowWeeklyCost(type as any, w)).reduce((a,b)=>a+b, 0).toFixed(2)}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-      </div>
-    </div>
-  );
-}
