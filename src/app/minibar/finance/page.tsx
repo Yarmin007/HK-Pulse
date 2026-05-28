@@ -147,7 +147,6 @@ export default function FinanceMinibarPage() {
   const exportToRealExcel = async () => {
       setIsExporting(true);
       try {
-          const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
           const wb = new ExcelJS.Workbook();
           const ws = wb.addWorksheet('Minibar Finance', {
               views: [{ state: 'frozen', xSplit: 6, ySplit: 2 }] // Freezes the top 2 rows and first 6 item columns!
@@ -187,7 +186,7 @@ export default function FinanceMinibarPage() {
           allWidths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
 
           // 4. Fill in Data & Colors
-          visibleCatalogItems.forEach(item => {
+          catalog.forEach(item => {
               const artNo = item.article_number;
               const fin = financials[artNo] || { opening_stock: 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
               const avgCost = parseFloat(item.avg_cost) || 0;
@@ -280,7 +279,6 @@ export default function FinanceMinibarPage() {
   };
 
   if (!isMounted) return null;
-  const visibleCatalogItems = catalog.filter(c => !hiddenItems.includes(c.article_number));
 
   return (
     <div className="fixed inset-0 z-[100] flex flex-col bg-[#FDFBFD] font-sans text-slate-800 overflow-hidden">
@@ -299,6 +297,7 @@ export default function FinanceMinibarPage() {
               <input type="month" className="bg-transparent text-sm font-bold text-[#6D2158] outline-none cursor-pointer p-1" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} />
            </div>
            <button onClick={exportToRealExcel} disabled={isExporting} className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-md hover:bg-emerald-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+               <img src="/placeholder.png" className="hidden"/>
                {isExporting ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16}/>}
                {isExporting ? 'Generating...' : 'Download Excel'}
            </button>
@@ -350,7 +349,7 @@ export default function FinanceMinibarPage() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 font-medium">
-                            {visibleCatalogItems.map(item => {
+                            {catalog.map(item => {
                                 const artNo = item.article_number;
                                 const fin = financials[artNo] || { opening_stock: 0, transfer_in: 0, transfer_out: 0, sales: 0, minibar_store: 0, comments: '' };
                                 const avgCost = parseFloat(item.avg_cost) || 0;
@@ -365,7 +364,6 @@ export default function FinanceMinibarPage() {
                                 
                                 const villaTotal = activeVillaList.reduce((sum, v) => sum + (matrixDict[v]?.[artNo] || 0), 0);
                                 const physTotal = villaTotal + fin.minibar_store;
-                                const physVal = physTotal * avgCost;
                                 
                                 const varQty = physTotal - soh;
                                 const varVal = varQty * avgCost;

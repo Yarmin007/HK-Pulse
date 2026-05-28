@@ -58,6 +58,7 @@ const TEAM_ITEMS = [
 ];
 
 const MINIBAR_ITEMS = [
+  { name: "Live Tracking", icon: ClipboardList, path: "/minibar/live-tracking" },
   { name: "Live Inventory Matrix", icon: Box, path: "/minibar/inventory" },
   { name: "Expiry Control", icon: Calendar, path: "/minibar/expiry" },
   { name: "Expiry Removals", icon: RefreshCw, path: "/minibar/removals" },
