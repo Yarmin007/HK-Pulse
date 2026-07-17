@@ -5,9 +5,24 @@ import { Moon, Star, Sparkles } from 'lucide-react';
 export default function OccasionBanner() {
     const [particles, setParticles] = useState<any[]>([]);
 
+    // Define the date for Eid Al Adha
+    const EID_START_DATE = new Date('2026-05-27T00:00:00');
+    
+    // Calculate the expiration date (4 days later)
+    const EID_END_DATE = new Date(EID_START_DATE.getTime());
+    EID_END_DATE.setDate(EID_END_DATE.getDate() + 4);
+
+    const currentDate = new Date();
+    const isEidActive = currentDate >= EID_START_DATE && currentDate <= EID_END_DATE;
+
     // Change this value manually to switch between occasions:
     // 'eid' | 'childrens_day' | 'independence_day' | 'republic_day' | 'new_year'
+    // If the active occasion is 'eid' but it's outside the valid 4-day window, this component will return null.
     const ACTIVE_OCCASION = 'eid';
+
+    if (ACTIVE_OCCASION === 'eid' && !isEidActive) {
+        return null;
+    }
 
     const occasions: Record<string, { title: string; description: string; bg: string; border: string; text: string }> = {
         eid: {

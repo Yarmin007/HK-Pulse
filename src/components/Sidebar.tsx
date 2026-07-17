@@ -34,6 +34,7 @@ const INVENTORY_ITEMS = [
   { name: "Linen Inventory", icon: Layers, path: "/inventory/linen" },
   { name: "Bottle Setup", icon: ClipboardCheck, path: "/inventory/bottle-setup" },
   { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle" },
+  { name: "Spot Count", icon: CheckSquare, path: "/inventory/spot-count" },
 ];
 
 const MENU_ITEMS = [
