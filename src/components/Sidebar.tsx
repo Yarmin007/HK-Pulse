@@ -52,6 +52,7 @@ const TEAM_ITEMS = [
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
+  { name: "Casual Attendance", icon: Users, path: "/attendance/casual" },
   { name: "Leave Clearance", icon: ShieldCheck, path: "/attendance/clearance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
   { name: "Leave Planner", icon: Plane, path: "/leave-planner" },
@@ -202,7 +203,7 @@ export default function Sidebar() {
   return (
     <>
       {/* DESKTOP SIDEBAR */}
-      <aside className="hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50 shadow-[4px_0_24px_rgba(0,0,0,0.01)] transition-transform duration-300 ease-in-out">
+      <aside className="print:hidden hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50 shadow-[4px_0_24px_rgba(0,0,0,0.01)] transition-transform duration-300 ease-in-out">
         <div className="h-24 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158]">
           <Logo className="h-10 w-auto drop-shadow-sm" />
         </div>
@@ -484,7 +485,7 @@ export default function Sidebar() {
       </aside>
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[999] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] overflow-x-auto no-scrollbar">
+      <div className="print:hidden md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[999] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] overflow-x-auto no-scrollbar">
          {BOTTOM_TABS.map((tab) => {
             const isActive = pathname === tab.path || (tab.path !== '/' && pathname?.startsWith(`${tab.path}/`));
             return (
