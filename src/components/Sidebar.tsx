@@ -37,6 +37,10 @@ const INVENTORY_ITEMS = [
   { name: "Spot Count", icon: CheckSquare, path: "/inventory/spot-count" },
 ];
 
+const LAUNDRY_ITEMS = [
+  { name: "Laundry Chemicals", icon: Droplets, path: "/laundry/chemicals" },
+];
+
 const MENU_ITEMS = [
   { name: "Over-Water Ops", icon: Waves, path: "/ladders" },
   { name: "Water Production", icon: Droplets, path: "/water" },
@@ -98,12 +102,14 @@ export default function Sidebar() {
   const isProfileRoute = pathname?.includes('/profile') || pathname?.includes('/org-chart') || pathname?.includes('/team');
   const isInventoryRoute = pathname?.includes('/inventory');
   const isAllocationRoute = pathname?.includes('/allocation') || pathname?.includes('/guests') || pathname?.includes('/forecast');
+  const isLaundryRoute = pathname?.includes('/laundry');
   
   const [isMinibarOpen, setIsMinibarOpen] = useState(isMinibarRoute);
   const [isTeamOpen, setIsTeamOpen] = useState(isTeamRoute);
   const [isProfileOpen, setIsProfileOpen] = useState(isProfileRoute);
   const [isInventoryOpen, setIsInventoryOpen] = useState(isInventoryRoute);
   const [isAllocationOpen, setIsAllocationOpen] = useState(isAllocationRoute);
+  const [isLaundryOpen, setIsLaundryOpen] = useState(isLaundryRoute);
 
   const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [isPoolAttendant, setIsPoolAttendant] = useState(false);
@@ -143,7 +149,8 @@ export default function Sidebar() {
       if (isProfileRoute) setIsProfileOpen(true);
       if (isInventoryRoute) setIsInventoryOpen(true);
       if (isAllocationRoute) setIsAllocationOpen(true);
-  }, [isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute]);
+      if (isLaundryRoute) setIsLaundryOpen(true);
+  }, [isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute, isLaundryRoute]);
 
   const handleLogout = () => {
       localStorage.removeItem('hk_pulse_session');
@@ -305,6 +312,45 @@ export default function Sidebar() {
                               }`}
                             >
                               <item.icon size={14} className={isActive ? "text-emerald-700" : "group-hover:text-emerald-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                              <span className="text-[11px] tracking-wide">{item.name}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* LAUNDRY HUB */}
+                  <div className="pt-1">
+                    <button 
+                      onClick={() => setIsLaundryOpen(!isLaundryOpen)}
+                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                        isLaundryRoute && !isLaundryOpen
+                          ? "bg-purple-50 text-purple-700 border border-purple-100" 
+                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Droplets size={18} className={isLaundryRoute ? "text-purple-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                        <span className="text-xs font-bold tracking-wide">Laundry Hub</span>
+                      </div>
+                      {isLaundryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+
+                    {isLaundryOpen && (
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                        {LAUNDRY_ITEMS.map((item) => {
+                          const isActive = pathname === item.path;
+                          return (
+                            <Link 
+                              key={item.path} href={item.path}
+                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                                isActive 
+                                  ? "bg-purple-50 text-purple-700 font-black shadow-sm" 
+                                  : "text-slate-500 hover:text-purple-700 hover:bg-slate-50"
+                              }`}
+                            >
+                              <item.icon size={14} className={isActive ? "text-purple-700" : "group-hover:text-purple-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
                               <span className="text-[11px] tracking-wide">{item.name}</span>
                             </Link>
                           );
