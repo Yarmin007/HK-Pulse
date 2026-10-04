@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Calendar, Loader2, Save, X, Search, CheckCircle2, 
   Trash2, Bell, LayoutGrid, Users, Target, User, Plus, Minus,
-  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3, Archive, Sparkles, Lock, Unlock
+  RefreshCw, Send, MessageCircle, Box, AlertTriangle, ScanSearch, Edit3, Archive, Sparkles, Lock, Unlock, History
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -110,7 +110,7 @@ const VillaTagInput = ({ value, onChange }: { value: string, onChange: (val: str
 
 export default function ExpiryRemovalsAdmin() {
   const [isMounted, setIsMounted] = useState(false);
-  const [activeTab, setActiveTab] = useState<'MATRIX' | 'ALLOCATIONS' | 'TARGETS'>('MATRIX');
+  const [activeTab, setActiveTab] = useState<'MATRIX' | 'ALLOCATIONS' | 'TARGETS' | 'SUMMARY'>('MATRIX');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isLocked, setIsLocked] = useState(true);
@@ -133,6 +133,9 @@ export default function ExpiryRemovalsAdmin() {
   
   const [allBatches, setAllBatches] = useState<any[]>([]);
   const [doubleVillasStr, setDoubleVillasStr] = useState<string>('');
+  
+  // Autofill Date State
+  const [autoFillDate, setAutoFillDate] = useState(getDhakaDateStr());
 
   const [notifyModal, setNotifyModal] = useState<{isOpen: boolean, host_id: string, name: string, msg: string}>({ isOpen: false, host_id: '', name: '', msg: '' });
 
@@ -229,28 +232,22 @@ export default function ExpiryRemovalsAdmin() {
       setIsLocked(!isLocked); // Optimistic UI update
 
       try {
-          // 1. Try to update the existing row first
-          const { data, error: updateError } = await supabase
+          // Bypass PostgreSQL "updated_at" trigger errors by deleting and re-inserting
+          // instead of using the traditional .update()
+          await supabase.from('hsk_constants').delete().eq('type', 'expiry_inv_status');
+
+          const { error: insertError } = await supabase
               .from('hsk_constants')
-              .update({ label: newStatus })
-              .eq('type', 'expiry_inv_status')
-              .select();
+              .insert([{ type: 'expiry_inv_status', label: newStatus }]);
 
-          // 2. If it doesn't exist yet (data is empty), insert it instead
-          if (updateError || !data || data.length === 0) {
-              const { error: insertError } = await supabase
-                  .from('hsk_constants')
-                  .insert({ type: 'expiry_inv_status', label: newStatus });
-
-              if (insertError) {
-                  throw insertError;
-              }
+          if (insertError) {
+              throw new Error(insertError.message || "Failed to save constant.");
           }
           
           toast.success(`Expiry Audit is now ${newStatus === 'OPEN' ? 'Unlocked' : 'Locked'}`);
       } catch (err: any) {
-          console.error("Lock error:", err);
-          toast.error("Failed to update lock status.");
+          console.error("Lock error details:", err);
+          toast.error(`Lock failed: ${err.message || 'Unknown database error'}`);
           setIsLocked(previousStatus); // Revert UI on failure
       }
   };
@@ -258,12 +255,11 @@ export default function ExpiryRemovalsAdmin() {
   // --- ⚡ AUTO ALLOCATE FROM DAILY BOARD (Sorted Jetty Wise) ---
   const handleAutoAllocate = async () => {
       setIsLoading(true);
-      const todayStr = getDhakaDateStr(); 
       
       const { data, error } = await supabase
           .from('hsk_allocations')
           .select('host_id, task_details')
-          .eq('report_date', todayStr);
+          .eq('report_date', autoFillDate);
 
       if (error) {
           toast.error("Failed to fetch daily allocations.");
@@ -272,7 +268,7 @@ export default function ExpiryRemovalsAdmin() {
       }
 
       if (!data || data.length === 0) {
-          toast.error("No allocations found for today on the live board.");
+          toast.error(`No allocations found for ${format(parseISO(autoFillDate), 'MMM dd, yyyy')}.`);
           setIsLoading(false);
           return;
       }
@@ -328,12 +324,12 @@ export default function ExpiryRemovalsAdmin() {
       const exists = targets.find((t: any) => t.article_number === batch.article_number && t.expiry_date === batch.expiry_date);
       if (exists) return toast.error("Batch already in target list!");
 
-      const { error } = await supabase.from('hsk_expiry_targets').insert({
+      const { error } = await supabase.from('hsk_expiry_targets').insert([{
           month_period: selectedMonth,
           article_number: batch.article_number,
           article_name: batch.article_name,
           expiry_date: batch.expiry_date
-      });
+      }]);
 
       if (!error) { toast.success("Added Expiry Batch to Targets!"); fetchData(false); }
   };
@@ -342,12 +338,12 @@ export default function ExpiryRemovalsAdmin() {
       const exists = targets.find((t: any) => t.article_number === item.article_number && (t.expiry_date === type || (!t.expiry_date && type === 'MISSING')));
       if (exists) return toast.error(`Already active as a ${type} task!`);
 
-      const { error } = await supabase.from('hsk_expiry_targets').insert({
+      const { error } = await supabase.from('hsk_expiry_targets').insert([{
           month_period: selectedMonth,
           article_number: item.article_number,
           article_name: item.generic_name || item.article_name,
           expiry_date: type === 'MISSING' ? null : type
-      });
+      }]);
 
       if (!error) { toast.success(`Added ${type} Task!`); fetchData(false); setCatalogSearch(''); }
   };
@@ -524,6 +520,37 @@ export default function ExpiryRemovalsAdmin() {
       return dict;
   }, [removals, activeVillaList]);
 
+  // Aggregate Data for History & Totals Tab
+  const summaryData = useMemo(() => {
+      const agg: Record<string, { name: string, batch: string, removed: number, refilled: number, villas: {villa: string, qty: number}[] }> = {};
+      
+      removals.forEach(rem => {
+          if (rem.status && rem.status !== 'Pending' && rem.removal_data) {
+              rem.removal_data.forEach((item: any) => {
+                  const removedQty = item.qty || 0;
+                  if (removedQty > 0) {
+                      const key = item.article_number;
+                      if (!agg[key]) {
+                          const target = targets.find(t => t.article_number === key);
+                          agg[key] = {
+                              name: item.name || target?.article_name || 'Unknown Item',
+                              batch: target?.expiry_date || 'MISSING',
+                              removed: 0,
+                              refilled: 0,
+                              villas: []
+                          };
+                      }
+                      agg[key].removed += removedQty;
+                      agg[key].refilled += (item.refilled_qty !== undefined ? item.refilled_qty : removedQty);
+                      agg[key].villas.push({ villa: rem.villa_number, qty: removedQty });
+                  }
+              });
+          }
+      });
+      
+      return Object.values(agg).sort((a, b) => b.removed - a.removed);
+  }, [removals, targets]);
+
   const assignedVillasSet = useMemo(() => {
       const set = new Set<string>();
       Object.values(allocations).forEach((villasStr: string) => {
@@ -577,9 +604,10 @@ export default function ExpiryRemovalsAdmin() {
 
       <div className="flex-none flex justify-between items-center px-4 md:px-6 py-4 bg-[#FDFBFD] z-10">
           <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1 w-full md:w-auto">
-              <button onClick={() => setActiveTab('MATRIX')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'MATRIX' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><LayoutGrid size={16}/> Removal Matrix</button>
-              <button onClick={() => setActiveTab('ALLOCATIONS')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'ALLOCATIONS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><Users size={16}/> Allocations</button>
-              <button onClick={() => setActiveTab('TARGETS')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${activeTab === 'TARGETS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><Target size={16}/> Target Items</button>
+              <button onClick={() => setActiveTab('MATRIX')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider shrink-0 flex items-center gap-2 transition-all ${activeTab === 'MATRIX' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><LayoutGrid size={16}/> Removal Matrix</button>
+              <button onClick={() => setActiveTab('ALLOCATIONS')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider shrink-0 flex items-center gap-2 transition-all ${activeTab === 'ALLOCATIONS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><Users size={16}/> Allocations</button>
+              <button onClick={() => setActiveTab('TARGETS')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider shrink-0 flex items-center gap-2 transition-all ${activeTab === 'TARGETS' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><Target size={16}/> Target Items</button>
+              <button onClick={() => setActiveTab('SUMMARY')} className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-wider shrink-0 flex items-center gap-2 transition-all ${activeTab === 'SUMMARY' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white border border-slate-200 text-slate-400 hover:text-[#6D2158]'}`}><History size={16}/> History & Totals</button>
           </div>
       </div>
 
@@ -802,7 +830,7 @@ export default function ExpiryRemovalsAdmin() {
                                     } else if (status === 'Sent') { 
                                         bgClass = 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-100 shadow-md'; 
                                         textClass = 'text-indigo-700'; 
-                                        statusText = 'Dispatched';
+                                        statusText = 'Dispatched'; 
                                     } else if (status === 'Refilled') { 
                                         bgClass = 'bg-blue-50 border-blue-200 shadow-sm'; 
                                         textClass = 'text-blue-700'; 
@@ -878,14 +906,14 @@ export default function ExpiryRemovalsAdmin() {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-[75vh] animate-in fade-in min-h-0">
                 
                 {/* Header & Add User */}
-                <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 sticky top-0 z-50 shrink-0">
+                <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 sticky top-0 z-50 shrink-0">
                     <div>
                         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">Assign Audit Villas</h3>
                         <p className="text-[10px] text-slate-400 font-bold mt-1">Type standard villa number. The app will split it automatically.</p>
                     </div>
                     
-                    <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto">
-                        <div className="relative w-full sm:w-64">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full xl:w-auto">
+                        <div className="relative w-full sm:w-64 shrink-0">
                             <Search className="absolute left-3 top-3.5 text-[#6D2158]" size={16}/>
                             <input 
                                 type="text" 
@@ -915,10 +943,18 @@ export default function ExpiryRemovalsAdmin() {
                             )}
                         </div>
 
-                        {/* ⚡ NEW BUTTON: AUTO FILL */}
-                        <button onClick={handleAutoAllocate} className="flex items-center gap-2 px-6 py-3 bg-purple-50 text-[#6D2158] border border-purple-200 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-purple-100 shadow-sm transition-all w-full sm:w-auto justify-center">
-                            <Sparkles size={16}/> Auto Fill
-                        </button>
+                        {/* ⚡ NEW BUTTON: AUTO FILL WITH DATE SELECTOR */}
+                        <div className="flex items-stretch rounded-xl overflow-hidden shadow-sm border border-purple-200 w-full sm:w-auto">
+                            <input 
+                                type="date" 
+                                className="px-3 bg-purple-50 text-[#6D2158] text-xs font-bold outline-none cursor-pointer w-full sm:w-auto" 
+                                value={autoFillDate}
+                                onChange={(e) => setAutoFillDate(e.target.value)}
+                            />
+                            <button onClick={handleAutoAllocate} className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-100 text-[#6D2158] text-xs font-bold uppercase tracking-wider hover:bg-purple-200 transition-all border-l border-purple-200 whitespace-nowrap">
+                                <Sparkles size={16}/> Auto Fill
+                            </button>
+                        </div>
 
                         <button onClick={() => setNotifyModal({ isOpen: true, host_id: '', name: '', msg: "Please check your assigned villas for new tasks." })} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-blue-500 shadow-md transition-all w-full sm:w-auto justify-center">
                             <Bell size={16}/> Notify Team
@@ -995,7 +1031,7 @@ export default function ExpiryRemovalsAdmin() {
                 </div>
             </div>
 
-        ) : (
+        ) : activeTab === 'TARGETS' ? (
             /* --- TARGETS TAB --- */
             <div className="flex-1 flex flex-col min-h-0">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in fade-in h-full min-h-0">
@@ -1093,6 +1129,53 @@ export default function ExpiryRemovalsAdmin() {
                         </div>
                     </div>
 
+                </div>
+            </div>
+        ) : (
+            /* --- SUMMARY & HISTORY TAB --- */
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-full w-full animate-in fade-in min-h-0">
+                <div className="p-5 border-b border-slate-100 bg-slate-50 shrink-0">
+                    <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Archive size={16}/> Removal History & Totals</h3>
+                    <p className="text-[10px] text-slate-400 font-bold mt-1">Aggregate totals of all items removed and refilled this month.</p>
+                </div>
+                
+                <div className="p-0 overflow-y-auto custom-scrollbar flex-1 bg-white">
+                    <table className="w-full text-left border-collapse min-w-[800px]">
+                        <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200">
+                            <tr>
+                                <th className="p-4 text-xs font-black text-slate-500 uppercase tracking-widest">Item Name</th>
+                                <th className="p-4 text-xs font-black text-slate-500 uppercase tracking-widest">Target / Batch</th>
+                                <th className="p-4 text-xs font-black text-rose-500 uppercase tracking-widest text-center">Total Removed</th>
+                                <th className="p-4 text-xs font-black text-emerald-500 uppercase tracking-widest text-center">Total Refilled</th>
+                                <th className="p-4 text-xs font-black text-slate-500 uppercase tracking-widest">Villas Affected</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {summaryData.length === 0 ? (
+                                <tr>
+                                    <td colSpan={5} className="p-8 text-center text-slate-400 italic font-bold">No removals recorded yet for this month.</td>
+                                </tr>
+                            ) : summaryData.map((item, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                    <td className="p-4 font-bold text-sm text-slate-800">{item.name}</td>
+                                    <td className="p-4">
+                                        {item.batch === 'REFILL' ? (
+                                            <span className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded uppercase tracking-widest">Refill Task</span>
+                                        ) : (!item.batch || item.batch === 'MISSING') ? (
+                                            <span className="text-[10px] font-black text-blue-500 bg-blue-50 px-2 py-1 rounded uppercase tracking-widest">Missing Check</span>
+                                        ) : (
+                                            <span className="text-[10px] font-black text-rose-500 bg-rose-50 px-2 py-1 rounded uppercase tracking-widest">Exp: {format(parseISO(item.batch), 'MMM yyyy')}</span>
+                                        )}
+                                    </td>
+                                    <td className="p-4 font-black text-rose-600 text-center text-lg bg-rose-50/30">{item.removed}</td>
+                                    <td className="p-4 font-black text-emerald-600 text-center text-lg bg-emerald-50/30">{item.refilled}</td>
+                                    <td className="p-4 text-xs font-bold text-slate-500 leading-relaxed max-w-xs truncate" title={item.villas.map(v => `V${v.villa} (${v.qty})`).join(', ')}>
+                                        {item.villas.map(v => `V${v.villa} (${v.qty})`).join(', ')}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         )}
