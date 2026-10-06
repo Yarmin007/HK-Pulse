@@ -7,7 +7,7 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp, Shirt
 } from "lucide-react";
 
 // --- ADMIN SPECIFIC MENUS ---
@@ -39,6 +39,8 @@ const INVENTORY_ITEMS = [
 
 const LAUNDRY_ITEMS = [
   { name: "Laundry Chemicals", icon: Droplets, path: "/laundry/chemicals" },
+  { name: "Host Uniforms", icon: Shirt, path: "/laundry/uniforms" },
+  { name: "Uniform Tracker", icon: Layers, path: "/laundry/tracker" },
 ];
 
 const MENU_ITEMS = [
@@ -425,7 +427,7 @@ export default function Sidebar() {
                               className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
                                 isActive 
                                   ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-rose-600 hover:bg-rose-50"
+                                  : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
                               }`}
                             >
                               <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
