@@ -113,9 +113,13 @@ export default function Sidebar() {
   const [isAllocationOpen, setIsAllocationOpen] = useState(isAllocationRoute);
   const [isLaundryOpen, setIsLaundryOpen] = useState(isLaundryRoute);
 
+  // Mobile Menu Drawer State
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
   const [isPoolAttendant, setIsPoolAttendant] = useState(false);
   const [isStepCleaner, setIsStepCleaner] = useState(false);
+  const [isLaundryStaff, setIsLaundryStaff] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
   // 1. INITIAL LOAD: Read from storage once
@@ -127,11 +131,17 @@ export default function Sidebar() {
               setUserRole(parsed.system_role || 'staff');
               
               const roleLower = String(parsed.role || '').toLowerCase();
+              const deptLower = String(parsed.department || '').toLowerCase();
+
               if (roleLower.includes('pool')) {
                   setIsPoolAttendant(true);
               }
               if (roleLower.includes('step cleaner')) {
                   setIsStepCleaner(true);
+              }
+              // Check if user belongs to Laundry team or has laundry designation
+              if (roleLower.includes('laundry') || deptLower.includes('laundry')) {
+                  setIsLaundryStaff(true);
               }
           } catch (e) {
               setUserRole('staff');
@@ -153,6 +163,11 @@ export default function Sidebar() {
       if (isAllocationRoute) setIsAllocationOpen(true);
       if (isLaundryRoute) setIsLaundryOpen(true);
   }, [isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute, isLaundryRoute]);
+
+  // Close mobile drawer upon route change
+  useEffect(() => {
+      setIsMobileMenuOpen(false);
+  }, [pathname]);
 
   const handleLogout = () => {
       localStorage.removeItem('hk_pulse_session');
@@ -200,6 +215,7 @@ export default function Sidebar() {
   if (!isLoaded) return null; 
 
   const isAdmin = userRole === 'admin';
+  const canAccessLaundry = isAdmin || isLaundryStaff;
   const CORE_TABS = isAdmin ? ADMIN_CORE_TABS : activeStaffTabs;
   const BOTTOM_TABS = isAdmin ? ADMIN_BOTTOM_TABS : STAFF_BOTTOM_TABS;
 
@@ -321,46 +337,52 @@ export default function Sidebar() {
                       </div>
                     )}
                   </div>
+              </>
+          )}
 
-                  {/* LAUNDRY HUB */}
-                  <div className="pt-1">
-                    <button 
-                      onClick={() => setIsLaundryOpen(!isLaundryOpen)}
-                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                        isLaundryRoute && !isLaundryOpen
-                          ? "bg-purple-50 text-purple-700 border border-purple-100" 
-                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Droplets size={18} className={isLaundryRoute ? "text-purple-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                        <span className="text-xs font-bold tracking-wide">Laundry Hub</span>
-                      </div>
-                      {isLaundryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-
-                    {isLaundryOpen && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                        {LAUNDRY_ITEMS.map((item) => {
-                          const isActive = pathname === item.path;
-                          return (
-                            <Link 
-                              key={item.path} href={item.path}
-                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                                isActive 
-                                  ? "bg-purple-50 text-purple-700 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-purple-700 hover:bg-slate-50"
-                              }`}
-                            >
-                              <item.icon size={14} className={isActive ? "text-purple-700" : "group-hover:text-purple-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                              <span className="text-[11px] tracking-wide">{item.name}</span>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
+          {/* LAUNDRY HUB: VISIBLE TO ADMIN OR LAUNDRY STAFF */}
+          {canAccessLaundry && (
+              <div className="pt-1">
+                <button 
+                  onClick={() => setIsLaundryOpen(!isLaundryOpen)}
+                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                    isLaundryRoute && !isLaundryOpen
+                      ? "bg-purple-50 text-purple-700 border border-purple-100" 
+                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Droplets size={18} className={isLaundryRoute ? "text-purple-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                    <span className="text-xs font-bold tracking-wide">Laundry Hub</span>
                   </div>
+                  {isLaundryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
 
+                {isLaundryOpen && (
+                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                    {LAUNDRY_ITEMS.map((item) => {
+                      const isActive = pathname === item.path;
+                      return (
+                        <Link 
+                          key={item.path} href={item.path}
+                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                            isActive 
+                              ? "bg-purple-50 text-purple-700 font-black shadow-sm" 
+                              : "text-slate-500 hover:text-purple-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          <item.icon size={14} className={isActive ? "text-purple-700" : "group-hover:text-purple-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                          <span className="text-[11px] tracking-wide">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+          )}
+
+          {isAdmin && (
+              <>
                   {/* TEAM HUB */}
                   <div className="pt-1">
                     <button 
@@ -546,13 +568,147 @@ export default function Sidebar() {
             )
          })}
          
-         <Link href="/menu" className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform">
-            <div className={`p-1.5 rounded-xl transition-all ${pathname === '/menu' ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
-               <Menu size={22} strokeWidth={pathname === '/menu' ? 2.5 : 2} />
+         {/* TRIGGER TO OPEN FULL MOBILE MENU DRAWER */}
+         <button 
+            onClick={() => setIsMobileMenuOpen(true)}
+            className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform"
+         >
+            <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen || isLaundryRoute ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
+               <Menu size={22} strokeWidth={2} />
             </div>
-            <span className={`text-[10px] mt-1 font-bold ${pathname === '/menu' ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
-         </Link>
+            <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen || isLaundryRoute ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
+         </button>
       </div>
+
+      {/* FULL MOBILE DRAWER / SLIDE-OVER */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-[1000] bg-black/60 backdrop-blur-xs flex flex-col justify-end md:hidden animate-in fade-in duration-200">
+          <div className="bg-white w-full max-h-[85vh] rounded-t-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
+            {/* Drawer Header */}
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-[#6D2158] text-white flex items-center justify-center font-bold text-xs">
+                  HK
+                </div>
+                <span className="font-black text-sm text-slate-800">Navigation Hub</span>
+              </div>
+              <button 
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="p-1.5 bg-white rounded-full text-slate-400 hover:text-slate-600 shadow-2xs"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Drawer Links */}
+            <div className="p-4 overflow-y-auto space-y-3 pb-12">
+              {/* LAUNDRY HUB (VISIBLE TO ADMIN & LAUNDRY STAFF) */}
+              {canAccessLaundry && (
+                <div className="p-3 bg-purple-50/70 border border-purple-100 rounded-2xl space-y-2">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-[#6D2158] flex items-center gap-1.5">
+                    <Droplets size={13} /> Laundry Hub
+                  </div>
+                  <div className="grid grid-cols-1 gap-1">
+                    {LAUNDRY_ITEMS.map((item) => {
+                      const isActive = pathname === item.path;
+                      return (
+                        <Link
+                          key={item.path}
+                          href={item.path}
+                          onClick={() => setIsMobileMenuOpen(false)}
+                          className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
+                            isActive
+                              ? "bg-[#6D2158] text-white shadow-sm"
+                              : "text-slate-600 hover:bg-purple-100/70"
+                          }`}
+                        >
+                          <item.icon size={15} />
+                          <span>{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ALLOCATION HUB */}
+              <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl space-y-2">
+                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
+                  <ListChecks size={13} /> Allocation
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  {ALLOCATION_ITEMS.map((item) => (
+                    <Link
+                      key={item.path}
+                      href={item.path}
+                      onClick={() => setIsMobileMenuOpen(false)}
+                      className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100"
+                    >
+                      <item.icon size={14} className="text-slate-400" />
+                      <span className="truncate">{item.name}</span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+
+              {/* INVENTORY HUB (ADMIN ONLY) */}
+              {isAdmin && (
+                <div className="p-3 bg-emerald-50/50 border border-emerald-100 rounded-2xl space-y-2">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800 flex items-center gap-1.5">
+                    <Warehouse size={13} /> Inventory
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {INVENTORY_ITEMS.map((item) => (
+                      <Link
+                        key={item.path}
+                        href={item.path}
+                        onClick={() => setIsMobileMenuOpen(false)}
+                        className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-emerald-100/60"
+                      >
+                        <item.icon size={14} className="text-emerald-700" />
+                        <span className="truncate">{item.name}</span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TEAM HUB (ADMIN ONLY) */}
+              {isAdmin && (
+                <div className="p-3 bg-blue-50/50 border border-blue-100 rounded-2xl space-y-2">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-blue-800 flex items-center gap-1.5">
+                    <Briefcase size={13} /> Team & Roster
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {TEAM_ITEMS.map((item) => (
+                      <Link
+                        key={item.path}
+                        href={item.path}
+                        onClick={() => setIsMobileMenuOpen(false)}
+                        className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-blue-100/60"
+                      >
+                        <item.icon size={14} className="text-blue-700" />
+                        <span className="truncate">{item.name}</span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* SIGN OUT */}
+              <div className="pt-2">
+                <button
+                  onClick={handleLogout}
+                  className="w-full flex items-center justify-center gap-2 p-3 bg-rose-50 text-rose-600 rounded-xl text-xs font-black uppercase tracking-wider"
+                >
+                  <LogOut size={15} />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
