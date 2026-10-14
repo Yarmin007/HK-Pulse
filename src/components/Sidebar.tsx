@@ -7,8 +7,10 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp, Shirt
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
+  Eye, ArrowLeft, UserCog
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
@@ -43,16 +45,6 @@ const LAUNDRY_ITEMS = [
   { name: "Uniform Tracker", icon: Layers, path: "/laundry/tracker" },
 ];
 
-const MENU_ITEMS = [
-  { name: "Over-Water Ops", icon: Waves, path: "/ladders" },
-  { name: "Water Production", icon: Droplets, path: "/water" },
-  { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
-  { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
-  { name: "Cost Saving", icon: TrendingUp, path: "/cost-saving" },
-  { name: "Print Hub", icon: Printer, path: "/print" },
-  { name: "Settings", icon: Settings, path: "/settings" },
-];
-
 const TEAM_ITEMS = [
   { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, 
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
@@ -74,6 +66,16 @@ const MINIBAR_ITEMS = [
   { name: "Finance P&L", icon: UtensilsCrossed, path: "/minibar/finance" },
 ];
 
+// --- OPERATIONS MENUS ---
+const OPERATIONS_ITEMS = [
+  { name: "Over-Water Ops", icon: Waves, path: "/ladders", key: "ladders" },
+  { name: "AC Tracker", icon: Wind, path: "/ac-tracker", key: "ac-tracker" },
+  { name: "Order Tracking", icon: ShoppingCart, path: "/orders", key: "orders" },
+  { name: "Cost Saving", icon: TrendingUp, path: "/cost-saving", key: "cost-saving" },
+  { name: "Print Hub", icon: Printer, path: "/print", key: "print" },
+  { name: "Settings", icon: Settings, path: "/settings", key: "settings" },
+];
+
 // --- BASE STAFF MENUS ---
 const STAFF_CORE_BASE = [
   { name: "Dashboard", icon: LayoutDashboard, path: "/" },
@@ -84,16 +86,16 @@ const STAFF_CORE_BASE = [
 
 const STAFF_PROFILE_ITEMS = [
   { name: "My Profile", icon: Contact, path: "/profile" },
-  { name: "HK Directory", icon: PhoneCall, text: "HK Directory", path: "/team/contacts" },
+  { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" },
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
 ];
 
 const STAFF_MENU_ITEMS = [
-  { name: "Guest List", icon: Users, path: "/guests" }, 
-  { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle" },
-  { name: "My Schedule", icon: Calendar, path: "/schedule" },
-  { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
-  { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
+  { name: "Guest List", icon: Users, path: "/guests", key: "allocation" }, 
+  { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle", key: "inventory" },
+  { name: "My Schedule", icon: Calendar, path: "/schedule", key: "schedule" },
+  { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests", key: "leave-requests" },
+  { name: "AC Tracker", icon: Wind, path: "/ac-tracker", key: "ac-tracker" },
 ];
 
 export default function Sidebar() {
@@ -113,48 +115,41 @@ export default function Sidebar() {
   const [isAllocationOpen, setIsAllocationOpen] = useState(isAllocationRoute);
   const [isLaundryOpen, setIsLaundryOpen] = useState(isLaundryRoute);
 
-  // Mobile Menu Drawer State
+  // Sub-menu state for switching hosts inside Team Hub
+  const [isSimulateOpen, setIsSimulateOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  const [userRole, setUserRole] = useState<'admin' | 'staff' | null>(null);
-  const [isPoolAttendant, setIsPoolAttendant] = useState(false);
-  const [isStepCleaner, setIsStepCleaner] = useState(false);
-  const [isLaundryStaff, setIsLaundryStaff] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [allHosts, setAllHosts] = useState<any[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  // 1. INITIAL LOAD: Read from storage once
   useEffect(() => {
       const sessionData = localStorage.getItem('hk_pulse_session');
       if (sessionData) {
           try {
               const parsed = JSON.parse(sessionData);
-              setUserRole(parsed.system_role || 'staff');
-              
-              const roleLower = String(parsed.role || '').toLowerCase();
-              const deptLower = String(parsed.department || '').toLowerCase();
+              setCurrentUser(parsed);
 
-              if (roleLower.includes('pool')) {
-                  setIsPoolAttendant(true);
-              }
-              if (roleLower.includes('step cleaner')) {
-                  setIsStepCleaner(true);
-              }
-              // Check if user belongs to Laundry team or has laundry designation
-              if (roleLower.includes('laundry') || deptLower.includes('laundry')) {
-                  setIsLaundryStaff(true);
+              if (parsed.is_super_admin || parsed.impersonating_from) {
+                supabase
+                  .from("hsk_hosts")
+                  .select("id, host_id, full_name, role, system_role, allowed_modules, jetty_allocation")
+                  .eq("status", "On Duty")
+                  .order("full_name")
+                  .then(({ data }) => setAllHosts(data || []));
               }
           } catch (e) {
-              setUserRole('staff');
+              setCurrentUser({ system_role: 'staff' });
           }
       } else {
           const adminAuth = localStorage.getItem('hk_pulse_admin_auth');
-          if (adminAuth === 'true') setUserRole('admin');
+          if (adminAuth === 'true') {
+            setCurrentUser({ system_role: 'admin', is_super_admin: true });
+          }
       }
-      
       setIsLoaded(true);
   }, []);
 
-  // 2. ROUTING LOGIC: Auto-expand menus based on current path
   useEffect(() => {
       if (isMinibarRoute) setIsMinibarOpen(true);
       if (isTeamRoute) setIsTeamOpen(true);
@@ -164,7 +159,6 @@ export default function Sidebar() {
       if (isLaundryRoute) setIsLaundryOpen(true);
   }, [isMinibarRoute, isTeamRoute, isProfileRoute, isInventoryRoute, isAllocationRoute, isLaundryRoute]);
 
-  // Close mobile drawer upon route change
   useEffect(() => {
       setIsMobileMenuOpen(false);
   }, [pathname]);
@@ -175,19 +169,74 @@ export default function Sidebar() {
       window.location.href = '/'; 
   };
 
+  const handleSimulateHost = (host: any) => {
+    const simulated = {
+      id: host.id,
+      host_id: host.host_id,
+      full_name: host.full_name,
+      role: host.role,
+      system_role: host.system_role || 'staff',
+      is_super_admin: false,
+      allowed_modules: host.allowed_modules || ['allocation', 'tasks'],
+      jetty_allocation: host.jetty_allocation,
+      impersonating_from: {
+        id: currentUser.impersonating_from?.id || currentUser.id,
+        full_name: currentUser.impersonating_from?.full_name || currentUser.full_name,
+        system_role: 'admin'
+      }
+    };
+    localStorage.setItem('hk_pulse_session', JSON.stringify(simulated));
+    window.location.reload();
+  };
+
+  const handleExitSimulation = () => {
+    if (!currentUser?.impersonating_from) return;
+    const restored = {
+      id: currentUser.impersonating_from.id,
+      full_name: currentUser.impersonating_from.full_name,
+      system_role: 'admin',
+      is_super_admin: true,
+      allowed_modules: ['all']
+    };
+    localStorage.setItem('hk_pulse_session', JSON.stringify(restored));
+    window.location.reload();
+  };
+
+  const canAccess = (moduleName: string): boolean => {
+    if (!currentUser) return false;
+    if (currentUser.is_super_admin && !currentUser.impersonating_from) return true;
+    if (moduleName === "allocation" || moduleName === "tasks") return true;
+    if (moduleName === "settings") return currentUser.system_role === 'admin' || !!currentUser.is_super_admin;
+    
+    const userModules = currentUser.allowed_modules || [];
+    return userModules.includes(moduleName);
+  };
+
+  const roleLower = String(currentUser?.role || '').toLowerCase();
+  const deptLower = String(currentUser?.department || '').toLowerCase();
+  const isPoolAttendant = roleLower.includes('pool');
+  const isStepCleaner = roleLower.includes('step cleaner');
+  const isSuperAdmin = currentUser?.is_super_admin || !!currentUser?.impersonating_from;
+  const isAdmin = currentUser?.system_role === 'admin' || (currentUser?.is_super_admin && !currentUser?.impersonating_from);
+
+  const canAccessLaundry = isAdmin || roleLower.includes('laundry') || deptLower.includes('laundry') || canAccess("laundry");
+  const canAccessWater = isAdmin || isPoolAttendant || canAccess("water");
+  const canAccessMinibar = isAdmin || canAccess("minibar");
+  const canAccessInventory = isAdmin || canAccess("inventory");
+
   const activeStaffTabs = useMemo(() => {
       if (!isPoolAttendant) return STAFF_CORE_BASE;
       return [
-          STAFF_CORE_BASE[0], // Dashboard
+          STAFF_CORE_BASE[0], 
           { name: "Water Prod.", icon: Droplets, path: "/water" },
-          STAFF_CORE_BASE[1]  // My Tasks
+          STAFF_CORE_BASE[1]  
       ];
   }, [isPoolAttendant]);
 
   const dynamicStaffMenuItems = useMemo(() => {
       const items = [...STAFF_MENU_ITEMS];
       if (isStepCleaner) {
-          items.unshift({ name: "Over-Water Ops", icon: Waves, path: "/ladders" });
+          items.unshift({ name: "Over-Water Ops", icon: Waves, path: "/ladders", key: "ladders" });
       }
       return items;
   }, [isStepCleaner]);
@@ -214,8 +263,6 @@ export default function Sidebar() {
 
   if (!isLoaded) return null; 
 
-  const isAdmin = userRole === 'admin';
-  const canAccessLaundry = isAdmin || isLaundryStaff;
   const CORE_TABS = isAdmin ? ADMIN_CORE_TABS : activeStaffTabs;
   const BOTTOM_TABS = isAdmin ? ADMIN_BOTTOM_TABS : STAFF_BOTTOM_TABS;
 
@@ -229,11 +276,14 @@ export default function Sidebar() {
     <>
       {/* DESKTOP SIDEBAR */}
       <aside className="print:hidden hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50 shadow-[4px_0_24px_rgba(0,0,0,0.01)] transition-transform duration-300 ease-in-out">
-        <div className="h-24 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158]">
-          <Logo className="h-10 w-auto drop-shadow-sm" />
+        
+        {/* TOP LOGO (Clean & Uncluttered) */}
+        <div className="h-20 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158]">
+          <Logo className="h-9 w-auto drop-shadow-sm" />
         </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto no-scrollbar">
+        {/* SIDEBAR NAVIGATION LIST */}
+        <nav className="flex-1 px-4 py-4 space-y-1.5 overflow-y-auto no-scrollbar">
           
           <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">
               {isAdmin ? 'Core' : 'Staff Portal'}
@@ -297,50 +347,48 @@ export default function Sidebar() {
             )}
           </div>
 
-          {isAdmin && (
-              <>
-                  {/* INVENTORY HUB */}
-                  <div className="pt-1">
-                    <button 
-                      onClick={() => setIsInventoryOpen(!isInventoryOpen)}
-                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                        isInventoryRoute && !isInventoryOpen
-                          ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
-                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Warehouse size={18} className={isInventoryRoute ? "text-emerald-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                        <span className="text-xs font-bold tracking-wide">Inventory Hub</span>
-                      </div>
-                      {isInventoryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-
-                    {isInventoryOpen && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                        {INVENTORY_ITEMS.map((item) => {
-                          const isActive = pathname === item.path;
-                          return (
-                            <Link 
-                              key={item.path} href={item.path}
-                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                                isActive 
-                                  ? "bg-emerald-50 text-emerald-700 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-emerald-700 hover:bg-slate-50"
-                              }`}
-                            >
-                              <item.icon size={14} className={isActive ? "text-emerald-700" : "group-hover:text-emerald-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                              <span className="text-[11px] tracking-wide">{item.name}</span>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
+          {/* INVENTORY HUB */}
+          {canAccessInventory && (
+              <div className="pt-1">
+                <button 
+                  onClick={() => setIsInventoryOpen(!isInventoryOpen)}
+                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                    isInventoryRoute && !isInventoryOpen
+                      ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Warehouse size={18} className={isInventoryRoute ? "text-emerald-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                    <span className="text-xs font-bold tracking-wide">Inventory Hub</span>
                   </div>
-              </>
+                  {isInventoryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+
+                {isInventoryOpen && (
+                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                    {INVENTORY_ITEMS.map((item) => {
+                      const isActive = pathname === item.path;
+                      return (
+                        <Link 
+                          key={item.path} href={item.path}
+                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                            isActive 
+                              ? "bg-emerald-50 text-emerald-700 font-black shadow-sm" 
+                              : "text-slate-500 hover:text-emerald-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          <item.icon size={14} className={isActive ? "text-emerald-700" : "group-hover:text-emerald-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                          <span className="text-[11px] tracking-wide">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
           )}
 
-          {/* LAUNDRY HUB: VISIBLE TO ADMIN OR LAUNDRY STAFF */}
+          {/* LAUNDRY HUB */}
           {canAccessLaundry && (
               <div className="pt-1">
                 <button 
@@ -381,88 +429,165 @@ export default function Sidebar() {
               </div>
           )}
 
+          {/* WATER PRODUCTION */}
+          {canAccessWater && (
+              <div className="pt-1">
+                <Link 
+                  href="/water"
+                  className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                    pathname === '/water' || pathname?.startsWith('/water/')
+                      ? "bg-sky-50 text-sky-700 font-black shadow-xs border border-sky-100" 
+                      : "text-slate-500 hover:bg-slate-100 hover:text-sky-700"
+                  }`}
+                >
+                  <Droplets size={18} className={pathname?.startsWith('/water') ? "text-sky-600" : "group-hover:text-sky-600 transition-colors"} strokeWidth={2} />
+                  <span className="text-xs font-bold tracking-wide">Water Production</span>
+                </Link>
+              </div>
+          )}
+
+          {/* MINIBAR HUB */}
+          {canAccessMinibar && (
+              <div className="pt-1 pb-1">
+                <button 
+                  onClick={() => setIsMinibarOpen(!isMinibarOpen)}
+                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                    isMinibarRoute && !isMinibarOpen
+                      ? "bg-rose-50 text-rose-600 border border-rose-100" 
+                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Wine size={18} className={isMinibarRoute ? "text-rose-600" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                    <span className="text-xs font-bold tracking-wide">Minibar</span>
+                  </div>
+                  {isMinibarOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+
+                {isMinibarOpen && (
+                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                    {MINIBAR_ITEMS.map((item) => {
+                      const isActive = pathname === item.path;
+                      return (
+                        <Link 
+                          key={item.path} href={item.path}
+                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                            isActive 
+                              ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
+                              : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                          <span className="text-[11px] tracking-wide">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+          )}
+
+          {/* TEAM HUB (WITH EMBEDDED SIMULATION BUTTON) */}
+          {(isAdmin || isSuperAdmin) && (
+              <div className="pt-1">
+                <button 
+                  onClick={() => setIsTeamOpen(!isTeamOpen)}
+                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
+                    isTeamRoute && !isTeamOpen
+                      ? "bg-blue-50 text-blue-700 border border-blue-100" 
+                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Briefcase size={18} className={isTeamRoute ? "text-blue-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
+                    <span className="text-xs font-bold tracking-wide">Team Hub</span>
+                  </div>
+                  {isTeamOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+
+                {isTeamOpen && (
+                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
+                    {TEAM_ITEMS.map((item) => {
+                      const isActive = pathname === item.path;
+                      return (
+                        <Link 
+                          key={item.path} href={item.path}
+                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
+                            isActive 
+                              ? "bg-blue-50 text-blue-700 font-black shadow-sm" 
+                              : "text-slate-500 hover:text-blue-700 hover:bg-slate-50"
+                          }`}
+                        >
+                          <item.icon size={14} className={isActive ? "text-blue-700" : "group-hover:text-blue-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
+                          <span className="text-[11px] tracking-wide">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+
+                    {/* --- CLEAN INTEGRATED SIMULATION BUTTON NEXT TO LEAVE ITEMS --- */}
+                    {isSuperAdmin && (
+                      <div className="pt-1 border-t border-slate-100 mt-1">
+                        {currentUser?.impersonating_from ? (
+                          <button
+                            onClick={handleExitSimulation}
+                            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-amber-500 text-slate-950 font-black text-[11px] shadow-xs active:scale-95 transition-all"
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              <Eye size={13} className="animate-pulse shrink-0" />
+                              <span className="truncate">Exit ({currentUser.full_name})</span>
+                            </div>
+                            <ArrowLeft size={12} className="shrink-0" />
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => setIsSimulateOpen(!isSimulateOpen)}
+                              className={`w-full flex items-center justify-between px-4 py-2 rounded-xl text-[11px] font-bold transition-all ${
+                                isSimulateOpen
+                                  ? "bg-blue-100 text-blue-900 font-black"
+                                  : "text-blue-700 hover:bg-blue-50"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <UserCog size={14} className="text-blue-700" />
+                                <span>Simulate Host View</span>
+                              </div>
+                              {isSimulateOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                            </button>
+
+                            {isSimulateOpen && (
+                              <div className="mt-1 pl-2 space-y-0.5 max-h-48 overflow-y-auto no-scrollbar py-1">
+                                {allHosts.map((h) => (
+                                  <button
+                                    key={h.id}
+                                    onClick={() => {
+                                      setIsSimulateOpen(false);
+                                      handleSimulateHost(h);
+                                    }}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-blue-100/70 text-[10.5px] flex flex-col text-slate-700 transition-colors"
+                                  >
+                                    <span className="font-bold truncate text-slate-900">{h.full_name}</span>
+                                    <span className="text-[9px] text-slate-400 uppercase truncate">
+                                      {h.role} • {h.jetty_allocation || "General"}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+          )}
+
+          {/* OPERATIONS SECTION */}
           {isAdmin && (
               <>
-                  {/* TEAM HUB */}
-                  <div className="pt-1">
-                    <button 
-                      onClick={() => setIsTeamOpen(!isTeamOpen)}
-                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                        isTeamRoute && !isTeamOpen
-                          ? "bg-blue-50 text-blue-700 border border-blue-100" 
-                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Briefcase size={18} className={isTeamRoute ? "text-blue-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                        <span className="text-xs font-bold tracking-wide">Team Hub</span>
-                      </div>
-                      {isTeamOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-
-                    {isTeamOpen && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                        {TEAM_ITEMS.map((item) => {
-                          const isActive = pathname === item.path;
-                          return (
-                            <Link 
-                              key={item.path} href={item.path}
-                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                                isActive 
-                                  ? "bg-blue-50 text-blue-700 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-blue-700 hover:bg-slate-50"
-                              }`}
-                            >
-                              <item.icon size={14} className={isActive ? "text-blue-700" : "group-hover:text-blue-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                              <span className="text-[11px] tracking-wide">{item.name}</span>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* MINIBAR */}
-                  <div className="pt-1 pb-2">
-                    <button 
-                      onClick={() => setIsMinibarOpen(!isMinibarOpen)}
-                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                        isMinibarRoute && !isMinibarOpen
-                          ? "bg-rose-50 text-rose-600 border border-rose-100" 
-                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Wine size={18} className={isMinibarRoute ? "text-rose-600" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                        <span className="text-xs font-bold tracking-wide">Minibar</span>
-                      </div>
-                      {isMinibarOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-
-                    {isMinibarOpen && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                        {MINIBAR_ITEMS.map((item) => {
-                          const isActive = pathname === item.path;
-                          return (
-                            <Link 
-                              key={item.path} href={item.path}
-                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                                isActive 
-                                  ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
-                              }`}
-                            >
-                              <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                              <span className="text-[11px] tracking-wide">{item.name}</span>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-4 mb-3 px-2">Operations</div>
-                  {MENU_ITEMS.map((item) => {
+                  {OPERATIONS_ITEMS.filter(item => item.key === 'settings' ? isAdmin : true).map((item) => {
                     const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
                     return (
                       <Link 
@@ -481,11 +606,11 @@ export default function Sidebar() {
               </>
           )}
 
+          {/* STAFF MORE OPTIONS */}
           {!isAdmin && (
               <>
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Personal</div>
                   
-                  {/* PROFILE HUB (STAFF) */}
                   <div className="pt-1 pb-4">
                     <button 
                       onClick={() => setIsProfileOpen(!isProfileOpen)}
@@ -546,6 +671,7 @@ export default function Sidebar() {
 
         </nav>
 
+        {/* LOGOUT BUTTON */}
         <div className="p-4 border-t border-slate-200/50 bg-white/50">
           <button onClick={handleLogout} className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-all active:scale-95">
             <LogOut size={18} strokeWidth={2} />
@@ -568,23 +694,21 @@ export default function Sidebar() {
             )
          })}
          
-         {/* TRIGGER TO OPEN FULL MOBILE MENU DRAWER */}
          <button 
             onClick={() => setIsMobileMenuOpen(true)}
             className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform"
          >
-            <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen || isLaundryRoute ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
+            <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
                <Menu size={22} strokeWidth={2} />
             </div>
-            <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen || isLaundryRoute ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
+            <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
          </button>
       </div>
 
-      {/* FULL MOBILE DRAWER / SLIDE-OVER */}
+      {/* FULL MOBILE DRAWER */}
       {isMobileMenuOpen && (
         <div className="fixed inset-0 z-[1000] bg-black/60 backdrop-blur-xs flex flex-col justify-end md:hidden animate-in fade-in duration-200">
           <div className="bg-white w-full max-h-[85vh] rounded-t-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
-            {/* Drawer Header */}
             <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-xl bg-[#6D2158] text-white flex items-center justify-center font-bold text-xs">
@@ -600,33 +724,48 @@ export default function Sidebar() {
               </button>
             </div>
 
-            {/* Drawer Links */}
             <div className="p-4 overflow-y-auto space-y-3 pb-12">
-              {/* LAUNDRY HUB (VISIBLE TO ADMIN & LAUNDRY STAFF) */}
+              {currentUser?.impersonating_from && (
+                <div className="p-3 bg-amber-500 text-slate-950 rounded-xl flex items-center justify-between text-xs font-bold">
+                  <span>Viewing As: <strong>{currentUser.full_name}</strong></span>
+                  <button onClick={handleExitSimulation} className="bg-black text-white px-2 py-1 rounded text-[10px] uppercase font-black">
+                    Exit
+                  </button>
+                </div>
+              )}
+
+              {/* WATER PRODUCTION */}
+              {canAccessWater && (
+                <div className="p-2.5 bg-sky-50 border border-sky-100 rounded-2xl">
+                  <Link
+                    href="/water"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="flex items-center gap-2.5 p-2 rounded-xl text-xs font-black text-sky-800"
+                  >
+                    <Droplets size={16} className="text-sky-600" />
+                    <span>Water Production</span>
+                  </Link>
+                </div>
+              )}
+
+              {/* LAUNDRY HUB */}
               {canAccessLaundry && (
                 <div className="p-3 bg-purple-50/70 border border-purple-100 rounded-2xl space-y-2">
                   <div className="text-[10px] font-black uppercase tracking-widest text-[#6D2158] flex items-center gap-1.5">
                     <Droplets size={13} /> Laundry Hub
                   </div>
                   <div className="grid grid-cols-1 gap-1">
-                    {LAUNDRY_ITEMS.map((item) => {
-                      const isActive = pathname === item.path;
-                      return (
-                        <Link
-                          key={item.path}
-                          href={item.path}
-                          onClick={() => setIsMobileMenuOpen(false)}
-                          className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                            isActive
-                              ? "bg-[#6D2158] text-white shadow-sm"
-                              : "text-slate-600 hover:bg-purple-100/70"
-                          }`}
-                        >
-                          <item.icon size={15} />
-                          <span>{item.name}</span>
-                        </Link>
-                      );
-                    })}
+                    {LAUNDRY_ITEMS.map((item) => (
+                      <Link
+                        key={item.path}
+                        href={item.path}
+                        onClick={() => setIsMobileMenuOpen(false)}
+                        className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-purple-100/70"
+                      >
+                        <item.icon size={15} />
+                        <span>{item.name}</span>
+                      </Link>
+                    ))}
                   </div>
                 </div>
               )}
@@ -651,8 +790,8 @@ export default function Sidebar() {
                 </div>
               </div>
 
-              {/* INVENTORY HUB (ADMIN ONLY) */}
-              {isAdmin && (
+              {/* INVENTORY HUB */}
+              {canAccessInventory && (
                 <div className="p-3 bg-emerald-50/50 border border-emerald-100 rounded-2xl space-y-2">
                   <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800 flex items-center gap-1.5">
                     <Warehouse size={13} /> Inventory
@@ -666,28 +805,6 @@ export default function Sidebar() {
                         className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-emerald-100/60"
                       >
                         <item.icon size={14} className="text-emerald-700" />
-                        <span className="truncate">{item.name}</span>
-                      </Link>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* TEAM HUB (ADMIN ONLY) */}
-              {isAdmin && (
-                <div className="p-3 bg-blue-50/50 border border-blue-100 rounded-2xl space-y-2">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-blue-800 flex items-center gap-1.5">
-                    <Briefcase size={13} /> Team & Roster
-                  </div>
-                  <div className="grid grid-cols-2 gap-1">
-                    {TEAM_ITEMS.map((item) => (
-                      <Link
-                        key={item.path}
-                        href={item.path}
-                        onClick={() => setIsMobileMenuOpen(false)}
-                        className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-blue-100/60"
-                      >
-                        <item.icon size={14} className="text-blue-700" />
                         <span className="truncate">{item.name}</span>
                       </Link>
                     ))}

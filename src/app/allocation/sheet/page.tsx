@@ -1,279 +1,335 @@
 "use client";
-import React, { useState, useEffect } from 'react';
-import { Printer } from 'lucide-react';
 
-export default function AllocationPage() {
-  const [isClient, setIsClient] = useState(false);
+import React, { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
+import { Printer, Calendar, RefreshCw } from "lucide-react";
+import { getDhakaDateStr } from "@/lib/dateUtils";
+import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
+import { parseVillas, JETTY_A, JETTY_B, JETTY_C, BEACH, getDefaultArea } from "../lib/constants";
 
-  // 1. DATA STATE - This controls all the text in your SVG
-  const [data, setData] = useState({
-    date: "05 / 02 / 2026",
-    occupancy: "81%",
-    occupied: "76",
-    arrivals: "13",
-    departures: "10",
-    moves: "1",
-    
-    // Middle Columns
-    repeaterVillas: "21 4 93 85 26",
-    birthday: "-",
-    anniversary: "65",
-    honeymoon: "-",
-    children: "12",
-    guests: "164",
-    
-    // Right Columns
-    sinner: "39 37 28",
-    saint: "-",
-    showrooms: "57 36 52",
-    dayShut: "-",
-    nightShut1: "42 43 51",
-    nightShut2: "-",
-
-    // The "Daily Ice Request" / Dep List section (2 Columns)
-    listColumn1: [
-      { villa: "67", time: "14:00", dep: "28 Feb" },
-      { villa: "67", time: "14:30", dep: "01 Mar" },
-      { villa: "67", time: "16:40", dep: "30 Mar" },
-      { villa: "67", time: "15:00", dep: "05 Apr" },
-      { villa: "67", time: "12:00", dep: "06 Apr" },
-    ],
-    listColumn2: [
-      { villa: "67", time: "14:00", dep: "28 Feb" },
-      { villa: "67", time: "14:00", dep: "28 Feb" },
-      { villa: "67", time: "14:00", dep: "28 Feb" },
-      { villa: "67", time: "14:00", dep: "28 Feb" },
-      { villa: "67", time: "14:00", dep: "28 Feb" },
-    ]
-  });
-
-  // 2. STAFF LIST (HTML Table below the SVG)
-  const staffList = [
-    { name: "Jeeth", mvpn: "2968", area: "Jetty A, B, C", duty: "AM/PM" },
-    { name: "Abow", mvpn: "2962", area: "87, 91-97", duty: "MORNING" },
-    { name: "Shamil", mvpn: "3035", area: "57, 82-86, 89, 90", duty: "MORNING" },
-    { name: "Eeku", mvpn: "2964", area: "36, 51-55, 80, 81", duty: "NIGHT" },
-    { name: "Maah", mvpn: "2842", area: "Floater", duty: "MORNING" },
-    { name: "Adam", mvpn: "2731", area: "Support", duty: "MORNING" },
-    { name: "Ziyatte", mvpn: "2836", area: "BOH", duty: "MORNING" },
-  ];
+export default function AllocationSheetPage() {
+  const [selectedDate, setSelectedDate] = useState<string>(getDhakaDateStr());
+  const [loading, setLoading] = useState(false);
+  const [sheetData, setSheetData] = useState<AllocationSheetData | null>(null);
 
   useEffect(() => {
-    setIsClient(true);
-  }, []);
+    fetchSheetData();
+  }, [selectedDate]);
 
-  if (!isClient) return null;
+  const fetchSheetData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch Overall Daily Summary Row specifically (villa_number is null or 0)
+      const { data: sumRows } = await supabase
+        .from("hsk_daily_summary")
+        .select("*")
+        .eq("report_date", selectedDate)
+        .or("villa_number.is.null,villa_number.eq.0")
+        .limit(1);
+
+      const summaryData = sumRows && sumRows.length > 0 ? sumRows[0] : null;
+
+      // Check yesterday's summary for persistent Sinner & Saint carryover if today's are empty
+      let finalSummary = summaryData ? { ...summaryData } : { report_date: selectedDate };
+      if (!finalSummary.sinner_villa || !finalSummary.saint_villa) {
+        const d = new Date(selectedDate);
+        d.setDate(d.getDate() - 1);
+        const yesterday = d.toISOString().split("T")[0];
+
+        const { data: yestRows } = await supabase
+          .from("hsk_daily_summary")
+          .select("sinner_villa, sinner_dep, saint_villa, saint_dep")
+          .eq("report_date", yesterday)
+          .or("villa_number.is.null,villa_number.eq.0")
+          .limit(1);
+
+        const yestSummary = yestRows && yestRows.length > 0 ? yestRows[0] : null;
+
+        if (yestSummary) {
+          if (!finalSummary.sinner_villa && yestSummary.sinner_villa && (!yestSummary.sinner_dep || yestSummary.sinner_dep >= selectedDate)) {
+            finalSummary.sinner_villa = yestSummary.sinner_villa;
+          }
+          if (!finalSummary.saint_villa && yestSummary.saint_villa && (!yestSummary.saint_dep || yestSummary.saint_dep >= selectedDate)) {
+            finalSummary.saint_villa = yestSummary.saint_villa;
+          }
+        }
+      }
+
+      // 2. Fetch Master Guest / Villa Statuses for VAC / OCC (individual villa rows)
+      const { data: masterVillas } = await supabase
+        .from("hsk_daily_summary")
+        .select("villa_number, status")
+        .eq("report_date", selectedDate)
+        .gt("villa_number", 0);
+
+      const statusMap: Record<string, string> = {};
+      (masterVillas || []).forEach((m: any) => {
+        statusMap[String(m.villa_number)] = m.status || "VAC";
+      });
+
+      // 3. Fetch Persistent Daily Ice Requests (active until guest departure date)
+      const { data: rawIceReqs } = await supabase
+        .from("hsk_daily_requests")
+        .select("villa_number, request_time, item_details")
+        .eq("request_type", "Ice")
+        .order("created_at", { ascending: true });
+
+      const activeIce = (rawIceReqs || []).filter((r: any) => {
+        const dep = r.item_details ? r.item_details.trim() : "";
+        return !dep || dep >= selectedDate;
+      });
+
+      const formattedIce = activeIce.slice(0, 6).map((r: any) => {
+        let timeStr = "";
+        if (r.request_time) {
+          if (r.request_time.includes("T")) {
+            timeStr = r.request_time.split("T")[1]?.substring(0, 5) || "";
+          } else {
+            timeStr = r.request_time.substring(0, 5);
+          }
+        }
+        return {
+          villa: r.villa_number || "",
+          time: timeStr,
+          dep: r.item_details || "",
+        };
+      });
+
+      // 4. Fetch All Allocations joined with Host details
+      const { data: allocs } = await supabase
+        .from("hsk_allocations")
+        .select("*, hosts:hsk_hosts(id, full_name, nicknames, mvpn, company_mobile, personal_mobile, role, sub_department)")
+        .eq("report_date", selectedDate);
+
+      const rawJA: any[] = [];
+      const rawJB: any[] = [];
+      const rawJC: any[] = [];
+      const rawBeach: any[] = [];
+
+      const poolHosts: any[] = [];
+      const paMorningFoh: string[] = [];
+      const paMorningBoh: string[] = [];
+      const paAfternoonFoh: string[] = [];
+      const paAfternoonBoh: string[] = [];
+      const paSpecialTasks: string[] = [];
+
+      const adminList: any[] = [];
+      const tailorList: any[] = [];
+      const housemateList: any[] = [];
+      const runnerList: any[] = [];
+      const stepList: any[] = [];
+      const luggageList: any[] = [];
+      const gardenList: any[] = [];
+      let gardenIncharge = { name: "", contact: "" };
+      const laundryList: any[] = [];
+      const pestList: any[] = [];
+
+      (allocs || []).forEach((a: any) => {
+        const hostObj = a.hosts;
+        const name = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
+        const contact = [hostObj?.mvpn, hostObj?.company_mobile || hostObj?.personal_mobile].filter(Boolean).join(", ");
+        const defaultArea = getDefaultArea(hostObj);
+
+        if (a.area === "villa") {
+          const vNums = parseVillas(a.task_details || "");
+          const villaList = vNums.map(v => ({ number: v, status: statusMap[String(v)] || "VAC" }));
+
+          if (defaultArea === "beach" || hostObj?.sub_department?.toLowerCase().includes("beach")) {
+            rawBeach.push({ name, contact, villas: villaList });
+          } else {
+            const firstV = vNums[0];
+            if (firstV && JETTY_A.includes(firstV)) rawJA.push({ name, contact, villas: villaList });
+            else if (firstV && JETTY_B.includes(firstV)) rawJB.push({ name, contact, villas: villaList });
+            else if (firstV && JETTY_C.includes(firstV)) rawJC.push({ name, contact, villas: villaList });
+            else if (firstV && BEACH.includes(firstV)) rawBeach.push({ name, contact, villas: villaList });
+            else rawJA.push({ name, contact, villas: villaList });
+          }
+        } else if (a.area === "water") {
+          poolHosts.push({ name, mvpn: hostObj?.mvpn || "", allocation: a.task_details || a.shift || "" });
+        } else if (a.area === "public") {
+          const sh = (a.shift || "").toLowerCase();
+          if (sh.includes("morning") || sh.includes("06:30")) {
+            if (sh.includes("boh") || a.task_details?.toLowerCase().includes("boh")) paMorningBoh.push(name);
+            else paMorningFoh.push(name);
+          } else if (sh.includes("afternoon") || sh.includes("14:30")) {
+            if (sh.includes("boh") || a.task_details?.toLowerCase().includes("boh")) paAfternoonBoh.push(name);
+            else paAfternoonFoh.push(name);
+          } else {
+            paMorningFoh.push(name);
+          }
+          if (a.task_details && a.task_details.toLowerCase().includes("special")) {
+            paSpecialTasks.push(a.task_details);
+          }
+        } else if (a.area === "admin") {
+          adminList.push({ name, contact: contact || "8 AM" });
+        } else if (a.area === "tailor") {
+          tailorList.push({ name, no: contact });
+        } else if (a.area === "housemate") {
+          housemateList.push({ name, no: contact });
+        } else if (a.area === "riders") {
+          const sh = (a.shift || "").toLowerCase();
+          if (sh.includes("step")) stepList.push({ name, duty: "Step", mvpn: contact });
+          else if (sh.includes("luggage")) luggageList.push({ name, duty: "Luggage", mvpn: contact });
+          else runnerList.push({ name, duty: "Runner", mvpn: contact });
+        } else if (a.area === "garden") {
+          if (a.shift?.toLowerCase().includes("incharge") || hostObj?.role?.toLowerCase().includes("supervisor")) {
+            gardenIncharge = { name, contact };
+          } else {
+            gardenList.push({ name, contact, area: a.task_details || a.shift || "" });
+          }
+        } else if (a.area === "laundry") {
+          laundryList.push({ name, no: contact });
+        }
+      });
+
+      const expandAttendants = (list: any[], maxRows: number, maxCols: number) => {
+        const slots: any[] = [];
+        list.forEach(item => {
+          let vils = [...item.villas];
+          if (vils.length <= maxRows) {
+            slots.push({ name: item.name, contact: item.contact, villas: vils });
+          } else {
+            while (vils.length > 0) {
+              const chunk = vils.splice(0, maxRows);
+              slots.push({ name: item.name, contact: item.contact, villas: chunk });
+            }
+          }
+        });
+        while (slots.length < maxCols) {
+          slots.push({ name: "", contact: "", villas: [] });
+        }
+        return slots.slice(0, maxCols);
+      };
+
+      const finalJA = expandAttendants(rawJA, 9, 7);
+      const finalJB = expandAttendants(rawJB, 8, 3);
+      const finalJC = expandAttendants(rawJC, 8, 4);
+      const finalBeach = expandAttendants(rawBeach, 7, 7);
+
+      // 5. Fetch Attendance (Leaves & Off Days)
+      const { data: attList } = await supabase
+        .from("hsk_attendance")
+        .select("host_id, status_code, hosts:hsk_hosts(full_name, nicknames)")
+        .eq("date", selectedDate);
+
+      const alList: any[] = [];
+      const slList: any[] = [];
+      const offList: any[] = [];
+
+      (attList || []).forEach((att: any) => {
+        const hObj = att.hosts;
+        const name = hObj?.nicknames ? hObj.nicknames.split(",")[0].trim() : hObj?.full_name || att.host_id;
+        const rec = { name, from: selectedDate, to: selectedDate, duration: "01" };
+
+        if (att.status_code === "AL" || att.status_code === "VAC") alList.push(rec);
+        else if (att.status_code === "SL" || att.status_code === "EL") slList.push(rec);
+        else if (["O", "OFF", "PH", "RR"].includes(att.status_code)) offList.push(rec);
+      });
+
+      setSheetData({
+        summary: finalSummary,
+        iceRequests: formattedIce,
+        jettyA: finalJA,
+        jettyB: finalJB,
+        jettyC: finalJC,
+        beach: finalBeach,
+        pool: {
+          hosts: poolHosts,
+          night: ["Night Duty"],
+          mod: ["MOD"],
+          continueShift: ["Continue"],
+        },
+        publicArea: {
+          morningFoh: paMorningFoh,
+          morningBoh: paMorningBoh,
+          afternoonFoh: paAfternoonFoh,
+          afternoonBoh: paAfternoonBoh,
+          specialTasks: paSpecialTasks,
+        },
+        admin: adminList,
+        tailor: tailorList,
+        housemate: housemateList,
+        runnerStepLuggage: {
+          runner: runnerList,
+          step: stepList,
+          luggage: luggageList,
+        },
+        garden: {
+          incharge: gardenIncharge,
+          hosts: gardenList,
+        },
+        laundry: laundryList,
+        pestControl: pestList,
+        specialTasks: {
+          task1: paSpecialTasks[0] || "",
+          task2: paSpecialTasks[1] || "",
+          task3: paSpecialTasks[2] || "",
+          task4: paSpecialTasks[3] || "",
+          deepVilla: finalSummary?.deep_clean || "",
+          oooVilla: finalSummary?.oos_villas || "",
+          huVilla: "",
+        },
+        annualLeave: alList,
+        sickLeave: slList,
+        dayOff: offList,
+      });
+    } catch (err) {
+      console.error("Failed to load allocation sheet", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-8 flex flex-col items-center font-serif">
-      
-      {/* CONTROL BAR */}
-      <div className="w-full max-w-[210mm] flex justify-between items-center mb-6 print:hidden">
+    <div className="min-h-screen bg-slate-200 p-2 md:p-6 print:p-0 print:bg-white flex flex-col items-center">
+      {/* SCREEN CONTROLS BAR */}
+      <div className="print:hidden w-full max-w-[210mm] mb-4 bg-white p-3 rounded-2xl shadow-sm border border-slate-300 flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#6D2158]">Allocation Report</h1>
-          <p className="text-sm text-gray-500">Illustrator SVG Template</p>
+          <h1 className="text-sm font-black text-slate-800">Housekeeping Allocation Report</h1>
+          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Live Bound to Board Data</p>
         </div>
-        <button 
-          onClick={() => window.print()}
-          className="bg-[#6D2158] text-white px-6 py-2 rounded font-bold flex gap-2 hover:bg-[#501840]"
-        >
-          <Printer size={18} /> Print Form
-        </button>
+
+        <div className="flex items-center gap-2">
+          <div className="flex items-center bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 gap-2">
+            <Calendar size={14} className="text-[#691c56]" />
+            <input
+              type="date"
+              className="bg-transparent font-black text-xs text-[#691c56] outline-none cursor-pointer"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+            />
+          </div>
+
+          <button onClick={fetchSheetData} className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors">
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+          </button>
+
+          <button
+            onClick={() => window.print()}
+            className="bg-[#691c56] text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-sm hover:bg-[#521643] active:scale-95 transition-all cursor-pointer"
+          >
+            <Printer size={15} />
+            <span>Print Sheet</span>
+          </button>
+        </div>
       </div>
 
-      {/* --- A4 PAPER START --- */}
-      <div className="bg-white shadow-xl print:shadow-none w-[210mm] min-h-[297mm] p-[10mm] print:p-0 print:m-0 relative">
-        
-        {/* 1. YOUR SVG HEADER (Cropped to show only the header part) */}
-        {/* I set viewBox height to 120 to cut off the empty bottom of the Artboard */}
-        <svg 
-          xmlns="http://www.w3.org/2000/svg" 
-          version="1.1" 
-          viewBox="0 0 595.3 115" 
-          className="w-full"
-        >
-          <defs>
-            <style>{`
-              .st0, .st1 { font-family: 'Book Antiqua', Palatino, serif; fill: #fff; }
-              .st0, .st2 { font-size: 10px; }
-              .st1 { font-size: 5px; }
-              .st3 { font-size: 6px; }
-              .st3, .st2 { font-family: 'Book Antiqua', Palatino, serif; font-weight: 700; fill: #000; }
-              .st4, .st5 { fill: none; stroke: #000; stroke-miterlimit: 10; }
-              .st4, .st7 { stroke-width: 0.5px; }
-              .st5, .st6 { stroke-width: 0.1px; }
-              .st6, .st7 { fill: #6d2158; }
-            `}</style>
-          </defs>
-          
-          <g id="OUTLINE">
-            <polygon className="st5" points="578.7 43.9 578.7 54 578.4 54 578.4 44 549.9 44 549.9 54 521.4 54 521.4 44 472.8 44 472.8 54 444.3 54 444.3 44 16.6 44 16.6 43.9 578.7 43.9"/>
-            <rect className="st7" x="16.6" y="31.2" width="407.7" height="12.7"/>
-            <rect className="st7" x="424.3" y="31.2" width="154.3" height="12.7"/>
-            <rect className="st5" x="16.6" y="44" width="407.7" height="10"/>
-            <rect className="st5" x="16.6" y="54" width="427.7" height="10"/>
-            <rect className="st5" x="16.6" y="64" width="427.7" height="10"/>
-            <rect className="st5" x="16.6" y="74" width="427.7" height="10"/>
-            <rect className="st5" x="16.6" y="84.1" width="427.7" height="10"/>
-            <rect className="st5" x="16.6" y="94.1" width="427.7" height="10"/>
-            
-            {/* Right Side Grid */}
-            <rect className="st5" x="444.3" y="54" width="134.3" height="10"/>
-            <rect className="st5" x="444.3" y="64" width="134.3" height="10"/>
-            <rect className="st5" x="444.3" y="74" width="134.3" height="10"/>
-            <rect className="st5" x="444.3" y="84.1" width="134.3" height="10"/>
-            <rect className="st5" x="444.3" y="94.1" width="134.3" height="10"/>
-            
-            <rect className="st5" x="97" y="43.9" width="53.4" height="60.2"/>
-            <rect className="st6" x="424.3" y="44" width="154.5" height="10"/>
-            <rect className="st5" x="230.5" y="44" width="73.8" height="60.1"/>
-            <rect className="st5" x="373.3" y="44" width="51" height="60.1"/>
-            <rect className="st5" x="501.4" y="54" width="20" height="50.1"/>
-            <rect className="st5" x="472.8" y="54" width="28.5" height="50.1"/>
-            <rect className="st5" x="550.3" y="54" width="28.5" height="50.1"/>
-            <line className="st4" x1="424.3" y1="31.2" x2="424.3" y2="104.1"/>
-            <line className="st4" x1="578.7" y1="108.1" x2="578.7" y2="31.2"/>
-            <line className="st5" x1="444.3" y1="58.3" x2="444.3" y2="44"/>
-            <line className="st5" x1="472.8" y1="58.3" x2="472.8" y2="44"/>
-            <line className="st5" x1="501.4" y1="57.6" x2="501.4" y2="43.9"/>
-            <line className="st5" x1="521.4" y1="58.2" x2="521.4" y2="44"/>
-            <line className="st5" x1="550.3" y1="57.3" x2="550.3" y2="43.9"/>
-          </g>
-
-          <g id="HEADINGS">
-            <text className="st2" transform="translate(120.2 41.2)">HOUSEKEEPING ALLOCATION REPORT</text>
-            <text className="st0" transform="translate(451.9 41.2)">DAILY ICE REQUEST</text>
-            <text className="st1" transform="translate(426.6 50.8)">VILLA</text>
-            <text className="st1" transform="translate(503.7 50.8)">VILLA</text>
-            <text className="st1" transform="translate(452.3 50.8)">TIME</text>
-            <text className="st1" transform="translate(529.4 50.8)">TIME</text>
-            <text className="st1" transform="translate(482.1 50.8)">DEP</text>
-            <text className="st1" transform="translate(559.3 50.7)">DEP</text>
-            
-            {/* Left Headers */}
-            <text className="st3" transform="translate(18.3 51.2)">DATE</text>
-            <text className="st3" transform="translate(18.3 61.2)">DAILY OCCUPANCY %</text>
-            <text className="st3" transform="translate(18.3 71.2)">NO OF VILLA OCCUPIED</text>
-            <text className="st3" transform="translate(18.3 81.2)">NO OF VILLA ARR</text>
-            <text className="st3" transform="translate(18.3 91.2)">NO OF VILLA DEP</text>
-            <text className="st3" transform="translate(18.3 101.3)">NO OF VILLA MOVES</text>
-            
-            {/* Middle Headers */}
-            <text className="st3" transform="translate(151.8 51.2)">REPEATER VILLAS</text>
-            <text className="st3" transform="translate(151.8 61.2)">BIRTHDAY VILLAS</text>
-            <text className="st3" transform="translate(151.8 71.2)">ANNIVERSARY VILLAS</text>
-            <text className="st3" transform="translate(151.8 81.2)">HONEYMOON VILLAS</text>
-            <text className="st3" transform="translate(151.8 91.2)">CHILDREN IN HOUSE</text>
-            <text className="st3" transform="translate(151.8 101.2)">GUEST IN HOUSE</text>
-            
-            {/* Right Headers */}
-            <text className="st3" transform="translate(306.8 51.2)">SINNER VILLA</text>
-            <text className="st3" transform="translate(306.8 61.2)">SAINT VILLA</text>
-            <text className="st3" transform="translate(306.8 71.2)">SHOWROOMS</text>
-            <text className="st3" transform="translate(306.8 81.2)">DAY SHUT</text>
-            <text className="st3" transform="translate(306.8 91.3)">NIGHT SHUT #1</text>
-            <text className="st3" transform="translate(306.8 101.3)">NIGHT SHUT #2</text>
-          </g>
-
-          {/* =========================================================
-              DYNAMIC DATA MAPPING (Injecting React Variables)
-             ========================================================= */}
-          <g id="PLACE_HOLDER">
-            {/* Col 1 */}
-            <text className="st3" transform="translate(107.7 51.2)" fill="red">{data.date}</text>
-            <text className="st3" transform="translate(118.1 61.2)">{data.occupancy}</text>
-            <text className="st3" transform="translate(120.7 71.2)">{data.occupied}</text>
-            <text className="st3" transform="translate(120.7 81.2)">{data.arrivals}</text>
-            <text className="st3" transform="translate(120.7 91.2)">{data.departures}</text>
-            <text className="st3" transform="translate(122.2 101.3)">{data.moves}</text>
-
-            {/* Col 2 */}
-            <text className="st3" transform="translate(250.8 51.2)">{data.repeaterVillas}</text>
-            <text className="st3" transform="translate(266.3 61.2)">{data.birthday}</text>
-            <text className="st3" transform="translate(264.3 71.2)">{data.anniversary}</text>
-            <text className="st3" transform="translate(266.3 81.2)">{data.honeymoon}</text>
-            <text className="st3" transform="translate(264.3 91.2)">{data.children}</text>
-            <text className="st3" transform="translate(262.8 101.3)">{data.guests}</text>
-
-            {/* Col 3 */}
-            <text className="st3" transform="translate(388.3 51.2)">{data.sinner}</text>
-            <text className="st3" transform="translate(397.8 61.2)">{data.saint}</text>
-            <text className="st3" transform="translate(388.3 71.2)">{data.showrooms}</text>
-            <text className="st3" transform="translate(397.8 81.2)">{data.dayShut}</text>
-            <text className="st3" transform="translate(388.3 91.2)">{data.nightShut1}</text>
-            <text className="st3" transform="translate(397.8 101.3)">{data.nightShut2}</text>
-
-            {/* List Column 1 (Dynamic Mapping) */}
-            {data.listColumn1.map((item, i) => (
-              <g key={i}>
-                <text className="st3" transform={`translate(431.5 ${61.2 + (i * 10)})`}>{item.villa}</text>
-                <text className="st3" transform={`translate(451.8 ${61.2 + (i * 10)})`}>{item.time}</text>
-                <text className="st3" transform={`translate(478.3 ${61.2 + (i * 10)})`}>{item.dep}</text>
-              </g>
-            ))}
-
-            {/* List Column 2 (Dynamic Mapping) */}
-            {data.listColumn2.map((item, i) => (
-              <g key={i}>
-                <text className="st3" transform={`translate(508.4 ${61.2 + (i * 10)})`}>{item.villa}</text>
-                <text className="st3" transform={`translate(529.1 ${61.2 + (i * 10)})`}>{item.time}</text>
-                <text className="st3" transform={`translate(555.6 ${61.2 + (i * 10)})`}>{item.dep}</text>
-              </g>
-            ))}
-          </g>
-        </svg>
-
-        {/* 2. THE HTML STAFF TABLE (For Flexibility) */}
-        <div className="mt-2">
-          <table className="w-full border-collapse border border-black text-[10px]">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="border border-black p-1 w-[20%] text-left">NAME</th>
-                <th className="border border-black p-1 w-[10%] text-left">MVPN</th>
-                <th className="border border-black p-1 w-[55%] text-left">AREA / STEPS</th>
-                <th className="border border-black p-1 w-[15%] text-left">DUTY</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staffList.map((s, i) => (
-                <tr key={i} className="h-6">
-                  <td className="border border-black p-1 font-bold uppercase">{s.name}</td>
-                  <td className="border border-black p-1">{s.mvpn}</td>
-                  <td className="border border-black p-1 font-medium">{s.area}</td>
-                  <td className="border border-black p-1 uppercase">{s.duty}</td>
-                </tr>
-              ))}
-              {/* Extra rows for layout padding */}
-              {[...Array(5)].map((_, i) => (
-                <tr key={`fill-${i}`} className="h-6">
-                  <td className="border border-black p-1"></td>
-                  <td className="border border-black p-1"></td>
-                  <td className="border border-black p-1"></td>
-                  <td className="border border-black p-1"></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* 3. FOOTER SIGNATURES */}
-        <div className="mt-8 flex justify-between px-16 text-[10px] uppercase font-bold">
-           <div className="text-center">
-              <div className="w-40 border-b border-black mb-1"></div>
-              Prepared By: Coordinator
-           </div>
-           <div className="text-center">
-              <div className="w-40 border-b border-black mb-1"></div>
-              Approved By: Exec. HSK
-           </div>
-        </div>
-
+      {/* RENDER EXACT A4 SVG COMPONENT */}
+      <div className="w-[210mm] bg-white border border-slate-300 shadow-xl print:border-0 print:shadow-none print:w-full">
+        {sheetData && <AllocationSheetSvg data={sheetData} />}
       </div>
 
       <style jsx global>{`
         @media print {
-          @page { size: A4; margin: 0; }
-          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          @page {
+            size: A4 portrait;
+            margin: 0;
+          }
+          body {
+            background: white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
         }
       `}</style>
     </div>

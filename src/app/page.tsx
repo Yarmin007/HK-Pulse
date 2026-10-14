@@ -4,7 +4,7 @@ import {
   Users, ShoppingCart, Clock, AlertTriangle, 
   CheckCircle2, BarChart2, Edit3, Loader2, Search,
   Bell, ClipboardList, Calendar, User, Plane, X, Timer, ChevronLeft,
-  CheckSquare, RefreshCw, ChevronRight, Play
+  CheckSquare, RefreshCw, ChevronRight, Play, Eye, ArrowLeft, UserCog
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
@@ -62,10 +62,6 @@ type TeamConfig = {
     nicknames: Record<string, string>;
 };
 
-// =========================================================================
-// 🖥️ MAIN DASHBOARD COMPONENT
-// =========================================================================
-
 export default function Dashboard() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isSupervisor, setIsSupervisor] = useState(false);
@@ -89,6 +85,7 @@ export default function Dashboard() {
 
   const [teamConfig, setTeamConfig] = useState<TeamConfig>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {} });
   const [allHosts, setAllHosts] = useState<any[]>([]);
+  const [simulationHosts, setSimulationHosts] = useState<any[]>([]);
   const [allSubDepts, setAllSubDepts] = useState<string[]>([]);
   
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
@@ -101,11 +98,14 @@ export default function Dashboard() {
   const [selectedTeamHost, setSelectedTeamHost] = useState<any | null>(null);
   const [selectedTeamHostAtt, setSelectedTeamHostAtt] = useState<any[]>([]);
 
+  // ⚡ SEARCHABLE SIMULATION MODAL STATES
+  const [isSimulateModalOpen, setIsSimulateModalOpen] = useState(false);
+  const [simulateSearchTerm, setSimulateSearchTerm] = useState('');
+
   const [myAttendance, setMyAttendance] = useState<any[]>([]);
   const [payrollStart, setPayrollStart] = useState<Date>(getDhakaTime());
   const [payrollEnd, setPayrollEnd] = useState<Date>(getDhakaTime());
 
-  // ⚡ FIX: This is the ONLY date state now. It controls everything.
   const [cutoffDate, setCutoffDate] = useState(getDhakaDateStr());
   const cutoffDateRef = useRef(cutoffDate); 
 
@@ -118,8 +118,21 @@ export default function Dashboard() {
       cutoffDateRef.current = cutoffDate;
   }, [cutoffDate]);
 
+  // Load all hosts for the simulation switcher unconditionally
+  const loadSimulationHosts = async () => {
+    const { data } = await supabase
+      .from('hsk_hosts')
+      .select('id, host_id, full_name, role, system_role, allowed_modules, jetty_allocation, status')
+      .neq('status', 'Resigned')
+      .order('full_name');
+    if (data && data.length > 0) {
+      setSimulationHosts(data);
+    }
+  };
+
   useEffect(() => { 
       fetchDashboardData(); 
+      loadSimulationHosts();
       const reqChannel = supabase.channel('dashboard_reqs')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, () => { fetchDashboardData(false); }).subscribe();
       const orderChannel = supabase.channel('dashboard_orders')
@@ -128,7 +141,6 @@ export default function Dashboard() {
       return () => { supabase.removeChannel(reqChannel); supabase.removeChannel(orderChannel); };
   }, []);
 
-  // ⚡ FIX: Any time cutoffDate changes, instantly fetch new data from DB
   useEffect(() => {
       if (!isLoading) {
           const fetchRPC = async () => {
@@ -139,7 +151,6 @@ export default function Dashboard() {
       }
   }, [cutoffDate, isLoading]);
 
-  // ⚡ LIVE TIMER FOR ACTIVE DASHBOARD BANNER
   useEffect(() => {
       let interval: NodeJS.Timeout;
       const updateTimer = () => {
@@ -171,7 +182,6 @@ export default function Dashboard() {
   const handleHostClick = async (itemData: any) => {
       setSelectedTeamHost(itemData);
       setSelectedTeamHostAtt([]);
-      // ⚡ FIX: Math is now correctly wired to the global cutoffDate
       const period = getPayrollPeriod(parseISO(cutoffDate));
       const { data } = await supabase.from('hsk_attendance')
           .select('*')
@@ -185,15 +195,73 @@ export default function Dashboard() {
       if (selectedTeamHost) handleHostClick(selectedTeamHost);
   }, [cutoffDate]);
 
+  const handleSimulateHost = (host: any) => {
+    // ⚡ If not already simulating, back up the current true Super Admin session
+    const existingRaw = localStorage.getItem('hk_pulse_session');
+    let adminOrigin = currentUser?.impersonating_from;
+
+    if (existingRaw && !adminOrigin) {
+      try {
+        const parsed = JSON.parse(existingRaw);
+        if (!parsed.impersonating_from) {
+          localStorage.setItem('hk_pulse_true_admin_backup', existingRaw);
+          adminOrigin = {
+            id: parsed.id,
+            host_id: parsed.host_id,
+            full_name: parsed.full_name,
+            system_role: 'admin'
+          };
+        }
+      } catch (e) {}
+    }
+
+    const simulated = {
+      id: host.id,
+      host_id: host.host_id,
+      full_name: host.full_name,
+      role: host.role,
+      system_role: host.system_role || 'staff',
+      is_super_admin: false,
+      allowed_modules: host.allowed_modules || ['allocation', 'tasks'],
+      jetty_allocation: host.jetty_allocation,
+      impersonating_from: adminOrigin || {
+        id: currentUser?.id,
+        full_name: currentUser?.full_name,
+        system_role: 'admin'
+      }
+    };
+    localStorage.setItem('hk_pulse_session', JSON.stringify(simulated));
+    window.location.reload();
+  };
+
+  const handleExitSimulation = () => {
+    if (!currentUser?.impersonating_from) return;
+    const restored = {
+      id: currentUser.impersonating_from.id,
+      full_name: currentUser.impersonating_from.full_name,
+      system_role: 'admin',
+      is_super_admin: true,
+      allowed_modules: ['all']
+    };
+    localStorage.setItem('hk_pulse_session', JSON.stringify(restored));
+    window.location.reload();
+  };
+
   const fetchDashboardData = async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
     const todayStr = getDhakaDateStr(); 
     const currentCutoff = cutoffDateRef.current;
 
-    const [constRes, configRes] = await Promise.all([
+    const [constRes, configRes, hostsListRes] = await Promise.all([
         supabase.from('hsk_constants').select('*'),
-        supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').maybeSingle()
+        supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').maybeSingle(),
+        supabase.from('hsk_hosts').select('id, host_id, full_name, role, system_role, allowed_modules, jetty_allocation, status').neq('status', 'Resigned').order('full_name')
     ]);
+
+    if (hostsListRes.data) {
+        setAllHosts(hostsListRes.data);
+        setSimulationHosts(hostsListRes.data);
+    }
 
     let loadedHolidays: any[] = [];
     if (constRes.data) {
@@ -224,7 +292,8 @@ export default function Dashboard() {
 
     if (sessionData) {
         const parsed = JSON.parse(sessionData);
-        adminFlag = parsed.system_role === 'admin' || localStorage.getItem('hk_pulse_admin_auth') === 'true';
+        const isCurrentlySimulating = !!parsed.impersonating_from;
+        adminFlag = !isCurrentlySimulating && (parsed.system_role === 'admin' || parsed.is_super_admin === true || localStorage.getItem('hk_pulse_admin_auth') === 'true');
         loggedHostId = String(parsed.host_id || '').trim();
         
         let allowedHosts: string[] = [];
@@ -240,11 +309,13 @@ export default function Dashboard() {
         setIsAdmin(adminFlag);
         setIsSupervisor(superFlag);
         
-        const { data: hostData } = await supabase.from('hsk_hosts').select('*').eq('host_id', loggedHostId).single();
+        const { data: hostData } = await supabase.from('hsk_hosts').select('*').eq('host_id', loggedHostId).maybeSingle();
         if (hostData) {
-            setCurrentUser(hostData);
+            setCurrentUser({ ...hostData, ...parsed });
             const localNick = localStorage.getItem(`nickname_${hostData.host_id}`);
             setDisplayName(config.nicknames[hostData.host_id] || localNick || '');
+        } else {
+            setCurrentUser(parsed);
         }
         
         if (superFlag) {
@@ -266,7 +337,6 @@ export default function Dashboard() {
             setRpcStats(rpcRes.data || []);
             setFutureLeaves(futureRes.data || []);
             setAnniversaryLeaves(anniRes.data || []);
-
         } else {
             const [rpcRes, futureRes, anniRes] = await Promise.all([
                 supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
@@ -285,12 +355,15 @@ export default function Dashboard() {
         
         if (adminFlag) {
              const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
-                supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'), 
+                supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'),
                 supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
                 supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
-            if (hostsRes.data) setAllHosts(hostsRes.data);
+            if (hostsRes.data) {
+                setAllHosts(hostsRes.data);
+                setSimulationHosts(hostsRes.data);
+            }
             setRpcStats(rpcRes.data || []);
             setFutureLeaves(futureRes.data || []);
             setAnniversaryLeaves(anniRes.data || []);
@@ -411,7 +484,6 @@ export default function Dashboard() {
       setIsLoadingTeam(false);
   }, [allHosts, rpcStats, futureLeaves, anniversaryLeaves, cutoffDate, publicHolidays, teamConfig]);
 
-  // ⚡ FIX: Ensuring loadTeamLeaves reliably fires when cutoffDate or rpcStats update
   useEffect(() => {
       if (isTeamModalOpen) loadTeamLeaves();
   }, [rpcStats, cutoffDate, isTeamModalOpen, loadTeamLeaves]);
@@ -426,7 +498,6 @@ export default function Dashboard() {
       return computeLeaveBalancesRPC(currentUser, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
   }, [currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves]);
 
-  // FULLY RESPONSIVE CALENDAR GRID
   const renderPayrollGrid = (attendanceArray: any[], startDateObj: Date, endDateObj: Date) => {
       if (!attendanceArray) return null;
       
@@ -504,6 +575,7 @@ export default function Dashboard() {
 
   const hour = getDhakaTime().getHours();
   const greeting = hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening';
+  const isSuperAdminUser = currentUser?.is_super_admin || !!currentUser?.impersonating_from;
 
   if (isLoading) {
       return (
@@ -519,7 +591,25 @@ export default function Dashboard() {
   return (
     <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800 pb-20">
       
-      {/* REDESIGNED CENTERED PROFILE HEADER */}
+      {/* ⚡ SIMULATION ACTIVE ALERT BANNER */}
+      {currentUser?.impersonating_from && (
+        <div className="bg-amber-500 text-slate-950 px-4 py-2.5 flex items-center justify-between text-xs font-black shadow-md border-b border-amber-600 sticky top-0 z-40">
+          <div className="flex items-center gap-2 truncate">
+            <Eye size={16} className="animate-pulse shrink-0 text-slate-950" />
+            <span className="truncate">
+              Viewing Dashboard as: <strong>{currentUser.full_name}</strong> ({currentUser.role} • {currentUser.system_role?.toUpperCase()})
+            </span>
+          </div>
+          <button
+            onClick={handleExitSimulation}
+            className="bg-black text-white hover:bg-slate-900 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 shrink-0 active:scale-95 transition-all shadow-sm"
+          >
+            <ArrowLeft size={12} /> Exit Simulation
+          </button>
+        </div>
+      )}
+
+      {/* CENTERED PROFILE HEADER */}
       <div className="relative pt-10 md:pt-16 pb-8 px-4 md:px-8 flex flex-col items-center justify-center text-center bg-white/80 backdrop-blur-xl border-b border-slate-200 shadow-[0_4px_30px_rgba(0,0,0,0.02)] z-30 animate-in fade-in slide-in-from-top-4">
           
           <div 
@@ -577,18 +667,48 @@ export default function Dashboard() {
               <span className="text-[10px] font-bold uppercase tracking-widest opacity-50">Resort Time</span>
           </div>
 
+          {/* ⚡ PILL ROW: SEARCHABLE VIEW AS STAFF + TEAM LEAVES + HOLIDAYS + DATE */}
           <div className="flex flex-wrap items-center justify-center gap-3 mt-6 w-full">
+              
+              {/* VIEW AS / SIMULATE STAFF BUTTON (SEARCHABLE MODAL TRIGGER) */}
+              {isSuperAdminUser && (
+                  currentUser?.impersonating_from ? (
+                      <button
+                          onClick={handleExitSimulation}
+                          className="text-[10px] md:text-xs font-black text-amber-950 bg-amber-400 hover:bg-amber-500 px-4 md:px-5 py-2.5 md:py-3 rounded-2xl transition-all uppercase tracking-widest border border-amber-500 flex items-center gap-2 shadow-md active:scale-95 animate-pulse cursor-pointer"
+                      >
+                          <ArrowLeft size={15} className="shrink-0"/> 
+                          <span>Exit ({currentUser.full_name?.split(' ')[0]})</span>
+                      </button>
+                  ) : (
+                      <button 
+                          onClick={() => {
+                              setSimulateSearchTerm("");
+                              loadSimulationHosts();
+                              setIsSimulateModalOpen(true);
+                          }}
+                          className="text-[10px] md:text-xs font-black text-emerald-700 bg-emerald-50 px-4 md:px-5 py-2.5 md:py-3 rounded-2xl hover:bg-emerald-100 transition-colors uppercase tracking-widest border border-emerald-200 flex items-center gap-2 shadow-sm active:scale-95 cursor-pointer"
+                      >
+                          <UserCog size={15}/> View As Staff
+                      </button>
+                  )
+              )}
+
+              {/* TEAM LEAVES BUTTON */}
               {isSupervisor && (
-                  <button onClick={loadTeamLeaves} className="text-[10px] md:text-xs font-black text-purple-600 bg-purple-50 px-4 md:px-5 py-2.5 md:py-3 rounded-xl hover:bg-purple-100 transition-colors uppercase tracking-widest border border-purple-200 flex items-center gap-2 shadow-sm">
-                      <BarChart2 size={16}/> Team Leaves
+                  <button onClick={loadTeamLeaves} className="text-[10px] md:text-xs font-black text-purple-600 bg-purple-50 px-4 md:px-5 py-2.5 md:py-3 rounded-2xl hover:bg-purple-100 transition-colors uppercase tracking-widest border border-purple-200 flex items-center gap-2 shadow-sm">
+                      <BarChart2 size={15}/> Team Leaves
                   </button>
               )}
-              <button onClick={() => setIsHolidayModalOpen(true)} className="text-[10px] md:text-xs font-black text-blue-600 bg-blue-50 px-4 md:px-5 py-2.5 md:py-3 rounded-xl hover:bg-blue-100 transition-colors uppercase tracking-widest border border-blue-200 flex items-center gap-2 shadow-sm">
-                  <Plane size={16}/> Holidays
+
+              {/* HOLIDAYS BUTTON */}
+              <button onClick={() => setIsHolidayModalOpen(true)} className="text-[10px] md:text-xs font-black text-blue-600 bg-blue-50 px-4 md:px-5 py-2.5 md:py-3 rounded-2xl hover:bg-blue-100 transition-colors uppercase tracking-widest border border-blue-200 flex items-center gap-2 shadow-sm">
+                  <Plane size={15}/> Holidays
               </button>
               
-              <div className="flex items-center bg-white px-3 md:px-4 py-2 md:py-2.5 rounded-xl border border-slate-200 shadow-sm hover:border-[#6D2158] transition-colors gap-2">
-                  <Calendar size={16} className="text-[#6D2158] shrink-0" />
+              {/* DATE PICKER PILL */}
+              <div className="flex items-center bg-white px-3 md:px-4 py-2 md:py-2.5 rounded-2xl border border-slate-200 shadow-sm hover:border-[#6D2158] transition-colors gap-2">
+                  <Calendar size={15} className="text-[#6D2158] shrink-0" />
                   <input 
                       type="date" 
                       className="bg-transparent font-black text-xs md:text-sm text-[#6D2158] uppercase tracking-widest outline-none cursor-pointer"
@@ -854,272 +974,102 @@ export default function Dashboard() {
           )}
       </div>
 
-      {/* --- PUBLIC HOLIDAYS MODAL --- */}
-      {isHolidayModalOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-              <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95">
-                  <div className="p-6 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
-                      <div>
-                          <h3 className="font-black text-xl flex items-center gap-2 tracking-tight"><Plane size={20}/> Public Holidays</h3>
-                          <p className="text-[10px] uppercase tracking-widest text-white/70 mt-1">Maldives</p>
-                      </div>
-                      <button onClick={() => setIsHolidayModalOpen(false)} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors"><X size={18}/></button>
-                  </div>
-                  <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto custom-scrollbar bg-slate-50">
-                      {publicHolidays.length === 0 ? (
-                          <p className="text-center text-slate-400 italic text-sm py-10">No public holidays have been configured.</p>
-                      ) : (
-                          publicHolidays.map((h) => (
-                              <div key={h.id} className="flex justify-between items-center p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
-                                  <span className="font-bold text-slate-700 text-sm">{h.name}</span>
-                                  <span className="text-[10px] font-black text-[#6D2158] bg-[#6D2158]/10 px-3 py-1.5 rounded-lg uppercase tracking-wider">
-                                      {format(parseISO(h.date), 'dd MMM yyyy')}
-                                  </span>
-                              </div>
-                          ))
-                      )}
-                      <p className="text-[10px] text-slate-400 italic text-center pt-2">Note: Islamic holiday dates are estimates and subject to moon sighting.</p>
-                  </div>
+      {/* --- SEARCHABLE HOST SIMULATION MODAL --- */}
+      {isSimulateModalOpen && (
+        <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col border border-slate-100 animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-emerald-700 to-emerald-800 text-white flex justify-between items-center shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-white/10 rounded-xl">
+                  <UserCog size={20} className="text-white" />
+                </div>
+                <div>
+                  <h3 className="font-black text-lg tracking-tight">Simulate Host View</h3>
+                  <p className="text-[10px] uppercase font-bold tracking-widest text-emerald-200">
+                    Test Permissions & Experience
+                  </p>
+                </div>
               </div>
+              <button 
+                onClick={() => setIsSimulateModalOpen(false)} 
+                className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Live Search Input */}
+            <div className="p-4 bg-slate-50 border-b border-slate-100">
+              <div className="relative">
+                <Search className="absolute left-3.5 top-3 text-slate-400" size={16} />
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Type name, role, or ID (e.g. 101, Laundry)..."
+                  className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl font-bold text-xs sm:text-sm text-slate-800 outline-none focus:border-emerald-600 shadow-2xs placeholder:text-slate-400"
+                  value={simulateSearchTerm}
+                  onChange={(e) => setSimulateSearchTerm(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Filtered Host Results List */}
+            <div className="p-3 max-h-72 overflow-y-auto space-y-1.5 custom-scrollbar bg-slate-50/50">
+              {(() => {
+                const term = simulateSearchTerm.toLowerCase().trim();
+                const filtered = simulationHosts.filter((h: any) => 
+                  !term || 
+                  h.full_name?.toLowerCase().includes(term) ||
+                  h.role?.toLowerCase().includes(term) ||
+                  String(h.host_id || '').includes(term) ||
+                  h.jetty_allocation?.toLowerCase().includes(term)
+                );
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-slate-400 italic font-bold text-xs">
+                      No host found matching &ldquo;{simulateSearchTerm}&rdquo;
+                    </div>
+                  );
+                }
+
+                return filtered.map((host: any) => (
+                  <button
+                    key={host.id}
+                    onClick={() => {
+                      setIsSimulateModalOpen(false);
+                      handleSimulateHost(host);
+                    }}
+                    className="w-full text-left p-3 rounded-2xl bg-white hover:bg-emerald-50 border border-slate-100 hover:border-emerald-200 transition-all flex items-center justify-between group shadow-2xs cursor-pointer active:scale-98"
+                  >
+                    <div className="min-w-0 pr-3">
+                      <div className="font-black text-xs sm:text-sm text-slate-800 group-hover:text-emerald-800 truncate">
+                        {host.full_name}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+                        {host.role || 'Staff'} {host.host_id ? `• ID: ${host.host_id}` : ''}
+                      </div>
+                    </div>
+                    <span className="text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-md bg-slate-100 text-slate-600 group-hover:bg-emerald-100 group-hover:text-emerald-700 shrink-0">
+                      Switch →
+                    </span>
+                  </button>
+                ));
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-3 bg-white border-t border-slate-100 text-center">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                {simulationHosts.length} Active Hosts Available
+              </span>
+            </div>
           </div>
+        </div>
       )}
 
-      {/* --- GRAPHICAL TEAM LEAVE INSIGHTS MODAL --- */}
-      {isTeamModalOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-0 md:p-4 animate-in fade-in duration-200">
-              <div className="bg-[#FDFBFD] w-full max-w-6xl rounded-none md:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col h-[100dvh] md:h-[95vh] md:max-h-[90vh] animate-in zoom-in-95">
-                  <div className="p-4 md:p-6 bg-[#6D2158] text-white flex flex-col md:flex-row justify-between items-start md:items-center shrink-0 gap-4 pt-10 md:pt-6">
-                      <div className="flex justify-between w-full md:w-auto items-start">
-                          <div>
-                              <h3 className="font-black text-xl md:text-3xl flex items-center gap-2 md:gap-3 tracking-tight"><BarChart2 className="w-6 h-6 md:w-8 md:h-8"/> Team Leaves</h3>
-                              <p className="text-[9px] md:text-xs uppercase tracking-widest text-white/70 mt-1 font-bold">Leave Liability Overview</p>
-                          </div>
-                          <button onClick={() => {setIsTeamModalOpen(false); setSelectedTeamHost(null);}} className="p-2 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95 md:hidden"><X size={18}/></button>
-                      </div>
-                      
-                      {/* ⚡ FIX: Restored invisible overlay trick for native clicking! */}
-                      <div className="flex items-center gap-3 w-full md:w-auto justify-between">
-                          <div className="relative cursor-pointer group w-full md:w-auto">
-                              <input 
-                                  type="date" 
-                                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30"
-                                  value={cutoffDate}
-                                  onChange={e => e.target.value && setCutoffDate(e.target.value)}
-                              />
-                              <div className="flex items-center bg-white/10 px-3 md:px-4 py-2 md:py-2.5 rounded-xl border border-white/20 gap-2 w-full transition-colors group-hover:bg-white/20">
-                                  <Calendar size={14} className="text-white shrink-0"/>
-                                  <span className="text-white font-bold text-xs md:text-sm tracking-widest uppercase">{format(parseISO(cutoffDate), 'dd MMM yyyy')}</span>
-                              </div>
-                          </div>
-                          <button onClick={() => {setIsTeamModalOpen(false); setSelectedTeamHost(null);}} className="p-3 bg-white/10 rounded-full hover:bg-white/20 transition-colors active:scale-95 hidden md:block"><X size={20}/></button>
-                      </div>
-                  </div>
-
-                  <div className="flex flex-col flex-1 overflow-hidden">
-                      {isLoadingTeam ? (
-                          <div className="flex flex-col items-center justify-center h-full text-[#6D2158]">
-                               <Loader2 size={48} className="animate-spin mb-4"/>
-                               <p className="font-bold uppercase tracking-widest text-sm">Analyzing Team Data...</p>
-                          </div>
-                      ) : teamBalances.length === 0 ? (
-                          <div className="text-center py-32 text-slate-400">
-                              <Users size={64} className="mx-auto mb-4 opacity-20"/>
-                              <p className="font-bold text-lg">No team members found in your scope.</p>
-                          </div>
-                      ) : selectedTeamHost ? (
-                          <div className="flex flex-col h-full bg-slate-50 animate-in slide-in-from-right-8">
-                              <div className="p-4 md:p-6 border-b border-slate-200 bg-white shrink-0 flex items-center justify-between">
-                                  <div>
-                                      <button onClick={() => setSelectedTeamHost(null)} className="text-[10px] font-bold uppercase tracking-widest text-[#6D2158] flex items-center gap-1 mb-2 hover:opacity-70 transition-opacity">
-                                          <ChevronLeft size={14}/> Back to Team List
-                                      </button>
-                                      <h3 className="font-black text-xl text-slate-800">{selectedTeamHost.host.full_name}</h3>
-                                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{selectedTeamHost.host.role}</p>
-                                  </div>
-                                  <div className="text-right">
-                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Leaves Owed</p>
-                                      <p className="text-3xl font-black text-[#6D2158]">{selectedTeamHost.balances.balTotal}</p>
-                                  </div>
-                              </div>
-                              <div className="p-4 md:p-8 overflow-y-auto flex-1 pb-32">
-                                  <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
-                                      <div className="grid grid-cols-7 gap-2 xl:gap-3 mb-2 min-w-[600px]">
-                                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-                                              <div key={d} className="text-center text-[10px] xl:text-xs font-black uppercase text-slate-400 tracking-widest">
-                                                  {d}
-                                              </div>
-                                          ))}
-                                      </div>
-                                      {(() => {
-                                          const teamPeriod = getPayrollPeriod(parseISO(cutoffDate));
-                                          return renderPayrollGrid(selectedTeamHostAtt, teamPeriod.start, teamPeriod.end);
-                                      })()}
-                                  </div>
-                              </div>
-                          </div>
-                      ) : (
-                          <div className="flex flex-col h-full">
-                              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 md:p-6 border-b border-slate-200 bg-white shrink-0">
-                                  <div className="flex-1 flex gap-2 overflow-x-auto custom-scrollbar pb-2 w-full min-w-0">
-                                      <button onClick={() => setActiveDeptTab('All')} className={`shrink-0 px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === 'All' ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>All Staff</button>
-                                      
-                                      {(isAdmin ? allSubDepts : Array.from(new Set(teamBalances.map(c => c.department))).filter(d => d !== 'Unassigned').sort()).map((dept: any) => (
-                                          <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`shrink-0 px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-black text-[10px] md:text-xs uppercase tracking-widest whitespace-nowrap transition-all shadow-sm ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border border-[#6D2158]' : 'bg-slate-50 text-slate-500 border border-slate-200 hover:border-slate-300'}`}>{dept}</button>
-                                      ))}
-                                  </div>
-                                  
-                                  <div className="flex gap-2 w-full lg:w-auto shrink-0">
-                                      <select 
-                                          className="px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-[10px] md:text-xs outline-none focus:border-[#6D2158] transition-colors text-slate-600 uppercase tracking-widest cursor-pointer shrink-0"
-                                          value={teamSortBy}
-                                          onChange={(e) => setTeamSortBy(e.target.value as any)}
-                                      >
-                                          <option value="balTotal">Sort: Total</option>
-                                          <option value="balOff">Sort: Off Days</option>
-                                          <option value="balAL">Sort: Annual</option>
-                                      </select>
-                                      <div className="relative w-full sm:w-48">
-                                          <Search className="absolute left-3 top-2.5 md:top-3 text-slate-400" size={16}/>
-                                          <input type="text" placeholder="Search..." className="w-full pl-10 pr-4 py-2 md:py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs md:text-sm outline-none focus:border-[#6D2158] transition-colors" value={teamSearch} onChange={e => setTeamSearch(e.target.value)} />
-                                      </div>
-                                  </div>
-                              </div>
-
-                              <div className="flex-1 overflow-y-auto custom-scrollbar bg-slate-50 md:bg-white pb-32">
-                                  {(() => {
-                                      let deptData = [...teamBalances];
-                                      if (activeDeptTab !== 'All') {
-                                          deptData = deptData.filter((c: any) => c.department === activeDeptTab);
-                                      }
-                                      if (teamSearch) {
-                                          deptData = deptData.filter((c: any) => c.host.full_name.toLowerCase().includes(teamSearch.toLowerCase()) || String(c.host.host_id).includes(teamSearch));
-                                      }
-
-                                      deptData.sort((a: any, b: any) => parseFloat(b.balances[teamSortBy]) - parseFloat(a.balances[teamSortBy]));
-
-                                      const totalOff = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balOff), 0);
-                                      const totalAL = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balAL), 0);
-                                      const totalPH = deptData.reduce((acc: number, curr: any) => acc + parseFloat(curr.balances.balPH), 0);
-                                      const overall = totalOff + totalAL + totalPH;
-                                      
-                                      const offPct = overall ? (totalOff / overall) * 100 : 0;
-                                      const alPct = overall ? (totalAL / overall) * 100 : 0;
-
-                                      return (
-                                          <div className="p-4 md:p-8 space-y-6 md:space-y-8 animate-in fade-in duration-300">
-                                              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-6">
-                                                  <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
-                                                      <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Liability</div>
-                                                      <div className="text-2xl md:text-4xl font-black text-rose-600">{overall.toFixed(1)} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
-                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 md:h-24 bg-rose-50 rounded-full blur-2xl"></div>
-                                                  </div>
-                                                  
-                                                  <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex flex-col justify-center text-center relative overflow-hidden">
-                                                      <div className="text-[9px] md:text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Highest Balance</div>
-                                                      <div className="text-2xl md:text-4xl font-black text-amber-600">{deptData[0]?.balances.balTotal || 0} <span className="text-[10px] md:text-sm text-slate-400 font-bold uppercase tracking-widest">Days</span></div>
-                                                      <div className="text-[9px] md:text-xs font-bold text-slate-600 bg-amber-50 px-2 py-1 md:px-3 md:py-1.5 rounded-lg mt-2 inline-block mx-auto border border-amber-100 truncate max-w-[100px] md:max-w-full">{deptData[0]?.host.full_name || 'N/A'}</div>
-                                                      <div className="absolute -bottom-4 -right-4 w-16 h-16 md:w-24 md:h-24 bg-amber-50 rounded-full blur-2xl"></div>
-                                                  </div>
-
-                                                  <div className="col-span-2 md:col-span-1 bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl shadow-sm border border-slate-200 flex items-center justify-around md:justify-start gap-4 md:gap-6">
-                                                      <div style={{ background: `conic-gradient(#10b981 ${offPct}%, #06b6d4 0 ${offPct + alPct}%, #3b82f6 0)` }} className="w-16 h-16 md:w-24 md:h-24 rounded-full relative shadow-inner shrink-0">
-                                                          <div className="absolute inset-2 md:inset-3 bg-white rounded-full flex items-center justify-center font-black text-slate-800 text-sm md:text-lg shadow-sm">{deptData.length}</div>
-                                                      </div>
-                                                      <div className="flex-1 space-y-1.5 md:space-y-2">
-                                                          <div className="flex justify-between items-center text-[10px] md:text-xs font-bold"><span className="flex items-center gap-2"><span className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-emerald-500"></span> Off Days</span> <span>{totalOff.toFixed(1)}</span></div>
-                                                          <div className="flex justify-between items-center text-[10px] md:text-xs font-bold"><span className="flex items-center gap-2"><span className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-cyan-500"></span> Annual</span> <span>{totalAL.toFixed(1)}</span></div>
-                                                          <div className="flex justify-between items-center text-[10px] md:text-xs font-bold"><span className="flex items-center gap-2"><span className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-blue-500"></span> Pub Hol</span> <span>{totalPH.toFixed(1)}</span></div>
-                                                      </div>
-                                                  </div>
-                                              </div>
-
-                                              <div className="bg-white p-0 md:p-8 rounded-2xl md:rounded-[2rem] md:shadow-sm md:border border-slate-200">
-                                                  <div className="flex flex-col space-y-0 md:space-y-3">
-                                                      {deptData.length === 0 ? (
-                                                          <div className="text-center py-10 text-slate-400 font-bold italic text-sm border border-slate-100 rounded-2xl">No matches found.</div>
-                                                      ) : (
-                                                          deptData.map((itemData: any, idx: number) => {
-                                                              const { host, balances, upcoming } = itemData;
-                                                              const total = parseFloat(balances.balTotal);
-                                                              const max = Math.max(...deptData.map((t: any) => parseFloat(t.balances.balTotal)), 1);
-                                                              const overallWidth = Math.max((total / max) * 100, 0);
-                                                              
-                                                              const oPct = total ? (parseFloat(balances.balOff) / total) * 100 : 0;
-                                                              const aPct = total ? (parseFloat(balances.balAL) / total) * 100 : 0;
-                                                              const pPct = total ? (parseFloat(balances.balPH) / total) * 100 : 0;
-
-                                                              return (
-                                                                  <div 
-                                                                      key={host.host_id} 
-                                                                      onClick={() => handleHostClick(itemData)}
-                                                                      className="flex flex-col gap-2 md:gap-3 group p-4 border-b border-slate-100 md:border md:border-transparent md:rounded-2xl hover:bg-slate-50 transition-colors cursor-pointer last:border-0"
-                                                                  >
-                                                                      
-                                                                      <div className="flex justify-between items-start md:items-end gap-2">
-                                                                          <div className="min-w-0 flex-1">
-                                                                              <div className="font-bold text-sm text-slate-800 flex items-center gap-1.5 md:gap-2 truncate group-hover:text-[#6D2158] transition-colors">
-                                                                                  <span className="text-[10px] text-slate-400 font-mono w-4 shrink-0">{idx + 1}.</span> 
-                                                                                  <span className="truncate">{host.full_name}</span>
-                                                                                  {teamConfig.nicknames?.[host.host_id] && (
-                                                                                      <span className="text-[9px] bg-purple-50 text-[#6D2158] px-1.5 py-0.5 rounded font-black uppercase tracking-widest shrink-0 ml-1">AKA: {teamConfig.nicknames[host.host_id]}</span>
-                                                                                  )}
-                                                                                  <span className="hidden sm:inline text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-white shadow-sm border border-slate-200 px-2 py-0.5 rounded-md shrink-0 ml-1">{host.role}</span>
-                                                                              </div>
-                                                                              
-                                                                              <div className="pl-5 mt-1.5 flex flex-wrap gap-2">
-                                                                                  {upcoming?.isOnLeaveNow && (
-                                                                                      <span className="text-[9px] bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1 w-max border border-cyan-200">
-                                                                                          <Plane size={10}/> On Leave • Returns {format(upcoming.returnDate, 'MMM d')}
-                                                                                      </span>
-                                                                                  )}
-                                                                                  {!upcoming?.isOnLeaveNow && upcoming && upcoming.daysUntilLeave <= 30 && (
-                                                                                      <span className="text-[9px] bg-amber-50 text-amber-600 px-2 py-0.5 rounded font-bold uppercase tracking-wider flex items-center gap-1 w-max border border-amber-200">
-                                                                                          <Calendar size={10}/> Leave in {upcoming.daysUntilLeave}d
-                                                                                      </span>
-                                                                                  )}
-                                                                              </div>
-                                                                          </div>
-                                                                          <div className="text-right shrink-0">
-                                                                              <span className={`font-black text-base md:text-lg ${parseFloat(balances[teamSortBy]) > (teamSortBy === 'balTotal' ? 15 : 7) ? 'text-rose-600' : 'text-[#6D2158]'}`}>
-                                                                                  {balances[teamSortBy]}
-                                                                              </span>
-                                                                              {teamSortBy !== 'balTotal' && (
-                                                                                  <div className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{teamSortBy === 'balOff' ? 'Off Days' : 'Annual'}</div>
-                                                                              )}
-                                                                          </div>
-                                                                      </div>
-                                                                      
-                                                                      <div className="h-3 md:h-4 w-full bg-slate-100 rounded-full flex shadow-inner p-0.5 mt-1">
-                                                                          <div className="h-full flex gap-0.5" style={{width: `${overallWidth}%`}}>
-                                                                              {oPct > 0 && <div className="h-full bg-emerald-500 rounded-l-full" style={{width: `${oPct}%`}}></div>}
-                                                                              {aPct > 0 && <div className="h-full bg-cyan-500" style={{width: `${aPct}%`}}></div>}
-                                                                              {pPct > 0 && <div className="h-full bg-blue-500 rounded-r-full" style={{width: `${pPct}%`}}></div>}
-                                                                          </div>
-                                                                      </div>
-
-                                                                      <div className="flex gap-4 text-[8px] md:text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
-                                                                          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> {balances.balOff}</span>
-                                                                          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-cyan-500"></span> {balances.balAL}</span>
-                                                                          <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span> {balances.balPH}</span>
-                                                                      </div>
-                                                                  </div>
-                                                              );
-                                                          })
-                                                      )}
-                                                  </div>
-                                              </div>
-                                          </div>
-                                      );
-                                  })()}
-                              </div>
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-      )}
-
-      {/* ⚡ ACTIVE SERVICE FLOATING BANNER FOR DASHBOARD */}
+      {/* ⚡ ACTIVE SERVICE FLOATING BANNER */}
       {activeService && (
           <Link href="/my-tasks" className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-colors ${
               cleaningElapsedSeconds > 3600 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'

@@ -1,13 +1,70 @@
-import React, { useState } from 'react';
-import { Search, Plus, X, Pointer, RefreshCw, Users, Share2 } from "lucide-react";
+"use client";
+
+import React, { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
+import { 
+    Search, Plus, X, Pointer, RefreshCw, Users, Share2, 
+    Calendar, Plane, AlertTriangle, UserCheck 
+} from "lucide-react";
 import toast from 'react-hot-toast';
 import { 
     AREAS, TOTAL_VILLAS, JETTY_A, JETTY_B, JETTY_C, BEACH, 
     parseVillas, getDefaultArea 
 } from '../lib/constants';
 
+interface Host {
+  id: string;
+  host_id?: string;
+  full_name: string;
+  nicknames?: string;
+  mvpn?: string;
+  company_mobile?: string;
+  personal_mobile?: string;
+  role?: string;
+  sub_department?: string;
+}
+
+interface Allocation {
+  id?: string;
+  host_id: string;
+  area: string;
+  shift: string;
+  task_details: string;
+  report_date: string;
+}
+
+interface ActiveLeaveRecord {
+  id?: string;
+  host_id: string;
+  leave_type: string;
+  start_date: string;
+  end_date: string;
+}
+
+interface VillaBoardProps {
+  hosts: Host[];
+  setHosts?: React.Dispatch<React.SetStateAction<any[]>>;
+  allocations: Allocation[];
+  setAllocations: React.Dispatch<React.SetStateAction<Allocation[]>>;
+  masterList: any[];
+  setIsDirty: (val: boolean) => void;
+  selectedDate: string;
+  activeArea?: string;
+}
+
+const LEAVE_TYPES = [
+  { value: "AL", label: "Annual Leave (AL)" },
+  { value: "OFF", label: "Day Off (OFF)" },
+  { value: "PH", label: "Public Holiday (PH)" },
+  { value: "NPL", label: "No Pay Leave (NPL)" },
+  { value: "PL", label: "Paternity Leave (PL)" },
+  { value: "ML", label: "Maternity Leave (ML)" },
+  { value: "SL", label: "Sick Leave (SL)" },
+  { value: "EL", label: "Emergency Leave (EL)" },
+];
+
 // --- INLINE SEARCH COMPONENT FOR BLOCKS ---
-const EmptyBlockSearch = ({ jettyId, candidates, onAssign, placeholder = "+ Search & Add VA", onCancel }: any) => {
+const EmptyBlockSearch = ({ candidates, onAssign, placeholder = "+ Search & Add VA", onCancel }: any) => {
     const [query, setQuery] = useState('');
     const [focused, setFocused] = useState(false);
 
@@ -52,14 +109,53 @@ const EmptyBlockSearch = ({ jettyId, candidates, onAssign, placeholder = "+ Sear
     );
 };
 
-export default function VillaBoard({ hosts, allocations, setAllocations, masterList, setIsDirty, selectedDate, activeArea }: any) {
+export default function VillaBoard({
+  hosts,
+  setHosts,
+  allocations,
+  setAllocations,
+  masterList,
+  setIsDirty,
+  selectedDate,
+}: VillaBoardProps) {
     const [villaSearchQuery, setVillaSearchQuery] = useState('');
     const [selectedVA, setSelectedVA] = useState<string | null>(null);
     const [swappingHostId, setSwappingHostId] = useState<string | null>(null);
     const [intendedJetties, setIntendedJetties] = useState<Record<string, string>>({});
     const [typingState, setTypingState] = useState<Record<string, string>>({});
+    
+    // Add Host to Pool Modal
     const [isAddHostModalOpen, setIsAddHostModalOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+
+    // Leave Tracking
+    const [activeLeaveRecords, setActiveLeaveRecords] = useState<ActiveLeaveRecord[]>([]);
+    const [selectedHostForLeave, setSelectedHostForLeave] = useState<Host | null>(null);
+    const [leaveForm, setLeaveForm] = useState({
+        leave_type: "AL",
+        start_date: selectedDate,
+        end_date: selectedDate,
+    });
+
+    useEffect(() => {
+        fetchActiveLeaves();
+    }, [selectedDate]);
+
+    const fetchActiveLeaves = async () => {
+        try {
+            const { data, error } = await supabase
+                .from("hsk_leave_requests")
+                .select("*")
+                .lte("start_date", selectedDate)
+                .gte("end_date", selectedDate);
+
+            if (!error && data) {
+                setActiveLeaveRecords(data as ActiveLeaveRecord[]);
+            }
+        } catch (err) {
+            console.warn("Error fetching leave records:", err);
+        }
+    };
 
     const handleShareLink = () => {
         const url = `${window.location.origin}/share/allocation`;
@@ -70,18 +166,149 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
         });
     };
 
-    const currentAreaHosts = hosts.filter((h: any) => {
-        const existingAlloc = allocations.find((a: any) => String(a.host_id) === String(h.id));
-        if (existingAlloc) return existingAlloc.area === 'villa';
-        return getDefaultArea(h) === 'villa';
-    }).sort((a: any, b: any) => {
-        const idxA = allocations.findIndex((alloc: any) => String(alloc.host_id) === String(a.id));
-        const idxB = allocations.findIndex((alloc: any) => String(alloc.host_id) === String(b.id));
-        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-        if (idxA !== -1) return -1;
-        if (idxB !== -1) return 1;
-        return 0; 
-    });
+    // Filter staff belonging to Villa team
+    const currentAreaHosts = React.useMemo(() => {
+        return hosts.filter((h: any) => {
+            const sub = (h.sub_department || '').toLowerCase();
+            const role = (h.role || '').toLowerCase();
+            return sub.includes('villa') || role.includes('villa') || getDefaultArea(h) === 'villa';
+        });
+    }, [hosts]);
+
+    const getHostLabel = (h: Host) => {
+        return h.nicknames ? h.nicknames.split(',')[0].trim() : h.full_name;
+    };
+
+    const getHostLeaveRecord = (hostId: string) => {
+        const targetHost = hosts.find((h) => h.id === hostId);
+        return activeLeaveRecords.find((l) => 
+            l.host_id === hostId || (targetHost?.host_id && l.host_id === targetHost.host_id)
+        );
+    };
+
+    const getLeaveBadge = (hostId: string) => {
+        const rec = getHostLeaveRecord(hostId);
+        if (!rec) return null;
+
+        if (rec.leave_type === "AL") {
+            return (
+                <span className="text-[9px] bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded font-black flex items-center gap-1">
+                    <Plane size={9} /> AL (till {rec.end_date})
+                </span>
+            );
+        }
+        if (["OFF", "PH"].includes(rec.leave_type)) {
+            return (
+                <span className="text-[9px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-black">
+                    {rec.leave_type} (till {rec.end_date})
+                </span>
+            );
+        }
+        return (
+            <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-black">
+                {rec.leave_type} (till {rec.end_date})
+            </span>
+        );
+    };
+
+    const handleSaveLeave = async () => {
+        if (!selectedHostForLeave) return;
+
+        try {
+            const dStart = new Date(leaveForm.start_date);
+            const dEnd = new Date(leaveForm.end_date);
+            const diffTime = Math.abs(dEnd.getTime() - dStart.getTime());
+            const daysCount = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+            const hostKey = String(selectedHostForLeave.id || selectedHostForLeave.host_id || "");
+            const hostNameVal = selectedHostForLeave.full_name || getHostLabel(selectedHostForLeave);
+
+            await supabase
+                .from("hsk_leave_requests")
+                .delete()
+                .eq("host_id", hostKey)
+                .lte("start_date", leaveForm.end_date)
+                .gte("end_date", leaveForm.start_date);
+
+            const payload = {
+                host_id: hostKey,
+                host_name: hostNameVal,
+                leave_type: String(leaveForm.leave_type),
+                start_date: String(leaveForm.start_date),
+                end_date: String(leaveForm.end_date),
+                total_days: Number(daysCount),
+                days_count: Number(daysCount),
+                status: "Approved",
+                reason: `${leaveForm.leave_type} applied from board`,
+            };
+
+            const { error } = await supabase.from("hsk_leave_requests").insert([payload]);
+
+            if (error) {
+                throw new Error(error.message || error.details || "Database constraint error");
+            }
+
+            toast.success(`${getHostLabel(selectedHostForLeave)} set to ${leaveForm.leave_type} until ${leaveForm.end_date}!`);
+            setSelectedHostForLeave(null);
+            fetchActiveLeaves();
+            setIsDirty(true);
+        } catch (err: any) {
+            console.error("Leave save error:", err);
+            toast.error("Failed to save leave: " + (err?.message || "Check database table"));
+        }
+    };
+
+    const handleRemoveLeave = async (leaveId?: string) => {
+        if (!leaveId) return;
+        try {
+            const { error } = await supabase.from("hsk_leave_requests").delete().eq("id", leaveId);
+            if (error) throw error;
+            toast.success("Leave removed!");
+            fetchActiveLeaves();
+            setIsDirty(true);
+        } catch (err: any) {
+            toast.error("Error clearing leave: " + (err?.message || "Could not delete"));
+        }
+    };
+
+    const handleAddToPool = async (hostId: string) => {
+        if (setHosts) {
+            setHosts((prev: Host[]) =>
+                prev.map((h) => (h.id === hostId ? { ...h, sub_department: "Villa" } : h))
+            );
+        }
+
+        const { error } = await supabase
+            .from("hsk_hosts")
+            .update({ sub_department: "Villa" })
+            .eq("id", hostId);
+
+        if (error) {
+            toast.error("Could not save to pool: " + error.message);
+        } else {
+            toast.success("Host added to Villa pool!");
+        }
+
+        setIsAddHostModalOpen(false);
+    };
+
+    const handleRemoveFromPool = async (hostId: string) => {
+        if (setHosts) {
+            setHosts((prev: Host[]) =>
+                prev.map((h) => (h.id === hostId ? { ...h, sub_department: "General" } : h))
+            );
+        }
+
+        await supabase
+            .from("hsk_hosts")
+            .update({ sub_department: "General" })
+            .eq("id", hostId);
+
+        setAllocations(allocations.filter((a: any) => !(String(a.host_id) === String(hostId) && a.area === 'villa')));
+        if (selectedVA === hostId) setSelectedVA(null);
+        setIsDirty(true);
+        toast.success("Host removed from pool");
+    };
 
     const getVillaData = (vNum?: number) => {
         if (!vNum) return null;
@@ -106,7 +333,7 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
         const filteredAllocs = allocations.filter((a: any) => String(a.host_id) !== String(hostId));
         
         let shiftToSet = 'Split';
-        if (existingAlloc && existingAlloc.shift !== 'Unassigned' && existingAlloc.shift !== 'Off') shiftToSet = existingAlloc.shift;
+        if (existingAlloc && existingAlloc.shift !== 'Unassigned') shiftToSet = existingAlloc.shift;
 
         setAllocations([...filteredAllocs, { report_date: selectedDate, host_id: hostId, area: 'villa', shift: shiftToSet, task_details: existingAlloc?.task_details || '' }]);
         setIntendedJetties(prev => ({ ...prev, [hostId]: jettyName }));
@@ -147,22 +374,6 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
         if (selectedVA === hostId) setSelectedVA(null);
         if (swappingHostId === hostId) setSwappingHostId(null);
         setIntendedJetties(prev => { const next = { ...prev }; delete next[hostId]; return next; });
-        setIsDirty(true);
-    };
-
-    const handleAllocUpdate = (hostId: string, field: string, value: string) => {
-        const existingIndex = allocations.findIndex((a: any) => String(a.host_id) === String(hostId));
-        if (field === 'shift' && ['Unassigned', 'Off', 'Annual Leave', 'Sick Leave'].includes(value)) {
-            setIntendedJetties(prev => { const next = { ...prev }; delete next[hostId]; return next; });
-        }
-
-        if (existingIndex >= 0) {
-            const newAllocs = [...allocations];
-            newAllocs[existingIndex] = { ...newAllocs[existingIndex], [field]: value };
-            setAllocations(newAllocs);
-        } else {
-            setAllocations([...allocations, { report_date: selectedDate, host_id: hostId, area: 'villa', shift: field === 'shift' ? value : 'Split', task_details: field === 'task_details' ? value : '' }]);
-        }
         setIsDirty(true);
     };
 
@@ -246,24 +457,8 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
         setIsDirty(true);
     };
 
-    const handleCleanUpPool = () => {
-        if (!confirm("This will remove any staff from this Unallocated list who are NOT natively Villa Attendants. Proceed?")) return;
-        const newAllocs = allocations.filter((a: any) => {
-            if (a.area !== 'villa') return true; 
-            const h = hosts.find((h: any) => String(h.id) === String(a.host_id));
-            if (!h) return false;
-            if (a.task_details && a.task_details.trim() !== '') return true;
-            if (getDefaultArea(h) === 'villa') return true;
-            return false;
-        });
-        setAllocations(newAllocs);
-        setIsDirty(true);
-        setSelectedVA(null);
-        toast.success("Pool cleaned successfully!");
-    };
-
     // --- DATA GROUPINGS ---
-    const hostGroups = { jettyA: [] as any[], jettyB: [] as any[], jettyC: [] as any[], beach: [] as any[], leave: [] as any[] };
+    const hostGroups = { jettyA: [] as any[], jettyB: [] as any[], jettyC: [] as any[], beach: [] as any[] };
     const unassignedVAs: any[] = [];
     const allAllocatedVillas = new Set<number>();
 
@@ -273,10 +468,6 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
 
     currentAreaHosts.forEach((host: any) => {
         const alloc = allocations.find((a: any) => String(a.host_id) === String(host.id));
-        const shift = alloc?.shift || '';
-        
-        if (['Off', 'Annual Leave', 'Sick Leave'].includes(shift)) return hostGroups.leave.push(host);
-
         const myVillas = parseVillas(alloc?.task_details || '');
         const intended = intendedJetties[host.id];
         
@@ -288,7 +479,7 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
             BEACH.includes(myVillas[0]) ? 'beach' : 'jettyA'
         );
 
-        if (!targetJetty || shift === 'Unassigned') unassignedVAs.push(host);
+        if (!alloc || !targetJetty) unassignedVAs.push(host);
         else if (targetJetty === 'jettyA') hostGroups.jettyA.push(host);
         else if (targetJetty === 'jettyB') hostGroups.jettyB.push(host);
         else if (targetJetty === 'jettyC') hostGroups.jettyC.push(host);
@@ -317,7 +508,7 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
             return (
                 <div key={key} className="flex flex-col bg-slate-50 border w-full border-slate-400 rounded-sm overflow-hidden shadow-sm h-full">
                     <div className="bg-[#6D2158] p-1 border-b border-slate-400">
-                        <EmptyBlockSearch jettyId={jettyId} candidates={unassignedVAs} onAssign={(hId: string) => handleBlockAssign(hId, jettyId)} />
+                        <EmptyBlockSearch candidates={unassignedVAs} onAssign={(hId: string) => handleBlockAssign(hId, jettyId)} />
                     </div>
                     <div className="bg-slate-100 border-b border-slate-400 text-[8px] font-mono text-slate-400 px-1 py-0.5 text-center truncate italic">No Contact Info</div>
                     <div className="grid grid-cols-2 bg-slate-200 border-b border-slate-400">
@@ -341,17 +532,21 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
         const isSelected = selectedVA === String(host.id);
         const displayName = host.nicknames ? host.nicknames.split(',')[0] : host.full_name;
         const contactInfo = [host.mvpn ? `MVPN: ${host.mvpn}` : '', host.company_mobile ? `Duty: ${host.company_mobile}` : '', host.personal_mobile ? `Per: ${host.personal_mobile}` : ''].filter(Boolean).join(' | ') || 'No Contact Info';
+        const leave = getHostLeaveRecord(host.id);
 
         return (
             <div key={key} onClick={() => setSelectedVA(host.id)} className={`flex flex-col bg-slate-50 border w-full rounded-sm overflow-hidden shadow-sm h-full cursor-pointer transition-all ${isSelected ? 'ring-2 ring-green-500 border-green-500 z-10' : 'border-slate-400 hover:border-slate-500'}`}>
                 <div className={`p-1 flex justify-between items-center text-white border-b border-slate-400 ${isSelected ? 'bg-green-600' : 'bg-[#6D2158]'}`}>
                     {swappingHostId === host.id ? (
                         <div className="w-full">
-                            <EmptyBlockSearch jettyId={jettyId} candidates={unassignedVAs} onAssign={(newHostId: string) => handleSwapHost(host.id, newHostId)} placeholder="Swap VA..." onCancel={() => setSwappingHostId(null)} />
+                            <EmptyBlockSearch candidates={unassignedVAs} onAssign={(newHostId: string) => handleSwapHost(host.id, newHostId)} placeholder="Swap VA..." onCancel={() => setSwappingHostId(null)} />
                         </div>
                     ) : (
                         <>
-                            <span className="text-[11px] font-bold pl-1 leading-tight truncate">{displayName}</span>
+                            <div className="flex items-center gap-1 min-w-0 pr-1">
+                                <span className="text-[11px] font-bold pl-1 leading-tight truncate">{displayName}</span>
+                                {leave && <span className="text-[7px] bg-rose-200 text-rose-900 px-1 rounded font-black">{leave.leave_type}</span>}
+                            </div>
                             <div className="flex items-center gap-1 shrink-0">
                                 <button onClick={(e) => { e.stopPropagation(); setSwappingHostId(host.id); }} className="text-white/60 hover:text-white px-1" title="Swap VA"><RefreshCw size={10}/></button>
                                 <button onClick={(e) => { e.stopPropagation(); handleRemove(host.id); }} className="text-white/60 hover:text-white px-1" title="Remove VA"><X size={12}/></button>
@@ -406,6 +601,7 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
     return (
         <div className="flex flex-col-reverse xl:flex-row gap-4 items-start w-full">
             <div className="flex-1 w-full min-w-0 flex flex-col gap-4">
+                
                 {/* ROW 1: JETTY A */}
                 <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-300">
                     <div className="bg-[#6D2158] text-white font-black text-center py-1.5 text-[10px] tracking-widest uppercase rounded-sm mb-2">Jetty A</div>
@@ -438,52 +634,70 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
                     </div>
                 </div>
 
-                {/* UNALLOCATED POOL */}
+                {/* VILLA STAFF POOL & LEAVE MANAGEMENT */}
                 <div className="mt-4 bg-white p-4 rounded-xl border border-slate-300 shadow-sm">
                     <div className="flex justify-between items-center mb-3 border-b border-slate-200 pb-2">
-                        <h3 className="text-xs font-black uppercase text-slate-700 tracking-widest">Unallocated & Leave Status</h3>
                         <div className="flex items-center gap-2">
-                            <button onClick={handleCleanUpPool} className="text-[10px] bg-rose-50 hover:bg-rose-100 text-rose-600 px-2 py-1 rounded font-bold transition-colors border border-rose-200 shadow-sm">Clean Up Pool</button>
-                            <button onClick={() => setIsAddHostModalOpen(true)} className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded font-bold flex items-center gap-1 transition-colors border border-slate-200 shadow-sm"><Plus size={12}/> Pull Staff to Pool</button>
+                            <span className="text-xs font-black uppercase text-slate-800 flex items-center gap-1.5">
+                                <UserCheck size={16} className="text-[#6D2158]" /> 
+                                Villa Attendants Pool & Roster
+                            </span>
+                            <span className="text-[10px] font-black bg-[#6D2158]/10 text-[#6D2158] px-2 py-0.5 rounded-full">
+                                {currentAreaHosts.length} Hosts
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => setIsAddHostModalOpen(true)} className="text-[10px] bg-[#6D2158] hover:bg-[#581a47] text-white px-2.5 py-1 rounded font-bold flex items-center gap-1 transition-all shadow-sm">
+                                <Plus size={12}/> Add Host to Villa Pool
+                            </button>
                         </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        {unassignedVAs.length === 0 && hostGroups.leave.length === 0 ? <span className="text-xs text-slate-400 italic">No unassigned staff.</span> : 
-                            [...unassignedVAs, ...hostGroups.leave].map(h => {
-                                const alloc = allocations.find((a: any) => String(a.host_id) === String(h.id));
-                                const n = h.nicknames ? h.nicknames.split(',')[0] : h.full_name.split(' ')[0];
-                                return (
-                                    <div key={h.id} className="bg-slate-50 border border-slate-300 pl-2 pr-1 py-1 rounded flex items-center gap-2 shadow-sm">
-                                        <div className="flex flex-col">
-                                            <span className="text-[11px] font-bold text-slate-800 leading-tight">{n}</span>
-                                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-widest leading-none mt-0.5 truncate max-w-[80px]">{h.sub_department || h.role}</span>
-                                        </div>
-                                        <select 
-                                            className="bg-white border border-slate-200 text-[10px] font-bold outline-none text-slate-700 rounded p-1 cursor-pointer"
-                                            value={alloc?.shift || 'Unassigned'}
-                                            onChange={(e) => handleAllocUpdate(h.id, 'shift', e.target.value)}
-                                        >
-                                            <option value="Unassigned">Unassigned</option>
-                                            <option value="Off">Off</option>
-                                            <option value="Annual Leave">Annual Leave</option>
-                                            <option value="Sick Leave">Sick Leave</option>
-                                            <option value="Split">Split</option>
-                                            <option value="Morning">Morning</option>
-                                            <option value="Evening">Evening</option>
-                                        </select>
-                                        <button onClick={() => handleRemove(h.id)} className="text-slate-400 hover:text-rose-500 p-1"><X size={12}/></button>
-                                    </div>
-                                )
-                            })
-                        }
+
+                    <div className="flex flex-wrap gap-2 max-h-[160px] overflow-y-auto p-1">
+                        {currentAreaHosts.map(h => {
+                            const isAssigned = allocations.some((a: any) => String(a.host_id) === String(h.id) && a.area === 'villa');
+                            const leave = getHostLeaveRecord(h.id);
+
+                            return (
+                                <div
+                                    key={h.id}
+                                    onClick={() => {
+                                        setSelectedHostForLeave(h);
+                                        setLeaveForm({
+                                            leave_type: leave?.leave_type || "AL",
+                                            start_date: leave?.start_date || selectedDate,
+                                            end_date: leave?.end_date || selectedDate,
+                                        });
+                                    }}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer transition-all shadow-sm ${
+                                        leave
+                                            ? "bg-rose-50/80 border-rose-300 text-rose-900"
+                                            : isAssigned
+                                            ? "bg-purple-50 border-[#6D2158] text-[#6D2158]"
+                                            : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                                    }`}
+                                >
+                                    <span>{getHostLabel(h)}</span>
+                                    {getLeaveBadge(h.id)}
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleRemoveFromPool(h.id);
+                                        }}
+                                        className="text-slate-400 hover:text-rose-600 ml-1"
+                                        title="Remove from pool"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             </div>
 
             {/* RIGHT SIDEBAR */}
             <div className="w-full xl:w-48 shrink-0 flex flex-col gap-4 relative xl:sticky xl:top-6 z-20">
-                
-                {/* SHARE BUTTON ADDED HERE */}
                 <button 
                     onClick={handleShareLink} 
                     className="w-full py-3 bg-[#6D2158] hover:bg-[#902468] text-white rounded-xl font-black uppercase tracking-widest text-[10px] shadow-sm active:scale-95 transition-all flex items-center justify-center gap-2"
@@ -517,18 +731,117 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
                                 <button key={v} onClick={() => handleVillaClick(v)} className={`w-[34px] h-[30px] rounded border border-slate-300 shadow-sm flex items-center justify-center transition-all ${vData?.colorClass || 'bg-white'} hover:scale-105 active:scale-95`}>
                                     <span className="text-[11px] font-black leading-none">{v}</span>
                                 </button>
-                            )
+                            );
                         })}
                     </div>
                 </div>
             </div>
 
-            {/* PULL STAFF MODAL */}
+            {/* SET LEAVE & RETURN DATE MODAL */}
+            {selectedHostForLeave && (
+                <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden flex flex-col p-5 gap-4">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                            <div className="flex items-center gap-2">
+                                <div className="p-2 bg-rose-50 text-rose-700 rounded-lg">
+                                    <Calendar size={18} />
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-black text-slate-800">
+                                        Set Leave for {getHostLabel(selectedHostForLeave)}
+                                    </h3>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
+                                        Persists across days until Return Date
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setSelectedHostForLeave(null)}
+                                className="text-slate-400 hover:text-slate-600 text-sm font-black"
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        <div className="space-y-3">
+                            <div>
+                                <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Status / Leave Type</label>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    {LEAVE_TYPES.map((lt) => (
+                                        <button
+                                            key={lt.value}
+                                            type="button"
+                                            onClick={() => setLeaveForm({ ...leaveForm, leave_type: lt.value })}
+                                            className={`p-2 rounded-xl text-xs font-black border text-left transition-all ${
+                                                leaveForm.leave_type === lt.value
+                                                    ? "bg-[#6D2158] text-white border-[#6D2158] shadow-sm"
+                                                    : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                                            }`}
+                                        >
+                                            {lt.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3 pt-2">
+                                <div>
+                                    <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Start Date</label>
+                                    <input
+                                        type="date"
+                                        className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2 font-bold text-xs outline-none focus:border-[#6D2158]"
+                                        value={leaveForm.start_date}
+                                        onChange={(e) => setLeaveForm({ ...leaveForm, start_date: e.target.value })}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Return / End Date</label>
+                                    <input
+                                        type="date"
+                                        className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2 font-bold text-xs outline-none focus:border-[#6D2158]"
+                                        value={leaveForm.end_date}
+                                        onChange={(e) => setLeaveForm({ ...leaveForm, end_date: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
+                            {getHostLeaveRecord(selectedHostForLeave.id) ? (
+                                <button
+                                    type="button"
+                                    onClick={() => handleRemoveLeave(getHostLeaveRecord(selectedHostForLeave.id)?.id)}
+                                    className="text-rose-600 hover:text-rose-800 text-xs font-black"
+                                >
+                                    Clear Active Leave
+                                </button>
+                            ) : <div />}
+
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setSelectedHostForLeave(null)}
+                                    className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveLeave}
+                                    className="bg-[#6D2158] hover:bg-[#521643] text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-sm"
+                                >
+                                    Apply Leave
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ADD HOST TO VILLA POOL MODAL */}
             {isAddHostModalOpen && (
                 <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 max-h-[80vh]">
                         <div className="bg-[#6D2158] p-5 text-white flex justify-between items-center">
-                            <h3 className="text-lg font-bold flex items-center gap-2"><Users size={18}/> Pull Staff to VA Pool</h3>
+                            <h3 className="text-lg font-bold flex items-center gap-2"><Users size={18}/> Add Staff to Villa Pool</h3>
                             <button onClick={() => setIsAddHostModalOpen(false)} className="bg-white/10 p-1.5 rounded-full hover:bg-white/20"><X size={18}/></button>
                         </div>
                         <div className="p-4 border-b border-slate-200 bg-slate-50">
@@ -539,45 +852,30 @@ export default function VillaBoard({ hosts, allocations, setAllocations, masterL
                         </div>
                         <div className="p-0 flex-1 overflow-y-auto custom-scrollbar">
                             <div className="pb-4">
-                                {AREAS.map((area: any) => {
-                                    const hostsInGroup = hosts.filter((h: any) => {
-                                        const hasAlloc = allocations.some((a: any) => String(a.host_id) === String(h.id));
-                                        if (hasAlloc) return false;
-                                        if (getDefaultArea(h) !== area.id) return false;
-                                        if (!searchQuery) return true;
+                                {hosts
+                                    .filter((h) => {
+                                        const alreadyInPool = currentAreaHosts.some((p) => p.id === h.id);
+                                        if (alreadyInPool) return false;
+                                        if (!searchQuery.trim()) return true;
                                         const q = searchQuery.toLowerCase();
-                                        return h.full_name.toLowerCase().includes(q) || h.role.toLowerCase().includes(q) || (h.nicknames || '').toLowerCase().includes(q);
-                                    });
-                                    if (hostsInGroup.length === 0) return null;
-                                    return (
-                                        <div key={area.id} className="mb-2">
-                                            <div className="px-4 py-1.5 bg-slate-100 border-y border-slate-200 text-[9px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
-                                                <area.icon size={12} /> {area.label}
+                                        return h.full_name.toLowerCase().includes(q) || (h.role || '').toLowerCase().includes(q) || (h.nicknames || '').toLowerCase().includes(q);
+                                    })
+                                    .map((host) => {
+                                        return (
+                                            <div key={host.id} className="flex items-center justify-between p-3 hover:bg-slate-50 border-b border-slate-100 transition-colors">
+                                                <div className="truncate">
+                                                    <p className="text-xs font-bold text-slate-800">{getHostLabel(host)}</p>
+                                                    <p className="text-[9px] text-slate-400 uppercase tracking-wider">{host.sub_department || host.role || 'Host'}</p>
+                                                </div>
+                                                <button 
+                                                    onClick={() => handleAddToPool(host.id)} 
+                                                    className="px-3 py-1.5 bg-[#6D2158] text-white hover:bg-[#521643] rounded-lg transition-all text-xs font-bold shadow-sm"
+                                                >
+                                                    + Add to Pool
+                                                </button>
                                             </div>
-                                            <div className="px-2 space-y-0.5 mt-1">
-                                                {hostsInGroup.map((host: any) => {
-                                                    const displayName = host.nicknames ? host.nicknames.split(',')[0] : host.full_name;
-                                                    return (
-                                                        <div key={host.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors border border-transparent hover:border-slate-200">
-                                                            <div className="flex items-center gap-3 overflow-hidden">
-                                                                <div className="h-8 w-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0 text-xs font-bold">{displayName.charAt(0)}</div>
-                                                                <div className="truncate">
-                                                                    <p className="text-xs font-bold text-slate-700 truncate">{displayName}</p>
-                                                                    <p className="text-[9px] text-slate-400 uppercase tracking-wider truncate mt-0.5">{host.sub_department || host.role}</p>
-                                                                </div>
-                                                            </div>
-                                                            <button onClick={() => { 
-                                                                setAllocations([...allocations, { report_date: selectedDate, host_id: host.id, area: 'villa', shift: 'Unassigned', task_details: '' }]);
-                                                                setIsDirty(true);
-                                                                setIsAddHostModalOpen(false); 
-                                                            }} className="px-3 py-1.5 bg-white border border-slate-200 text-[#6D2158] hover:bg-[#6D2158]/10 rounded-lg transition-all shadow-sm text-xs font-bold">Pull to Pool</button>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )
-                                })}
+                                        );
+                                    })}
                             </div>
                         </div>
                     </div>

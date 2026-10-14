@@ -7,7 +7,13 @@ import toast from 'react-hot-toast';
 // ⚡ BULLETPROOF ABSOLUTE IMPORTS
 import { AREAS } from '@/app/allocation/lib/constants';
 import VillaBoard from '@/app/allocation/components/VillaBoard';
-import DepartmentBoard from '@/app/allocation/components/DepartmentBoard';
+import SummaryStatsBoard from '@/app/allocation/components/SummaryStatsBoard';
+import PublicAreaBoard from '@/app/allocation/components/PublicAreaBoard';
+import WaterRoomBoard from '@/app/allocation/components/WaterRoomBoard';
+import LaundryTailorBoard from '@/app/allocation/components/LaundryTailorBoard';
+import GardeningBoard from '@/app/allocation/components/GardeningBoard';
+import RidersStepBoard from '@/app/allocation/components/RidersStepBoard';
+import AdminOfficeBoard from '@/app/allocation/components/AdminOfficeBoard';
 
 const getToday = () => {
   const d = new Date();
@@ -28,16 +34,31 @@ export default function AllocationPage() {
 
   const fetchData = async () => {
       setIsProcessing(true);
-      const { data: hostsData } = await supabase.from('hsk_hosts').select('id, full_name, host_id, role, sub_department, mvpn, personal_mobile, company_mobile, nicknames').eq('status', 'Active').order('full_name');
+      const { data: hostsData } = await supabase
+        .from('hsk_hosts')
+        .select('id, full_name, host_id, role, sub_department, mvpn, personal_mobile, company_mobile, nicknames')
+        .eq('status', 'Active')
+        .order('full_name');
       if (hostsData) setHosts(hostsData);
 
-      const { data: allocData } = await supabase.from('hsk_allocations').select('*').eq('report_date', selectedDate);
+      const { data: allocData } = await supabase
+        .from('hsk_allocations')
+        .select('*')
+        .eq('report_date', selectedDate);
       if (allocData) setAllocations(allocData); else setAllocations([]);
 
-      const { data: guestData } = await supabase.from('hsk_daily_summary').select('villa_number, status, arrival_time, departure_time').eq('report_date', selectedDate);
+      const { data: guestData } = await supabase
+        .from('hsk_daily_summary')
+        .select('villa_number, status, arrival_time, departure_time')
+        .eq('report_date', selectedDate);
       if (guestData) setMasterList(guestData);
 
-      const { data: leavesData } = await supabase.from('hsk_leave_requests').select('*').eq('status', 'Approved').lte('start_date', selectedDate).gte('end_date', selectedDate);
+      const { data: leavesData } = await supabase
+        .from('hsk_leave_requests')
+        .select('*')
+        .eq('status', 'Approved')
+        .lte('start_date', selectedDate)
+        .gte('end_date', selectedDate);
       if (leavesData) setActiveLeaves(leavesData);
 
       setIsDirty(false);
@@ -50,7 +71,7 @@ export default function AllocationPage() {
       if (allocations.length > 0) {
           const payload = allocations.map((a: any) => {
               const { id, ...rest } = a; 
-              const cleaned = rest.task_details.split(',').filter((s: string) => s.trim() !== '').join(',');
+              const cleaned = rest.task_details ? rest.task_details.split(',').filter((s: string) => s.trim() !== '').join(',') : '';
               return { ...rest, task_details: cleaned };
           });
           const { error } = await supabase.from('hsk_allocations').insert(payload);
@@ -92,6 +113,9 @@ export default function AllocationPage() {
       setSelectedDate(d.toISOString().split('T')[0]);
   };
 
+  // Safe tab identification matching exact or normalized names
+  const areaKey = (activeArea || '').toLowerCase().replace(/[-_ &]/g, '');
+
   return (
     <div className="min-h-screen bg-slate-100 p-2 md:p-4 pb-32">
       <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
@@ -125,10 +149,74 @@ export default function AllocationPage() {
           ))}
       </div>
 
-      {activeArea === 'villa' ? (
-          <VillaBoard hosts={hosts} allocations={allocations} setAllocations={setAllocations} masterList={masterList} setIsDirty={setIsDirty} selectedDate={selectedDate} activeArea={activeArea} />
+      {areaKey === 'summary' ? (
+          <SummaryStatsBoard selectedDate={selectedDate} setIsDirty={setIsDirty} />
+      ) : areaKey === 'villa' || areaKey === 'villaattendant' ? (
+          <VillaBoard 
+              hosts={hosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              masterList={masterList} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+              activeArea={activeArea} 
+          />
+      ) : (areaKey.includes('public') || areaKey.includes('housemate') || areaKey === 'pa') ? (
+          <PublicAreaBoard 
+              hosts={hosts} 
+              setHosts={setHosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+          />
+      ) : (areaKey.includes('water') || areaKey.includes('pool')) ? (
+          <WaterRoomBoard 
+              hosts={hosts} 
+              setHosts={setHosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+          />
+      ) : (areaKey.includes('laundry') || areaKey.includes('tailor') || areaKey.includes('linen')) ? (
+          <LaundryTailorBoard 
+              hosts={hosts} 
+              setHosts={setHosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+          />
+      ) : (areaKey.includes('garden') || areaKey.includes('landscap')) ? (
+          <GardeningBoard 
+              hosts={hosts} 
+              setHosts={setHosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+          />
+      ) : (areaKey.includes('rider') || areaKey.includes('step') || areaKey.includes('buggy') || areaKey.includes('transport')) ? (
+          <RidersStepBoard 
+              hosts={hosts} 
+              setHosts={setHosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+          />
+      ) : (areaKey.includes('admin') || areaKey.includes('office')) ? (
+          <AdminOfficeBoard 
+              hosts={hosts} 
+              setHosts={setHosts} 
+              allocations={allocations} 
+              setAllocations={setAllocations} 
+              setIsDirty={setIsDirty} 
+              selectedDate={selectedDate} 
+          />
       ) : (
-          <DepartmentBoard hosts={hosts} allocations={allocations} setAllocations={setAllocations} activeLeaves={activeLeaves} setIsDirty={setIsDirty} selectedDate={selectedDate} activeArea={activeArea} />
+          <SummaryStatsBoard selectedDate={selectedDate} setIsDirty={setIsDirty} />
       )}
     </div>
   );
