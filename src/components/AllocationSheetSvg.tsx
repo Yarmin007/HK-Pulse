@@ -106,6 +106,22 @@ const formatDateDdMm = (dateStr?: string) => {
   return dateStr;
 };
 
+// Status Box Color Helper
+const getStatusTheme = (statusStr?: string) => {
+  const st = String(statusStr || "").trim().toUpperCase();
+  if (st.includes("ARR")) {
+    return { bg: "#22c55e", text: "#000000" }; // Green with Black text
+  }
+  if (st.includes("DEP")) {
+    return { bg: "#ef4444", text: "#ffffff" }; // Red with White text
+  }
+  if (st.includes("VAC") || st === "VM/VAC") {
+    return { bg: "#38bdf8", text: "#000000" }; // Blue with Black text
+  }
+  // OCC / Default: Normal (White background with dark text)
+  return { bg: "#ffffff", text: "#231f20" };
+};
+
 export default function AllocationSheetSvg({ data }: { data: AllocationSheetData }) {
   const d = data;
   const s = d.summary || {};
@@ -126,11 +142,11 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 595.28 841.89" className="w-full h-auto">
       <defs>
         <style>{`
-          .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11 {
+          .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11, .cls-contact {
             font-family: BookAntiqua-Bold, 'Book Antiqua';
             font-weight: 700;
           }
-          .cls-1, .cls-4, .cls-7, .cls-9 {
+          .cls-1, .cls-4, .cls-9 {
             fill: #231f20;
           }
           .cls-1, .cls-5 {
@@ -141,6 +157,11 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           }
           .cls-2, .cls-3, .cls-5, .cls-6, .cls-8, .cls-10, .cls-11 {
             fill: #fff;
+          }
+          .cls-contact {
+            font-size: 4px;
+            fill: #ffffff !important;
+            letter-spacing: -0.1px;
           }
           .cls-3 {
             font-size: 8.24px;
@@ -169,6 +190,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           }
           .cls-7 {
             font-size: 4.55px;
+            fill: #231f20;
           }
           .cls-8 {
             font-size: 6.84px;
@@ -186,7 +208,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
       </defs>
 
       {/* ========================================================================= */}
-      {/* 1. STRUCTURE (100% UNTOUCHED ORIGINAL RECTANGLES FROM ILLUSTRATOR)        */}
+      {/* 1. STRUCTURE                                                              */}
       {/* ========================================================================= */}
       <g id="STRUCTURE">
         <rect className="cls-14" x="9" y="10.59" width="577.53" height="75.29"/>
@@ -1055,7 +1077,81 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
       </g>
 
       {/* ========================================================================= */}
-      {/* 2. STATIC LABELS + DYNAMIC HEADERS (CENTER-ALIGNED)                       */}
+      {/* 2. DYNAMIC STATUS BOX OVERLAYS (EXACT FILL COLORS FOR ARR, DEP, VAC, OCC)*/}
+      {/* ========================================================================= */}
+      <g id="STATUS_BOX_FILLS">
+        {/* Tier 1 Fills */}
+        {t1.map((col, cIdx) => (
+          col.villas?.map((v, rIdx) => {
+            if (!v || !v.status) return null;
+            const theme = getStatusTheme(v.status);
+            if (theme.bg === "#ffffff") return null; // OCC / default leaves untouched
+            const x = 36.53 + cIdx * 82.5;
+            const y = 118.71 + rIdx * 15.88;
+            return (
+              <rect
+                key={`t1-fill-${cIdx}-${rIdx}`}
+                x={x}
+                y={y}
+                width="54.97"
+                height="15.88"
+                fill={theme.bg}
+                stroke="#231f20"
+                strokeWidth="0.2"
+              />
+            );
+          })
+        ))}
+
+        {/* Tier 2 Fills */}
+        {t2.map((col, cIdx) => (
+          col.villas?.map((v, rIdx) => {
+            if (!v || !v.status) return null;
+            const theme = getStatusTheme(v.status);
+            if (theme.bg === "#ffffff") return null;
+            const x = 36.53 + cIdx * 82.5;
+            const y = 294.47 + rIdx * 15.88;
+            return (
+              <rect
+                key={`t2-fill-${cIdx}-${rIdx}`}
+                x={x}
+                y={y}
+                width="54.97"
+                height="15.88"
+                fill={theme.bg}
+                stroke="#231f20"
+                strokeWidth="0.2"
+              />
+            );
+          })
+        ))}
+
+        {/* Tier 3 Fills */}
+        {t3.map((col, cIdx) => (
+          col.villas?.map((v, rIdx) => {
+            if (!v || !v.status) return null;
+            const theme = getStatusTheme(v.status);
+            if (theme.bg === "#ffffff") return null;
+            const x = 36.53 + cIdx * 82.5;
+            const y = 454.35 + rIdx * 15.88;
+            return (
+              <rect
+                key={`t3-fill-${cIdx}-${rIdx}`}
+                x={x}
+                y={y}
+                width="54.97"
+                height="15.88"
+                fill={theme.bg}
+                stroke="#231f20"
+                strokeWidth="0.2"
+              />
+            );
+          })
+        ))}
+      </g>
+
+      {/* ========================================================================= */}
+      {/* 3. STATIC LABELS + DYNAMIC HEADERS                                        */}
       {/* ========================================================================= */}
       <g id="static">
         <text className="cls-4" transform="translate(10.66 30.33)"><tspan x="0" y="0">Date</tspan></text>
@@ -1098,51 +1194,51 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-11" textAnchor="middle" transform="translate(462.77 440.52)"><tspan x="0" y="0">{t3[5]?.name || ""}</tspan></text>
         <text className="cls-11" textAnchor="middle" transform="translate(545.28 440.52)"><tspan x="0" y="0">{t3[6]?.name || ""}</tspan></text>
 
-        {/* Dynamic MV/CON Headers (Indices 0..6 for Tier 1, 7..13 for Tier 2, 14..20 for Tier 3) */}
+        {/* Dynamic Contact Headers (GUARANTEED WHITE TEXT) */}
         <text className="cls-11" transform="translate(12.11 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(64.01 115.52)"><tspan x="0" y="0">{t1[0]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(64.01 115.52)"><tspan x="0" y="0">{t1[0]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(94.62 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(146.51 115.52)"><tspan x="0" y="0">{t1[1]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(146.51 115.52)"><tspan x="0" y="0">{t1[1]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(177.12 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(229.02 115.52)"><tspan x="0" y="0">{t1[2]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(229.02 115.52)"><tspan x="0" y="0">{t1[2]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(259.63 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(311.52 115.52)"><tspan x="0" y="0">{t1[3]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(311.52 115.52)"><tspan x="0" y="0">{t1[3]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(342.13 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(394.03 115.52)"><tspan x="0" y="0">{t1[4]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(394.03 115.52)"><tspan x="0" y="0">{t1[4]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(424.64 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(476.53 115.52)"><tspan x="0" y="0">{t1[5]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(476.53 115.52)"><tspan x="0" y="0">{t1[5]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(507.14 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(559.04 115.52)"><tspan x="0" y="0">{t1[6]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(559.04 115.52)"><tspan x="0" y="0">{t1[6]?.contact || ""}</tspan></text>
 
         <text className="cls-11" transform="translate(12.12 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(64.01 291.28)"><tspan x="0" y="0">{t2[0]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(64.01 291.28)"><tspan x="0" y="0">{t2[0]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(94.62 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(146.51 291.28)"><tspan x="0" y="0">{t2[1]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(146.51 291.28)"><tspan x="0" y="0">{t2[1]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(177.12 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(229.02 291.28)"><tspan x="0" y="0">{t2[2]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(229.02 291.28)"><tspan x="0" y="0">{t2[2]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(259.56 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(311.52 291.28)"><tspan x="0" y="0">{t2[3]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(311.52 291.28)"><tspan x="0" y="0">{t2[3]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(342.1 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(394.03 291.28)"><tspan x="0" y="0">{t2[4]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(394.03 291.28)"><tspan x="0" y="0">{t2[4]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(424.64 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(476.53 291.28)"><tspan x="0" y="0">{t2[5]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(476.53 291.28)"><tspan x="0" y="0">{t2[5]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(507.14 291.28)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(559.04 291.28)"><tspan x="0" y="0">{t2[6]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(559.04 291.28)"><tspan x="0" y="0">{t2[6]?.contact || ""}</tspan></text>
 
         <text className="cls-11" transform="translate(12.12 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(64.01 451.16)"><tspan x="0" y="0">{t3[0]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(64.01 451.16)"><tspan x="0" y="0">{t3[0]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(94.62 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(146.51 451.16)"><tspan x="0" y="0">{t3[1]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(146.51 451.16)"><tspan x="0" y="0">{t3[1]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(176.59 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(229.02 451.16)"><tspan x="0" y="0">{t3[2]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(229.02 451.16)"><tspan x="0" y="0">{t3[2]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(259.56 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(311.52 451.16)"><tspan x="0" y="0">{t3[3]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(311.52 451.16)"><tspan x="0" y="0">{t3[3]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(342.1 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(394.03 451.16)"><tspan x="0" y="0">{t3[4]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(394.03 451.16)"><tspan x="0" y="0">{t3[4]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(424.64 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(476.53 451.16)"><tspan x="0" y="0">{t3[5]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(476.53 451.16)"><tspan x="0" y="0">{t3[5]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(507.14 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
-        <text className="cls-7" fill="#fff" textAnchor="middle" transform="translate(559.04 451.16)"><tspan x="0" y="0">{t3[6]?.contact || "MV/CON"}</tspan></text>
+        <text className="cls-contact" textAnchor="middle" transform="translate(559.04 451.16)"><tspan x="0" y="0">{t3[6]?.contact || ""}</tspan></text>
 
         {/* Lower Section Labels */}
         <text className="cls-2" transform="translate(73.26 571.7)"><tspan x="0" y="0">POOL DUTY</tspan></text>
@@ -1194,10 +1290,10 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
       </g>
 
       {/* ========================================================================= */}
-      {/* 3. DYNAMIC VALUES (CENTER-ALIGNED & FORMATTED)                            */}
+      {/* 4. DYNAMIC VALUES                                                         */}
       {/* ========================================================================= */}
       <g id="Variable">
-        {/* Top Summary Column 1 (cx = 104.82) */}
+        {/* Top Summary Column 1 */}
         <text className="cls-4" textAnchor="middle" transform="translate(104.82 30.33)"><tspan x="0" y="0">{formatDateDdMm(s.report_date)}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(104.82 40.74)"><tspan x="0" y="0">{s.occupancy_pct !== undefined ? `${s.occupancy_pct}%` : ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(104.82 51.15)"><tspan x="0" y="0">{formatTwoDigit(s.occupied_count)}</tspan></text>
@@ -1205,7 +1301,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-4" textAnchor="middle" transform="translate(104.82 71.97)"><tspan x="0" y="0">{formatTwoDigit(s.departures_count)}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(104.82 82.38)"><tspan x="0" y="0">{formatTwoDigit(s.villa_moves)}</tspan></text>
 
-        {/* Top Summary Column 2 (cx = 218.11) */}
+        {/* Top Summary Column 2 */}
         <text className="cls-4" textAnchor="middle" transform="translate(218.11 30.32)"><tspan x="0" y="0">{s.repeater_villas || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(218.11 40.74)"><tspan x="0" y="0">{s.birthday_villas || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(218.11 51.15)"><tspan x="0" y="0">{s.anniversary_villas || ""}</tspan></text>
@@ -1213,14 +1309,14 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-4" textAnchor="middle" transform="translate(218.11 71.97)"><tspan x="0" y="0">{formatTwoDigit(s.children_count)}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(218.11 82.38)"><tspan x="0" y="0">{formatTwoDigit(s.guest_in_house)}</tspan></text>
 
-        {/* Top Summary Column 3 (cx = 319.14) */}
+        {/* Top Summary Column 3 */}
         <text className="cls-4" textAnchor="middle" transform="translate(319.14 31.17)"><tspan x="0" y="0">{s.deep_clean || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(319.14 41.58)"><tspan x="0" y="0">{s.deck_clean || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(319.14 51.15)"><tspan x="0" y="0">{s.oos_villas || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(319.14 61.56)"><tspan x="0" y="0">{s.maintenance_villas || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(319.14 71.97)"><tspan x="0" y="0">{s.pmp_villas || ""}</tspan></text>
 
-        {/* Top Summary Column 4 (cx = 419.38) */}
+        {/* Top Summary Column 4 */}
         <text className="cls-4" textAnchor="middle" transform="translate(419.38 30.41)"><tspan x="0" y="0">{s.sinner_villa || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(419.38 40.74)"><tspan x="0" y="0">{s.saint_villa || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(419.38 51.15)"><tspan x="0" y="0">{s.show_villa || ""}</tspan></text>
@@ -1228,7 +1324,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-4" textAnchor="middle" transform="translate(419.38 71.97)"><tspan x="0" y="0">{s.night_shut_1 || ""}</tspan></text>
         <text className="cls-4" textAnchor="middle" transform="translate(419.38 82.38)"><tspan x="0" y="0">{s.night_shut_2 || ""}</tspan></text>
 
-        {/* Ice Requests (6 Rows, Middle Aligned) */}
+        {/* Ice Requests (6 Rows) */}
         {[0, 1, 2, 3, 4, 5].map((r) => {
           const y = 40.74 + r * 10.41;
           const req = d.iceRequests?.[r];
@@ -1250,10 +1346,11 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((rIdx) => {
                 const y = 128.35 + rIdx * 15.88;
                 const v = col.villas?.[rIdx];
+                const theme = getStatusTheme(v?.status);
                 return (
                   <React.Fragment key={`t1-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
-                    <text className="cls-4" textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+                    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
                   </React.Fragment>
                 );
               })}
@@ -1270,10 +1367,11 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               {[0, 1, 2, 3, 4, 5, 6, 7].map((rIdx) => {
                 const y = 304.12 + rIdx * 15.88;
                 const v = col.villas?.[rIdx];
+                const theme = getStatusTheme(v?.status);
                 return (
                   <React.Fragment key={`t2-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
-                    <text className="cls-4" textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+                    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
                   </React.Fragment>
                 );
               })}
@@ -1290,10 +1388,11 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               {[0, 1, 2, 3, 4, 5, 6].map((rIdx) => {
                 const y = 464 + rIdx * 15.88;
                 const v = col.villas?.[rIdx];
+                const theme = getStatusTheme(v?.status);
                 return (
                   <React.Fragment key={`t3-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
-                    <text className="cls-4" textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+                    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
                   </React.Fragment>
                 );
               })}
@@ -1382,7 +1481,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           </React.Fragment>
         ))}
 
-        {/* Garden Duty (8 rows) */}
+        {/* Garden Duty */}
         {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
           <React.Fragment key={`gar-${i}`}>
             <text className="cls-4" transform={`translate(10.93 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.garden?.hosts?.[i]?.name || ""}</tspan></text>
@@ -1391,7 +1490,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           </React.Fragment>
         ))}
 
-        {/* Laundry Duty (10 rows) */}
+        {/* Laundry Duty */}
         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
           <React.Fragment key={`lnd-${i}`}>
             <text className="cls-4" transform={`translate(148.32 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.laundry?.[i]?.name || ""}</tspan></text>
@@ -1399,7 +1498,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           </React.Fragment>
         ))}
 
-        {/* Pest Control (4 rows) */}
+        {/* Pest Control */}
         {[0, 1, 2, 3].map((i) => (
           <React.Fragment key={`pest-${i}`}>
             <text className="cls-4" transform={`translate(148.32 ${807 + i * 8.47})`}><tspan x="0" y="0">{d.pestControl?.[i]?.name || ""}</tspan></text>
@@ -1407,7 +1506,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           </React.Fragment>
         ))}
 
-        {/* Public Area Special Tasks (4 rows) */}
+        {/* Public Area Special Tasks */}
         <text className="cls-1" transform="translate(10.93 773.11)"><tspan x="0" y="0">{d.publicArea?.specialTasks?.[0] || d.specialTasks?.task1 || ""}</tspan></text>
         <text className="cls-1" transform="translate(10.93 781.14)"><tspan x="0" y="0">{d.publicArea?.specialTasks?.[1] || d.specialTasks?.task2 || ""}</tspan></text>
         <text className="cls-1" transform="translate(10.93 789.61)"><tspan x="0" y="0">{d.publicArea?.specialTasks?.[2] || d.specialTasks?.task3 || ""}</tspan></text>
@@ -1418,7 +1517,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-9" transform="translate(87.71 824.15)"><tspan x="0" y="0">{s.oos_villas || ""}</tspan></text>
         <text className="cls-9" transform="translate(89.73 832.62)"><tspan x="0" y="0">{d.specialTasks?.huVilla || ""}</tspan></text>
 
-        {/* Annual Leave (11 rows) */}
+        {/* Annual Leave */}
         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => {
           const y = 680.01 + i * 8.47;
           const al = d.annualLeave?.[i];
@@ -1432,7 +1531,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           );
         })}
 
-        {/* Sick / EL Leave (6 rows) */}
+        {/* Sick / EL Leave */}
         {[0, 1, 2, 3, 4, 5].map((i) => {
           const y = 790.06 + i * 8.47;
           const sl = d.sickLeave?.[i];
@@ -1446,7 +1545,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           );
         })}
 
-        {/* Day Off / PH (19 rows) */}
+        {/* Day Off / PH */}
         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map((i) => {
           const y = 679.95 + i * 8.47;
           const off = d.dayOff?.[i];

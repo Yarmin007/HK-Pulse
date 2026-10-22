@@ -7,6 +7,54 @@ import { getDhakaDateStr } from "@/lib/dateUtils";
 import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
 import { parseVillas, JETTY_A, JETTY_B, JETTY_C, BEACH, getDefaultArea } from "../lib/constants";
 
+// Exact status colors:
+// ARR: Green with Black text
+// DEP: Red with White text
+// VAC: Blue with Black text
+// OCC: Normal (White with Dark text, no effect)
+export const getStatusColors = (status: string) => {
+  const st = String(status || "").trim().toUpperCase();
+
+  if (st.includes("ARR")) {
+    return {
+      bg: "#22c55e",
+      text: "#000000",
+      colorClass: "bg-green-500 text-black",
+    };
+  }
+
+  if (st.includes("DEP")) {
+    return {
+      bg: "#ef4444",
+      text: "#ffffff",
+      colorClass: "bg-rose-500 text-white",
+    };
+  }
+
+  if (st.includes("VAC") || st === "VM/VAC") {
+    return {
+      bg: "#38bdf8",
+      text: "#000000",
+      colorClass: "bg-sky-400 text-black",
+    };
+  }
+
+  if (st.includes("TMA")) {
+    return {
+      bg: "#facc15",
+      text: "#0f172a",
+      colorClass: "bg-yellow-400 text-slate-900",
+    };
+  }
+
+  // OCC / Default: Normal no effect
+  return {
+    bg: "#ffffff",
+    text: "#1e293b",
+    colorClass: "bg-white text-slate-800",
+  };
+};
+
 export default function AllocationSheetPage() {
   const [selectedDate, setSelectedDate] = useState<string>(getDhakaDateStr());
   const [loading, setLoading] = useState(false);
@@ -19,7 +67,7 @@ export default function AllocationSheetPage() {
   const fetchSheetData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Overall Daily Summary Row specifically (villa_number is null or 0)
+      // 1. Fetch Overall Daily Summary Row
       const { data: sumRows } = await supabase
         .from("hsk_daily_summary")
         .select("*")
@@ -29,7 +77,6 @@ export default function AllocationSheetPage() {
 
       const summaryData = sumRows && sumRows.length > 0 ? sumRows[0] : null;
 
-      // Check yesterday's summary for persistent Sinner & Saint carryover if today's are empty
       let finalSummary = summaryData ? { ...summaryData } : { report_date: selectedDate };
       if (!finalSummary.sinner_villa || !finalSummary.saint_villa) {
         const d = new Date(selectedDate);
@@ -55,19 +102,24 @@ export default function AllocationSheetPage() {
         }
       }
 
-      // 2. Fetch Master Guest / Villa Statuses for VAC / OCC (individual villa rows)
+      // 2. Fetch Master Guest / Villa Statuses
       const { data: masterVillas } = await supabase
         .from("hsk_daily_summary")
-        .select("villa_number, status")
+        .select("villa_number, status, arrival_time, departure_time")
         .eq("report_date", selectedDate)
         .gt("villa_number", 0);
 
       const statusMap: Record<string, string> = {};
+      const timeMap: Record<string, string> = {};
+
       (masterVillas || []).forEach((m: any) => {
-        statusMap[String(m.villa_number)] = m.status || "VAC";
+        const vKey = String(m.villa_number);
+        statusMap[vKey] = m.status || "VAC";
+        if (m.arrival_time) timeMap[vKey] = m.arrival_time;
+        else if (m.departure_time) timeMap[vKey] = m.departure_time;
       });
 
-      // 3. Fetch Persistent Daily Ice Requests (active until guest departure date)
+      // 3. Fetch Persistent Daily Ice Requests
       const { data: rawIceReqs } = await supabase
         .from("hsk_daily_requests")
         .select("villa_number, request_time, item_details")
@@ -95,7 +147,7 @@ export default function AllocationSheetPage() {
         };
       });
 
-      // 4. Fetch All Allocations joined with Host details
+      // 4. Fetch Allocations joined with Host details
       const { data: allocs } = await supabase
         .from("hsk_allocations")
         .select("*, hosts:hsk_hosts(id, full_name, nicknames, mvpn, company_mobile, personal_mobile, role, sub_department)")
@@ -127,12 +179,33 @@ export default function AllocationSheetPage() {
       (allocs || []).forEach((a: any) => {
         const hostObj = a.hosts;
         const name = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
-        const contact = [hostObj?.mvpn, hostObj?.company_mobile || hostObj?.personal_mobile].filter(Boolean).join(", ");
+
+        // ONLY NUMBERS separated by a single divider line (no words like MVPN/Duty/Per)
+        const contactNums = [
+          hostObj?.mvpn,
+          hostObj?.company_mobile,
+          hostObj?.personal_mobile,
+        ]
+          .map((n: any) => String(n || "").trim())
+          .filter(Boolean);
+
+        const contact = contactNums.join(" | ");
         const defaultArea = getDefaultArea(hostObj);
 
         if (a.area === "villa") {
           const vNums = parseVillas(a.task_details || "");
-          const villaList = vNums.map(v => ({ number: v, status: statusMap[String(v)] || "VAC" }));
+          const villaList = vNums.map((v) => {
+            const rawStatus = statusMap[String(v)] || "VAC";
+            const colors = getStatusColors(rawStatus);
+            return {
+              number: v,
+              status: rawStatus,
+              time: timeMap[String(v)] || "",
+              bg: colors.bg,
+              textColor: colors.text,
+              colorClass: colors.colorClass,
+            };
+          });
 
           if (defaultArea === "beach" || hostObj?.sub_department?.toLowerCase().includes("beach")) {
             rawBeach.push({ name, contact, villas: villaList });
@@ -184,7 +257,7 @@ export default function AllocationSheetPage() {
 
       const expandAttendants = (list: any[], maxRows: number, maxCols: number) => {
         const slots: any[] = [];
-        list.forEach(item => {
+        list.forEach((item) => {
           let vils = [...item.villas];
           if (vils.length <= maxRows) {
             slots.push({ name: item.name, contact: item.contact, villas: vils });

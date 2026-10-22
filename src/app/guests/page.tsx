@@ -39,7 +39,7 @@ const monthToNum = (mStr: string) => {
         'JAN':'01', 'FEB':'02', 'MAR':'03', 'APR':'04', 'MAY':'05', 'JUN':'06',
         'JUL':'07', 'AUG':'08', 'SEP':'09', 'OCT':'10', 'NOV':'11', 'DEC':'12'
     };
-    const upperM = mStr.toUpperCase();
+    const upperM = (mStr || '').toUpperCase();
     return months[upperM] || mStr.padStart(2, '0');
 };
 
@@ -79,7 +79,7 @@ const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any
 };
 
 // --- GUEST TRACKING & ALLOCATION ENGINE ---
-const cleanNameForMatch = (n: string) => n.toLowerCase().replace(/\b(mr|ms|mrs|miss|mstr|alfaalil|alfaalila|kokko|yrs)\b/g, '').replace(/[^a-z]/g, '');
+const cleanNameForMatch = (n: string) => String(n || '').toLowerCase().replace(/\b(mr|ms|mrs|miss|mstr|alfaalil|alfaalila|kokko|yrs)\b/g, '').replace(/[^a-z]/g, '');
 
 const isSameGuest = (n1: string, n2: string) => {
     if (!n1 || !n2) return false;
@@ -160,8 +160,12 @@ export default function HousekeepingSummaryPage() {
   useEffect(() => {
     const sessionData = localStorage.getItem('hk_pulse_session');
     if (sessionData) {
-        const parsed = JSON.parse(sessionData);
-        setIsAdmin(parsed.system_role === 'admin');
+        try {
+            const parsed = JSON.parse(sessionData);
+            setIsAdmin(parsed.system_role === 'admin');
+        } catch {
+            setIsAdmin(false);
+        }
     } else if (localStorage.getItem('hk_pulse_admin_auth') === 'true') {
         setIsAdmin(true);
     }
@@ -190,147 +194,185 @@ export default function HousekeepingSummaryPage() {
 
   const fetchDailyData = async (showLoading = true) => {
     if (showLoading) setIsProcessing(true);
-    const { data: dbRecords, error } = await supabase
-      .from('hsk_daily_summary')
-      .select('*')
-      .eq('report_date', selectedDate);
+    try {
+        const { data: dbRecords, error } = await supabase
+          .from('hsk_daily_summary')
+          .select('*')
+          .eq('report_date', selectedDate);
 
-    if (error) console.error(error);
+        if (error) console.error(error);
 
-    const fullList: GuestRecord[] = [];
-    for (let i = 1; i <= TOTAL_VILLAS; i++) {
-      const villaNum = i.toString();
-      const match = dbRecords?.find(r => normalizeVilla(r.villa_number) === villaNum);
-      
-      // ⚡ FIX: Safely map ALL data to avoid NULLs breaking string methods or Inputs
-      if (match) {
-        fullList.push({ 
-            ...match, 
-            villa_number: villaNum,
-            guest_name: match.guest_name || '',
-            status: match.status || 'VAC',
-            pax_adults: match.pax_adults || 0,
-            pax_kids: match.pax_kids || 0,
-            gem_name: match.gem_name || '',
-            meal_plan: match.meal_plan || '',
-            stay_dates: match.stay_dates || '',
-            arrival_time: match.arrival_time || '',
-            departure_time: match.departure_time || '',
-            preferences: match.preferences || '',
-            remarks: match.remarks || '',
-            stay_id: match.stay_id || ''
-        });
-      } else {
-        fullList.push({
-          report_date: selectedDate, villa_number: villaNum, status: 'VAC', guest_name: '',
-          pax_adults: 0, pax_kids: 0, gem_name: '', meal_plan: '', stay_dates: '', remarks: '',
-          preferences: '', arrival_time: '', departure_time: '', stay_id: ''
-        });
-      }
-    }
-    fullList.sort((a, b) => parseInt(a.villa_number) - parseInt(b.villa_number));
-    setMasterList(fullList);
-
-    if (dbRecords && dbRecords.length > 0) {
-        let maxTime = 0;
-        for (const r of dbRecords) {
-            const t = new Date(r.updated_at || r.created_at || 0).getTime();
-            if (t > maxTime) maxTime = t;
+        const fullList: GuestRecord[] = [];
+        for (let i = 1; i <= TOTAL_VILLAS; i++) {
+          const villaNum = i.toString();
+          const match = dbRecords?.find(r => normalizeVilla(r.villa_number) === villaNum);
+          
+          if (match) {
+            fullList.push({ 
+                ...match, 
+                villa_number: villaNum,
+                guest_name: match.guest_name || '',
+                status: match.status || 'VAC',
+                pax_adults: match.pax_adults || 0,
+                pax_kids: match.pax_kids || 0,
+                gem_name: match.gem_name || '',
+                meal_plan: match.meal_plan || '',
+                stay_dates: match.stay_dates || '',
+                arrival_time: match.arrival_time || '',
+                departure_time: match.departure_time || '',
+                preferences: match.preferences || '',
+                remarks: match.remarks || '',
+                stay_id: match.stay_id || ''
+            });
+          } else {
+            fullList.push({
+              report_date: selectedDate, villa_number: villaNum, status: 'VAC', guest_name: '',
+              pax_adults: 0, pax_kids: 0, gem_name: '', meal_plan: '', stay_dates: '', remarks: '',
+              preferences: '', arrival_time: '', departure_time: '', stay_id: ''
+            });
+          }
         }
-        if (maxTime > 0) {
-            setLastSyncTime(new Date(maxTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' }));
+        fullList.sort((a, b) => parseInt(a.villa_number, 10) - parseInt(b.villa_number, 10));
+        setMasterList(fullList);
+
+        if (dbRecords && dbRecords.length > 0) {
+            let maxTime = 0;
+            for (const r of dbRecords) {
+                const t = new Date(r.updated_at || r.created_at || 0).getTime();
+                if (t > maxTime) maxTime = t;
+            }
+            if (maxTime > 0) {
+                setLastSyncTime(new Date(maxTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit' }));
+            } else {
+                setLastSyncTime('');
+            }
         } else {
             setLastSyncTime('');
         }
-    } else {
-        setLastSyncTime('');
+    } catch (err) {
+        console.error("fetchDailyData error:", err);
+    } finally {
+        if (showLoading) setIsProcessing(false);
     }
-
-    if (showLoading) setIsProcessing(false);
   };
 
   const handleSaveEdit = async () => {
     if (!editingRecord) return;
     setIsProcessing(true);
     
-    let finalPayload = { ...editingRecord };
-    if (!finalPayload.stay_id && finalPayload.stay_dates) {
-        const arrStr = finalPayload.stay_dates.split('-')[0].trim().replace(/\//g, '');
-        finalPayload.stay_id = `${finalPayload.villa_number}_${arrStr}`;
-    }
-    
-    // ⚡ FIX: Save Master Villa
-    const masterRec = masterList.find(r => r.villa_number === finalPayload.villa_number);
-    const { id: mId, ...masterPayload } = finalPayload;
-    
-    const { error: masterErr } = masterRec?.id 
-        ? await supabase.from('hsk_daily_summary').update(masterPayload).eq('id', masterRec.id) 
-        : await supabase.from('hsk_daily_summary').insert(masterPayload);
-
-    if (masterErr) toast.error(`Error saving ${finalPayload.villa_number}: ` + masterErr.message);
-
-    // ⚡ FIX: Save Associated Villas (Status only, clear guest data to prevent double count)
-    const associates = getAssociatedVillas(finalPayload.villa_number);
-    for (const v of associates) {
-        const targetRec = masterList.find(r => r.villa_number === v);
-        const assocPayload = { 
-            ...masterPayload, 
-            villa_number: v,
-            guest_name: '', 
-            pax_adults: 0, 
-            pax_kids: 0,
-            arrival_time: '',
-            departure_time: '',
-            preferences: ''
-        };
+    try {
+        let finalPayload = { ...editingRecord };
+        if (!finalPayload.stay_id && finalPayload.stay_dates) {
+            const arrStr = finalPayload.stay_dates.split('-')[0].trim().replace(/\//g, '');
+            finalPayload.stay_id = `${finalPayload.villa_number}_${arrStr}`;
+        }
         
-        const { error: assocErr } = targetRec?.id 
-            ? await supabase.from('hsk_daily_summary').update(assocPayload).eq('id', targetRec.id) 
-            : await supabase.from('hsk_daily_summary').insert(assocPayload);
+        const masterRec = masterList.find(r => r.villa_number === finalPayload.villa_number);
+        const { id: mId, ...masterPayload } = finalPayload;
+        
+        const { error: masterErr } = masterRec?.id 
+            ? await supabase.from('hsk_daily_summary').update(masterPayload).eq('id', masterRec.id) 
+            : await supabase.from('hsk_daily_summary').insert(masterPayload);
+
+        if (masterErr) toast.error(`Error saving ${finalPayload.villa_number}: ` + masterErr.message);
+
+        const associates = getAssociatedVillas(finalPayload.villa_number);
+        for (const v of associates) {
+            const targetRec = masterList.find(r => r.villa_number === v);
+            const assocPayload = { 
+                ...masterPayload, 
+                villa_number: v,
+                guest_name: '', 
+                pax_adults: 0, 
+                pax_kids: 0,
+                arrival_time: '',
+                departure_time: '',
+                preferences: ''
+            };
             
-        if (assocErr) toast.error(`Error saving ${v}: ` + assocErr.message);
+            const { error: assocErr } = targetRec?.id 
+                ? await supabase.from('hsk_daily_summary').update(assocPayload).eq('id', targetRec.id) 
+                : await supabase.from('hsk_daily_summary').insert(assocPayload);
+                
+            if (assocErr) toast.error(`Error saving ${v}: ` + assocErr.message);
+        }
+        
+        setIsEditOpen(false); 
+        fetchDailyData(); 
+        setEditingRecord(null);
+        toast.success("Profile Saved!");
+    } catch (err: any) {
+        console.error("Save edit error:", err);
+        toast.error("Failed to save profile: " + (err?.message || "Unknown error"));
+    } finally {
+        setIsProcessing(false);
     }
-    
-    setIsEditOpen(false); 
-    fetchDailyData(); 
-    setEditingRecord(null);
-    toast.success("Profile Saved!");
-    setIsProcessing(false);
   };
 
+  // ⚡ UPDATED: Update existing database rows directly instead of deleting and creating new lines
   const handleApproveUpdate = async () => {
       setIsProcessing(true);
-      await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
-      
-      const finalPending = [...pendingData];
-      
-      // ⚡ FIX: Auto mirror 57 to 56/58 and 87 to 88 inside the data map before batch updating
-      const v57 = finalPending.find(p => p.villa_number === '57');
-      if (v57) {
-          const p56 = finalPending.find(p => p.villa_number === '56');
-          const p58 = finalPending.find(p => p.villa_number === '58');
-          const childPayload = { ...v57, guest_name: '', pax_adults: 0, pax_kids: 0, arrival_time: '', departure_time: '', preferences: '' };
-          if (p56) Object.assign(p56, { ...childPayload, id: p56.id, villa_number: '56' });
-          if (p58) Object.assign(p58, { ...childPayload, id: p58.id, villa_number: '58' });
-      }
-      
-      const v87 = finalPending.find(p => p.villa_number === '87');
-      if (v87) {
-          const p88 = finalPending.find(p => p.villa_number === '88');
-          const childPayload = { ...v87, guest_name: '', pax_adults: 0, pax_kids: 0, arrival_time: '', departure_time: '', preferences: '' };
-          if (p88) Object.assign(p88, { ...childPayload, id: p88.id, villa_number: '88' });
-      }
+      try {
+          const finalPending = [...pendingData];
+          
+          // Mirror 57 to 56/58 and 87 to 88
+          const v57 = finalPending.find(p => p.villa_number === '57');
+          if (v57) {
+              const p56 = finalPending.find(p => p.villa_number === '56');
+              const p58 = finalPending.find(p => p.villa_number === '58');
+              const childPayload = { ...v57, guest_name: '', pax_adults: 0, pax_kids: 0, arrival_time: '', departure_time: '', preferences: '' };
+              if (p56) Object.assign(p56, { ...childPayload, id: p56.id, villa_number: '56' });
+              if (p58) Object.assign(p58, { ...childPayload, id: p58.id, villa_number: '58' });
+          }
+          
+          const v87 = finalPending.find(p => p.villa_number === '87');
+          if (v87) {
+              const p88 = finalPending.find(p => p.villa_number === '88');
+              const childPayload = { ...v87, guest_name: '', pax_adults: 0, pax_kids: 0, arrival_time: '', departure_time: '', preferences: '' };
+              if (p88) Object.assign(p88, { ...childPayload, id: p88.id, villa_number: '88' });
+          }
 
-      const payload = finalPending.map(r => { 
-          const { id, ...rest } = r; 
-          return { ...rest, report_date: selectedDate, arrival_time: rest.arrival_time || '', departure_time: rest.departure_time || '' };
-      });
+          // Update each existing row by its ID, or insert if newly assigned
+          for (const rec of finalPending) {
+              const existingRow = masterList.find(m => m.villa_number === rec.villa_number);
+              const payloadToSave = {
+                  report_date: selectedDate,
+                  villa_number: rec.villa_number,
+                  status: rec.status,
+                  guest_name: rec.guest_name || '',
+                  pax_adults: rec.pax_adults || 0,
+                  pax_kids: rec.pax_kids || 0,
+                  gem_name: rec.gem_name || '',
+                  meal_plan: rec.meal_plan || '',
+                  stay_dates: rec.stay_dates || '',
+                  arrival_time: rec.arrival_time || '',
+                  departure_time: rec.departure_time || '',
+                  preferences: rec.preferences || '',
+                  remarks: rec.remarks || '',
+                  stay_id: rec.stay_id || ''
+              };
 
-      await supabase.from('hsk_daily_summary').insert(payload);
-      fetchDailyData();
-      setDiffModalOpen(false);
-      setIsProcessing(false);
-      toast.success("Summary synchronized successfully.");
+              if (existingRow?.id) {
+                  await supabase
+                      .from('hsk_daily_summary')
+                      .update(payloadToSave)
+                      .eq('id', existingRow.id);
+              } else {
+                  await supabase
+                      .from('hsk_daily_summary')
+                      .insert([payloadToSave]);
+              }
+          }
+
+          await fetchDailyData();
+          setDiffModalOpen(false);
+          toast.success("Summary synchronized on existing records successfully.");
+      } catch (err: any) {
+          console.error("Approve update error:", err);
+          toast.error("Sync failed: " + (err?.message || "Unknown error"));
+      } finally {
+          setIsProcessing(false);
+      }
   };
 
   const removeChange = (index: number) => {
@@ -361,83 +403,85 @@ export default function HousekeepingSummaryPage() {
       if (!toRec) return toast.error("Destination villa not found.");
 
       setIsProcessing(true);
+      try {
+          let combinedNames = moveData.mergeDest && toRec.guest_name ? [toRec.guest_name] : [];
+          let combinedAdults = moveData.mergeDest ? (toRec.pax_adults || 0) : 0;
+          let combinedKids = moveData.mergeDest ? (toRec.pax_kids || 0) : 0;
+          let combinedPrefs = moveData.mergeDest && toRec.preferences ? [toRec.preferences] : [];
+          let mealPlan = moveData.mergeDest && toRec.meal_plan ? toRec.meal_plan : '';
+          let gemName = moveData.mergeDest && toRec.gem_name ? toRec.gem_name : '';
+          let stayDates = moveData.mergeDest && toRec.stay_dates ? toRec.stay_dates : '';
 
-      let combinedNames = moveData.mergeDest && toRec.guest_name ? [toRec.guest_name] : [];
-      let combinedAdults = moveData.mergeDest ? (toRec.pax_adults || 0) : 0;
-      let combinedKids = moveData.mergeDest ? (toRec.pax_kids || 0) : 0;
-      let combinedPrefs = moveData.mergeDest && toRec.preferences ? [toRec.preferences] : [];
-      let mealPlan = moveData.mergeDest && toRec.meal_plan ? toRec.meal_plan : '';
-      let gemName = moveData.mergeDest && toRec.gem_name ? toRec.gem_name : '';
-      let stayDates = moveData.mergeDest && toRec.stay_dates ? toRec.stay_dates : '';
-
-      for (const v of fromVillas) {
-          const fromRec = masterList.find(r => r.villa_number === v);
-          if (fromRec) {
-              if (fromRec.guest_name) combinedNames.push(fromRec.guest_name);
-              combinedAdults += (fromRec.pax_adults || 0);
-              combinedKids += (fromRec.pax_kids || 0);
-              if (fromRec.preferences) combinedPrefs.push(fromRec.preferences);
-              if (!mealPlan) mealPlan = fromRec.meal_plan;
-              if (!gemName) gemName = fromRec.gem_name;
-              if (!stayDates) stayDates = fromRec.stay_dates;
-          }
-      }
-
-      const toPayload = {
-          ...toRec,
-          status: moveData.type,
-          guest_name: combinedNames.join(' & '),
-          pax_adults: combinedAdults,
-          pax_kids: combinedKids,
-          preferences: combinedPrefs.join('\n\n'),
-          meal_plan: mealPlan,
-          gem_name: gemName,
-          stay_dates: stayDates
-      };
-
-      const executeUpdate = async (villaNum: string, payload: any) => {
-          const rec = masterList.find(r => r.villa_number === villaNum);
-          if (rec?.id) await supabase.from('hsk_daily_summary').update(payload).eq('id', rec.id);
-          else await supabase.from('hsk_daily_summary').insert({...payload, report_date: selectedDate, villa_number: villaNum});
-      };
-
-      // ⚡ FIX: Update Destination Master
-      await executeUpdate(toVilla, { ...toPayload, villa_number: toVilla });
-
-      // ⚡ FIX: Update Destination Associates (Status only, clear guest data)
-      const toTargets = getAssociatedVillas(toVilla);
-      for (const v of toTargets) {
-          await executeUpdate(v, { 
-              ...toPayload, 
-              villa_number: v, 
-              guest_name: '', 
-              pax_adults: 0, 
-              pax_kids: 0, 
-              arrival_time: '', 
-              departure_time: '', 
-              preferences: '' 
-          });
-      }
-
-      // Update Sources
-      if (!moveData.isPartial) {
           for (const v of fromVillas) {
-              const sourceTargets = [v, ...getAssociatedVillas(v)];
-              for (const sv of sourceTargets) {
-                  const sRec = masterList.find(r => r.villa_number === sv);
-                  if (sRec) {
-                      const fromPayload = { ...sRec, status: 'VM/VAC', guest_name: '', pax_adults: 0, pax_kids: 0 };
-                      await executeUpdate(sv, fromPayload);
+              const fromRec = masterList.find(r => r.villa_number === v);
+              if (fromRec) {
+                  if (fromRec.guest_name) combinedNames.push(fromRec.guest_name);
+                  combinedAdults += (fromRec.pax_adults || 0);
+                  combinedKids += (fromRec.pax_kids || 0);
+                  if (fromRec.preferences) combinedPrefs.push(fromRec.preferences);
+                  if (!mealPlan) mealPlan = fromRec.meal_plan;
+                  if (!gemName) gemName = fromRec.gem_name;
+                  if (!stayDates) stayDates = fromRec.stay_dates;
+              }
+          }
+
+          const toPayload = {
+              ...toRec,
+              status: moveData.type,
+              guest_name: combinedNames.join(' & '),
+              pax_adults: combinedAdults,
+              pax_kids: combinedKids,
+              preferences: combinedPrefs.join('\n\n'),
+              meal_plan: mealPlan,
+              gem_name: gemName,
+              stay_dates: stayDates
+          };
+
+          const executeUpdate = async (villaNum: string, payload: any) => {
+              const rec = masterList.find(r => r.villa_number === villaNum);
+              if (rec?.id) await supabase.from('hsk_daily_summary').update(payload).eq('id', rec.id);
+              else await supabase.from('hsk_daily_summary').insert({...payload, report_date: selectedDate, villa_number: villaNum});
+          };
+
+          await executeUpdate(toVilla, { ...toPayload, villa_number: toVilla });
+
+          const toTargets = getAssociatedVillas(toVilla);
+          for (const v of toTargets) {
+              await executeUpdate(v, { 
+                  ...toPayload, 
+                  villa_number: v, 
+                  guest_name: '', 
+                  pax_adults: 0, 
+                  pax_kids: 0, 
+                  arrival_time: '', 
+                  departure_time: '', 
+                  preferences: '' 
+              });
+          }
+
+          if (!moveData.isPartial) {
+              for (const v of fromVillas) {
+                  const sourceTargets = [v, ...getAssociatedVillas(v)];
+                  for (const sv of sourceTargets) {
+                      const sRec = masterList.find(r => r.villa_number === sv);
+                      if (sRec) {
+                          const fromPayload = { ...sRec, status: 'VM/VAC', guest_name: '', pax_adults: 0, pax_kids: 0 };
+                          await executeUpdate(sv, fromPayload);
+                      }
                   }
               }
           }
-      }
 
-      setIsMoveModalOpen(false);
-      setMoveData({ from: '', to: '', type: 'VM/OCC', isPartial: false, mergeDest: true });
-      fetchDailyData();
-      setIsProcessing(false);
-      toast.success(`Moved Guests to V${toVilla}`);
+          setIsMoveModalOpen(false);
+          setMoveData({ from: '', to: '', type: 'VM/OCC', isPartial: false, mergeDest: true });
+          fetchDailyData();
+          toast.success(`Moved Guests to V${toVilla}`);
+      } catch (err: any) {
+          console.error("Move error:", err);
+          toast.error("Move failed: " + (err?.message || "Unknown error"));
+      } finally {
+          setIsProcessing(false);
+      }
   };
 
   const handlePasteSubmit = () => {
@@ -483,257 +527,52 @@ export default function HousekeepingSummaryPage() {
   };
 
   const processOCCXML = (xmlText: string) => {
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-      const nodes = Array.from(xmlDoc.querySelectorAll('G_C9'));
-      
-      const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-      const diffs: ChangeLog[] = [];
-      const resByVilla: Record<string, any[]> = {};
-      
-      nodes.forEach((node: any) => {
-          const v = node.querySelector('C9')?.textContent?.trim();
-          if (v) {
-              if (!resByVilla[v]) resByVilla[v] = [];
-              resByVilla[v].push(node);
-          }
-      });
-
-      const newOccList: any[] = [];
-
-      for (const [villa, resList] of Object.entries(resByVilla)) {
-          const cleanVilla = normalizeVilla(villa);
-          if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
+      try {
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+          const nodes = Array.from(xmlDoc.querySelectorAll('G_C9'));
           
-          let totalAdults = 0; let totalKids = 0;
-          let names: string[] = []; let mealPlan = 'RO'; let gemName = '';
-          let arrDate = ''; let depDate = '';
-
-          resList.forEach(res => {
-              const rawName = res.querySelector('C36')?.textContent || '';
-              const title = res.querySelector('C33')?.textContent || '';
-              if (rawName) names.push(formatGuestName(rawName, title));
-              
-              totalAdults += parseInt(res.querySelector('C48')?.textContent || '0', 10);
-              totalKids += parseInt(res.querySelector('C51')?.textContent || '0', 10);
-              
-              const mPlan = res.querySelector('C30')?.textContent?.trim();
-              if (mPlan && mPlan !== 'RO') mealPlan = mPlan;
-              
-              const gem = res.querySelector('C27')?.textContent?.trim();
-              if (gem) gemName = gem;
-
-              if (!arrDate) arrDate = res.querySelector('C81')?.textContent || '';
-              if (!depDate) depDate = res.querySelector('C87')?.textContent || '';
-          });
-
-          let stayDates = ''; let stayId = '';
-          if (arrDate && depDate) {
-              const aParts = arrDate.split('-'); const dParts = depDate.split('-');
-              if (aParts.length === 3 && dParts.length === 3) {
-                  const aMonth = monthToNum(aParts[1]);
-                  const dMonth = monthToNum(dParts[1]);
-                  stayDates = `${aParts[0].padStart(2, '0')}/${aMonth} - ${dParts[0].padStart(2, '0')}/${dMonth}`;
-                  stayId = `${cleanVilla}_${aParts[2]}${aMonth}${aParts[0].padStart(2, '0')}`; 
-              }
-          }
-
-          newOccList.push({
-              villa: cleanVilla,
-              names: names.join(' & '),
-              adults: totalAdults,
-              kids: totalKids,
-              mealPlan: mealPlan,
-              gemName: gemName,
-              stayDates: stayDates,
-              stayId: stayId
-          });
-      }
-
-      newOccList.forEach(newOcc => {
-          const record = currentMap.get(newOcc.villa)!;
-          let oldVillaMatch: GuestRecord | null = null;
-
-          if (!isSameGuest(record.guest_name, newOcc.names)) {
-              for (const [vNum, rec] of currentMap.entries()) {
-                  if (vNum !== newOcc.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
-                      if (isSameGuest(rec.guest_name, newOcc.names)) {
-                          oldVillaMatch = rec;
-                          break;
-                      }
-                  }
-              }
-          }
-
-          const oldStatus = record.status;
-          if (!oldStatus.includes('ARR') && !oldStatus.includes('DEP')) record.status = 'OCC';
+          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
+          const diffs: ChangeLog[] = [];
+          const resByVilla: Record<string, any[]> = {};
           
-          record.guest_name = newOcc.names;
-          record.pax_adults = newOcc.adults;
-          record.pax_kids = newOcc.kids;
-          record.meal_plan = newOcc.mealPlan;
-          record.stay_dates = newOcc.stayDates;
-          record.stay_id = newOcc.stayId;
-
-          if (oldVillaMatch) {
-              if (!newOcc.gemName && oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
-              else record.gem_name = newOcc.gemName;
-              
-              if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
-              if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
-              if (oldVillaMatch.preferences) record.preferences = oldVillaMatch.preferences;
-
-              diffs.push({
-                  villa: newOcc.villa, type: 'ALLOC CHANGE',
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-                  newGuest: `${newOcc.names} (Moved from V${oldVillaMatch.villa_number})`,
-                  oldStatus: oldStatus, newStatus: record.status
-              });
-          } else {
-              record.gem_name = newOcc.gemName;
-              diffs.push({
-                  villa: newOcc.villa, type: 'SYNC',
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-                  newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
-              });
-          }
-      });
-
-      currentMap.forEach((rec, vNum) => {
-          const inOCC = newOccList.find(n => n.villa === vNum);
-          const isTMA = rec.status.toUpperCase().includes('TMA');
-          const isHouseUse = rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U') || rec.status.toUpperCase().includes('HOUSE');
-
-          if (!inOCC && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
-              if (!isTMA && !isHouseUse) {
-                  const movedTo = newOccList.find(n => isSameGuest(n.names, rec.guest_name));
-                  
-                  if (movedTo) {
-                      diffs.push({
-                          villa: vNum, type: 'MOVED OUT',
-                          oldGuest: rec.guest_name,
-                          newGuest: `Moved to V${movedTo.villa}`,
-                          oldStatus: rec.status, newStatus: 'VAC'
-                      });
-                  } else {
-                      diffs.push({
-                          villa: vNum, type: 'DISCREPANCY',
-                          oldGuest: rec.guest_name || 'Expected Guest',
-                          newGuest: 'Not in OCC List! (No Show / Early C/O?)',
-                          oldStatus: rec.status, newStatus: 'VAC'
-                      });
-                  }
-                  
-                  rec.status = 'VAC'; rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
-                  rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
-              }
-          }
-      });
-
-      setChanges(diffs);
-      setPendingData(Array.from(currentMap.values()));
-      setDiffModalOpen(true);
-      setIsProcessing(false);
-  };
-
-  const processArrDepXML = (xmlText: string) => {
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-      
-      const reservations = Array.from(xmlDoc.querySelectorAll('G_RESERVATION'));
-      const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-      const diffs: ChangeLog[] = [];
-      const resByVilla: Record<string, any[]> = {};
-      
-      const getText = (node: Element, tag: string) => {
-          let el = node.querySelector(tag) || node.querySelector(tag.toLowerCase());
-          return el ? el.textContent?.trim() || '' : '';
-      };
-
-      reservations.forEach((res: any) => {
-          const v = getText(res, 'DISP_ROOM_NO');
-          if (v) {
-              if (!resByVilla[v]) resByVilla[v] = [];
-              resByVilla[v].push(res);
-          }
-      });
-
-      const newArrList: any[] = [];
-
-      for (const [villa, resList] of Object.entries(resByVilla)) {
-          const cleanVilla = normalizeVilla(villa);
-          if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
-          
-          const record = currentMap.get(cleanVilla)!;
-
-          let isArr = false; let isDep = false;
-          let isFullyDeparting = true;
-          let arrNames: string[] = []; let depNames: string[] = [];
-          let isExtFromCarrier = false;
-
-          resList.forEach(res => {
-              const arrDate = getText(res, 'ARRIVAL');
-              const depDate = getText(res, 'DEPARTURE');
-              const arrCarrier = (getText(res, 'ARRIVAL_CARRIER_CODE') || '').toUpperCase();
-              
-              if (arrCarrier.includes('EXT') || arrCarrier.includes('STAY EXT')) {
-                  isExtFromCarrier = true;
-              }
-
-              if (arrDate && depDate) {
-                  const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
-                  const dFull = `20${depDate.split('-')[2]}-${monthToNum(depDate.split('-')[1])}-${depDate.split('-')[0].padStart(2, '0')}`;
-                  
-                  const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
-                  const formattedName = formatGuestName(rawName);
-
-                  if (aFull === selectedDate) { isArr = true; arrNames.push(formattedName); }
-                  if (dFull === selectedDate) { isDep = true; depNames.push(formattedName); }
-                  
-                  // Check if any guest in this villa is extending beyond today
-                  if (dFull > selectedDate) {
-                      isFullyDeparting = false;
-                  }
+          nodes.forEach((node: any) => {
+              const v = node.querySelector('C9')?.textContent?.trim();
+              if (v) {
+                  if (!resByVilla[v]) resByVilla[v] = [];
+                  resByVilla[v].push(node);
               }
           });
 
-          let isB2BExtension = isExtFromCarrier;
-          if (isArr && isDep) {
-              if (arrNames.some(aName => depNames.some(dName => isSameGuest(aName, dName)))) {
-                  isB2BExtension = true;
-              }
-          }
+          const newOccList: any[] = [];
 
-          let finalStatus = 'OCC';
-          if (isArr && isDep && !isB2BExtension) finalStatus = 'DEP/ARR';
-          else if (isArr) finalStatus = 'ARR';
-          // Ensure we don't mark a villa DEP if only some guests are checking out
-          else if (isDep) finalStatus = isFullyDeparting ? 'DEP' : 'OCC';
-          else if (resList.every(r => getText(r, 'SHORT_RESV_STATUS').includes('CKOT'))) finalStatus = 'VAC';
-
-          let primaryResList = resList;
-          if (finalStatus === 'DEP/ARR' || isB2BExtension) {
-              primaryResList = resList.filter(res => {
-                  const arrDate = getText(res, 'ARRIVAL');
-                  if (!arrDate) return false;
-                  const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
-                  return aFull === selectedDate;
-              });
-          }
-
-          let totalAdults = 0; let totalKids = 0;
-          let names: string[] = []; let prefs: string[] = [];
-          let mealPlan = ''; let stayDates = ''; let stayId = '';
-
-          primaryResList.forEach(res => {
-              const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
-              if (rawName) names.push(formatGuestName(rawName));
+          for (const [villa, resList] of Object.entries(resByVilla)) {
+              const cleanVilla = normalizeVilla(villa);
+              if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
               
-              totalAdults += parseInt(getText(res, 'ADULTS') || '0', 10);
-              totalKids += parseInt(getText(res, 'CHILDREN') || '0', 10);
+              let totalAdults = 0; let totalKids = 0;
+              let names: string[] = []; let mealPlan = 'RO'; let gemName = '';
+              let arrDate = ''; let depDate = '';
 
-              const arrDate = getText(res, 'ARRIVAL');
-              const depDate = getText(res, 'DEPARTURE');
+              resList.forEach(res => {
+                  const rawName = res.querySelector('C36')?.textContent || '';
+                  const title = res.querySelector('C33')?.textContent || '';
+                  if (rawName) names.push(formatGuestName(rawName, title));
+                  
+                  totalAdults += parseInt(res.querySelector('C48')?.textContent || '0', 10);
+                  totalKids += parseInt(res.querySelector('C51')?.textContent || '0', 10);
+                  
+                  const mPlan = res.querySelector('C30')?.textContent?.trim();
+                  if (mPlan && mPlan !== 'RO') mealPlan = mPlan;
+                  
+                  const gem = res.querySelector('C27')?.textContent?.trim();
+                  if (gem) gemName = gem;
+
+                  if (!arrDate) arrDate = res.querySelector('C81')?.textContent || '';
+                  if (!depDate) depDate = res.querySelector('C87')?.textContent || '';
+              });
+
+              let stayDates = ''; let stayId = '';
               if (arrDate && depDate) {
                   const aParts = arrDate.split('-'); const dParts = depDate.split('-');
                   if (aParts.length === 3 && dParts.length === 3) {
@@ -744,294 +583,556 @@ export default function HousekeepingSummaryPage() {
                   }
               }
 
-              mealPlan = '';
+              newOccList.push({
+                  villa: cleanVilla,
+                  names: names.join(' & '),
+                  adults: totalAdults,
+                  kids: totalKids,
+                  mealPlan: mealPlan,
+                  gemName: gemName,
+                  stayDates: stayDates,
+                  stayId: stayId
+              });
+          }
 
-              const comments = Array.from(res.querySelectorAll('RES_COMMENT'));
-              comments.forEach((c: any) => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
-          });
+          newOccList.forEach(newOcc => {
+              const record = currentMap.get(newOcc.villa)!;
+              let oldVillaMatch: GuestRecord | null = null;
 
-          newArrList.push({
-              villa: cleanVilla,
-              names: names.join(' & '),
-              adults: totalAdults,
-              kids: totalKids,
-              mealPlan: mealPlan,
-              stayDates: stayDates,
-              stayId: stayId,
-              status: finalStatus,
-              isB2B: isB2BExtension,
-              prefs: Array.from(new Set(prefs)).join('\n\n')
-          });
-      }
-
-      newArrList.forEach(newArr => {
-          const record = currentMap.get(newArr.villa)!;
-          let oldVillaMatch: GuestRecord | null = null;
-          let isStayExt = newArr.isB2B;
-
-          if (!isSameGuest(record.guest_name, newArr.names)) {
-              for (const [vNum, rec] of currentMap.entries()) {
-                  if (vNum !== newArr.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
-                      if (isSameGuest(rec.guest_name, newArr.names)) {
-                          oldVillaMatch = rec;
-                          break;
+              if (!isSameGuest(record.guest_name, newOcc.names)) {
+                  for (const [vNum, rec] of currentMap.entries()) {
+                      if (vNum !== newOcc.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
+                          if (isSameGuest(rec.guest_name, newOcc.names)) {
+                              oldVillaMatch = rec;
+                              break;
+                          }
                       }
                   }
               }
-          } else {
-              if (['OCC', 'VM/OCC'].includes(record.status) && newArr.status.includes('ARR')) {
-                  isStayExt = true;
-              }
-          }
 
-          const oldStatus = record.status;
-          let newStatus = newArr.status;
-          
-          if (newStatus === 'ARR' && oldStatus.includes('DEP')) newStatus = 'DEP/ARR';
+              const oldStatus = record.status || 'VAC';
+              if (!String(oldStatus).includes('ARR') && !String(oldStatus).includes('DEP')) record.status = 'OCC';
+              
+              record.guest_name = newOcc.names;
+              record.pax_adults = newOcc.adults;
+              record.pax_kids = newOcc.kids;
+              record.meal_plan = newOcc.mealPlan;
+              record.stay_dates = newOcc.stayDates;
+              record.stay_id = newOcc.stayId;
 
-          let finalNames = newArr.names;
-          let finalAdults = newArr.adults;
-          let finalKids = newArr.kids;
-          let isJoiner = false;
-
-          if (isStayExt) {
-              newStatus = oldStatus.includes('VM/') ? oldStatus : 'OCC'; 
-          } else if (['OCC', 'VM/OCC'].includes(oldStatus) && newStatus.includes('ARR')) {
-              if (record.guest_name && !isSameGuest(record.guest_name, newArr.names)) {
-                  finalNames = `${record.guest_name} & ${newArr.names}`;
-                  finalAdults = record.pax_adults + newArr.adults;
-                  finalKids = record.pax_kids + newArr.kids;
-                  isJoiner = true;
-              }
-          }
-
-          record.guest_name = finalNames;
-          record.pax_adults = finalAdults;
-          record.pax_kids = finalKids;
-          record.meal_plan = newArr.mealPlan;
-          record.stay_dates = newArr.stayDates;
-          record.status = newStatus;
-          record.stay_id = newArr.stayId;
-          
-          if (newArr.prefs) {
-              record.preferences = record.preferences ? `${record.preferences}\n\n${newArr.prefs}` : newArr.prefs;
-          }
-
-          if (oldVillaMatch) {
-              if (oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
-              if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
-              if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
-              if (oldVillaMatch.preferences && !newArr.prefs) record.preferences = oldVillaMatch.preferences;
-
-              diffs.push({
-                  villa: newArr.villa, type: 'ALLOC CHANGE',
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-                  newGuest: `${finalNames} (Moved from V${oldVillaMatch.villa_number})`,
-                  oldStatus: oldStatus, newStatus: record.status
-              });
-          } else {
-              let diffType = 'SYNC';
-              if (isStayExt) diffType = 'STAY EXT';
-              else if (isJoiner) diffType = 'JOINER (ARR)';
-              else if (newStatus === 'DEP/ARR' && !oldStatus.includes('ARR')) diffType = 'DEP/ARR';
-              else if (newStatus.includes('ARR') && !oldStatus.includes('ARR')) diffType = 'ARRIVAL';
-              else if (newStatus.includes('DEP') && !oldStatus.includes('DEP')) diffType = 'DEPARTURE';
-
-              diffs.push({
-                  villa: newArr.villa, type: diffType,
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : (isJoiner ? record.guest_name : record.guest_name),
-                  newGuest: finalNames, oldStatus: oldStatus, newStatus: record.status
-              });
-          }
-      });
-
-      currentMap.forEach((rec, vNum) => {
-          const inARR = newArrList.find(n => n.villa === vNum);
-
-          if (!inARR) {
-              const oldStatus = rec.status;
-              if (oldStatus === 'ARR' || oldStatus === 'DEP/ARR') {
-                  let newStatus = oldStatus === 'DEP/ARR' ? 'DEP' : 'VAC';
+              if (oldVillaMatch) {
+                  if (!newOcc.gemName && oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
+                  else record.gem_name = newOcc.gemName;
                   
-                  const movedTo = newArrList.find(n => isSameGuest(n.names, rec.guest_name));
-                  
-                  if (movedTo) {
-                      diffs.push({
-                          villa: vNum, type: 'MOVED OUT',
-                          oldGuest: rec.guest_name,
-                          newGuest: `Moved to V${movedTo.villa}`,
-                          oldStatus: oldStatus, newStatus: newStatus
-                      });
-                  } else {
-                      diffs.push({
-                          villa: vNum, type: 'CHANGE', 
-                          oldGuest: rec.guest_name || 'Cancelled', newGuest: newStatus === 'VAC' ? 'Vacant' : 'Departing', 
-                          oldStatus: oldStatus, newStatus: newStatus
-                      });
-                  }
+                  if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
+                  if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
+                  if (oldVillaMatch.preferences) record.preferences = oldVillaMatch.preferences;
 
-                  rec.status = newStatus;
-                  if (newStatus === 'VAC') {
-                      rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
+                  diffs.push({
+                      villa: newOcc.villa, type: 'ALLOC CHANGE',
+                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                      newGuest: `${newOcc.names} (Moved from V${oldVillaMatch.villa_number})`,
+                      oldStatus: oldStatus, newStatus: record.status
+                  });
+              } else {
+                  record.gem_name = newOcc.gemName;
+                  diffs.push({
+                      villa: newOcc.villa, type: 'SYNC',
+                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                      newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+                  });
+              }
+          });
+
+          currentMap.forEach((rec, vNum) => {
+              const inOCC = newOccList.find(n => n.villa === vNum);
+              const isTMA = String(rec?.status || '').toUpperCase().includes('TMA');
+              const guestUpper = String(rec?.guest_name || '').toUpperCase();
+              const isHouseUse = guestUpper.includes('HOUSE USE') || guestUpper.includes('H/U') || String(rec?.status || '').toUpperCase().includes('HOUSE');
+
+              if (!inOCC && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
+                  if (!isTMA && !isHouseUse) {
+                      const movedTo = newOccList.find(n => isSameGuest(n.names, rec.guest_name));
+                      
+                      if (movedTo) {
+                          diffs.push({
+                              villa: vNum, type: 'MOVED OUT',
+                              oldGuest: rec.guest_name,
+                              newGuest: `Moved to V${movedTo.villa}`,
+                              oldStatus: rec.status, newStatus: 'VAC'
+                          });
+                      } else {
+                          diffs.push({
+                              villa: vNum, type: 'DISCREPANCY',
+                              oldGuest: rec.guest_name || 'Expected Guest',
+                              newGuest: 'Not in OCC List! (No Show / Early C/O?)',
+                              oldStatus: rec.status, newStatus: 'VAC'
+                          });
+                      }
+                      
+                      rec.status = 'VAC'; rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
                       rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
                   }
               }
-          }
-      });
+          });
 
-      setChanges(diffs);
-      setPendingData(Array.from(currentMap.values()));
-      setDiffModalOpen(true);
-      setIsProcessing(false);
+          setChanges(diffs);
+          setPendingData(Array.from(currentMap.values()));
+          setDiffModalOpen(true);
+      } catch (err: any) {
+          console.error("processOCCXML error:", err);
+          toast.error("Failed to parse OCC XML: " + (err?.message || "Unknown error"));
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+  const processArrDepXML = (xmlText: string) => {
+      try {
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+          
+          const reservations = Array.from(xmlDoc.querySelectorAll('G_RESERVATION'));
+          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
+          const diffs: ChangeLog[] = [];
+          const resByVilla: Record<string, any[]> = {};
+          
+          const getText = (node: Element, tag: string) => {
+              let el = node.querySelector(tag) || node.querySelector(tag.toLowerCase());
+              return el ? el.textContent?.trim() || '' : '';
+          };
+
+          reservations.forEach((res: any) => {
+              const v = getText(res, 'DISP_ROOM_NO');
+              if (v) {
+                  if (!resByVilla[v]) resByVilla[v] = [];
+                  resByVilla[v].push(res);
+              }
+          });
+
+          const newArrList: any[] = [];
+
+          for (const [villa, resList] of Object.entries(resByVilla)) {
+              const cleanVilla = normalizeVilla(villa);
+              if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
+              
+              const record = currentMap.get(cleanVilla)!;
+
+              let isArr = false; let isDep = false;
+              let isFullyDeparting = true;
+              let arrNames: string[] = []; let depNames: string[] = [];
+              let isExtFromCarrier = false;
+
+              resList.forEach(res => {
+                  const arrDate = getText(res, 'ARRIVAL');
+                  const depDate = getText(res, 'DEPARTURE');
+                  const arrCarrier = (getText(res, 'ARRIVAL_CARRIER_CODE') || '').toUpperCase();
+                  
+                  if (arrCarrier.includes('EXT') || arrCarrier.includes('STAY EXT')) {
+                      isExtFromCarrier = true;
+                  }
+
+                  if (arrDate && depDate) {
+                      const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
+                      const dFull = `20${depDate.split('-')[2]}-${monthToNum(depDate.split('-')[1])}-${depDate.split('-')[0].padStart(2, '0')}`;
+                      
+                      const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
+                      const formattedName = formatGuestName(rawName);
+
+                      if (aFull === selectedDate) { isArr = true; arrNames.push(formattedName); }
+                      if (dFull === selectedDate) { isDep = true; depNames.push(formattedName); }
+                      
+                      if (dFull > selectedDate) {
+                          isFullyDeparting = false;
+                      }
+                  }
+              });
+
+              let isB2BExtension = isExtFromCarrier;
+              if (isArr && isDep) {
+                  if (arrNames.some(aName => depNames.some(dName => isSameGuest(aName, dName)))) {
+                      isB2BExtension = true;
+                  }
+              }
+
+              let finalStatus = 'OCC';
+              if (isArr && isDep && !isB2BExtension) finalStatus = 'DEP/ARR';
+              else if (isArr) finalStatus = 'ARR';
+              else if (isDep) finalStatus = isFullyDeparting ? 'DEP' : 'OCC';
+              else if (resList.every(r => getText(r, 'SHORT_RESV_STATUS').includes('CKOT'))) finalStatus = 'VAC';
+
+              let primaryResList = resList;
+              if (finalStatus === 'DEP/ARR' || isB2BExtension) {
+                  primaryResList = resList.filter(res => {
+                      const arrDate = getText(res, 'ARRIVAL');
+                      if (!arrDate) return false;
+                      const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
+                      return aFull === selectedDate;
+                  });
+              }
+
+              let totalAdults = 0; let totalKids = 0;
+              let names: string[] = []; let prefs: string[] = [];
+              let mealPlan = ''; let stayDates = ''; let stayId = '';
+
+              primaryResList.forEach(res => {
+                  const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
+                  if (rawName) names.push(formatGuestName(rawName));
+                  
+                  totalAdults += parseInt(getText(res, 'ADULTS') || '0', 10);
+                  totalKids += parseInt(getText(res, 'CHILDREN') || '0', 10);
+
+                  const arrDate = getText(res, 'ARRIVAL');
+                  const depDate = getText(res, 'DEPARTURE');
+                  if (arrDate && depDate) {
+                      const aParts = arrDate.split('-'); const dParts = depDate.split('-');
+                      if (aParts.length === 3 && dParts.length === 3) {
+                          const aMonth = monthToNum(aParts[1]);
+                          const dMonth = monthToNum(dParts[1]);
+                          stayDates = `${aParts[0].padStart(2, '0')}/${aMonth} - ${dParts[0].padStart(2, '0')}/${dMonth}`;
+                          stayId = `${cleanVilla}_${aParts[2]}${aMonth}${aParts[0].padStart(2, '0')}`; 
+                      }
+                  }
+
+                  mealPlan = '';
+
+                  const comments = Array.from(res.querySelectorAll('RES_COMMENT'));
+                  comments.forEach((c: any) => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
+              });
+
+              newArrList.push({
+                  villa: cleanVilla,
+                  names: names.join(' & '),
+                  adults: totalAdults,
+                  kids: totalKids,
+                  mealPlan: mealPlan,
+                  stayDates: stayDates,
+                  stayId: stayId,
+                  status: finalStatus,
+                  isB2B: isB2BExtension,
+                  prefs: Array.from(new Set(prefs)).join('\n\n')
+              });
+          }
+
+          newArrList.forEach(newArr => {
+              const record = currentMap.get(newArr.villa)!;
+              let oldVillaMatch: GuestRecord | null = null;
+              let isStayExt = newArr.isB2B;
+
+              if (!isSameGuest(record.guest_name, newOccNames(newArr.names))) {
+                  for (const [vNum, rec] of currentMap.entries()) {
+                      if (vNum !== newArr.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
+                          if (isSameGuest(rec.guest_name, newArr.names)) {
+                              oldVillaMatch = rec;
+                              break;
+                          }
+                      }
+                  }
+              } else {
+                  if (['OCC', 'VM/OCC'].includes(record.status) && String(newArr?.status || '').includes('ARR')) {
+                      isStayExt = true;
+                  }
+              }
+
+              const oldStatus = record.status || 'VAC';
+              let newStatus = newArr.status;
+              
+              if (newStatus === 'ARR' && String(oldStatus).includes('DEP')) newStatus = 'DEP/ARR';
+
+              let finalNames = newArr.names;
+              let finalAdults = newArr.adults;
+              let finalKids = newArr.kids;
+              let isJoiner = false;
+
+              if (isStayExt) {
+                  newStatus = String(oldStatus).includes('VM/') ? oldStatus : 'OCC'; 
+              } else if (['OCC', 'VM/OCC'].includes(oldStatus) && String(newStatus).includes('ARR')) {
+                  if (record.guest_name && !isSameGuest(record.guest_name, newArr.names)) {
+                      finalNames = `${record.guest_name} & ${newArr.names}`;
+                      finalAdults = (record.pax_adults || 0) + newArr.adults;
+                      finalKids = (record.pax_kids || 0) + newArr.kids;
+                      isJoiner = true;
+                  }
+              }
+
+              record.guest_name = finalNames;
+              record.pax_adults = finalAdults;
+              record.pax_kids = finalKids;
+              record.meal_plan = newArr.mealPlan;
+              record.stay_dates = newArr.stayDates;
+              record.status = newStatus;
+              record.stay_id = newArr.stayId;
+              
+              if (newArr.prefs) {
+                  record.preferences = record.preferences ? `${record.preferences}\n\n${newArr.prefs}` : newArr.prefs;
+              }
+
+              if (oldVillaMatch) {
+                  if (oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
+                  if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
+                  if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
+                  if (oldVillaMatch.preferences && !newArr.prefs) record.preferences = oldVillaMatch.preferences;
+
+                  diffs.push({
+                      villa: newArr.villa, type: 'ALLOC CHANGE',
+                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                      newGuest: `${finalNames} (Moved from V${oldVillaMatch.villa_number})`,
+                      oldStatus: oldStatus, newStatus: record.status
+                  });
+              } else {
+                  let diffType = 'SYNC';
+                  if (isStayExt) diffType = 'STAY EXT';
+                  else if (isJoiner) diffType = 'JOINER (ARR)';
+                  else if (newStatus === 'DEP/ARR' && !String(oldStatus).includes('ARR')) diffType = 'DEP/ARR';
+                  else if (String(newStatus).includes('ARR') && !String(oldStatus).includes('ARR')) diffType = 'ARRIVAL';
+                  else if (String(newStatus).includes('DEP') && !String(oldStatus).includes('DEP')) diffType = 'DEPARTURE';
+
+                  diffs.push({
+                      villa: newArr.villa, type: diffType,
+                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : (isJoiner ? record.guest_name : record.guest_name),
+                      newGuest: finalNames, oldStatus: oldStatus, newStatus: record.status
+                  });
+              }
+          });
+
+          function newOccNames(names: string) { return names; }
+
+          currentMap.forEach((rec, vNum) => {
+              const inARR = newArrList.find(n => n.villa === vNum);
+
+              if (!inARR) {
+                  const oldStatus = rec.status || 'VAC';
+                  if (oldStatus === 'ARR' || oldStatus === 'DEP/ARR') {
+                      let newStatus = oldStatus === 'DEP/ARR' ? 'DEP' : 'VAC';
+                      
+                      const movedTo = newArrList.find(n => isSameGuest(n.names, rec.guest_name));
+                      
+                      if (movedTo) {
+                          diffs.push({
+                              villa: vNum, type: 'MOVED OUT',
+                              oldGuest: rec.guest_name,
+                              newGuest: `Moved to V${movedTo.villa}`,
+                              oldStatus: oldStatus, newStatus: newStatus
+                          });
+                      } else {
+                          diffs.push({
+                              villa: vNum, type: 'CHANGE', 
+                              oldGuest: rec.guest_name || 'Cancelled', newGuest: newStatus === 'VAC' ? 'Vacant' : 'Departing', 
+                              oldStatus: oldStatus, newStatus: newStatus
+                          });
+                      }
+
+                      rec.status = newStatus;
+                      if (newStatus === 'VAC') {
+                          rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
+                          rec.meal_plan = ''; rec.stay_dates = ''; rec.preferences = ''; rec.gem_name = ''; rec.stay_id = '';
+                      }
+                  }
+              }
+          });
+
+          setChanges(diffs);
+          setPendingData(Array.from(currentMap.values()));
+          setDiffModalOpen(true);
+      } catch (err: any) {
+          console.error("processArrDepXML error:", err);
+          toast.error("Failed to parse Arrivals XML: " + (err?.message || "Unknown error"));
+      } finally {
+          setIsProcessing(false);
+      }
   };
 
   const processOperationalMemo = (rows: any[][]) => {
-      const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-      const diffs: ChangeLog[] = [];
+      try {
+          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
+          const diffs: ChangeLog[] = [];
 
-      let isArrSection = false, isDepSection = false;
-      
-      for (let i = 0; i < rows.length; i++) {
-          const row = rows[i] || [];
-          if (row.length < 2) continue;
-          const rowStr = row.map(c => String(c).toUpperCase()).join(' ');
+          let isArrSection = false, isDepSection = false;
+          
+          for (let i = 0; i < rows.length; i++) {
+              const row = rows[i] || [];
+              if (row.length < 2) continue;
+              const rowStr = row.map(c => String(c || '').toUpperCase()).join(' ');
 
-          if (rowStr.includes('ARRIVALS') && !rowStr.includes('VS')) { isArrSection = true; isDepSection = false; continue; }
-          if (rowStr.includes('DEPARTURES')) { isArrSection = false; isDepSection = true; continue; }
-          if (rowStr.includes('ROOM MOVES')) break; 
+              if (rowStr.includes('ARRIVALS') && !rowStr.includes('VS')) { isArrSection = true; isDepSection = false; continue; }
+              if (rowStr.includes('DEPARTURES')) { isArrSection = false; isDepSection = true; continue; }
+              if (rowStr.includes('ROOM MOVES')) break; 
 
-          if (isArrSection) {
-              let v = normalizeVilla(row[1]) || normalizeVilla(row[0]); 
-              if (v && currentMap.has(v)) {
-                  const record = currentMap.get(v)!;
-                  const gemName = row[9] ? String(row[9]).split('\n')[0] : null; 
-                  const arrTimeRaw = String(row[4] || '') + " " + String(row[5] || '') + " " + String(row[3] || ''); 
+              if (isArrSection) {
+                  let v = normalizeVilla(row[1]) || normalizeVilla(row[0]); 
+                  if (v && currentMap.has(v)) {
+                      const record = currentMap.get(v)!;
+                      const gemName = row[9] ? String(row[9]).split('\n')[0] : null; 
+                      const arrTimeRaw = String(row[4] || '') + " " + String(row[5] || '') + " " + String(row[3] || ''); 
 
-                  let isTMA = rowStr.includes('8Q') || rowStr.includes('TMA') || rowStr.includes('SHUT') || rowStr.includes('E\nA\nP');
-                  let madeChange = false;
+                      let isTMA = rowStr.includes('8Q') || rowStr.includes('TMA') || rowStr.includes('SHUT') || rowStr.includes('E\nA\nP');
+                      let madeChange = false;
 
-                  if (isTMA && !record.status.includes('TMA')) {
-                      record.status = 'TMA (Day)';
-                      madeChange = true;
+                      if (isTMA && !String(record?.status || '').includes('TMA')) {
+                          record.status = 'TMA (Day)';
+                          madeChange = true;
+                      }
+                      if (gemName && gemName.length > 1 && !gemName.includes(',')) {
+                          record.gem_name = gemName.trim();
+                          madeChange = true;
+                      }
+                      const t = extractTime(arrTimeRaw);
+                      if (t && record.arrival_time !== t) {
+                          record.arrival_time = t;
+                          madeChange = true;
+                      }
+
+                      if (madeChange) {
+                          diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
+                      }
                   }
-                  if (gemName && gemName.length > 1 && !gemName.includes(',')) {
-                      record.gem_name = gemName.trim();
-                      madeChange = true;
-                  }
-                  const t = extractTime(arrTimeRaw);
-                  if (t && record.arrival_time !== t) {
-                      record.arrival_time = t;
-                      madeChange = true;
-                  }
+              }
 
-                  if (madeChange) {
-                      diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
+              if (isDepSection) {
+                  let v = normalizeVilla(row[1]) || normalizeVilla(row[0]);
+                  if (v && currentMap.has(v)) {
+                      const record = currentMap.get(v)!;
+                      const gemName = row[10] ? String(row[10]).split('\n')[0] : null; 
+                      const depTimeRaw = String(row[4] || '') + " " + String(row[5] || '') + " " + String(row[7] || ''); 
+
+                      let madeChange = false;
+                      const t = extractTime(depTimeRaw);
+                      if (t && record.departure_time !== t) {
+                          record.departure_time = t;
+                          madeChange = true;
+                      }
+                      if (gemName && gemName.length > 1 && !gemName.includes(',') && !record.gem_name) {
+                          record.gem_name = gemName.trim();
+                          madeChange = true;
+                      }
+
+                      if (madeChange) {
+                          diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
+                      }
                   }
               }
           }
 
-          if (isDepSection) {
-              let v = normalizeVilla(row[1]) || normalizeVilla(row[0]);
-              if (v && currentMap.has(v)) {
-                  const record = currentMap.get(v)!;
-                  const gemName = row[10] ? String(row[10]).split('\n')[0] : null; 
-                  const depTimeRaw = String(row[4] || '') + " " + String(row[5] || '') + " " + String(row[7] || ''); 
-
-                  let madeChange = false;
-                  const t = extractTime(depTimeRaw);
-                  if (t && record.departure_time !== t) {
-                      record.departure_time = t;
-                      madeChange = true;
-                  }
-                  if (gemName && gemName.length > 1 && !gemName.includes(',') && !record.gem_name) {
-                      record.gem_name = gemName.trim();
-                      madeChange = true;
-                  }
-
-                  if (madeChange) {
-                      diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
-                  }
-              }
+          if (diffs.length === 0) {
+              toast.success("No new operational times found.");
+              return;
           }
-      }
 
-      if (diffs.length === 0) {
-          toast.success("No new operational times found.");
+          setChanges(diffs);
+          setPendingData(Array.from(currentMap.values()));
+          setDiffModalOpen(true);
+      } catch (err: any) {
+          console.error("processOperationalMemo error:", err);
+          toast.error("Failed to parse memo: " + (err?.message || "Unknown error"));
+      } finally {
           setIsProcessing(false);
-          return;
       }
-
-      setChanges(diffs);
-      setPendingData(Array.from(currentMap.values()));
-      setDiffModalOpen(true);
-      setIsProcessing(false);
   };
 
+  // ⚡ UPDATED: Bulletproof Rollover that persists guests until their departure date on existing rows
   const handleRollOver = () => {
       setConfirmDialog({
           isOpen: true,
           title: "Confirm Rollover",
-          message: `Overwrite ${selectedDate} with previous day's data?`,
+          message: `Update ${selectedDate} with previous day's active guests?`,
           confirmText: "Yes, Roll Over",
           confirmColor: "bg-amber-500 hover:bg-amber-600",
           onConfirm: async () => {
               setConfirmDialog(null);
               setIsRollingOver(true);
-              const { data: recentRecords } = await supabase.from('hsk_daily_summary').select('*').lt('report_date', selectedDate).order('report_date', { ascending: false }).limit(200);
-              if (!recentRecords || recentRecords.length === 0) { toast.error("No history found."); setIsRollingOver(false); return; }
-              const lastDate = recentRecords[0].report_date;
-              const sourceData = recentRecords.filter(r => r.report_date === lastDate);
-              
-              const newDayData = sourceData.map(r => {
-                  let newStatus = 'VAC';
-                  let keepDetails = false;
-                  
-                  if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(r.status)) {
-                      let departingToday = false;
-                      if (r.stay_dates) {
-                          const parts = r.stay_dates.split('-');
-                          if (parts.length === 2) {
-                              const depDateStr = parts[1].trim(); 
-                              const [selYear, selMonth, selDay] = selectedDate.split('-');
-                              if (depDateStr === `${selDay}/${selMonth}`) {
-                                  departingToday = true;
-                              }
-                          }
-                      }
-                      newStatus = departingToday ? 'DEP' : 'OCC';
-                      keepDetails = true;
-                  } 
-                  else if (['DEP', 'DAY USE', 'VM/VAC'].includes(r.status) || r.status.includes('TMA')) {
-                      newStatus = 'VAC';
-                      keepDetails = false;
+              try {
+                  const { data: recentRecords, error: fetchErr } = await supabase
+                      .from('hsk_daily_summary')
+                      .select('*')
+                      .lt('report_date', selectedDate)
+                      .order('report_date', { ascending: false })
+                      .limit(200);
+
+                  if (fetchErr) throw fetchErr;
+
+                  if (!recentRecords || recentRecords.length === 0) { 
+                      toast.error("No history found."); 
+                      return; 
                   }
 
-                  return {
-                      report_date: selectedDate, villa_number: r.villa_number, status: newStatus, 
-                      guest_name: keepDetails ? r.guest_name : '',
-                      pax_adults: keepDetails ? r.pax_adults : 0, 
-                      pax_kids: keepDetails ? r.pax_kids : 0, 
-                      gem_name: keepDetails ? r.gem_name : '', 
-                      meal_plan: keepDetails ? r.meal_plan : '', 
-                      stay_dates: keepDetails ? r.stay_dates : '',
-                      remarks: '', 
-                      preferences: keepDetails ? r.preferences : '', 
-                      arrival_time: '', 
-                      departure_time: '', 
-                      stay_id: keepDetails ? r.stay_id : ''
-                  };
-              });
+                  const lastDate = recentRecords[0].report_date;
+                  const sourceData = recentRecords.filter(r => r.report_date === lastDate);
+                  
+                  for (let i = 1; i <= TOTAL_VILLAS; i++) {
+                      const vNum = i.toString();
+                      const prevRec = sourceData.find(r => normalizeVilla(r.villa_number) === vNum);
+                      const existingRow = masterList.find(m => m.villa_number === vNum);
 
-              await supabase.from('hsk_daily_summary').delete().eq('report_date', selectedDate);
-              await supabase.from('hsk_daily_summary').insert(newDayData);
-              fetchDailyData();
-              setIsRollingOver(false);
-              toast.success("Rollover Complete!");
+                      let newStatus = 'VAC';
+                      let keepDetails = false;
+
+                      if (prevRec) {
+                          const statusStr = String(prevRec.status || 'VAC').trim().toUpperCase();
+
+                          if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
+                              let departingToday = false;
+                              if (prevRec.stay_dates) {
+                                  const parts = String(prevRec.stay_dates).split('-');
+                                  if (parts.length === 2) {
+                                      const depDateStr = parts[1].trim(); 
+                                      const [selYear, selMonth, selDay] = selectedDate.split('-');
+                                      if (depDateStr === `${selDay}/${selMonth}`) {
+                                          departingToday = true;
+                                      }
+                                  }
+                              }
+                              newStatus = departingToday ? 'DEP' : 'OCC';
+                              keepDetails = true;
+                          } else if (['DEP', 'DAY USE', 'VM/VAC'].includes(statusStr) || statusStr.includes('TMA')) {
+                              newStatus = 'VAC';
+                              keepDetails = false;
+                          } else if (statusStr.includes('HOUSE') || statusStr === 'SHOW VILLA') {
+                              newStatus = prevRec.status;
+                              keepDetails = true;
+                          }
+                      }
+
+                      const payloadToSave = {
+                          report_date: selectedDate,
+                          villa_number: vNum,
+                          status: newStatus,
+                          guest_name: keepDetails && prevRec ? (prevRec.guest_name || '') : '',
+                          pax_adults: keepDetails && prevRec ? (prevRec.pax_adults || 0) : 0,
+                          pax_kids: keepDetails && prevRec ? (prevRec.pax_kids || 0) : 0,
+                          gem_name: keepDetails && prevRec ? (prevRec.gem_name || '') : '',
+                          meal_plan: keepDetails && prevRec ? (prevRec.meal_plan || '') : '',
+                          stay_dates: keepDetails && prevRec ? (prevRec.stay_dates || '') : '',
+                          remarks: '',
+                          preferences: keepDetails && prevRec ? (prevRec.preferences || '') : '',
+                          arrival_time: '',
+                          departure_time: '',
+                          stay_id: keepDetails && prevRec ? (prevRec.stay_id || '') : ''
+                      };
+
+                      if (existingRow?.id) {
+                          await supabase
+                              .from('hsk_daily_summary')
+                              .update(payloadToSave)
+                              .eq('id', existingRow.id);
+                      } else {
+                          await supabase
+                              .from('hsk_daily_summary')
+                              .insert([payloadToSave]);
+                      }
+                  }
+
+                  await fetchDailyData();
+                  toast.success("Rollover Complete on existing lines!");
+              } catch (err: any) {
+                  console.error("Rollover failed:", err);
+                  toast.error("Rollover failed: " + (err?.message || "Check network"));
+              } finally {
+                  setIsRollingOver(false);
+              }
           }
       });
   };
 
-  // ⚡ FIX: Accurate Date Logic
   const changeDate = (days: number) => {
       const [year, month, day] = selectedDate.split('-').map(Number);
       const d = new Date(year, month - 1, day + days);
@@ -1052,10 +1153,13 @@ export default function HousekeepingSummaryPage() {
       };
 
       masterList.forEach(rec => {
-          if (rec.status === 'VAC' || (rec.status.includes('DEP') && !rec.status.includes('ARR'))) return;
-          if (rec.status === 'VM/VAC') return;
-          if (rec.status.includes('TMA')) return;
-          if (rec.guest_name && (rec.guest_name.toUpperCase().includes('HOUSE USE') || rec.guest_name.toUpperCase().includes('H/U') || rec.status === 'HOUSE USE')) return;
+          const st = String(rec?.status || 'VAC').toUpperCase();
+          if (st === 'VAC' || (st.includes('DEP') && !st.includes('ARR'))) return;
+          if (st === 'VM/VAC') return;
+          if (st.includes('TMA')) return;
+          
+          const gUpper = String(rec?.guest_name || '').toUpperCase();
+          if (gUpper && (gUpper.includes('HOUSE USE') || gUpper.includes('H/U') || st === 'HOUSE USE')) return;
 
           const v = parseInt(rec.villa_number, 10);
           if (isNaN(v)) return;
@@ -1071,9 +1175,8 @@ export default function HousekeepingSummaryPage() {
           let male = 0;
           let female = 0;
 
-          const nameStr = rec.guest_name ? rec.guest_name.toUpperCase() : '';
-          const mrCount = (nameStr.match(/\bMR\b/g) || []).length;
-          const msCount = (nameStr.match(/\b(MS|MRS|MISS|ALFAALILA)\b/g) || []).length;
+          const mrCount = (gUpper.match(/\bMR\b/g) || []).length;
+          const msCount = (gUpper.match(/\b(MS|MRS|MISS|ALFAALILA)\b/g) || []).length;
           
           male += mrCount;
           female += msCount;
@@ -1135,7 +1238,7 @@ export default function HousekeepingSummaryPage() {
   );
 
   const getStatusColor = (s: string) => {
-      const st = s?.toUpperCase() || 'VAC';
+      const st = String(s || 'VAC').toUpperCase();
       if(st === 'HOUSE USE' || st === 'SHOW VILLA') return 'text-fuchsia-700 bg-fuchsia-100 border border-fuchsia-200';
       if(st === 'VM/VAC') return 'text-slate-500 bg-slate-200 border border-slate-300';
       if(st === 'VM/OCC') return 'text-indigo-700 bg-indigo-100 border border-indigo-200';
@@ -1209,7 +1312,6 @@ export default function HousekeepingSummaryPage() {
       {/* MOBILE LIST VIEW */}
       <div className="md:hidden grid grid-cols-1 gap-4">
         {masterList.map((row) => {
-            // ⚡ FIX: Safe House Use Check
             const isHouseUse = row.status === 'HOUSE USE' || (row.guest_name && String(row.guest_name).toUpperCase().includes('HOUSE USE'));
             return (
           <div key={row.villa_number} onClick={() => { if(isAdmin){ setEditingRecord(row); setIsEditOpen(true); } }} className={`bg-white rounded-2xl p-4 shadow-sm border flex flex-col gap-3 relative ${row.status === 'VAC' ? 'border-slate-100 bg-slate-50/30' : 'border-slate-200 active:scale-[0.98] transition-transform cursor-pointer'} ${isHouseUse ? 'bg-fuchsia-50/30 border-fuchsia-100' : ''}`}>
@@ -1284,7 +1386,6 @@ export default function HousekeepingSummaryPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {masterList.map((row) => {
-                  // ⚡ FIX: Safe House Use Check
                   const isHouseUse = row.status === 'HOUSE USE' || (row.guest_name && String(row.guest_name).toUpperCase().includes('HOUSE USE'));
                   return (
                 <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''} ${isHouseUse ? 'bg-fuchsia-50/30' : ''}`}>
@@ -1441,8 +1542,8 @@ export default function HousekeepingSummaryPage() {
                                                                   <option value="AI">AI</option>
                                                               </select>
                                                               <input className="w-16 p-1 border border-slate-200 rounded text-[10px] uppercase outline-none focus:border-purple-400" value={pendingRec.gem_name} onChange={(e) => updatePendingRecord(c.villa, 'gem_name', e.target.value)} placeholder="GEM" />
-                                                              {(pendingRec.status.includes('ARR') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-emerald-200 rounded text-[10px] outline-none" value={pendingRec.arrival_time} onChange={(e) => updatePendingRecord(c.villa, 'arrival_time', e.target.value)} />}
-                                                              {(pendingRec.status.includes('DEP') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-rose-200 rounded text-[10px] outline-none" value={pendingRec.departure_time} onChange={(e) => updatePendingRecord(c.villa, 'departure_time', e.target.value)} />}
+                                                              {(String(pendingRec?.status || '').includes('ARR') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-emerald-200 rounded text-[10px] outline-none" value={pendingRec.arrival_time} onChange={(e) => updatePendingRecord(c.villa, 'arrival_time', e.target.value)} />}
+                                                              {(String(pendingRec?.status || '').includes('DEP') || pendingRec.status === 'OCC') && <input type="time" className="w-20 p-1 border border-rose-200 rounded text-[10px] outline-none" value={pendingRec.departure_time} onChange={(e) => updatePendingRecord(c.villa, 'departure_time', e.target.value)} />}
                                                           </div>
                                                       )}
                                                   </div>
@@ -1636,8 +1737,8 @@ export default function HousekeepingSummaryPage() {
                             </div>
                         </div>
                         <div className="grid grid-cols-3 gap-4 border-t border-slate-100 pt-4">
-                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Adults</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.pax_adults} onChange={e => setEditingRecord({...editingRecord, pax_adults: parseInt(e.target.value) || 0})}/></div>
-                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Kids</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.pax_kids} onChange={e => setEditingRecord({...editingRecord, pax_kids: parseInt(e.target.value) || 0})}/></div>
+                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Adults</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.pax_adults} onChange={e => setEditingRecord({...editingRecord, pax_adults: parseInt(e.target.value, 10) || 0})}/></div>
+                            <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Kids</label><input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.pax_kids} onChange={e => setEditingRecord({...editingRecord, pax_kids: parseInt(e.target.value, 10) || 0})}/></div>
                             <div className="col-span-1"><label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Dates</label><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700" value={editingRecord.stay_dates} onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}/></div>
                         </div>
                      </div>
