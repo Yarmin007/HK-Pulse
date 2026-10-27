@@ -1,9 +1,9 @@
 "use client";
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Search, Plus, X, Wine, Wrench, Trash2, 
+  Search, Plus, Minus, X, Wine, Wrench, Trash2, 
   Calendar, Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
-  CheckCircle2, AlertTriangle, User, MessageCircle
+  CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles, Filter, RefreshCw
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useConfirm } from '@/components/ConfirmProvider';
@@ -123,6 +123,7 @@ export default function CoordinatorLog() {
   const [villaSearch, setVillaSearch] = useState('');
   
   const [mbItemSearch, setMbItemSearch] = useState('');
+  const [otherItemSearch, setOtherItemSearch] = useState('');
   const [villaNumber, setVillaNumber] = useState('');
   const [guestInfo, setGuestInfo] = useState<any>(null); 
   const [manualTime, setManualTime] = useState('');
@@ -179,7 +180,6 @@ export default function CoordinatorLog() {
           setAllHosts(data);
           const map: Record<string, string> = {};
           data.forEach(h => {
-              // FIX: Only use nicknames and full_name (no nickname singular)
               if (h.id) map[h.id] = h.nicknames || h.full_name || 'Unknown VA';
           });
           setHostMap(map);
@@ -221,7 +221,6 @@ export default function CoordinatorLog() {
                   
                   const host = allHosts.find(h => String(h.id) === String(hostUUID) || String(h.host_id) === String(hostUUID));
                   if (host) {
-                      // FIX: Removed the singular nickname to match the typescript request
                       assignedVA = host.nicknames || host.full_name || host.name || hostUUID;
                   } else {
                       assignedVA = hostMap[hostUUID] || hostUUID; 
@@ -238,20 +237,20 @@ export default function CoordinatorLog() {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
             
             if (!isEditing) {
-                if (otherModalType === 'GEM') setRequesterSearch(data.gem_name || '');
+                if (otherModalType === 'GEM' && isOtherOpen) setRequesterSearch(data.gem_name || '');
                 else setRequesterSearch(assignedVA || '');
             }
           } else { 
             setGuestInfo(null); 
             if (!isEditing) {
-                if (otherModalType !== 'GEM') setRequesterSearch(assignedVA || '');
+                if (otherModalType !== 'GEM' || isMinibarOpen) setRequesterSearch(assignedVA || '');
                 else setRequesterSearch('');
             }
           }
       } else {
           setGuestInfo(null);
           if (!isEditing) {
-              if (otherModalType !== 'GEM') setRequesterSearch(assignedVA || '');
+              if (otherModalType !== 'GEM' || isMinibarOpen) setRequesterSearch(assignedVA || '');
               else setRequesterSearch('');
           }
       }
@@ -259,7 +258,7 @@ export default function CoordinatorLog() {
     
     const timer = setTimeout(fetchGuestAndVA, 300);
     return () => clearTimeout(timer);
-  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, dailyAllocations, allHosts, hostMap, isEditing]);
+  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, isOtherOpen, dailyAllocations, allHosts, hostMap, isEditing]);
 
   const fetchCatalog = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
@@ -317,7 +316,7 @@ export default function CoordinatorLog() {
     const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
     setManualTime(dhakaTimeFormatter.format(getDhakaTime()));
     
-    setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch('');
+    setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch(''); setOtherItemSearch('');
     setOtherCategory('General'); setIsEditing(false); setEditingId(null);
     
     if (type === 'Minibar') setIsMinibarOpen(true);
@@ -335,7 +334,6 @@ export default function CoordinatorLog() {
     
     if (record.request_type === 'Minibar') {
       const items = (record.item_details || '').split('\n').map(line => {
-        // Strip out the inline SENT tags so they can cleanly edit the items
         const cleanLine = line.replace(/\s*\(SENT\)$/, '');
         const match = cleanLine.match(/(\d+)x (.+)/);
         const isRef = cleanLine.includes('(Refill)');
@@ -346,7 +344,6 @@ export default function CoordinatorLog() {
       setMbCart(items);
       setIsMinibarOpen(true);
     } else {
-      // Strip SENT tags from general requests too
       const cleanNote = (record.item_details || '').split('\n').map(l => l.replace(/\s*\(SENT\)$/, '')).join('\n');
       setCustomNote(cleanNote);
       setOtherMode('Note');
@@ -364,6 +361,14 @@ export default function CoordinatorLog() {
         setter(cart.map(i => i.name === item ? { ...i, qty: i.qty + 1 } : i));
     } else {
         setter([...cart, { name: item, qty: 1, isRefill: false }]);
+    }
+  };
+
+  const updateCartQty = (item: string, delta: number, type: 'MB' | 'Other') => {
+    if (type === 'MB') {
+      setMbCart(prev => prev.map(i => i.name === item ? { ...i, qty: i.qty + delta } : i).filter(i => i.qty > 0));
+    } else {
+      setOtherCart(prev => prev.map(i => i.name === item ? { ...i, qty: i.qty + delta } : i).filter(i => i.qty > 0));
     }
   };
 
@@ -419,10 +424,12 @@ export default function CoordinatorLog() {
     let reqType = 'General';
 
     if (type === 'Minibar') {
+        if (mbCart.length === 0) { toast.error("Add at least one Minibar item"); return; }
         details = mbCart.map(i => `${i.qty}x ${i.name}${i.isRefill ? ' (Refill)' : ''}`).join('\n');
         reqType = 'Minibar';
     } else {
         details = otherMode === 'Catalog' ? otherCart.map(i => `${i.qty}x ${i.name}`).join('\n') : customNote;
+        if (!details.trim()) { toast.error("Enter request details or select items"); return; }
         reqType = otherModalType === 'GEM' ? 'GEM Request' : otherCategory; 
     }
 
@@ -436,7 +443,6 @@ export default function CoordinatorLog() {
         else attendantName = 'Staff';
     }
 
-    // FIX: Removed the singular nickname to match the typescript request
     const loggedByName = currentUser ? (currentUser.nicknames || currentUser.full_name || currentUser.name || 'Staff') : 'Admin';
 
     const payload = {
@@ -505,7 +511,6 @@ export default function CoordinatorLog() {
   };
 
   const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
-      // Formats the message cleanly for WhatsApp, swapping inline tags for emojis
       const cleanDetails = (record.item_details || '')
           .split(/\n/)
           .map(s => {
@@ -532,7 +537,6 @@ export default function CoordinatorLog() {
 
   const openPartialModal = (record: RequestRecord) => {
       setPartialTarget(record);
-      // Extract all items, pulling out the ones that already have the (SENT) tag
       const allItemsRaw = (record.item_details || '').split(/\n/).map(s => s.trim().replace(/^[•\-\*]\s*/, '')).filter(Boolean);
       const alreadySent = allItemsRaw.filter(i => i.endsWith('(SENT)')).map(i => i.replace(/\s*\(SENT\)$/, ''));
       setPartialSelection(alreadySent);
@@ -544,7 +548,6 @@ export default function CoordinatorLog() {
       
       const allItemsRaw = (partialTarget.item_details || '').split(/\n/).map(s => s.trim().replace(/^[•\-\*]\s*/, '')).filter(Boolean);
       
-      // Inline Tagging: Append (SENT) to the selected items
       const updatedItems = allItemsRaw.map(item => {
           const baseItem = item.replace(/\s*\(SENT\)$/, '');
           if (partialSelection.includes(baseItem)) {
@@ -553,7 +556,6 @@ export default function CoordinatorLog() {
           return baseItem;
       });
       
-      // If every single item has the (SENT) tag, mark the whole card as is_sent
       const allSent = updatedItems.length > 0 && updatedItems.every(i => i.endsWith('(SENT)'));
       const newItemDetails = updatedItems.join('\n');
       
@@ -592,7 +594,7 @@ export default function CoordinatorLog() {
           if (!isMB && !r.is_done) return false;
       }
       
-      if (villaSearch && !r.villa_number.toLowerCase().includes(villaSearch.toLowerCase())) return false;
+      if (villaSearch && !r.villa_number.toLowerCase().includes(villaSearch.toLowerCase()) && !(r.attendant_name || '').toLowerCase().includes(villaSearch.toLowerCase()) && !(r.item_details || '').toLowerCase().includes(villaSearch.toLowerCase())) return false;
       if (jettyFilter === 'Jetty A' && !(vNum >= 1 && vNum <= 35)) return false;
       if (jettyFilter === 'Jetty B' && !(vNum >= 37 && vNum <= 50)) return false;
       if (jettyFilter === 'Jetty C' && !(vNum >= 59 && vNum <= 79)) return false;
@@ -601,7 +603,7 @@ export default function CoordinatorLog() {
   });
 
   const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
-  const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))) as string[]];
+  const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))).filter(Boolean) as string[]];
 
   const GuestCard = () => {
       if (!guestInfo) return null;
@@ -616,74 +618,159 @@ export default function CoordinatorLog() {
       const mealPlan = guestInfo.meal_plan || 'RO';
 
       return (
-        <div className={`mt-3 p-4 rounded-2xl border-l-4 shadow-sm animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50 border-rose-500' : 'bg-blue-50 border-blue-500'}`}>
-            <div className="flex justify-between items-start">
-                <div>
-                    <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2"><User size={14} className="text-slate-400"/>{guestInfo.mainName || 'Guest'}</h3>
-                    <p className="text-[10px] text-slate-500 font-bold mt-1 tracking-wide">
-                        Dep: <span className="text-slate-800">{depDate}</span>
+        <div className={`mt-2.5 p-3.5 rounded-2xl border-l-4 shadow-xs animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50/90 border-rose-500' : 'bg-blue-50/80 border-blue-500'}`}>
+            <div className="flex justify-between items-start gap-2">
+                <div className="min-w-0">
+                    <h3 className="text-xs font-black text-slate-800 flex items-center gap-1.5 truncate">
+                      <User size={13} className="text-slate-400 shrink-0"/>
+                      <span className="truncate">{guestInfo.mainName || 'Guest'}</span>
+                    </h3>
+                    <p className="text-[10px] text-slate-500 font-bold mt-0.5 tracking-wide">
+                        Dep: <span className="text-slate-800 font-mono">{depDate}</span>
                     </p>
                 </div>
-                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider border bg-white ${guestInfo.pkg?.color || 'border-slate-200 text-slate-500'}`}>
+                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider border bg-white shrink-0 ${guestInfo.pkg?.color || 'border-slate-200 text-slate-500'}`}>
                     {mealPlan}
                 </span>
             </div>
-            {guestInfo.isCheckout && <div className="mt-2 flex items-center gap-1 text-rose-600 font-black text-[10px] uppercase tracking-widest"><AlertTriangle size={12}/> Checkout Today</div>}
+            {guestInfo.isCheckout && (
+              <div className="mt-1.5 flex items-center gap-1 text-rose-600 font-black text-[10px] uppercase tracking-widest">
+                <AlertTriangle size={11}/> Checkout Today
+              </div>
+            )}
         </div>
       );
   };
 
   return (
-    <div className="flex flex-col min-h-full bg-slate-50 font-sans text-slate-800">
+    <div className="flex flex-col min-h-screen bg-[#F8FAFC] font-sans text-slate-800">
       
+      {/* UNIFIED PAGE HEADER */}
       <PageHeader 
-        title="Request Log"
+        title="Request & Minibar Log"
         date={selectedDate}
         onDateChange={setSelectedDate}
         actions={
-          <div className="flex gap-2 overflow-x-auto no-scrollbar w-full md:w-auto">
-            <button onClick={() => handleOpenModal('Minibar')} className="btn-danger !px-4 !py-2.5">Minibar</button>
-            <button onClick={() => handleOpenModal('General')} className="btn-primary !px-4 !py-2.5">Gen Req</button>
-            <button onClick={() => handleOpenModal('GEM')} className="btn-primary !bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600 !px-4 !py-2.5 text-white">GEM Req</button>
+          <div className="flex gap-2 w-full md:w-auto">
+            <button 
+              onClick={() => handleOpenModal('Minibar')} 
+              className="flex-1 md:flex-initial justify-center bg-rose-600 hover:bg-rose-700 active:scale-95 text-white px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm shadow-rose-600/20 transition-all cursor-pointer"
+            >
+              <Wine size={15} />
+              <span>Minibar</span>
+            </button>
+            <button 
+              onClick={() => handleOpenModal('General')} 
+              className="flex-1 md:flex-initial justify-center bg-[#6D2158] hover:bg-[#5a1b49] active:scale-95 text-white px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm shadow-[#6D2158]/20 transition-all cursor-pointer"
+            >
+              <Plus size={15} />
+              <span>Gen Req</span>
+            </button>
+            <button 
+              onClick={() => handleOpenModal('GEM')} 
+              className="flex-1 md:flex-initial justify-center bg-amber-500 hover:bg-amber-600 active:scale-95 text-white px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm shadow-amber-500/20 transition-all cursor-pointer"
+            >
+              <Sparkles size={15} />
+              <span>GEM Req</span>
+            </button>
           </div>
         }
       />
 
-      <div className="px-3 sm:px-4 mt-2 mb-2">
-        <div className="relative mt-2">
-            <Search size={16} className="absolute left-4 top-4 text-slate-400" />
-            <input type="text" placeholder="Search Villa or Name..." className="input-field pl-12 py-3 text-[16px] md:text-sm" value={villaSearch} onChange={e => setVillaSearch(e.target.value)}/>
-        </div>
+      {/* UNIFIED SEARCH & FILTER BAR */}
+      <div className="px-3 sm:px-6 mt-3">
+        <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">
+          {/* Search Input */}
+          <div className="relative">
+            <Search size={16} className="absolute left-3.5 top-3 text-slate-400" />
+            <input 
+              type="text" 
+              placeholder="Search by Villa No, Host Name, or Item..." 
+              className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-[#6D2158] transition-all" 
+              value={villaSearch} 
+              onChange={e => setVillaSearch(e.target.value)}
+            />
+            {villaSearch && (
+              <button onClick={() => setVillaSearch('')} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 p-0.5">
+                <X size={15} />
+              </button>
+            )}
+          </div>
 
-        <div className="flex flex-col gap-2.5 mt-3">
-            <div className="flex gap-2 flex-wrap items-center">
-                <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Type</span>
-                {['All', 'Minibar', 'General', 'GEM'].map(t => (
-                    <button key={t} onClick={() => setTypeFilter(t)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${typeFilter === t ? 'bg-slate-800 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-500 hover:border-slate-400'}`}>{t}</button>
-                ))}
+          {/* Horizontal Filter Rows */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 pt-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1">Type:</span>
+              {['All', 'Minibar', 'General', 'GEM'].map(t => (
+                <button 
+                  key={t} 
+                  onClick={() => setTypeFilter(t)} 
+                  className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
+                    typeFilter === t 
+                      ? 'bg-slate-800 text-white shadow-xs' 
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+
+              <div className="h-4 w-px bg-slate-200 mx-1 hidden sm:block" />
+
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1 ml-1 sm:ml-0">State:</span>
+              {getAvailableStatuses().map(f => (
+                <button 
+                  key={f} 
+                  onClick={() => setStatusFilter(f)} 
+                  className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
+                    statusFilter === f 
+                      ? 'bg-[#6D2158] text-white shadow-xs' 
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                  }`}
+                >
+                  {f}
+                </button>
+              ))}
             </div>
-            <div className="flex gap-2 flex-wrap items-center">
-                <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">State</span>
-                {getAvailableStatuses().map(f => (
-                    <button key={f} onClick={() => setStatusFilter(f)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${statusFilter === f ? 'bg-[#6D2158] text-white shadow-md shadow-[#6D2158]/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-[#6D2158]'}`}>{f}</button>
-                ))}
+
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5 lg:pb-0">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1 shrink-0">Zone:</span>
+              {['All', 'Jetty A', 'Jetty B', 'Jetty C', 'Beach'].map(j => (
+                <button 
+                  key={j} 
+                  onClick={() => setJettyFilter(j)} 
+                  className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
+                    jettyFilter === j 
+                      ? 'bg-blue-600 text-white shadow-xs' 
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                  }`}
+                >
+                  {j}
+                </button>
+              ))}
+              <button 
+                onClick={() => setShowOverdue(!showOverdue)} 
+                className={`ml-1 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
+                  showOverdue 
+                    ? 'bg-rose-600 text-white shadow-xs' 
+                    : 'bg-rose-50 text-rose-600 border border-rose-200'
+                }`}
+              >
+                {showOverdue ? 'Hide Overdue' : 'Overdue'}
+              </button>
             </div>
-            <div className="flex gap-2 flex-wrap items-center">
-                <span className="text-[10px] font-bold text-slate-400 uppercase w-10 shrink-0">Zone</span>
-                {['All', 'Jetty A', 'Jetty B', 'Jetty C', 'Beach'].map(j => (
-                    <button key={j} onClick={() => setJettyFilter(j)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${jettyFilter === j ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-white border border-slate-200 text-slate-500 hover:border-blue-600'}`}>{j}</button>
-                ))}
-                <div className="border-l border-slate-200 pl-3 ml-1 h-6 flex items-center">
-                    <button onClick={() => setShowOverdue(!showOverdue)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 ${showOverdue ? 'bg-rose-50 text-rose-600 border border-rose-200 shadow-sm' : 'bg-white border border-slate-200 text-slate-400'}`}>
-                        {showOverdue ? 'Hide Overdue' : 'Show Overdue'}
-                    </button>
-                </div>
-            </div>
+          </div>
         </div>
       </div>
 
-      <div className="p-2 sm:p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 sm:gap-4 pb-32">
-         {visibleRecords.map(r => {
+      {/* REQUEST CARDS GRID */}
+      <div className="p-3 sm:p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-32">
+         {visibleRecords.length === 0 ? (
+           <div className="col-span-full bg-white rounded-2xl border border-slate-200/80 p-12 text-center text-slate-400 font-bold text-xs">
+             No requests matching current filters.
+           </div>
+         ) : (
+           visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
              const isGemReq = r.request_type === 'GEM Request';
              
@@ -727,34 +814,72 @@ export default function CoordinatorLog() {
              }
 
              return (
-             <div key={r.id} className={`card-standard p-0 overflow-hidden transition-all ${isCompleted ? 'opacity-80 bg-slate-50 border-slate-300 shadow-none' : isUrgent ? 'border-rose-400 ring-4 ring-rose-50' : r.request_type === 'Minibar' ? 'border-rose-100' : isGemReq ? 'border-amber-200' : 'border-slate-200'}`}>
-                
+             <div 
+               key={r.id} 
+               className={`bg-white rounded-2xl border overflow-hidden flex flex-col justify-between transition-all ${
+                 isCompleted 
+                   ? 'opacity-70 bg-slate-50/70 border-slate-200' 
+                   : isUrgent 
+                   ? 'border-rose-400 ring-2 ring-rose-100 shadow-sm' 
+                   : r.request_type === 'Minibar' 
+                   ? 'border-rose-200/80 shadow-xs hover:shadow-md' 
+                   : isGemReq 
+                   ? 'border-amber-200/90 shadow-xs hover:shadow-md' 
+                   : 'border-slate-200/80 shadow-xs hover:shadow-md'
+               }`}
+             >
                 {isPreviousDay && !isCompleted && (
-                    <div className="bg-rose-600 text-white text-[9px] sm:text-[10px] font-black px-2 py-1 w-full text-center tracking-widest uppercase flex items-center justify-center gap-1 shadow-sm">
+                    <div className="bg-rose-600 text-white text-[9px] font-black px-2 py-1 w-full text-center tracking-widest uppercase flex items-center justify-center gap-1">
                         <AlertTriangle size={10} /> Overdue (From {pastDateStr})
                     </div>
                 )}
 
-                <div className="p-3 sm:p-5 flex flex-col h-full">
-                    <div className="flex justify-between items-start mb-2">
+                <div className="p-4 flex flex-col h-full">
+                    {/* Card Top Header */}
+                    <div className="flex justify-between items-start gap-2 mb-3">
                        <div className="flex flex-col gap-1">
-                           <div className="flex items-center gap-1">
-                             <span className="text-lg sm:text-2xl font-black text-slate-800 tracking-tight leading-none break-all">{r.villa_number}</span>
-                             <button onClick={() => handleEditRecord(r)} className="p-1 text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0" title="Edit"><Edit3 size={14}/></button>
+                           <div className="flex items-center gap-1.5">
+                             <span className="text-xl font-black text-slate-900 font-mono tracking-tight leading-none">
+                               V{r.villa_number}
+                             </span>
+                             <button 
+                               onClick={() => handleEditRecord(r)} 
+                               className="p-1 text-slate-400 hover:text-[#6D2158] hover:bg-slate-100 rounded-lg transition-colors cursor-pointer" 
+                               title="Edit"
+                             >
+                               <Edit3 size={13}/>
+                             </button>
                            </div>
                            
-                           <div className="flex items-center gap-1 flex-wrap">
-                               {mealPlan && <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[8px] sm:text-[9px] font-black uppercase border border-slate-200">{mealPlan}</span>}
-                               {depDate && <span className={`px-1.5 py-0.5 rounded-md text-[8px] sm:text-[9px] font-black uppercase border ${isCheckout ? 'bg-rose-100 text-rose-700 border-rose-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>Dep: {depDate}</span>}
+                           <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                               {mealPlan && (
+                                 <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-black uppercase border border-slate-200">
+                                   {mealPlan}
+                                 </span>
+                               )}
+                               {depDate && (
+                                 <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase border font-mono ${
+                                   isCheckout ? 'bg-rose-100 text-rose-700 border-rose-200 font-black' : 'bg-slate-50 text-slate-400 border-slate-200'
+                                 }`}>
+                                   Dep: {depDate}
+                                 </span>
+                               )}
                            </div>
                        </div>
 
-                       <div className={`px-1.5 py-0.5 sm:px-2.5 sm:py-1 rounded-xl text-[8px] sm:text-[9px] font-black uppercase tracking-wider shrink-0 shadow-sm ${r.request_type === 'Minibar' ? 'bg-rose-50 text-rose-600 border border-rose-100' : isGemReq ? 'bg-amber-100 text-amber-700 border border-amber-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
+                       <div className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0 border ${
+                         r.request_type === 'Minibar' 
+                           ? 'bg-rose-50 text-rose-700 border-rose-200' 
+                           : isGemReq 
+                           ? 'bg-amber-50 text-amber-700 border-amber-200' 
+                           : 'bg-purple-50 text-[#6D2158] border-purple-200'
+                       }`}>
                            {r.request_type === 'General Request' ? 'Gen Req' : r.request_type}
                        </div>
                     </div>
                     
-                    <div className="mb-3 text-[11px] sm:text-sm font-bold text-slate-600 leading-tight space-y-0.5">
+                    {/* Line Items */}
+                    <div className="mb-4 text-xs font-bold text-slate-700 leading-relaxed space-y-1 bg-slate-50/70 p-3 rounded-xl border border-slate-100">
                         {(r.item_details || '').split(/\n/).map((item: string, idx: number) => {
                             const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
                             if (!cleanItem) return null;
@@ -763,211 +888,470 @@ export default function CoordinatorLog() {
                             const displayText = cleanItem.replace(/\s*\(SENT\)$/, '');
                             
                             return (
-                                <div key={idx} className={`flex items-center gap-1.5 ${isSentItem ? 'text-slate-400 line-through' : ''}`}>
+                                <div key={idx} className={`flex items-start justify-between gap-2 ${isSentItem ? 'text-slate-400 line-through' : ''}`}>
                                     <span>• {displayText}</span>
-                                    {isSentItem && <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />}
+                                    {isSentItem && <CheckCircle2 size={13} className="text-emerald-500 shrink-0 mt-0.5" />}
                                 </div>
                             );
                         })}
                     </div>
 
-                    <div className="mt-auto pt-3 border-t border-slate-50 flex flex-col xl:flex-row justify-between items-start xl:items-end gap-2">
-                       <div className="w-full xl:w-auto">
-                          <div className="text-[9px] sm:text-[10px] text-slate-400 font-black uppercase">{r.attendant_name}</div>
+                    {/* Footer Info & Action Buttons */}
+                    <div className="mt-auto pt-2.5 border-t border-slate-100 flex items-end justify-between gap-2">
+                       <div className="min-w-0">
+                          <div className="text-[10px] text-slate-700 font-black uppercase truncate">{r.attendant_name}</div>
                           
-                          <div className={`text-[9px] sm:text-[10px] font-bold mt-0.5 flex flex-wrap items-center gap-1 ${isUrgent ? 'text-rose-600 animate-pulse' : 'text-slate-400'}`}>
-                              <span className="flex items-center whitespace-nowrap">
-                                  <Clock size={10} className="inline mr-1 -mt-0.5"/>
+                          <div className={`text-[10px] font-bold mt-0.5 flex flex-wrap items-center gap-1.5 ${isUrgent ? 'text-rose-600' : 'text-slate-400'}`}>
+                              <span className="flex items-center font-mono">
+                                  <Clock size={10} className="mr-1"/>
                                   {formatDisplayTime(r.request_time)} 
                               </span>
-                              <span className={`whitespace-nowrap px-1.5 py-0.5 rounded text-[8px] uppercase tracking-widest ${isUrgent ? 'bg-rose-100 font-black' : 'bg-slate-100'}`}>
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider font-black ${isUrgent ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-500'}`}>
                                   {timeStr}
                               </span>
                           </div>
 
-                          {r.chk_number && <div className="text-[9px] sm:text-[10px] text-[#6D2158] font-black mt-1">CHK: {r.chk_number}</div>}
-                          {r.logged_by && <div className="text-[8px] text-slate-300 font-bold uppercase mt-1">Log: {r.logged_by}</div>}
+                          {r.chk_number && <div className="text-[10px] text-emerald-700 font-mono font-black mt-1">CHK #{r.chk_number}</div>}
+                          {r.logged_by && <div className="text-[9px] text-slate-400 font-semibold mt-0.5">By: {r.logged_by}</div>}
                        </div>
                        
-                       <div className="flex gap-1.5 flex-wrap justify-end w-full xl:w-auto">
+                       <div className="flex gap-1.5 shrink-0">
                          {r.request_type === 'Minibar' ? (
                              <>
-                                 <button onClick={() => openPartialModal(r)} className="p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl bg-slate-50 text-slate-400 hover:text-slate-600 active:scale-90 transition-transform" title="Split"><Split size={14}/></button>
-                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:bg-blue-50 hover:text-blue-600'}`} title="Sent"><Send size={14}/></button>
+                                 <button onClick={() => openPartialModal(r)} className="p-2 rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 active:scale-90 transition-all cursor-pointer" title="Split Send"><Split size={14}/></button>
+                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_sent ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`} title="Mark Sent"><Send size={14}/></button>
                                  
                                  {!allRefill && (
-                                     <button onClick={() => handleOpenPost(r)} className={`p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl active:scale-90 transition-all ${r.is_posted ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600'}`} title={r.is_posted ? "Edit Bill" : "Post to Guest"}>
+                                     <button onClick={() => handleOpenPost(r)} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_posted ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`} title={r.is_posted ? "Edit Bill" : "Post CHK Bill"}>
                                          <Check size={14}/>
                                      </button>
                                  )}
                              </>
                          ) : (
                              <>
-                                 <button onClick={() => handleWhatsApp(r, 'inform')} className="p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform" title="WhatsApp Inform">
+                                 <button onClick={() => handleWhatsApp(r, 'inform')} className="p-2 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-all cursor-pointer" title="WhatsApp Inform">
                                      <MessageCircle size={14} />
                                  </button>
-                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl active:scale-90 transition-all ${r.is_sent ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20' : 'bg-slate-100 text-slate-400 hover:text-blue-500'}`} title={r.is_sent ? 'Informed' : 'Inform'}>
+                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_sent ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`} title={r.is_sent ? 'Informed' : 'Mark Informed'}>
                                      <Send size={14}/>
                                  </button>
 
-                                 <button onClick={() => handleWhatsApp(r, 'done')} className="p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-transform flex items-center gap-0.5" title="WhatsApp Done">
+                                 <button onClick={() => handleWhatsApp(r, 'done')} className="p-2 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-all flex items-center gap-0.5 cursor-pointer" title="WhatsApp Done">
                                      <MessageCircle size={14}/><Check size={10} strokeWidth={4}/>
                                  </button>
-                                 <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl active:scale-90 transition-all ${r.is_done ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'bg-slate-100 text-slate-400 hover:text-emerald-500'}`} title="Done">
+                                 <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_done ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`} title="Mark Done">
                                      <Check size={14}/>
                                  </button>
                              </>
                          )}
-                         <button onClick={() => askDelete(r.id)} className="p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl text-slate-300 hover:bg-rose-50 hover:text-rose-500 active:scale-90 transition-all"><Trash2 size={14}/></button>
+                         <button onClick={() => askDelete(r.id)} className="p-2 rounded-xl text-slate-300 hover:bg-rose-50 hover:text-rose-600 active:scale-90 transition-all cursor-pointer" title="Delete"><Trash2 size={14}/></button>
                        </div>
                     </div>
                 </div>
              </div>
-             )
-         })}
+             );
+           })
+         )}
       </div>
 
+      {/* ========================================================================= */}
+      {/* POST BILL MODAL                                                           */}
+      {/* ========================================================================= */}
       {postModal.isOpen && (
-          <div className="modal-overlay !z-[9999]">
-              <div className="modal-content">
-                  <h3 className="text-2xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight">Post Bill</h3>
-                  <p className="text-[10px] font-bold text-slate-400 text-center mb-6 uppercase tracking-widest">Confirm CHK Number</p>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
+                  <h3 className="text-xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight">Post Minibar Bill</h3>
+                  <p className="text-[11px] font-bold text-slate-400 text-center mb-5 uppercase tracking-widest">Confirm POS Check (CHK) Number</p>
                   
                   <input 
                       type="number" 
-                      className="input-field text-center text-4xl mb-6 py-6"
+                      className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl font-mono font-black text-center text-3xl text-slate-800 outline-none focus:border-[#6D2158] mb-5"
                       value={postModal.chk}
                       onChange={e => setPostModal({...postModal, chk: e.target.value})}
                       autoFocus
                   />
 
-                  <div className="flex flex-col gap-3">
-                      <button onClick={confirmPost} className="btn-primary w-full py-5">Link Bill & Post</button>
-                      <button onClick={() => setPostModal({isOpen: false, id: '', chk: ''})} className="w-full py-5 bg-slate-50 text-slate-500 rounded-3xl font-black uppercase text-[10px] tracking-widest active:scale-95 transition-all hover:bg-slate-100">Cancel</button>
+                  <div className="flex gap-2.5">
+                      <button onClick={() => setPostModal({isOpen: false, id: '', chk: ''})} className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-bold uppercase text-xs hover:bg-slate-200 cursor-pointer">
+                        Cancel
+                      </button>
+                      <button onClick={confirmPost} className="flex-1 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black uppercase text-xs shadow-md cursor-pointer">
+                        Link & Post
+                      </button>
                   </div>
               </div>
           </div>
       )}
 
+      {/* ========================================================================= */}
+      {/* MINIBAR POS MODAL (SPLIT-VIEW ON DESKTOP, NATIVE SHEET ON MOBILE)         */}
+      {/* ========================================================================= */}
       {isMinibarOpen && (
-         <div className="bottom-sheet-overlay !z-[9999]">
-            <div className="bottom-sheet-content flex flex-col h-[90vh]">
-               <div className="drag-handle"></div>
+         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4">
+            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-6xl h-[92vh] md:h-[86vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95">
                
-               <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
-                  <h3 className="text-xl font-black text-rose-700 tracking-tight flex items-center gap-2">
-                      <Wine size={20}/> {isEditing ? 'Edit Entry' : 'Minibar Log'}
-                  </h3>
-                  <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 active:scale-90 transition-transform"><X size={20}/></button>
-               </div>
-               
-               <div className="flex-1 overflow-y-auto p-6 pb-6 custom-scrollbar">
-                  <div className="flex gap-3 mb-4 items-center">
-                     <input type="text" placeholder="Villa" autoFocus className="input-field w-20 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
-                     <div className="flex-1 relative">
-                         <input type="text" placeholder="VA Name (e.g. Ali)" className="input-field w-full text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
-                     </div>
+               {/* Modal Top Bar */}
+               <div className="px-5 py-3.5 bg-white border-b border-slate-200 flex justify-between items-center shrink-0">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
+                      <Wine size={20}/>
+                    </div>
+                    <div>
+                      <h3 className="text-base sm:text-lg font-black text-slate-800 tracking-tight leading-none">
+                        {isEditing ? 'Edit Minibar Log' : 'New Minibar Consumption Log'}
+                      </h3>
+                      <p className="text-[11px] font-bold text-slate-400 mt-0.5">
+                        Tap product cards to add items • Toggle Refill for complimentary items
+                      </p>
+                    </div>
                   </div>
-                  
-                  <GuestCard />
-                  
-                  {mbCart.length > 0 && (
-                     <div className="mt-4 p-4 bg-white rounded-3xl border-2 border-rose-50 flex flex-wrap gap-2 animate-in zoom-in-95 shadow-sm">
-                        {mbCart.map(i => (
-                           <div key={i.name} className="flex items-center gap-0.5">
-                             <button onClick={() => toggleRefill(i.name)} className={`px-2.5 py-2 rounded-l-xl text-[10px] font-black uppercase transition-all ${i.isRefill ? 'bg-blue-600 text-white shadow-md shadow-blue-100' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'}`}>Refill</button>
-                             <button onClick={() => setMbCart(mbCart.filter(c => c.name !== i.name))} className={`px-3 py-2 rounded-r-xl text-xs font-black flex items-center gap-1 active:scale-95 transition-all ${i.isRefill ? 'bg-blue-50 text-blue-700 border-2 border-blue-100' : 'bg-rose-600 text-white shadow-md hover:bg-rose-700'}`}>{i.qty} {i.name} <X size={14}/></button>
-                           </div>
-                        ))}
-                     </div>
-                  )}
-
-                  <div className="relative mt-6 mb-3">
-                      <Search size={16} className="absolute left-4 top-4 text-slate-400"/>
-                      <input type="text" placeholder="Find Item..." className="input-field pl-12 text-[16px] md:text-sm" value={mbItemSearch} onChange={(e) => setMbItemSearch(e.target.value)}/>
-                  </div>
-                  
-                  <div className="flex flex-wrap gap-2 mb-6 overflow-x-auto no-scrollbar pb-2">
-                      {minibarCats.map(c => (
-                          <button key={c} onClick={() => setMbCategory(c)} className={`px-4 py-2 rounded-full text-[10px] font-bold uppercase transition-all shadow-sm active:scale-95 ${mbCategory === c ? 'bg-rose-600 text-white border-rose-600' : 'bg-white border border-slate-200 text-slate-500 hover:border-rose-300'}`}>{c}</button>
-                      ))}
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-3">
-                     {masterCatalog.filter(i => i.is_minibar_item).filter(i => (mbCategory === 'All' || i.category === mbCategory) && (i.article_name.toLowerCase().includes(mbItemSearch.toLowerCase()) || (i.generic_name || "").toLowerCase().includes(mbItemSearch.toLowerCase()))).map(item => {
-                        const inCart = mbCart.find(c => c.name === (item.generic_name || item.article_name));
-                        return (
-                        <button key={item.article_number} onClick={() => addToCart(item.generic_name || item.article_name, 'MB')} className={`bg-white p-3 rounded-3xl border-2 flex flex-col items-center gap-3 active:scale-95 transition-transform overflow-hidden group relative ${inCart ? 'border-rose-500 ring-4 ring-rose-100 shadow-md' : 'border-slate-100 hover:border-rose-200'}`}>
-                           {inCart && <div className="absolute top-2 right-2 bg-rose-500 text-white text-xs font-black px-2 py-0.5 rounded-full animate-in zoom-in">{inCart.qty}</div>}
-                           <div className="w-full aspect-square bg-slate-50 rounded-2xl flex items-center justify-center overflow-hidden h-20 sm:h-24">
-                               {item.image_url ? <img src={item.image_url} alt="" className="w-full h-full object-contain p-2 group-hover:scale-110 transition-transform duration-500"/> : <Wine size={20} className="text-rose-200"/>}
-                           </div>
-                           <span className="text-[11px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-8 flex items-center">{item.generic_name || item.article_name}</span>
-                        </button>
-                     )})}
-                  </div>
-               </div>
-               
-               <div className="p-4 bg-white/95 backdrop-blur-xl border-t border-slate-100 pb-28 md:pb-6 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] mt-auto w-full z-20 shrink-0">
-                  <button onClick={() => submitRequest('Minibar')} className="btn-danger w-full py-5 text-sm font-black shadow-xl">
-                      {isEditing ? 'Confirm Update' : 'Save To Log'}
+                  <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-2 rounded-full text-slate-500 transition-colors cursor-pointer">
+                    <X size={18}/>
                   </button>
+               </div>
+               
+               {/* Split Layout Container */}
+               <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+                  
+                  {/* LEFT / TOP ON MOBILE: VILLA INPUTS + VISUAL PRODUCT GALLERY */}
+                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/60">
+                    
+                    {/* Mobile-Only Villa & VA Input Bar */}
+                    <div className="md:hidden p-3.5 bg-white border-b border-slate-200">
+                      <div className="flex gap-2 items-center">
+                        <input 
+                          type="text" 
+                          placeholder="Villa #" 
+                          autoFocus 
+                          className="w-24 p-2.5 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500" 
+                          value={villaNumber} 
+                          onChange={e => setVillaNumber(e.target.value)}
+                        />
+                        <input 
+                          type="text" 
+                          placeholder="VA Name (Auto-filled)" 
+                          className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-rose-500" 
+                          value={requesterSearch} 
+                          onChange={e => setRequesterSearch(e.target.value)}
+                        />
+                      </div>
+                      <GuestCard />
+                    </div>
+
+                    {/* Search & Category Pills Bar */}
+                    <div className="p-3.5 sm:p-4 bg-white border-b border-slate-200/80 space-y-2.5 shrink-0">
+                      <div className="relative">
+                        <Search size={16} className="absolute left-3.5 top-3 text-slate-400"/>
+                        <input 
+                          type="text" 
+                          placeholder="Quick filter minibar items (e.g. Coke, Beer, Cashew, Taittinger)..." 
+                          className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-rose-500" 
+                          value={mbItemSearch} 
+                          onChange={(e) => setMbItemSearch(e.target.value)}
+                        />
+                        {mbItemSearch && (
+                          <button onClick={() => setMbItemSearch('')} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+                      
+                      <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                        {minibarCats.map(c => (
+                          <button 
+                            key={c} 
+                            onClick={() => setMbCategory(c)} 
+                            className={`px-3.5 py-1.5 rounded-xl text-[11px] font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
+                              mbCategory === c 
+                                ? 'bg-rose-600 text-white shadow-xs' 
+                                : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                            }`}
+                          >
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Visual Product Grid (3 cols on Mobile, 4-5 cols on Desktop) */}
+                    <div className="flex-1 overflow-y-auto p-3.5 sm:p-4 grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3 content-start">
+                       {minibarItems
+                         .filter(i => (mbCategory === 'All' || i.category === mbCategory) && (i.article_name.toLowerCase().includes(mbItemSearch.toLowerCase()) || (i.generic_name || "").toLowerCase().includes(mbItemSearch.toLowerCase())))
+                         .map(item => {
+                            const itemName = item.generic_name || item.article_name;
+                            const inCart = mbCart.find(c => c.name === itemName);
+                            return (
+                              <button 
+                                key={item.article_number} 
+                                onClick={() => addToCart(itemName, 'MB')} 
+                                className={`bg-white p-2.5 rounded-2xl border-2 flex flex-col items-center justify-between gap-2 active:scale-95 transition-all group relative cursor-pointer select-none ${
+                                  inCart 
+                                    ? 'border-rose-500 ring-2 ring-rose-100 shadow-sm' 
+                                    : 'border-slate-200/70 hover:border-rose-300 shadow-2xs'
+                                }`}
+                              >
+                                 {inCart && (
+                                   <div className="absolute top-2 right-2 bg-rose-600 text-white text-[11px] font-black w-6 h-6 rounded-full flex items-center justify-center shadow-sm z-10">
+                                     {inCart.qty}
+                                   </div>
+                                 )}
+                                 <div className="w-full h-16 sm:h-24 bg-slate-50 rounded-xl flex items-center justify-center overflow-hidden p-1.5">
+                                     {item.image_url ? (
+                                       <img src={item.image_url} alt={itemName} className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-300"/>
+                                     ) : (
+                                       <Wine size={22} className="text-rose-200"/>
+                                     )}
+                                 </div>
+                                 <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-7 flex items-center">
+                                   {itemName}
+                                 </span>
+                              </button>
+                            );
+                         })}
+                    </div>
+                  </div>
+
+                  {/* RIGHT SIDEBAR ON DESKTOP / BOTTOM TRAY ON MOBILE */}
+                  <div className="w-full md:w-88 lg:w-96 bg-white border-t md:border-t-0 md:border-l border-slate-200 flex flex-col shrink-0 max-h-[44vh] md:max-h-none">
+                    
+                    {/* Desktop Villa & VA Inputs */}
+                    <div className="hidden md:block p-4 border-b border-slate-100">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider block mb-2">
+                        Villa & Attendant Details
+                      </label>
+                      <div className="flex gap-2.5">
+                        <input 
+                          type="text" 
+                          placeholder="Villa #" 
+                          autoFocus 
+                          className="w-24 p-2.5 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-lg text-slate-800 outline-none focus:border-rose-500" 
+                          value={villaNumber} 
+                          onChange={e => setVillaNumber(e.target.value)}
+                        />
+                        <input 
+                          type="text" 
+                          placeholder="VA Name (e.g. Ali)" 
+                          className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-rose-500" 
+                          value={requesterSearch} 
+                          onChange={e => setRequesterSearch(e.target.value)}
+                        />
+                      </div>
+                      <GuestCard />
+                    </div>
+
+                    {/* Selected Items Cart List */}
+                    <div className="flex-1 overflow-y-auto p-3.5 sm:p-4 space-y-2">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                          Selected Items ({mbCart.reduce((sum, i) => sum + i.qty, 0)})
+                        </span>
+                        {mbCart.length > 0 && (
+                          <button 
+                            onClick={() => setMbCart([])} 
+                            className="text-[10px] font-bold text-rose-500 hover:underline cursor-pointer"
+                          >
+                            Clear All
+                          </button>
+                        )}
+                      </div>
+
+                      {mbCart.length === 0 ? (
+                        <div className="py-6 md:py-16 text-center text-slate-300 text-xs font-bold">
+                          Tap any item picture to add to tray
+                        </div>
+                      ) : (
+                        mbCart.map(i => (
+                          <div key={i.name} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <span className="text-xs font-bold text-slate-800 block truncate">{i.name}</span>
+                              <button 
+                                onClick={() => toggleRefill(i.name)} 
+                                className={`mt-1 px-2 py-0.5 rounded text-[9px] font-black uppercase transition-all cursor-pointer ${
+                                  i.isRefill 
+                                    ? 'bg-blue-600 text-white' 
+                                    : 'bg-slate-200/80 text-slate-500 hover:bg-slate-300'
+                                }`}
+                              >
+                                {i.isRefill ? '✓ Refill Only' : '+ Mark Refill'}
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 bg-white px-1.5 py-1 rounded-xl border border-slate-200">
+                              <button 
+                                onClick={() => updateCartQty(i.name, -1, 'MB')} 
+                                className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-rose-100 hover:text-rose-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
+                              >
+                                <Minus size={12}/>
+                              </button>
+                              <span className="w-6 text-center font-mono font-black text-xs text-slate-800">
+                                {i.qty}
+                              </span>
+                              <button 
+                                onClick={() => updateCartQty(i.name, 1, 'MB')} 
+                                className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-emerald-100 hover:text-emerald-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
+                              >
+                                <Plus size={12}/>
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {/* Submit Footer */}
+                    <div className="p-4 border-t border-slate-200 bg-white pb-6 md:pb-4">
+                      <button 
+                        onClick={() => submitRequest('Minibar')} 
+                        className="w-full py-3.5 bg-rose-600 hover:bg-rose-700 active:scale-98 text-white rounded-2xl text-xs font-black uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+                      >
+                        {isEditing ? 'Confirm Update' : `Save Minibar Log (${mbCart.reduce((s, i) => s + i.qty, 0)} Items)`}
+                      </button>
+                    </div>
+                  </div>
+
                </div>
             </div>
          </div>
       )}
 
+      {/* ========================================================================= */}
+      {/* GENERAL & GEM REQUEST MODAL                                               */}
+      {/* ========================================================================= */}
       {isOtherOpen && (
-         <div className="bottom-sheet-overlay !z-[9999]">
-            <div className={`bottom-sheet-content flex flex-col h-[90vh] ${otherModalType === 'GEM' ? 'border-t-4 border-amber-400' : ''}`}>
-               <div className="drag-handle"></div>
-
-               <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
-                  <h3 className={`text-xl font-black flex items-center gap-2 uppercase tracking-tight ${otherModalType === 'GEM' ? 'text-amber-600' : 'text-[#6D2158]'}`}>
-                      <Wrench size={24}/> {otherModalType === 'GEM' ? 'GEM Request' : 'General Request'}
+         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4">
+            <div className={`bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-4xl h-[90vh] md:h-[82vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95 ${otherModalType === 'GEM' ? 'border-t-4 border-t-amber-400' : ''}`}>
+               
+               <div className="px-5 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
+                  <h3 className={`text-base sm:text-lg font-black flex items-center gap-2 uppercase tracking-tight ${otherModalType === 'GEM' ? 'text-amber-600' : 'text-[#6D2158]'}`}>
+                      <Wrench size={20}/> {otherModalType === 'GEM' ? 'GEM Request' : 'General Housekeeping Request'}
                   </h3>
-                  <button onClick={() => setIsOtherOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 active:scale-90 transition-transform"><X size={20}/></button>
+                  <button onClick={() => setIsOtherOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 hover:bg-slate-200 cursor-pointer"><X size={18}/></button>
                </div>
 
-               <div className="flex-1 overflow-y-auto p-6 pb-6 custom-scrollbar">
-                  <div className="flex gap-3 mb-4">
-                     <input type="text" placeholder="Villa" autoFocus className="input-field w-24 text-center text-xl text-[16px] md:text-sm" value={villaNumber} onChange={e => setVillaNumber(e.target.value)}/>
+               <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+                     <input 
+                       type="text" 
+                       placeholder="Villa #" 
+                       autoFocus 
+                       className="col-span-1 p-3 bg-slate-50 border-2 border-slate-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-[#6D2158]" 
+                       value={villaNumber} 
+                       onChange={e => setVillaNumber(e.target.value)}
+                     />
                      {otherModalType === 'GEM' ? (
-                         <select className="input-field flex-1 text-[16px] md:text-sm focus:border-amber-500" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}>
+                         <select 
+                           className="col-span-2 p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-amber-500" 
+                           value={requesterSearch} 
+                           onChange={e => setRequesterSearch(e.target.value)}
+                         >
                              <option value="" disabled>Select GEM...</option>
                              {gems.map(g => <option key={g} value={g}>{g}</option>)}
                          </select>
                      ) : (
-                         <input type="text" placeholder="VA Name / ID" className="input-field flex-1 text-[16px] md:text-sm" value={requesterSearch} onChange={e => setRequesterSearch(e.target.value)}/>
+                         <input 
+                           type="text" 
+                           placeholder="VA Name / ID" 
+                           className="col-span-2 p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-[#6D2158]" 
+                           value={requesterSearch} 
+                           onChange={e => setRequesterSearch(e.target.value)}
+                         />
                      )}
                      
-                     <input type="time" className="input-field w-28 text-center text-[16px] md:text-sm" value={manualTime} onChange={e => setManualTime(e.target.value)}/>
+                     <input 
+                       type="time" 
+                       className="col-span-3 sm:col-span-1 p-3 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-xs text-center text-slate-700 outline-none" 
+                       value={manualTime} 
+                       onChange={e => setManualTime(e.target.value)}
+                     />
                   </div>
                   
                   <GuestCard />
                   
-                  <div className="flex bg-slate-200 p-1.5 rounded-2xl mb-6 mt-6 shrink-0">
-                     <button onClick={() => setOtherMode('Catalog')} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${otherMode === 'Catalog' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Items</button>
-                     <button onClick={() => setOtherMode('Note')} className={`flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${otherMode === 'Note' ? 'bg-white shadow text-[#6D2158]' : 'text-slate-500'}`}>Note</button>
+                  {/* Mode Switcher */}
+                  <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
+                     <button 
+                       onClick={() => setOtherMode('Catalog')} 
+                       className={`py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                         otherMode === 'Catalog' ? 'bg-white shadow-xs text-[#6D2158]' : 'text-slate-500'
+                       }`}
+                     >
+                       Visual Catalog ({otherCart.reduce((s, i) => s + i.qty, 0)})
+                     </button>
+                     <button 
+                       onClick={() => setOtherMode('Note')} 
+                       className={`py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                         otherMode === 'Note' ? 'bg-white shadow-xs text-[#6D2158]' : 'text-slate-500'
+                       }`}
+                     >
+                       Custom Text / AI Note
+                     </button>
                   </div>
                   
                   {otherMode === 'Catalog' ? (
-                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        {masterCatalog.filter(i => !i.is_minibar_item).map(item => {
-                           const inCart = otherCart.find(c => c.name === (item.generic_name || item.article_name));
-                           return (
-                               <button key={item.article_number} onClick={() => addToCart(item.generic_name || item.article_name, 'Other')} className={`bg-white p-3 rounded-3xl flex flex-col items-center gap-2 active:scale-95 transition-all overflow-hidden group relative border-2 ${inCart ? 'border-[#6D2158] shadow-md ring-4 ring-[#6D2158]/10' : 'border-slate-100 hover:border-slate-200'}`}>
-                                  {inCart && <div className="absolute top-1 right-1 bg-[#6D2158] text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-in zoom-in">{inCart.qty}</div>}
-                                  <div className="w-full aspect-square bg-slate-50 rounded-[1.2rem] flex items-center justify-center overflow-hidden h-16"><img src={item.image_url || '/placeholder.png'} alt="" className="w-full h-full object-contain p-2 group-hover:scale-110 transition-all"/></div>
-                                  <span className="text-[10px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-8 flex items-center">{item.generic_name || item.article_name}</span>
-                               </button>
-                           )
-                        })}
+                     <div className="space-y-3">
+                        {/* Selected Pill Bar */}
+                        {otherCart.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 p-3 bg-purple-50/60 rounded-2xl border border-purple-100">
+                            {otherCart.map(item => (
+                              <span key={item.name} className="px-2.5 py-1 bg-[#6D2158] text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
+                                {item.qty}x {item.name}
+                                <button onClick={() => updateCartQty(item.name, -item.qty, 'Other')} className="hover:text-rose-200">
+                                  <X size={13}/>
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="relative">
+                          <Search size={15} className="absolute left-3.5 top-3 text-slate-400"/>
+                          <input 
+                            type="text" 
+                            placeholder="Search general items (Towels, Hangers, Iron, Adapter, Pillow)..." 
+                            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]"
+                            value={otherItemSearch}
+                            onChange={e => setOtherItemSearch(e.target.value)}
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2.5">
+                          {masterCatalog
+                            .filter(i => !i.is_minibar_item && ((i.article_name || '').toLowerCase().includes(otherItemSearch.toLowerCase()) || (i.generic_name || '').toLowerCase().includes(otherItemSearch.toLowerCase())))
+                            .map(item => {
+                             const itemName = item.generic_name || item.article_name;
+                             const inCart = otherCart.find(c => c.name === itemName);
+                             return (
+                                 <button 
+                                   key={item.article_number} 
+                                   onClick={() => addToCart(itemName, 'Other')} 
+                                   className={`bg-white p-2.5 rounded-2xl flex flex-col items-center justify-between gap-2 active:scale-95 transition-all group relative border-2 cursor-pointer ${
+                                     inCart ? 'border-[#6D2158] shadow-sm ring-2 ring-[#6D2158]/10' : 'border-slate-200/70 hover:border-slate-300'
+                                   }`}
+                                 >
+                                    {inCart && (
+                                      <div className="absolute top-1.5 right-1.5 bg-[#6D2158] text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center">
+                                        {inCart.qty}
+                                      </div>
+                                    )}
+                                    <div className="w-full h-16 bg-slate-50 rounded-xl flex items-center justify-center overflow-hidden p-1.5">
+                                      <img src={item.image_url || '/placeholder.png'} alt="" className="w-full h-full object-contain group-hover:scale-110 transition-all"/>
+                                    </div>
+                                    <span className="text-[10px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-7 flex items-center">
+                                      {itemName}
+                                    </span>
+                                 </button>
+                             );
+                          })}
+                        </div>
                      </div>
                   ) : (
-                     <div className="flex flex-col gap-4 h-full pb-6">
+                     <div className="flex flex-col gap-3">
                          {otherModalType !== 'GEM' && (
-                             <select value={otherCategory} onChange={e => setOtherCategory(e.target.value)} className="input-field text-[16px] md:text-sm">
+                             <select 
+                               value={otherCategory} 
+                               onChange={e => setOtherCategory(e.target.value)} 
+                               className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-[#6D2158]"
+                             >
                                 <option value="General">General Request</option>
                                 <option value="Cleaning">Cleaning</option>
                                 <option value="Maintenance">Maintenance</option>
@@ -975,10 +1359,11 @@ export default function CoordinatorLog() {
                                 <option value="Laundry">Laundry</option>
                              </select>
                          )}
-                         <div className="relative flex-1 min-h-[200px]">
+                         <div className="relative">
                              <textarea 
-                                 className="input-field h-full pr-14 resize-none leading-relaxed text-[16px] md:text-sm" 
-                                 placeholder="Paste your long request message here..." 
+                                 rows={6}
+                                 className="w-full p-4 pr-14 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-[#6D2158] resize-none leading-relaxed" 
+                                 placeholder="Paste WhatsApp message or type request notes here..." 
                                  value={customNote} 
                                  onChange={e => setCustomNote(e.target.value)}
                              />
@@ -986,17 +1371,24 @@ export default function CoordinatorLog() {
                                  onClick={handleMagicFormat} 
                                  disabled={isMagicLoading || !customNote}
                                  title="Magic Format (AI)" 
-                                 className="absolute top-4 right-4 p-3 bg-[#6D2158]/10 text-[#6D2158] rounded-xl active:scale-95 transition-all shadow-sm disabled:opacity-50 flex items-center justify-center"
+                                 className="absolute top-3 right-3 p-2.5 bg-[#6D2158]/10 hover:bg-[#6D2158]/20 text-[#6D2158] rounded-xl active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
                              >
-                                 {isMagicLoading ? <Loader2 className="animate-spin" size={20} /> : <Wand2 size={20} />}
+                                 {isMagicLoading ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />}
                              </button>
                          </div>
                      </div>
                   )}
                </div>
 
-               <div className="p-4 bg-white/95 backdrop-blur-xl border-t border-slate-100 pb-28 md:pb-6 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] sm:rounded-b-[2.5rem] mt-auto w-full z-20 shrink-0">
-                  <button onClick={() => submitRequest('Other')} className={`btn-primary w-full py-5 text-sm font-black shadow-xl ${otherModalType === 'GEM' ? '!bg-amber-500 !shadow-amber-500/20 hover:!bg-amber-600' : ''}`}>
+               <div className="p-4 bg-white border-t border-slate-100 pb-6 md:pb-4 shrink-0">
+                  <button 
+                    onClick={() => submitRequest('Other')} 
+                    className={`w-full py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider text-white shadow-lg transition-all cursor-pointer ${
+                      otherModalType === 'GEM' 
+                        ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-500/20' 
+                        : 'bg-[#6D2158] hover:bg-[#5a1b49] shadow-[#6D2158]/20'
+                    }`}
+                  >
                       {isEditing ? 'Confirm Update' : 'Save Request'}
                   </button>
                </div>
@@ -1004,16 +1396,20 @@ export default function CoordinatorLog() {
          </div>
       )}
 
+      {/* ========================================================================= */}
+      {/* PARTIAL SEND MODAL                                                        */}
+      {/* ========================================================================= */}
       {isPartialOpen && partialTarget && (
-          <div className="bottom-sheet-overlay !z-[9999]">
-              <div className="bg-white rounded-t-[2.5rem] sm:rounded-[2.5rem] w-full max-w-sm p-8 pb-28 md:pb-8 shadow-2xl animate-in slide-in-from-bottom-full duration-300 mt-auto sm:mt-0">
-                  <div className="drag-handle mb-6"></div>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4">
+              <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-6 pb-8 sm:pb-6 shadow-2xl animate-in slide-in-from-bottom-6 sm:zoom-in-95">
+                  <h3 className="text-lg font-black text-slate-800 mb-1 flex items-center justify-center gap-2 uppercase tracking-tight">
+                    <Split size={18}/> Partial Dispatch (V{partialTarget.villa_number})
+                  </h3>
+                  <p className="text-[11px] font-bold text-slate-400 mb-5 text-center">
+                    Select items that have been <b>SENT</b>
+                  </p>
                   
-                  <h3 className="text-2xl font-black text-slate-800 mb-2 flex items-center justify-center gap-2 uppercase tracking-tight"><Split size={24}/> Partial Send</h3>
-                  <p className="text-xs font-bold text-slate-400 mb-8 uppercase text-center">Select items to mark as <b>SENT</b>.</p>
-                  
-                  <div className="space-y-3 mb-8">
-                      {/* INLINE TAGGING: Ensure the modal buttons reflect the base item cleanly */}
+                  <div className="space-y-2 mb-6 max-h-64 overflow-y-auto">
                       {(partialTarget.item_details || '').split(/\n/).map((item, i) => {
                           const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
                           if (!cleanItem) return null;
@@ -1022,16 +1418,28 @@ export default function CoordinatorLog() {
                           const isSelected = partialSelection.includes(baseItem);
                           
                           return (
-                              <button key={i} onClick={() => isSelected ? setPartialSelection(partialSelection.filter(x => x !== baseItem)) : setPartialSelection([...partialSelection, baseItem])}
-                                className={`w-full p-4 rounded-2xl flex items-center justify-between border-2 font-bold text-sm transition-all active:scale-95 ${isSelected ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-slate-50 border-transparent text-slate-500'}`}>
-                                  {baseItem} 
-                                  {isSelected ? <CheckCircle2 size={20} className="text-blue-600"/> : <div className="w-5 h-5 rounded-full border-2 border-slate-300"/>}
+                              <button 
+                                key={i} 
+                                onClick={() => isSelected ? setPartialSelection(partialSelection.filter(x => x !== baseItem)) : setPartialSelection([...partialSelection, baseItem])}
+                                className={`w-full p-3.5 rounded-xl flex items-center justify-between border-2 font-bold text-xs transition-all cursor-pointer ${
+                                  isSelected ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-slate-50 border-slate-200 text-slate-600'
+                                }`}
+                              >
+                                  <span>{baseItem}</span>
+                                  {isSelected ? <CheckCircle2 size={18} className="text-blue-600"/> : <div className="w-4 h-4 rounded-full border-2 border-slate-300"/>}
                               </button>
-                          )})}
+                          );
+                      })}
                   </div>
                   
-                  <button onClick={submitPartial} className="btn-primary w-full py-5 text-sm !bg-blue-600 hover:!bg-blue-700 !shadow-blue-600/20 mb-3">Confirm Dispatch</button>
-                  <button onClick={() => setIsPartialOpen(false)} className="w-full py-5 text-slate-400 bg-slate-50 rounded-[1.5rem] font-black text-sm uppercase active:scale-95 transition-transform hover:bg-slate-100">Cancel</button>
+                  <div className="flex gap-2">
+                    <button onClick={() => setIsPartialOpen(false)} className="flex-1 py-3 text-slate-500 bg-slate-100 rounded-xl font-bold text-xs uppercase hover:bg-slate-200 cursor-pointer">
+                      Cancel
+                    </button>
+                    <button onClick={submitPartial} className="flex-1 py-3 text-xs font-black uppercase bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md cursor-pointer">
+                      Save Dispatch
+                    </button>
+                  </div>
               </div>
           </div>
       )}
