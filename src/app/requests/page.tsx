@@ -1,9 +1,9 @@
 "use client";
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Search, Plus, Minus, X, Wine, Wrench, Trash2, 
-  Calendar, Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
-  CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles, Filter, RefreshCw
+  Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
+  CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useConfirm } from '@/components/ConfirmProvider';
@@ -40,6 +40,19 @@ type MasterItem = {
   image_url?: string; 
 };
 
+// Target category sorting order
+const CATEGORY_ORDER = [
+  "BITES",
+  "SWEETS",
+  "JUICES",
+  "SOFT DRINKS",
+  "BEER",
+  "WINES",
+  "WINE",
+  "SPIRITS",
+  "SPIRIT"
+];
+
 const analyzePackage = (mp: string) => {
   const plan = (mp || '').toUpperCase();
   if (plan.includes('SA')) return { type: 'Saint', color: 'bg-emerald-100 text-emerald-700 border-emerald-200' };
@@ -54,11 +67,9 @@ const extractMainGuest = (fullString: string) => {
   return main || parts[0];
 };
 
-// --- BULLETPROOF COMMA PARSER ---
 const parseVillas = (input: string, doubleVillas: string[] = []) => {
     if (!input) return [];
     const result = new Set<string>();
-    
     const normalized = input.replace(/&|and/gi, ',').replace(/\s+/g, '');
     const parts = normalized.split(',');
 
@@ -114,7 +125,6 @@ export default function CoordinatorLog() {
   const [editingId, setEditingId] = useState<string | null>(null);
   
   const [postModal, setPostModal] = useState({ isOpen: false, id: '', chk: '' });
-  
   const [selectedDate, setSelectedDate] = useState(getDhakaTime());
   
   const [typeFilter, setTypeFilter] = useState('All');
@@ -211,14 +221,12 @@ export default function CoordinatorLog() {
               const numericBase = extractedDigits ? String(parseInt(extractedDigits, 10)) : '';
               
               let isMatch = false;
-              
               if (vList.includes(cleanVilla)) isMatch = true;
               else if (numericBase && vList.includes(numericBase)) isMatch = true;
               else if (numericBase && new RegExp(`\\b${numericBase}\\b`).test(rawVillas)) isMatch = true;
               
               if (isMatch) {
                   const hostUUID = alloc.host_id; 
-                  
                   const host = allHosts.find(h => String(h.id) === String(hostUUID) || String(h.host_id) === String(hostUUID));
                   if (host) {
                       assignedVA = host.nicknames || host.full_name || host.name || hostUUID;
@@ -235,7 +243,6 @@ export default function CoordinatorLog() {
           
           if (data) {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
-            
             if (!isEditing) {
                 if (otherModalType === 'GEM' && isOtherOpen) setRequesterSearch(data.gem_name || '');
                 else setRequesterSearch(assignedVA || '');
@@ -272,7 +279,7 @@ export default function CoordinatorLog() {
 
   const isOnlyRefills = (details: string) => {
       const items = (details || '').split(/\n/).map(s => s.trim()).filter(Boolean);
-      if(items.length === 0) return false;
+      if (items.length === 0) return false;
       return items.every(item => item.includes('(Refill)'));
   };
 
@@ -326,7 +333,6 @@ export default function CoordinatorLog() {
   const handleEditRecord = (record: RequestRecord) => {
     setIsEditing(true); 
     setEditingId(record.id);
-
     setVillaNumber(record.villa_number);
     const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
     setManualTime(dhakaTimeFormatter.format(new Date(record.request_time)));
@@ -338,7 +344,7 @@ export default function CoordinatorLog() {
         const match = cleanLine.match(/(\d+)x (.+)/);
         const isRef = cleanLine.includes('(Refill)');
         let n = match ? match[2] : cleanLine;
-        if(isRef) n = n.replace(' (Refill)', '');
+        if (isRef) n = n.replace(' (Refill)', '');
         return { name: n.trim(), qty: match ? parseInt(match[1]) : 1, isRefill: isRef };
       });
       setMbCart(items);
@@ -393,10 +399,10 @@ export default function CoordinatorLog() {
         if (data.category && otherModalType !== 'GEM') setOtherCategory(data.category);
         setCustomNote(data.summary);
         toast.success('Magic formatting applied!');
-    } catch (err) {
+    } catch {
         let v = "";
         const vMatch = customNote.match(/villa\s*(\d{1,3})/i);
-        if(vMatch) v = vMatch[1];
+        if (vMatch) v = vMatch[1];
 
         const fragments = customNote
             .replace(/please (can you )?(bring|send|provide|give|ensure that)/gi, '')
@@ -409,7 +415,6 @@ export default function CoordinatorLog() {
             .filter(s => s.length > 2);
 
         const bulleted = fragments.map(f => `• ${f.charAt(0).toUpperCase() + f.slice(1)}`).join('\n');
-        
         if (v && !villaNumber) setVillaNumber(v);
         setCustomNote(bulleted);
         toast.success('Basic formatting applied');
@@ -464,8 +469,8 @@ export default function CoordinatorLog() {
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
       toast.success(isEditing ? "Updated" : "Saved"); 
     } else {
-        toast.error("Error saving. Did you add the 'logged_by' text column to hsk_daily_requests?");
-        console.error(error);
+      toast.error("Error saving request.");
+      console.error(error);
     }
   };
 
@@ -545,7 +550,6 @@ export default function CoordinatorLog() {
 
   const submitPartial = async () => {
       if (!partialTarget) return;
-      
       const allItemsRaw = (partialTarget.item_details || '').split(/\n/).map(s => s.trim().replace(/^[•\-\*]\s*/, '')).filter(Boolean);
       
       const updatedItems = allItemsRaw.map(item => {
@@ -602,12 +606,70 @@ export default function CoordinatorLog() {
       return true;
   });
 
-  const minibarItems = masterCatalog.filter(i => i.is_minibar_item);
-  const minibarCats = ['All', ...Array.from(new Set(minibarItems.map(i => i.category))).filter(Boolean) as string[]];
+  // Filter and sort minibar items strictly by your custom sequence and rules
+  const visibleMinibarItems = useMemo(() => {
+    return masterCatalog
+      .filter(i => {
+        if (!i.is_minibar_item) return false;
+        
+        const cat = (i.category || '').toUpperCase().trim();
+        const name = (i.article_name || '').toLowerCase();
+        const gen = (i.generic_name || '').toLowerCase();
+
+        // 1. Hide general requests & baby/retail items from minibar
+        if (cat.includes('GENERAL') || cat.includes('RETAIL') || cat.includes('AMENITIES')) return false;
+        if (name.includes('diaper') || name.includes('daiper') || name.includes('wipe')) return false;
+
+        // 2. Hide Dom Perignon and RW Stags from standard view unless explicitly searched
+        if (!mbItemSearch) {
+          if (name.includes('dom perignon') || gen.includes('dom perignon')) return false;
+          if (name.includes('stags') || gen.includes('stags') || name.includes('rw stag') || gen.includes('rw stag')) return false;
+        }
+
+        // Search text matching
+        if (mbItemSearch) {
+          const q = mbItemSearch.toLowerCase();
+          return name.includes(q) || gen.includes(q) || (i.category || '').toLowerCase().includes(q);
+        }
+
+        // Category filter
+        if (mbCategory !== 'All' && i.category !== mbCategory) return false;
+
+        return true;
+      })
+      .sort((a, b) => {
+        const catA = (a.category || '').toUpperCase().trim();
+        const catB = (b.category || '').toUpperCase().trim();
+        
+        let indexA = CATEGORY_ORDER.findIndex(o => catA.includes(o));
+        let indexB = CATEGORY_ORDER.findIndex(o => catB.includes(o));
+        
+        if (indexA === -1) indexA = 999;
+        if (indexB === -1) indexB = 999;
+
+        if (indexA !== indexB) return indexA - indexB;
+        return (a.generic_name || a.article_name).localeCompare(b.generic_name || b.article_name);
+      });
+  }, [masterCatalog, mbCategory, mbItemSearch]);
+
+  const minibarCats = useMemo(() => {
+    const rawCats = Array.from(new Set(
+      masterCatalog
+        .filter(i => i.is_minibar_item && !['GENERAL REQUESTS', 'RETAIL'].includes((i.category || '').toUpperCase().trim()))
+        .map(i => i.category)
+    )).filter(Boolean) as string[];
+
+    return ['All', ...rawCats.sort((a, b) => {
+      let indexA = CATEGORY_ORDER.findIndex(o => a.toUpperCase().includes(o));
+      let indexB = CATEGORY_ORDER.findIndex(o => b.toUpperCase().includes(o));
+      if (indexA === -1) indexA = 999;
+      if (indexB === -1) indexB = 999;
+      return indexA - indexB;
+    })];
+  }, [masterCatalog]);
 
   const GuestCard = () => {
       if (!guestInfo) return null;
-      
       let depDate = '-';
       if (guestInfo.stay_dates) {
           const parts = guestInfo.stay_dates.split('-');
@@ -618,24 +680,24 @@ export default function CoordinatorLog() {
       const mealPlan = guestInfo.meal_plan || 'RO';
 
       return (
-        <div className={`mt-2.5 p-3.5 rounded-2xl border-l-4 shadow-xs animate-in zoom-in-95 ${guestInfo.isCheckout ? 'bg-rose-50/90 border-rose-500' : 'bg-blue-50/80 border-blue-500'}`}>
-            <div className="flex justify-between items-start gap-2">
+        <div className={`mt-2 p-2.5 rounded-xl border-l-4 shadow-xs animate-in zoom-in-95 text-xs ${guestInfo.isCheckout ? 'bg-rose-50/90 border-rose-500' : 'bg-blue-50/80 border-blue-500'}`}>
+            <div className="flex justify-between items-start gap-1">
                 <div className="min-w-0">
-                    <h3 className="text-xs font-black text-slate-800 flex items-center gap-1.5 truncate">
-                      <User size={13} className="text-slate-400 shrink-0"/>
+                    <h3 className="font-black text-slate-800 flex items-center gap-1.5 truncate text-xs">
+                      <User size={12} className="text-slate-400 shrink-0"/>
                       <span className="truncate">{guestInfo.mainName || 'Guest'}</span>
                     </h3>
-                    <p className="text-[10px] text-slate-500 font-bold mt-0.5 tracking-wide">
+                    <p className="text-[10px] text-slate-500 font-bold mt-0.5">
                         Dep: <span className="text-slate-800 font-mono">{depDate}</span>
                     </p>
                 </div>
-                <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wider border bg-white shrink-0 ${guestInfo.pkg?.color || 'border-slate-200 text-slate-500'}`}>
+                <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider border bg-white shrink-0 ${guestInfo.pkg?.color || 'border-slate-200 text-slate-500'}`}>
                     {mealPlan}
                 </span>
             </div>
             {guestInfo.isCheckout && (
-              <div className="mt-1.5 flex items-center gap-1 text-rose-600 font-black text-[10px] uppercase tracking-widest">
-                <AlertTriangle size={11}/> Checkout Today
+              <div className="mt-1 flex items-center gap-1 text-rose-600 font-black text-[9px] uppercase tracking-widest">
+                <AlertTriangle size={10}/> Checkout Today
               </div>
             )}
         </div>
@@ -645,7 +707,6 @@ export default function CoordinatorLog() {
   return (
     <div className="flex flex-col min-h-screen bg-[#F8FAFC] font-sans text-slate-800">
       
-      {/* UNIFIED PAGE HEADER */}
       <PageHeader 
         title="Request & Minibar Log"
         date={selectedDate}
@@ -677,10 +738,9 @@ export default function CoordinatorLog() {
         }
       />
 
-      {/* UNIFIED SEARCH & FILTER BAR */}
+      {/* FILTER AND SEARCH BAR */}
       <div className="px-3 sm:px-6 mt-3">
         <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">
-          {/* Search Input */}
           <div className="relative">
             <Search size={16} className="absolute left-3.5 top-3 text-slate-400" />
             <input 
@@ -697,7 +757,6 @@ export default function CoordinatorLog() {
             )}
           </div>
 
-          {/* Horizontal Filter Rows */}
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 pt-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider mr-1">Type:</span>
@@ -706,9 +765,7 @@ export default function CoordinatorLog() {
                   key={t} 
                   onClick={() => setTypeFilter(t)} 
                   className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
-                    typeFilter === t 
-                      ? 'bg-slate-800 text-white shadow-xs' 
-                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                    typeFilter === t ? 'bg-slate-800 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
                   }`}
                 >
                   {t}
@@ -723,9 +780,7 @@ export default function CoordinatorLog() {
                   key={f} 
                   onClick={() => setStatusFilter(f)} 
                   className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
-                    statusFilter === f 
-                      ? 'bg-[#6D2158] text-white shadow-xs' 
-                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                    statusFilter === f ? 'bg-[#6D2158] text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
                   }`}
                 >
                   {f}
@@ -740,9 +795,7 @@ export default function CoordinatorLog() {
                   key={j} 
                   onClick={() => setJettyFilter(j)} 
                   className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
-                    jettyFilter === j 
-                      ? 'bg-blue-600 text-white shadow-xs' 
-                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                    jettyFilter === j ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
                   }`}
                 >
                   {j}
@@ -751,9 +804,7 @@ export default function CoordinatorLog() {
               <button 
                 onClick={() => setShowOverdue(!showOverdue)} 
                 className={`ml-1 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all whitespace-nowrap active:scale-95 cursor-pointer ${
-                  showOverdue 
-                    ? 'bg-rose-600 text-white shadow-xs' 
-                    : 'bg-rose-50 text-rose-600 border border-rose-200'
+                  showOverdue ? 'bg-rose-600 text-white shadow-xs' : 'bg-rose-50 text-rose-600 border border-rose-200'
                 }`}
               >
                 {showOverdue ? 'Hide Overdue' : 'Overdue'}
@@ -835,7 +886,6 @@ export default function CoordinatorLog() {
                 )}
 
                 <div className="p-4 flex flex-col h-full">
-                    {/* Card Top Header */}
                     <div className="flex justify-between items-start gap-2 mb-3">
                        <div className="flex flex-col gap-1">
                            <div className="flex items-center gap-1.5">
@@ -878,7 +928,6 @@ export default function CoordinatorLog() {
                        </div>
                     </div>
                     
-                    {/* Line Items */}
                     <div className="mb-4 text-xs font-bold text-slate-700 leading-relaxed space-y-1 bg-slate-50/70 p-3 rounded-xl border border-slate-100">
                         {(r.item_details || '').split(/\n/).map((item: string, idx: number) => {
                             const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
@@ -896,7 +945,6 @@ export default function CoordinatorLog() {
                         })}
                     </div>
 
-                    {/* Footer Info & Action Buttons */}
                     <div className="mt-auto pt-2.5 border-t border-slate-100 flex items-end justify-between gap-2">
                        <div className="min-w-0">
                           <div className="text-[10px] text-slate-700 font-black uppercase truncate">{r.attendant_name}</div>
@@ -935,7 +983,6 @@ export default function CoordinatorLog() {
                                  <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_sent ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`} title={r.is_sent ? 'Informed' : 'Mark Informed'}>
                                      <Send size={14}/>
                                  </button>
-
                                  <button onClick={() => handleWhatsApp(r, 'done')} className="p-2 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-all flex items-center gap-0.5 cursor-pointer" title="WhatsApp Done">
                                      <MessageCircle size={14}/><Check size={10} strokeWidth={4}/>
                                  </button>
@@ -954,15 +1001,12 @@ export default function CoordinatorLog() {
          )}
       </div>
 
-      {/* ========================================================================= */}
-      {/* POST BILL MODAL                                                           */}
-      {/* ========================================================================= */}
+      {/* POST BILL MODAL */}
       {postModal.isOpen && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
                   <h3 className="text-xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight">Post Minibar Bill</h3>
                   <p className="text-[11px] font-bold text-slate-400 text-center mb-5 uppercase tracking-widest">Confirm POS Check (CHK) Number</p>
-                  
                   <input 
                       type="number" 
                       className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl font-mono font-black text-center text-3xl text-slate-800 outline-none focus:border-[#6D2158] mb-5"
@@ -970,7 +1014,6 @@ export default function CoordinatorLog() {
                       onChange={e => setPostModal({...postModal, chk: e.target.value})}
                       autoFocus
                   />
-
                   <div className="flex gap-2.5">
                       <button onClick={() => setPostModal({isOpen: false, id: '', chk: ''})} className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-xl font-bold uppercase text-xs hover:bg-slate-200 cursor-pointer">
                         Cancel
@@ -984,53 +1027,53 @@ export default function CoordinatorLog() {
       )}
 
       {/* ========================================================================= */}
-      {/* MINIBAR POS MODAL (SPLIT-VIEW ON DESKTOP, NATIVE SHEET ON MOBILE)         */}
+      {/* COMPACT FULL-SCREEN FIT MINIBAR MODAL                                     */}
       {/* ========================================================================= */}
       {isMinibarOpen && (
-         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4">
-            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-6xl h-[92vh] md:h-[86vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95">
+         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-3">
+            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-6xl h-[94vh] md:h-[88vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95">
                
-               {/* Modal Top Bar */}
-               <div className="px-5 py-3.5 bg-white border-b border-slate-200 flex justify-between items-center shrink-0">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
-                      <Wine size={20}/>
+               {/* Modal Compact Header */}
+               <div className="px-4 py-2.5 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
+                      <Wine size={16}/>
                     </div>
                     <div>
-                      <h3 className="text-base sm:text-lg font-black text-slate-800 tracking-tight leading-none">
+                      <h3 className="text-sm sm:text-base font-black text-slate-800 leading-none">
                         {isEditing ? 'Edit Minibar Log' : 'New Minibar Consumption Log'}
                       </h3>
-                      <p className="text-[11px] font-bold text-slate-400 mt-0.5">
-                        Tap product cards to add items • Toggle Refill for complimentary items
+                      <p className="text-[10px] text-slate-400 font-bold mt-0.5">
+                        Tap any item to add • Filter by exact category sequence
                       </p>
                     </div>
                   </div>
-                  <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-2 rounded-full text-slate-500 transition-colors cursor-pointer">
-                    <X size={18}/>
+                  <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-1.5 rounded-full text-slate-500 transition-colors cursor-pointer">
+                    <X size={16}/>
                   </button>
                </div>
                
-               {/* Split Layout Container */}
+               {/* Split-Screen Terminal (Full Screen Fit) */}
                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
                   
-                  {/* LEFT / TOP ON MOBILE: VILLA INPUTS + VISUAL PRODUCT GALLERY */}
-                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/60">
+                  {/* Left Side: Product Gallery */}
+                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
                     
-                    {/* Mobile-Only Villa & VA Input Bar */}
-                    <div className="md:hidden p-3.5 bg-white border-b border-slate-200">
+                    {/* Mobile Only Villa Header */}
+                    <div className="md:hidden p-2.5 bg-white border-b border-slate-200">
                       <div className="flex gap-2 items-center">
                         <input 
                           type="text" 
                           placeholder="Villa #" 
                           autoFocus 
-                          className="w-24 p-2.5 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500" 
+                          className="w-20 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-sm text-slate-800 outline-none focus:border-rose-500" 
                           value={villaNumber} 
                           onChange={e => setVillaNumber(e.target.value)}
                         />
                         <input 
                           type="text" 
-                          placeholder="VA Name (Auto-filled)" 
-                          className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-rose-500" 
+                          placeholder="VA Name" 
+                          className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none" 
                           value={requesterSearch} 
                           onChange={e => setRequesterSearch(e.target.value)}
                         />
@@ -1038,33 +1081,31 @@ export default function CoordinatorLog() {
                       <GuestCard />
                     </div>
 
-                    {/* Search & Category Pills Bar */}
-                    <div className="p-3.5 sm:p-4 bg-white border-b border-slate-200/80 space-y-2.5 shrink-0">
+                    {/* Filter Bar with exact category sequence */}
+                    <div className="p-2.5 bg-white border-b border-slate-100 space-y-1.5 shrink-0">
                       <div className="relative">
-                        <Search size={16} className="absolute left-3.5 top-3 text-slate-400"/>
+                        <Search size={14} className="absolute left-3 top-2 text-slate-400"/>
                         <input 
                           type="text" 
-                          placeholder="Quick filter minibar items (e.g. Coke, Beer, Cashew, Taittinger)..." 
-                          className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-rose-500" 
+                          placeholder="Search items (e.g. Beer, Nuts, Coke, Taittinger, etc.)..." 
+                          className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-rose-500" 
                           value={mbItemSearch} 
                           onChange={(e) => setMbItemSearch(e.target.value)}
                         />
                         {mbItemSearch && (
-                          <button onClick={() => setMbItemSearch('')} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600">
-                            <X size={14} />
+                          <button onClick={() => setMbItemSearch('')} className="absolute right-2.5 top-2 text-slate-400">
+                            <X size={12} />
                           </button>
                         )}
                       </div>
                       
-                      <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                      <div className="flex gap-1 overflow-x-auto no-scrollbar py-0.5">
                         {minibarCats.map(c => (
                           <button 
                             key={c} 
                             onClick={() => setMbCategory(c)} 
-                            className={`px-3.5 py-1.5 rounded-xl text-[11px] font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
-                              mbCategory === c 
-                                ? 'bg-rose-600 text-white shadow-xs' 
-                                : 'bg-slate-100 text-slate-500 hover:bg-slate-200/70'
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
+                              mbCategory === c ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                             }`}
                           >
                             {c}
@@ -1073,65 +1114,60 @@ export default function CoordinatorLog() {
                       </div>
                     </div>
 
-                    {/* Visual Product Grid (3 cols on Mobile, 4-5 cols on Desktop) */}
-                    <div className="flex-1 overflow-y-auto p-3.5 sm:p-4 grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-3 content-start">
-                       {minibarItems
-                         .filter(i => (mbCategory === 'All' || i.category === mbCategory) && (i.article_name.toLowerCase().includes(mbItemSearch.toLowerCase()) || (i.generic_name || "").toLowerCase().includes(mbItemSearch.toLowerCase())))
-                         .map(item => {
-                            const itemName = item.generic_name || item.article_name;
-                            const inCart = mbCart.find(c => c.name === itemName);
-                            return (
-                              <button 
-                                key={item.article_number} 
-                                onClick={() => addToCart(itemName, 'MB')} 
-                                className={`bg-white p-2.5 rounded-2xl border-2 flex flex-col items-center justify-between gap-2 active:scale-95 transition-all group relative cursor-pointer select-none ${
-                                  inCart 
-                                    ? 'border-rose-500 ring-2 ring-rose-100 shadow-sm' 
-                                    : 'border-slate-200/70 hover:border-rose-300 shadow-2xs'
-                                }`}
-                              >
-                                 {inCart && (
-                                   <div className="absolute top-2 right-2 bg-rose-600 text-white text-[11px] font-black w-6 h-6 rounded-full flex items-center justify-center shadow-sm z-10">
-                                     {inCart.qty}
-                                   </div>
-                                 )}
-                                 <div className="w-full h-16 sm:h-24 bg-slate-50 rounded-xl flex items-center justify-center overflow-hidden p-1.5">
-                                     {item.image_url ? (
-                                       <img src={item.image_url} alt={itemName} className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-300"/>
-                                     ) : (
-                                       <Wine size={22} className="text-rose-200"/>
-                                     )}
+                    {/* Compact Image Grid (Fit on one screen without outer scroll) */}
+                    <div className="flex-1 overflow-y-auto p-2.5 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-2 content-start">
+                       {visibleMinibarItems.map(item => {
+                          const itemName = item.generic_name || item.article_name;
+                          const inCart = mbCart.find(c => c.name === itemName);
+                          return (
+                            <button 
+                              key={item.article_number} 
+                              onClick={() => addToCart(itemName, 'MB')} 
+                              className={`bg-white p-1.5 rounded-xl border flex flex-col items-center justify-between gap-1 active:scale-95 transition-all group relative cursor-pointer select-none ${
+                                inCart 
+                                  ? 'border-rose-500 ring-2 ring-rose-100 shadow-sm' 
+                                  : 'border-slate-200/70 hover:border-rose-300'
+                              }`}
+                            >
+                               {inCart && (
+                                 <div className="absolute top-1 right-1 bg-rose-600 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center shadow-xs z-10">
+                                   {inCart.qty}
                                  </div>
-                                 <span className="text-[10px] sm:text-[11px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-7 flex items-center">
-                                   {itemName}
-                                 </span>
-                              </button>
-                            );
-                         })}
+                               )}
+                               <div className="w-full h-12 sm:h-14 bg-slate-50/60 rounded-lg flex items-center justify-center overflow-hidden p-1">
+                                   {item.image_url ? (
+                                     <img src={item.image_url} alt={itemName} className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-200"/>
+                                   ) : (
+                                     <Wine size={16} className="text-rose-200"/>
+                                   )}
+                               </div>
+                               <span className="text-[10px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-6 flex items-center justify-center">
+                                 {itemName}
+                                </span>
+                            </button>
+                          );
+                       })}
                     </div>
                   </div>
 
-                  {/* RIGHT SIDEBAR ON DESKTOP / BOTTOM TRAY ON MOBILE */}
-                  <div className="w-full md:w-88 lg:w-96 bg-white border-t md:border-t-0 md:border-l border-slate-200 flex flex-col shrink-0 max-h-[44vh] md:max-h-none">
+                  {/* Right Side: Pinned Order Tray & Checkout */}
+                  <div className="w-full md:w-80 lg:w-84 bg-white border-t md:border-t-0 md:border-l border-slate-200 flex flex-col shrink-0 max-h-[46vh] md:max-h-none">
                     
-                    {/* Desktop Villa & VA Inputs */}
-                    <div className="hidden md:block p-4 border-b border-slate-100">
-                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider block mb-2">
-                        Villa & Attendant Details
-                      </label>
-                      <div className="flex gap-2.5">
+                    {/* Desktop Villa Input Box */}
+                    <div className="hidden md:block p-3 border-b border-slate-100">
+                      <div className="flex gap-2">
                         <input 
                           type="text" 
                           placeholder="Villa #" 
                           autoFocus 
-                          className="w-24 p-2.5 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-lg text-slate-800 outline-none focus:border-rose-500" 
+                          className="w-20 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500" 
                           value={villaNumber} 
                           onChange={e => setVillaNumber(e.target.value)}
                         />
                         <input 
                           type="text" 
-                          placeholder="VA Name (e.g. Ali)" 
-                          className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-rose-500" 
+                          placeholder="VA Name" 
+                          className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-rose-500" 
                           value={requesterSearch} 
                           onChange={e => setRequesterSearch(e.target.value)}
                         />
@@ -1139,58 +1175,53 @@ export default function CoordinatorLog() {
                       <GuestCard />
                     </div>
 
-                    {/* Selected Items Cart List */}
-                    <div className="flex-1 overflow-y-auto p-3.5 sm:p-4 space-y-2">
+                    {/* Pinned Selection Tray */}
+                    <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
                       <div className="flex justify-between items-center mb-1">
-                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                        <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider">
                           Selected Items ({mbCart.reduce((sum, i) => sum + i.qty, 0)})
                         </span>
                         {mbCart.length > 0 && (
-                          <button 
-                            onClick={() => setMbCart([])} 
-                            className="text-[10px] font-bold text-rose-500 hover:underline cursor-pointer"
-                          >
-                            Clear All
+                          <button onClick={() => setMbCart([])} className="text-[9px] font-bold text-rose-500 hover:underline">
+                            Clear
                           </button>
                         )}
                       </div>
 
                       {mbCart.length === 0 ? (
                         <div className="py-6 md:py-16 text-center text-slate-300 text-xs font-bold">
-                          Tap any item picture to add to tray
+                          Tap product picture to add
                         </div>
                       ) : (
                         mbCart.map(i => (
-                          <div key={i.name} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2">
+                          <div key={i.name} className="p-2 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
                             <div className="min-w-0 flex-1">
-                              <span className="text-xs font-bold text-slate-800 block truncate">{i.name}</span>
+                              <span className="text-xs font-bold text-slate-800 block truncate leading-tight">{i.name}</span>
                               <button 
                                 onClick={() => toggleRefill(i.name)} 
-                                className={`mt-1 px-2 py-0.5 rounded text-[9px] font-black uppercase transition-all cursor-pointer ${
-                                  i.isRefill 
-                                    ? 'bg-blue-600 text-white' 
-                                    : 'bg-slate-200/80 text-slate-500 hover:bg-slate-300'
+                                className={`mt-0.5 px-1.5 py-0.5 rounded text-[8px] font-black uppercase transition-all cursor-pointer ${
+                                  i.isRefill ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'
                                 }`}
                               >
-                                {i.isRefill ? '✓ Refill Only' : '+ Mark Refill'}
+                                {i.isRefill ? '✓ Refill' : '+ Refill'}
                               </button>
                             </div>
 
-                            <div className="flex items-center gap-1.5 bg-white px-1.5 py-1 rounded-xl border border-slate-200">
+                            <div className="flex items-center gap-1 bg-white px-1 py-0.5 rounded-lg border border-slate-200 shrink-0">
                               <button 
                                 onClick={() => updateCartQty(i.name, -1, 'MB')} 
-                                className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-rose-100 hover:text-rose-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
+                                className="w-5 h-5 rounded bg-slate-100 hover:bg-rose-100 hover:text-rose-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
                               >
-                                <Minus size={12}/>
+                                <Minus size={10}/>
                               </button>
-                              <span className="w-6 text-center font-mono font-black text-xs text-slate-800">
+                              <span className="w-5 text-center font-mono font-black text-xs text-slate-800">
                                 {i.qty}
                               </span>
                               <button 
                                 onClick={() => updateCartQty(i.name, 1, 'MB')} 
-                                className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-emerald-100 hover:text-emerald-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
+                                className="w-5 h-5 rounded bg-slate-100 hover:bg-emerald-100 hover:text-emerald-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
                               >
-                                <Plus size={12}/>
+                                <Plus size={10}/>
                               </button>
                             </div>
                           </div>
@@ -1198,13 +1229,13 @@ export default function CoordinatorLog() {
                       )}
                     </div>
 
-                    {/* Submit Footer */}
-                    <div className="p-4 border-t border-slate-200 bg-white pb-6 md:pb-4">
+                    {/* Bottom Action Footer */}
+                    <div className="p-3 border-t border-slate-200 bg-white">
                       <button 
                         onClick={() => submitRequest('Minibar')} 
-                        className="w-full py-3.5 bg-rose-600 hover:bg-rose-700 active:scale-98 text-white rounded-2xl text-xs font-black uppercase tracking-wider shadow-lg shadow-rose-600/20 transition-all cursor-pointer"
+                        className="w-full py-3 bg-rose-600 hover:bg-rose-700 active:scale-98 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all cursor-pointer"
                       >
-                        {isEditing ? 'Confirm Update' : `Save Minibar Log (${mbCart.reduce((s, i) => s + i.qty, 0)} Items)`}
+                        {isEditing ? 'Confirm Update' : `Save Minibar (${mbCart.reduce((s, i) => s + i.qty, 0)})`}
                       </button>
                     </div>
                   </div>
@@ -1267,7 +1298,6 @@ export default function CoordinatorLog() {
                   
                   <GuestCard />
                   
-                  {/* Mode Switcher */}
                   <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
                      <button 
                        onClick={() => setOtherMode('Catalog')} 
@@ -1289,13 +1319,12 @@ export default function CoordinatorLog() {
                   
                   {otherMode === 'Catalog' ? (
                      <div className="space-y-3">
-                        {/* Selected Pill Bar */}
                         {otherCart.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 p-3 bg-purple-50/60 rounded-2xl border border-purple-100">
                             {otherCart.map(item => (
                               <span key={item.name} className="px-2.5 py-1 bg-[#6D2158] text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
                                 {item.qty}x {item.name}
-                                <button onClick={() => updateCartQty(item.name, -item.qty, 'Other')} className="hover:text-rose-200">
+                                <button onClick={() => updateCartQty(item.name, -item.qty, 'Other')} className="hover:text-rose-200 cursor-pointer">
                                   <X size={13}/>
                                 </button>
                               </span>
@@ -1307,7 +1336,7 @@ export default function CoordinatorLog() {
                           <Search size={15} className="absolute left-3.5 top-3 text-slate-400"/>
                           <input 
                             type="text" 
-                            placeholder="Search general items (Towels, Hangers, Iron, Adapter, Pillow)..." 
+                            placeholder="Search general amenities (Towels, Hangers, Iron, Pillow)..." 
                             className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]"
                             value={otherItemSearch}
                             onChange={e => setOtherItemSearch(e.target.value)}
@@ -1396,9 +1425,7 @@ export default function CoordinatorLog() {
          </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* PARTIAL SEND MODAL                                                        */}
-      {/* ========================================================================= */}
+      {/* PARTIAL DISPATCH MODAL */}
       {isPartialOpen && partialTarget && (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4">
               <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-6 pb-8 sm:pb-6 shadow-2xl animate-in slide-in-from-bottom-6 sm:zoom-in-95">
