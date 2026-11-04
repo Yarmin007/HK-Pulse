@@ -3,7 +3,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Search, Plus, Minus, X, Wine, Wrench, Trash2, 
   Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
-  CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles
+  CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles,
+  Settings, ArrowUp, ArrowDown, Eye, EyeOff
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useConfirm } from '@/components/ConfirmProvider';
@@ -40,8 +41,8 @@ type MasterItem = {
   image_url?: string; 
 };
 
-// Target category sorting order
-const CATEGORY_ORDER = [
+// Target category sorting order inside Frequent tab
+const FREQUENT_CATEGORY_ORDER = [
   "BITES",
   "SWEETS",
   "JUICES",
@@ -52,6 +53,33 @@ const CATEGORY_ORDER = [
   "SPIRITS",
   "SPIRIT"
 ];
+
+// Display Tab Order in the Minibar Filter Bar
+const MINIBAR_TAB_ORDER = [
+  "Frequent",
+  "Bites",
+  "Sweets",
+  "Juices",
+  "Soft Drinks",
+  "Water",
+  "Beer",
+  "Wines",
+  "Spirits",
+  "Retail"
+];
+
+// Normalize villa numbers so "05" and "5" are always identical
+const normalizeVillaNumber = (raw: string): string => {
+  if (!raw) return '';
+  const str = raw.trim();
+  if (str.includes('-')) {
+    const [base, sub] = str.split('-');
+    const parsedBase = parseInt(base, 10);
+    return isNaN(parsedBase) ? str : `${parsedBase}-${sub}`;
+  }
+  const parsed = parseInt(str, 10);
+  return isNaN(parsed) ? str : parsed.toString();
+};
 
 const analyzePackage = (mp: string) => {
   const plan = (mp || '').toUpperCase();
@@ -115,11 +143,13 @@ export default function CoordinatorLog() {
   
   const [currentTime, setCurrentTime] = useState(getDhakaTime());
 
+  // Modals
   const [isMinibarOpen, setIsMinibarOpen] = useState(false);
   const [isOtherOpen, setIsOtherOpen] = useState(false);
   const [otherModalType, setOtherModalType] = useState<'General' | 'GEM'>('General');
   const [isPartialOpen, setIsPartialOpen] = useState(false);
   const [showOverdue, setShowOverdue] = useState(false); 
+  const [isManageLayoutOpen, setIsManageLayoutOpen] = useState(false);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -140,7 +170,7 @@ export default function CoordinatorLog() {
   const [requesterSearch, setRequesterSearch] = useState('');
   
   const [mbCart, setMbCart] = useState<{name: string, qty: number, isRefill?: boolean}[]>([]);
-  const [mbCategory, setMbCategory] = useState('All');
+  const [mbCategory, setMbCategory] = useState('Frequent');
   const [otherMode, setOtherMode] = useState<'Catalog' | 'Note'>('Catalog');
   const [otherCategory, setOtherCategory] = useState('General');
   const [otherCart, setOtherCart] = useState<{name: string, qty: number}[]>([]);
@@ -150,10 +180,24 @@ export default function CoordinatorLog() {
   const [partialTarget, setPartialTarget] = useState<RequestRecord | null>(null);
   const [partialSelection, setPartialSelection] = useState<string[]>([]);
 
+  // Layout customizations saved locally
+  const [customMinibarOrder, setCustomMinibarOrder] = useState<string[]>([]);
+  const [hiddenFromFrequent, setHiddenFromFrequent] = useState<string[]>([]);
+  const [catalogSearchInManager, setCatalogSearchInManager] = useState('');
+
   useEffect(() => { 
     const sessionStr = localStorage.getItem('hk_pulse_session');
     if (sessionStr) {
         setCurrentUser(JSON.parse(sessionStr));
+    }
+
+    const savedOrder = localStorage.getItem('hk_minibar_custom_order');
+    if (savedOrder) {
+      try { setCustomMinibarOrder(JSON.parse(savedOrder)); } catch {}
+    }
+    const savedHidden = localStorage.getItem('hk_minibar_hidden_frequent');
+    if (savedHidden) {
+      try { setHiddenFromFrequent(JSON.parse(savedHidden)); } catch {}
     }
 
     fetchHosts(); 
@@ -198,7 +242,7 @@ export default function CoordinatorLog() {
 
   useEffect(() => {
     const fetchGuestAndVA = async () => {
-      const cleanVilla = villaNumber.trim();
+      const cleanVilla = normalizeVillaNumber(villaNumber);
       
       if (!cleanVilla || cleanVilla.length < 1) { 
           setGuestInfo(null); 
@@ -239,7 +283,13 @@ export default function CoordinatorLog() {
       }
 
       if (/^\d+$/.test(cleanVilla) || cleanVilla.includes('-')) {
-          const { data } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', dateStr).eq('villa_number', cleanVilla).maybeSingle();
+          // Robust match for both "5" and "05"
+          const { data } = await supabase.from('hsk_daily_summary')
+            .select('*')
+            .eq('report_date', dateStr)
+            .or(`villa_number.eq.${cleanVilla},villa_number.eq.0${cleanVilla}`)
+            .limit(1)
+            .maybeSingle();
           
           if (data) {
             setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
@@ -263,7 +313,7 @@ export default function CoordinatorLog() {
       }
     };
     
-    const timer = setTimeout(fetchGuestAndVA, 300);
+    const timer = setTimeout(fetchGuestAndVA, 250);
     return () => clearTimeout(timer);
   }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, isOtherOpen, dailyAllocations, allHosts, hostMap, isEditing]);
 
@@ -314,7 +364,11 @@ export default function CoordinatorLog() {
     
     if (guestRes.data) {
         const gMap: Record<string, any> = {};
-        guestRes.data.forEach(g => { gMap[g.villa_number] = g; });
+        guestRes.data.forEach(g => { 
+          const cleanNum = normalizeVillaNumber(g.villa_number);
+          gMap[cleanNum] = g;
+          gMap[g.villa_number] = g;
+        });
         setDailyGuests(gMap);
     }
   };
@@ -325,6 +379,7 @@ export default function CoordinatorLog() {
     
     setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch(''); setOtherItemSearch('');
     setOtherCategory('General'); setIsEditing(false); setEditingId(null);
+    setMbCategory('Frequent');
     
     if (type === 'Minibar') setIsMinibarOpen(true);
     else { setOtherModalType(type); setOtherMode(type === 'GEM' ? 'Note' : 'Catalog'); setIsOtherOpen(true); }
@@ -333,7 +388,7 @@ export default function CoordinatorLog() {
   const handleEditRecord = (record: RequestRecord) => {
     setIsEditing(true); 
     setEditingId(record.id);
-    setVillaNumber(record.villa_number);
+    setVillaNumber(normalizeVillaNumber(record.villa_number));
     const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
     setManualTime(dhakaTimeFormatter.format(new Date(record.request_time)));
     setRequesterSearch(record.attendant_name);
@@ -395,7 +450,7 @@ export default function CoordinatorLog() {
         if (!res.ok) throw new Error('API failed');
         const data = await res.json();
         
-        if (data.villa && !villaNumber) setVillaNumber(data.villa);
+        if (data.villa && !villaNumber) setVillaNumber(normalizeVillaNumber(data.villa));
         if (data.category && otherModalType !== 'GEM') setOtherCategory(data.category);
         setCustomNote(data.summary);
         toast.success('Magic formatting applied!');
@@ -415,7 +470,7 @@ export default function CoordinatorLog() {
             .filter(s => s.length > 2);
 
         const bulleted = fragments.map(f => `• ${f.charAt(0).toUpperCase() + f.slice(1)}`).join('\n');
-        if (v && !villaNumber) setVillaNumber(v);
+        if (v && !villaNumber) setVillaNumber(normalizeVillaNumber(v));
         setCustomNote(bulleted);
         toast.success('Basic formatting applied');
     }
@@ -423,7 +478,8 @@ export default function CoordinatorLog() {
   };
 
   const submitRequest = async (type: 'Minibar' | 'Other') => {
-    if (!villaNumber) { toast.error("Villa Required"); return; }
+    const cleanV = normalizeVillaNumber(villaNumber);
+    if (!cleanV) { toast.error("Villa Required"); return; }
     
     let details = '';
     let reqType = 'General';
@@ -451,7 +507,7 @@ export default function CoordinatorLog() {
     const loggedByName = currentUser ? (currentUser.nicknames || currentUser.full_name || currentUser.name || 'Staff') : 'Admin';
 
     const payload = {
-       villa_number: villaNumber,
+       villa_number: cleanV,
        request_type: reqType,
        item_details: details,
        request_time: dbTimeStr, 
@@ -575,7 +631,6 @@ export default function CoordinatorLog() {
   };
 
   const visibleRecords = records.filter(r => {
-      const vNum = parseInt(r.villa_number);
       const isMB = r.request_type === 'Minibar';
       const isGemReq = r.request_type === 'GEM Request';
       const onlyRefills = isOnlyRefills(r.item_details);
@@ -598,7 +653,17 @@ export default function CoordinatorLog() {
           if (!isMB && !r.is_done) return false;
       }
       
-      if (villaSearch && !r.villa_number.toLowerCase().includes(villaSearch.toLowerCase()) && !(r.attendant_name || '').toLowerCase().includes(villaSearch.toLowerCase()) && !(r.item_details || '').toLowerCase().includes(villaSearch.toLowerCase())) return false;
+      const normRec = normalizeVillaNumber(r.villa_number);
+      const vNum = parseInt(normRec, 10);
+
+      if (villaSearch) {
+        const q = villaSearch.toLowerCase().trim();
+        const normSearch = normalizeVillaNumber(q);
+        const matchesVilla = normRec.includes(normSearch) || r.villa_number.toLowerCase().includes(q);
+        const matchesOther = (r.attendant_name || '').toLowerCase().includes(q) || (r.item_details || '').toLowerCase().includes(q);
+        if (!matchesVilla && !matchesOther) return false;
+      }
+
       if (jettyFilter === 'Jetty A' && !(vNum >= 1 && vNum <= 35)) return false;
       if (jettyFilter === 'Jetty B' && !(vNum >= 37 && vNum <= 50)) return false;
       if (jettyFilter === 'Jetty C' && !(vNum >= 59 && vNum <= 79)) return false;
@@ -606,67 +671,182 @@ export default function CoordinatorLog() {
       return true;
   });
 
-  // Filter and sort minibar items strictly by your custom sequence and rules
+  // --- REFINED MINIBAR CATALOG ENGINE ---
   const visibleMinibarItems = useMemo(() => {
     return masterCatalog
       .filter(i => {
-        if (!i.is_minibar_item) return false;
-        
         const cat = (i.category || '').toUpperCase().trim();
         const name = (i.article_name || '').toLowerCase();
         const gen = (i.generic_name || '').toLowerCase();
+        const fullDesc = `${name} ${gen}`;
 
-        // 1. Hide general requests & baby/retail items from minibar
-        if (cat.includes('GENERAL') || cat.includes('RETAIL') || cat.includes('AMENITIES')) return false;
-        if (name.includes('diaper') || name.includes('daiper') || name.includes('wipe')) return false;
+        // 1. Strict Item Identification
+        const isWaterItem = fullDesc.includes('perrier') || fullDesc.includes('evian') || cat === 'WATER';
+        const isRareWine = fullDesc.includes('dom perignon') || fullDesc.includes('krug') || fullDesc.includes('chateau') || fullDesc.includes('stags');
+        const isSoftDrinkSpecial = fullDesc.includes('fanta') || fullDesc.includes('sprite');
+        
+        // QR Codes (NEVER allowed in minibar or retail)
+        const isQrCode = fullDesc.includes('qr') || fullDesc.includes('qr code');
+        if (isQrCode) return false;
 
-        // 2. Hide Dom Perignon and RW Stags from standard view unless explicitly searched
-        if (!mbItemSearch) {
-          if (name.includes('dom perignon') || gen.includes('dom perignon')) return false;
-          if (name.includes('stags') || gen.includes('stags') || name.includes('rw stag') || gen.includes('rw stag')) return false;
+        // Turtle Plush (not QR)
+        const isTurtle = fullDesc.includes('turtle');
+        // Manta Plush (not QR)
+        const isManta = fullDesc.includes('manta');
+
+        // Baby items & Diapers
+        const isBabyWipesMinibar = fullDesc.includes('wipe') && i.is_minibar_item;
+        
+        // Diaper without size: Must NOT have numbers or size tags like "size", "m", "l", "xl", "3", etc.
+        const isDiaperWord = fullDesc.includes('diaper') || fullDesc.includes('daiper');
+        const hasSizeTag = /\b(size|small|medium|large|xl|xxl|nb|newborn|\d+)\b/i.test(fullDesc);
+        const isGenericDiaperWithoutSize = isDiaperWord && !hasSizeTag;
+
+        // User Custom Hidden
+        if (hiddenFromFrequent.includes(i.article_number) && mbCategory === 'Frequent') {
+          return false;
         }
 
-        // Search text matching
+        // Global search overrides tab filters
         if (mbItemSearch) {
-          const q = mbItemSearch.toLowerCase();
-          return name.includes(q) || gen.includes(q) || (i.category || '').toLowerCase().includes(q);
+          const q = mbItemSearch.toLowerCase().trim();
+          return fullDesc.includes(q) || cat.toLowerCase().includes(q);
         }
 
-        // Category filter
-        if (mbCategory !== 'All' && i.category !== mbCategory) return false;
+        // 1. "Frequent" Tab
+        if (mbCategory === 'Frequent') {
+          // Exclude Water, Rare Wine, Baby items, Diapers, Fanta, Sprite
+          if (isWaterItem) return false;
+          if (isRareWine) return false;
+          if (isBabyWipesMinibar) return false;
+          if (isDiaperWord) return false;
+          if (isSoftDrinkSpecial) return false;
+          
+          // Retail items in Frequent: Include Turtle and Manta at the end
+          if (isTurtle || isManta) return true;
 
-        return true;
+          // Exclude any other store inventory / general retail items
+          if (cat.includes('RETAIL') || cat.includes('PLUSH') || cat.includes('AMENITIES')) return false;
+
+          // Must be flagged as a true minibar item
+          return i.is_minibar_item;
+        }
+
+        // 2. "Water" Tab: Perrier, Evian, and water bottles
+        if (mbCategory === 'Water') {
+          return isWaterItem;
+        }
+
+        // 3. "Wines" Tab: ALL wines & champagnes (Chateau, Krug, Dom Perignon, Taittinger, etc.)
+        if (mbCategory === 'Wines' || mbCategory === 'Wine') {
+          return cat.includes('WINE') || isRareWine;
+        }
+
+        // 4. "Soft Drinks" Tab: Includes Fanta, Sprite, Coke, Diet Coke, Tonic, Ginger Beer, etc.
+        if (mbCategory === 'Soft Drinks') {
+          if (isWaterItem) return false; // Perrier and Evian strictly belong to Water tab
+          return cat.includes('SOFT') || isSoftDrinkSpecial;
+        }
+
+        // 5. "Retail" Tab: ONLY Baby Wipes (minibar), Diapers (without size), Manta, and Turtle
+        if (mbCategory === 'Retail') {
+          if (isTurtle) return true;
+          if (isManta) return true;
+          if (isBabyWipesMinibar) return true;
+          if (isGenericDiaperWithoutSize) return true;
+          return false; // No store inventory or other items!
+        }
+
+        // 6. Direct category tabs (Bites, Sweets, Juices, Beer, Spirits)
+        const activeUpper = mbCategory.toUpperCase();
+        return cat.includes(activeUpper);
       })
       .sort((a, b) => {
+        // User custom order priority if defined
+        if (customMinibarOrder.length > 0) {
+          const idxA = customMinibarOrder.indexOf(a.article_number);
+          const idxB = customMinibarOrder.indexOf(b.article_number);
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+        }
+
         const catA = (a.category || '').toUpperCase().trim();
         const catB = (b.category || '').toUpperCase().trim();
-        
-        let indexA = CATEGORY_ORDER.findIndex(o => catA.includes(o));
-        let indexB = CATEGORY_ORDER.findIndex(o => catB.includes(o));
-        
-        if (indexA === -1) indexA = 999;
-        if (indexB === -1) indexB = 999;
+        const descA = `${a.article_name} ${a.generic_name || ''}`.toLowerCase();
+        const descB = `${b.article_name} ${b.generic_name || ''}`.toLowerCase();
 
-        if (indexA !== indexB) return indexA - indexB;
+        // IN FREQUENT TAB:
+        // 1. Order categories: Bites -> Sweets -> Juices -> Soft Drinks -> Beer -> Wine -> Spirits
+        // 2. Within Bites: BBQ Cashew Nuts FIRST, Wasabi Green Peas SECOND, then others!
+        // 3. At the very end: Turtle and Manta plush!
+        if (mbCategory === 'Frequent') {
+          const isPlushA = descA.includes('turtle') || descA.includes('manta');
+          const isPlushB = descB.includes('turtle') || descB.includes('manta');
+
+          // Push Turtle & Manta to the very end
+          if (isPlushA && !isPlushB) return 1;
+          if (!isPlushA && isPlushB) return -1;
+          if (isPlushA && isPlushB) {
+            // Turtle before Manta
+            if (descA.includes('turtle') && !descB.includes('turtle')) return -1;
+            if (!descA.includes('turtle') && descB.includes('turtle')) return 1;
+          }
+
+          let indexA = FREQUENT_CATEGORY_ORDER.findIndex(o => catA.includes(o));
+          let indexB = FREQUENT_CATEGORY_ORDER.findIndex(o => catB.includes(o));
+          if (indexA === -1) indexA = 900;
+          if (indexB === -1) indexB = 900;
+
+          if (indexA !== indexB) return indexA - indexB;
+
+          // Inside Bites category: BBQ Cashew first, Wasabi next!
+          if (catA.includes('BITES')) {
+            const isBbqA = descA.includes('bbq');
+            const isBbqB = descB.includes('bbq');
+            const isWasabiA = descA.includes('wasabi');
+            const isWasabiB = descB.includes('wasabi');
+
+            if (isBbqA) return -1;
+            if (isBbqB) return 1;
+            if (isWasabiA) return -1;
+            if (isWasabiB) return 1;
+          }
+        }
+
         return (a.generic_name || a.article_name).localeCompare(b.generic_name || b.article_name);
       });
-  }, [masterCatalog, mbCategory, mbItemSearch]);
+  }, [masterCatalog, mbCategory, mbItemSearch, customMinibarOrder, hiddenFromFrequent]);
 
-  const minibarCats = useMemo(() => {
-    const rawCats = Array.from(new Set(
-      masterCatalog
-        .filter(i => i.is_minibar_item && !['GENERAL REQUESTS', 'RETAIL'].includes((i.category || '').toUpperCase().trim()))
-        .map(i => i.category)
-    )).filter(Boolean) as string[];
+  const minibarTabs = MINIBAR_TAB_ORDER;
 
-    return ['All', ...rawCats.sort((a, b) => {
-      let indexA = CATEGORY_ORDER.findIndex(o => a.toUpperCase().includes(o));
-      let indexB = CATEGORY_ORDER.findIndex(o => b.toUpperCase().includes(o));
-      if (indexA === -1) indexA = 999;
-      if (indexB === -1) indexB = 999;
-      return indexA - indexB;
-    })];
-  }, [masterCatalog]);
+  const moveItemInOrder = (artNo: string, direction: 'up' | 'down') => {
+    const currentList = customMinibarOrder.length > 0 
+      ? [...customMinibarOrder] 
+      : visibleMinibarItems.map(i => i.article_number);
+
+    const idx = currentList.indexOf(artNo);
+    if (idx === -1) return;
+
+    const newIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (newIdx < 0 || newIdx >= currentList.length) return;
+
+    const temp = currentList[idx];
+    currentList[idx] = currentList[newIdx];
+    currentList[newIdx] = temp;
+
+    setCustomMinibarOrder(currentList);
+    localStorage.setItem('hk_minibar_custom_order', JSON.stringify(currentList));
+  };
+
+  const toggleHideItemFromFrequent = (artNo: string) => {
+    const nextHidden = hiddenFromFrequent.includes(artNo)
+      ? hiddenFromFrequent.filter(id => id !== artNo)
+      : [...hiddenFromFrequent, artNo];
+    setHiddenFromFrequent(nextHidden);
+    localStorage.setItem('hk_minibar_hidden_frequent', JSON.stringify(nextHidden));
+    toast.success("Updated visibility");
+  };
 
   const GuestCard = () => {
       if (!guestInfo) return null;
@@ -751,7 +931,7 @@ export default function CoordinatorLog() {
               onChange={e => setVillaSearch(e.target.value)}
             />
             {villaSearch && (
-              <button onClick={() => setVillaSearch('')} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 p-0.5">
+              <button onClick={() => setVillaSearch('')} className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer">
                 <X size={15} />
               </button>
             )}
@@ -824,8 +1004,9 @@ export default function CoordinatorLog() {
            visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
              const isGemReq = r.request_type === 'GEM Request';
+             const cleanV = normalizeVillaNumber(r.villa_number);
              
-             const gInfo = dailyGuests[r.villa_number] || dailyGuests[r.villa_number.replace('-1', '').replace('-2', '')];
+             const gInfo = dailyGuests[cleanV] || dailyGuests[r.villa_number];
              
              let depDate = '';
              if (gInfo?.stay_dates) {
@@ -890,7 +1071,7 @@ export default function CoordinatorLog() {
                        <div className="flex flex-col gap-1">
                            <div className="flex items-center gap-1.5">
                              <span className="text-xl font-black text-slate-900 font-mono tracking-tight leading-none">
-                               V{r.villa_number}
+                               V{cleanV}
                              </span>
                              <button 
                                onClick={() => handleEditRecord(r)} 
@@ -1027,13 +1208,13 @@ export default function CoordinatorLog() {
       )}
 
       {/* ========================================================================= */}
-      {/* COMPACT FULL-SCREEN FIT MINIBAR MODAL                                     */}
+      {/* UPGRADED NATIVE MINIBAR MODAL (DESKTOP FIT + SMOOTH NO-JUMP MOBILE)       */}
       {/* ========================================================================= */}
       {isMinibarOpen && (
-         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-3">
-            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-6xl h-[94vh] md:h-[88vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95">
+         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-3 overflow-hidden">
+            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-6xl h-[100dvh] md:h-[88vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95">
                
-               {/* Modal Compact Header */}
+               {/* Modal Header */}
                <div className="px-4 py-2.5 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
@@ -1044,28 +1225,36 @@ export default function CoordinatorLog() {
                         {isEditing ? 'Edit Minibar Log' : 'New Minibar Consumption Log'}
                       </h3>
                       <p className="text-[10px] text-slate-400 font-bold mt-0.5">
-                        Tap any item to add • Filter by exact category sequence
+                        {mbCategory === 'Frequent' ? 'Frequently consumed items • Category sequenced' : `Showing ${mbCategory} items`}
                       </p>
                     </div>
                   </div>
-                  <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-1.5 rounded-full text-slate-500 transition-colors cursor-pointer">
-                    <X size={16}/>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button 
+                      onClick={() => setIsManageLayoutOpen(true)}
+                      className="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
+                      title="Manage Minibar Items & Order"
+                    >
+                      <Settings size={16}/>
+                    </button>
+                    <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-1.5 rounded-full text-slate-500 transition-colors cursor-pointer">
+                      <X size={16}/>
+                    </button>
+                  </div>
                </div>
                
-               {/* Split-Screen Terminal (Full Screen Fit) */}
+               {/* Split-Screen Terminal (Full Screen Fit on Desktop, Native Drawer on Mobile) */}
                <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
                   
                   {/* Left Side: Product Gallery */}
                   <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
                     
-                    {/* Mobile Only Villa Header */}
-                    <div className="md:hidden p-2.5 bg-white border-b border-slate-200">
+                    {/* Mobile Only Villa Header - NO AUTOFOCUS to eliminate keyboard jump */}
+                    <div className="md:hidden p-2.5 bg-white border-b border-slate-200 shrink-0">
                       <div className="flex gap-2 items-center">
                         <input 
                           type="text" 
                           placeholder="Villa #" 
-                          autoFocus 
                           className="w-20 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-sm text-slate-800 outline-none focus:border-rose-500" 
                           value={villaNumber} 
                           onChange={e => setVillaNumber(e.target.value)}
@@ -1081,13 +1270,13 @@ export default function CoordinatorLog() {
                       <GuestCard />
                     </div>
 
-                    {/* Filter Bar with exact category sequence */}
+                    {/* Filter Bar with Clean Search Placeholder (NO BRACKETS) */}
                     <div className="p-2.5 bg-white border-b border-slate-100 space-y-1.5 shrink-0">
                       <div className="relative">
                         <Search size={14} className="absolute left-3 top-2 text-slate-400"/>
                         <input 
                           type="text" 
-                          placeholder="Search items (e.g. Beer, Nuts, Coke, Taittinger, etc.)..." 
+                          placeholder="Search all items..." 
                           className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-rose-500" 
                           value={mbItemSearch} 
                           onChange={(e) => setMbItemSearch(e.target.value)}
@@ -1100,12 +1289,14 @@ export default function CoordinatorLog() {
                       </div>
                       
                       <div className="flex gap-1 overflow-x-auto no-scrollbar py-0.5">
-                        {minibarCats.map(c => (
+                        {minibarTabs.map(c => (
                           <button 
                             key={c} 
                             onClick={() => setMbCategory(c)} 
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
-                              mbCategory === c ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                            className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
+                              mbCategory === c 
+                                ? 'bg-rose-600 text-white shadow-xs' 
+                                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                             }`}
                           >
                             {c}
@@ -1159,7 +1350,6 @@ export default function CoordinatorLog() {
                         <input 
                           type="text" 
                           placeholder="Villa #" 
-                          autoFocus 
                           className="w-20 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500" 
                           value={villaNumber} 
                           onChange={e => setVillaNumber(e.target.value)}
@@ -1246,6 +1436,113 @@ export default function CoordinatorLog() {
       )}
 
       {/* ========================================================================= */}
+      {/* MANAGE MINIBAR LAYOUT & ITEMS MODAL                                      */}
+      {/* ========================================================================= */}
+      {isManageLayoutOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[10000] flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden border border-slate-200">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+              <div>
+                <h3 className="text-base font-black text-slate-800">Customize Minibar Layout & Order</h3>
+                <p className="text-[11px] text-slate-400 font-bold">Reorder items, hide non-minibar items, or prioritize favorites</p>
+              </div>
+              <button onClick={() => setIsManageLayoutOpen(false)} className="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer">
+                <X size={16}/>
+              </button>
+            </div>
+
+            <div className="p-3 border-b border-slate-100 bg-slate-50">
+              <input 
+                type="text" 
+                placeholder="Filter items to configure..." 
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-rose-500"
+                value={catalogSearchInManager}
+                onChange={e => setCatalogSearchInManager(e.target.value)}
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-3 divide-y divide-slate-100">
+              {masterCatalog
+                .filter(i => {
+                  if (!catalogSearchInManager) return i.is_minibar_item;
+                  const q = catalogSearchInManager.toLowerCase();
+                  return (i.article_name || '').toLowerCase().includes(q) || (i.generic_name || '').toLowerCase().includes(q);
+                })
+                .map((item) => {
+                  const isHidden = hiddenFromFrequent.includes(item.article_number);
+                  return (
+                    <div key={item.article_number} className="py-2.5 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-slate-800 truncate">
+                            {item.generic_name || item.article_name}
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-slate-100 text-slate-500">
+                            {item.category}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-400 block mt-0.5">Art #{item.article_number}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button 
+                          onClick={() => toggleHideItemFromFrequent(item.article_number)}
+                          className={`p-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 cursor-pointer ${
+                            isHidden 
+                              ? 'bg-rose-50 text-rose-600 border-rose-200' 
+                              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          }`}
+                          title={isHidden ? "Hidden from Frequent" : "Visible in Frequent"}
+                        >
+                          {isHidden ? <EyeOff size={13}/> : <Eye size={13}/>}
+                          <span className="text-[10px]">{isHidden ? 'Hidden' : 'Visible'}</span>
+                        </button>
+
+                        <button 
+                          onClick={() => moveItemInOrder(item.article_number, 'up')}
+                          className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer"
+                          title="Move Up"
+                        >
+                          <ArrowUp size={13}/>
+                        </button>
+                        <button 
+                          onClick={() => moveItemInOrder(item.article_number, 'down')}
+                          className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer"
+                          title="Move Down"
+                        >
+                          <ArrowDown size={13}/>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+
+            <div className="p-3 border-t border-slate-200 flex justify-end gap-2 bg-white">
+              <button 
+                onClick={() => {
+                  setCustomMinibarOrder([]);
+                  setHiddenFromFrequent([]);
+                  localStorage.removeItem('hk_minibar_custom_order');
+                  localStorage.removeItem('hk_minibar_hidden_frequent');
+                  toast.success("Reset to defaults");
+                }}
+                className="px-3 py-2 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-100 cursor-pointer"
+              >
+                Reset to Default
+              </button>
+              <button 
+                onClick={() => setIsManageLayoutOpen(false)}
+                className="px-5 py-2 rounded-xl text-xs font-black uppercase text-white bg-slate-800 hover:bg-slate-900 cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
       {/* GENERAL & GEM REQUEST MODAL                                               */}
       {/* ========================================================================= */}
       {isOtherOpen && (
@@ -1264,7 +1561,6 @@ export default function CoordinatorLog() {
                      <input 
                        type="text" 
                        placeholder="Villa #" 
-                       autoFocus 
                        className="col-span-1 p-3 bg-slate-50 border-2 border-slate-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-[#6D2158]" 
                        value={villaNumber} 
                        onChange={e => setVillaNumber(e.target.value)}
@@ -1337,7 +1633,7 @@ export default function CoordinatorLog() {
                           <input 
                             type="text" 
                             placeholder="Search general amenities (Towels, Hangers, Iron, Pillow)..." 
-                            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]"
+                            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" 
                             value={otherItemSearch}
                             onChange={e => setOtherItemSearch(e.target.value)}
                           />
@@ -1379,7 +1675,7 @@ export default function CoordinatorLog() {
                              <select 
                                value={otherCategory} 
                                onChange={e => setOtherCategory(e.target.value)} 
-                               className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-[#6D2158]"
+                               className="p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-[#6D2158]" 
                              >
                                 <option value="General">General Request</option>
                                 <option value="Cleaning">Cleaning</option>
@@ -1430,7 +1726,7 @@ export default function CoordinatorLog() {
           <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4">
               <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-6 pb-8 sm:pb-6 shadow-2xl animate-in slide-in-from-bottom-6 sm:zoom-in-95">
                   <h3 className="text-lg font-black text-slate-800 mb-1 flex items-center justify-center gap-2 uppercase tracking-tight">
-                    <Split size={18}/> Partial Dispatch (V{partialTarget.villa_number})
+                    <Split size={18}/> Partial Dispatch (V{normalizeVillaNumber(partialTarget.villa_number)})
                   </h3>
                   <p className="text-[11px] font-bold text-slate-400 mb-5 text-center">
                     Select items that have been <b>SENT</b>
