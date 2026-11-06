@@ -159,6 +159,10 @@ export default function AllocationSheetPage() {
       const rawBeach: any[] = [];
 
       const poolHosts: any[] = [];
+      const poolNight: string[] = [];
+      const poolMod: string[] = [];
+      const poolContinue: string[] = [];
+
       const paMorningFoh: string[] = [];
       const paMorningBoh: string[] = [];
       const paAfternoonFoh: string[] = [];
@@ -178,18 +182,19 @@ export default function AllocationSheetPage() {
 
       (allocs || []).forEach((a: any) => {
         const hostObj = a.hosts;
-        const name = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
+        // FULL CAPS for host name
+        const rawName = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
+        const name = rawName.toUpperCase();
 
-        // ONLY NUMBERS separated by a single divider line (no words like MVPN/Duty/Per)
+        // ONLY MVPN and Company Mobile separated by " / " (Personal mobile excluded)
         const contactNums = [
           hostObj?.mvpn,
           hostObj?.company_mobile,
-          hostObj?.personal_mobile,
         ]
           .map((n: any) => String(n || "").trim())
           .filter(Boolean);
 
-        const contact = contactNums.join(" | ");
+        const contact = contactNums.join(" / ");
         const defaultArea = getDefaultArea(hostObj);
 
         if (a.area === "villa") {
@@ -218,7 +223,21 @@ export default function AllocationSheetPage() {
             else rawJA.push({ name, contact, villas: villaList });
           }
         } else if (a.area === "water") {
-          poolHosts.push({ name, mvpn: hostObj?.mvpn || "", allocation: a.task_details || a.shift || "" });
+          const sh = (a.shift || "").toLowerCase();
+          if (sh.includes("night")) {
+            poolNight.push(name);
+          } else if (sh.includes("mod")) {
+            poolMod.push(name);
+          } else if (sh.includes("continue")) {
+            poolContinue.push(name);
+          } else {
+            // Morning duty / villa assignments
+            poolHosts.push({
+              name,
+              mvpn: hostObj?.mvpn || "",
+              allocation: a.task_details || a.shift || "",
+            });
+          }
         } else if (a.area === "public") {
           const sh = (a.shift || "").toLowerCase();
           if (sh.includes("morning") || sh.includes("06:30")) {
@@ -291,7 +310,7 @@ export default function AllocationSheetPage() {
 
       (attList || []).forEach((att: any) => {
         const hObj = att.hosts;
-        const name = hObj?.nicknames ? hObj.nicknames.split(",")[0].trim() : hObj?.full_name || att.host_id;
+        const name = (hObj?.nicknames ? hObj.nicknames.split(",")[0].trim() : hObj?.full_name || att.host_id).toUpperCase();
         const rec = { name, from: selectedDate, to: selectedDate, duration: "01" };
 
         if (att.status_code === "AL" || att.status_code === "VAC") alList.push(rec);
@@ -308,9 +327,9 @@ export default function AllocationSheetPage() {
         beach: finalBeach,
         pool: {
           hosts: poolHosts,
-          night: ["Night Duty"],
-          mod: ["MOD"],
-          continueShift: ["Continue"],
+          night: poolNight,
+          mod: poolMod,
+          continueShift: poolContinue,
         },
         publicArea: {
           morningFoh: paMorningFoh,
@@ -373,7 +392,7 @@ export default function AllocationSheetPage() {
             />
           </div>
 
-          <button onClick={fetchSheetData} className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors">
+          <button onClick={fetchSheetData} className="p-2 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors cursor-pointer">
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </button>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { 
   Waves, 
@@ -15,7 +15,11 @@ import {
   UserCheck, 
   Calendar, 
   Plus,
-  Plane
+  Plane,
+  ClipboardPaste,
+  CheckCircle2,
+  ChevronDown,
+  X
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -58,6 +62,15 @@ interface WaterRoomBoardProps {
   selectedDate: string;
 }
 
+interface ParsedWaterItem {
+  rawName: string;
+  matchedHost: Host | null;
+  shift: "Morning" | "Night" | "Continue" | "MOD" | "OFF";
+  taskDetails: string;
+  label: string;
+  isManuallyChanged?: boolean;
+}
+
 const LEAVE_TYPES = [
   { value: "AL", label: "Annual Leave (AL)" },
   { value: "OFF", label: "Day Off (OFF)" },
@@ -68,6 +81,142 @@ const LEAVE_TYPES = [
   { value: "SL", label: "Sick Leave (SL)" },
   { value: "EL", label: "Emergency Leave (EL)" },
 ];
+
+const sanitizeText = (txt: string) => {
+  return txt.replace(/[\u200B-\u200F\u2060-\u206F\uFEFF\u00A0]/g, " ");
+};
+
+// --- SEARCHABLE COMBOBOX COMPONENT FOR CONNECTING STAFF (NICKNAMES HIDDEN) ---
+function HostSearchSelect({
+  selectedHost,
+  allHosts,
+  poolHosts,
+  onSelect,
+}: {
+  selectedHost: Host | null;
+  allHosts: Host[];
+  poolHosts: Host[];
+  onSelect: (hostId: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState(selectedHost?.full_name || "");
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setQuery(selectedHost?.full_name || "");
+  }, [selectedHost]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setQuery(selectedHost?.full_name || "");
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [selectedHost]);
+
+  const cleanQuery = query.toLowerCase().trim();
+
+  const filteredPool = poolHosts.filter((h) =>
+    h.full_name.toLowerCase().includes(cleanQuery)
+  );
+  const filteredOther = allHosts
+    .filter((h) => !poolHosts.some((p) => p.id === h.id))
+    .filter((h) => h.full_name.toLowerCase().includes(cleanQuery));
+
+  return (
+    <div ref={wrapperRef} className="relative w-full">
+      <div className="relative">
+        <input
+          type="text"
+          value={query}
+          onFocus={() => setIsOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setIsOpen(true);
+          }}
+          placeholder="Type staff name..."
+          className={`w-full py-1.5 pl-2.5 pr-7 rounded-xl text-xs font-bold outline-none border transition-colors ${
+            selectedHost
+              ? "bg-white border-slate-300 text-slate-800 focus:border-sky-600 focus:ring-1 focus:ring-sky-500"
+              : "bg-rose-50 border-rose-300 text-rose-800 placeholder:text-rose-400"
+          }`}
+        />
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="absolute right-2 top-2.5 text-slate-400 hover:text-slate-600"
+        >
+          <ChevronDown size={13} />
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto z-50 divide-y divide-slate-100">
+          {filteredPool.length === 0 && filteredOther.length === 0 ? (
+            <div className="p-2.5 text-[11px] text-slate-400 font-bold text-center">
+              No staff found matching &quot;{query}&quot;
+            </div>
+          ) : (
+            <>
+              {filteredPool.length > 0 && (
+                <div>
+                  <div className="px-2.5 py-1 bg-slate-50 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Water Room Team Pool
+                  </div>
+                  {filteredPool.map((h) => (
+                    <button
+                      key={h.id}
+                      type="button"
+                      onClick={() => {
+                        onSelect(h.id);
+                        setQuery(h.full_name);
+                        setIsOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-sky-50 text-xs font-bold text-slate-800 flex items-center justify-between transition-colors"
+                    >
+                      <span>{h.full_name}</span>
+                      {selectedHost?.id === h.id && (
+                        <CheckCircle2 size={13} className="text-sky-600" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {filteredOther.length > 0 && (
+                <div>
+                  <div className="px-2.5 py-1 bg-slate-50 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Other Resort Staff
+                  </div>
+                  {filteredOther.map((h) => (
+                    <button
+                      key={h.id}
+                      type="button"
+                      onClick={() => {
+                        onSelect(h.id);
+                        setQuery(h.full_name);
+                        setIsOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-sky-50 text-xs font-bold text-slate-700 flex items-center justify-between transition-colors"
+                    >
+                      <span>{h.full_name}</span>
+                      {selectedHost?.id === h.id && (
+                        <CheckCircle2 size={13} className="text-sky-600" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function WaterRoomBoard({
   hosts,
@@ -101,6 +250,14 @@ export default function WaterRoomBoard({
     leaveWarning?: string;
   } | null>(null);
 
+  // --- AUTO ROSTER IMPORT STATE ---
+  const [showRosterModal, setShowRosterModal] = useState(false);
+  const [rosterRawText, setRosterRawText] = useState("");
+  const [parsedSchedule, setParsedSchedule] = useState<{
+    detectedDate: string;
+    items: ParsedWaterItem[];
+  } | null>(null);
+
   useEffect(() => {
     fetchActiveLeaves();
   }, [selectedDate]);
@@ -121,7 +278,7 @@ export default function WaterRoomBoard({
     }
   };
 
-  // Water Room Pool directly loaded from database sub_department
+  // Water Room Pool strictly filtered
   const currentPool = React.useMemo(() => {
     return hosts.filter((h) => {
       const sub = (h.sub_department || "").toLowerCase();
@@ -131,7 +288,7 @@ export default function WaterRoomBoard({
   }, [hosts]);
 
   const getHostLabel = (h: Host) => {
-    return h.nicknames ? h.nicknames.split(",")[0].trim() : h.full_name;
+    return h.full_name;
   };
 
   const getHostLeaveRecord = (hostId: string) => {
@@ -164,6 +321,356 @@ export default function WaterRoomBoard({
         {rec.leave_type} (till {rec.end_date})
       </span>
     );
+  };
+
+  // --- SAFE & ACCURATE MATCHER (WATER ROOM POOL FIRST) ---
+  const findMatchingHost = (rawSearch: string): Host | null => {
+    if (!rawSearch) return null;
+    const cleanSearch = rawSearch.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (cleanSearch.length < 2) return null;
+
+    const candidateLists = [currentPool, hosts];
+
+    for (const pool of candidateLists) {
+      // 1. Exact match on clean full name
+      for (const h of pool) {
+        const fullClean = (h.full_name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (fullClean && fullClean === cleanSearch) return h;
+      }
+
+      // 2. Exact match on stored nicknames (non-empty)
+      for (const h of pool) {
+        if (!h.nicknames) continue;
+        const nicks = h.nicknames
+          .toLowerCase()
+          .split(",")
+          .map((n) => n.trim().replace(/[^a-z0-9]/g, ""))
+          .filter((n) => n.length >= 2);
+
+        if (nicks.includes(cleanSearch)) return h;
+      }
+
+      // 3. Name abbreviation matching (e.g. "M Mizyaan" -> "Mohamed Mizyaan")
+      for (const h of pool) {
+        const parts = (h.full_name || "").toLowerCase().split(/\s+/).filter(Boolean);
+        if (parts.length >= 2) {
+          const firstInitialLast = `${parts[0].charAt(0)}${parts[parts.length - 1]}`;
+          if (cleanSearch === firstInitialLast) return h;
+          if (cleanSearch === parts[parts.length - 1] && parts[parts.length - 1].length >= 3) return h;
+        }
+      }
+
+      // 4. Safe word match (at least 3 characters)
+      if (cleanSearch.length >= 3) {
+        for (const h of pool) {
+          const full = (h.full_name || "").toLowerCase();
+          const words = full.split(/\s+/);
+          if (words.some((w) => w === cleanSearch)) return h;
+        }
+      }
+    }
+
+    return null;
+  };
+
+  // --- SMART WATER ROOM ROSTER PARSER ---
+  const handleParseWaterRoster = () => {
+    if (!rosterRawText.trim()) {
+      toast.error("Please paste the roster text first");
+      return;
+    }
+
+    const text = sanitizeText(rosterRawText);
+
+    // 1. Detect Target Date (DD/MM/YYYY or DD.MM.YY)
+    let detectedDate = selectedDate;
+    const dateMatch = text.match(/(\d{1,2})[\.\/\-]\s*(\d{1,2})[\.\/\-]\s*(\d{2,4})/);
+    if (dateMatch) {
+      const d = dateMatch[1].padStart(2, "0");
+      const m = dateMatch[2].padStart(2, "0");
+      let y = dateMatch[3].trim();
+      if (y.length === 2) y = `20${y}`;
+      detectedDate = `${y}-${m}-${d}`;
+    }
+
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const items: ParsedWaterItem[] = [];
+
+    let currentSection: "MORNING" | "CONTINUE" | "NIGHT" | "OFF" | "NONE" = "MORNING";
+    let pendingMorningName: string | null = null;
+
+    for (const line of lines) {
+      const upper = line.toUpperCase();
+
+      // Skip header lines
+      if (
+        upper.includes("DUTY SCHEDULE") ||
+        upper.includes("DUTY ROSTER") ||
+        (dateMatch && line.includes(dateMatch[0]))
+      ) {
+        continue;
+      }
+
+      // Section switches
+      if (upper.includes("CONTINUE") || upper.includes("CONTINUE DUTY") || upper.includes("CONTINUE SHIFT")) {
+        currentSection = "CONTINUE";
+        pendingMorningName = null;
+        continue;
+      }
+
+      if (upper.includes("NIGHT") || upper.includes("NIGHT SHIFT") || upper.includes("NIGHT DUTY")) {
+        currentSection = "NIGHT";
+        pendingMorningName = null;
+        continue;
+      }
+
+      if (upper.startsWith("OFF") || upper === "OFF" || upper.includes("DAY OFF") || upper === "VACATION" || upper === "LEAVE") {
+        currentSection = "OFF";
+        pendingMorningName = null;
+
+        const inlineOff = line.replace(/^(?:OFF|DAY OFF|DAYS OFF|LEAVE|VACATION)\s*[:\-]?\s*/i, "").trim();
+        if (inlineOff) {
+          const names = inlineOff.split(/[,&]|\band\b/i);
+          names.forEach((n) => {
+            const cn = n.trim();
+            if (cn) {
+              items.push({
+                rawName: cn,
+                matchedHost: findMatchingHost(cn),
+                shift: "OFF",
+                taskDetails: "Day Off",
+                label: "Day Off (OFF)",
+              });
+            }
+          });
+        }
+        continue;
+      }
+
+      // Ignore divider lines e.g. "————————————————————"
+      if (/^[\-=_—*]{2,}$/.test(line)) {
+        continue;
+      }
+
+      // --- SECTION: CONTINUE DUTY ---
+      if (currentSection === "CONTINUE") {
+        items.push({
+          rawName: line,
+          matchedHost: findMatchingHost(line),
+          shift: "Continue",
+          taskDetails: "Continue Shift",
+          label: "Continue Shift",
+        });
+        continue;
+      }
+
+      // --- SECTION: NIGHT SHIFT ---
+      if (currentSection === "NIGHT") {
+        items.push({
+          rawName: line,
+          matchedHost: findMatchingHost(line),
+          shift: "Night",
+          taskDetails: "Night Duty",
+          label: "Night Duty",
+        });
+        continue;
+      }
+
+      // --- SECTION: OFF ---
+      if (currentSection === "OFF") {
+        const names = line.split(/[,&]|\band\b/i);
+        names.forEach((n) => {
+          const cn = n.trim();
+          if (cn) {
+            items.push({
+              rawName: cn,
+              matchedHost: findMatchingHost(cn),
+              shift: "OFF",
+              taskDetails: "Day Off",
+              label: "Day Off (OFF)",
+            });
+          }
+        });
+        continue;
+      }
+
+      // --- SECTION: MORNING DUTY (VILLAS / ZONES) ---
+      if (line.includes(":")) {
+        const [nPart, vPart] = line.split(":");
+        const nameClean = nPart.trim();
+        const villasClean = vPart.replace(/,/g, " ").replace(/\s+/g, " ").trim();
+
+        items.push({
+          rawName: nameClean,
+          matchedHost: findMatchingHost(nameClean),
+          shift: "Morning",
+          taskDetails: villasClean,
+          label: "Morning Duty",
+        });
+        pendingMorningName = null;
+        continue;
+      }
+
+      const nameWithNumbersMatch = line.match(/^([a-zA-Z\s]+)\s+([\d,\s\-]+)$/);
+      if (nameWithNumbersMatch) {
+        const nameClean = nameWithNumbersMatch[1].trim();
+        const villasClean = nameWithNumbersMatch[2].replace(/,/g, " ").replace(/\s+/g, " ").trim();
+
+        items.push({
+          rawName: nameClean,
+          matchedHost: findMatchingHost(nameClean),
+          shift: "Morning",
+          taskDetails: villasClean,
+          label: "Morning Duty",
+        });
+        pendingMorningName = null;
+        continue;
+      }
+
+      if (/^[\d,\s\-]+$/.test(line)) {
+        const villasClean = line.replace(/,/g, " ").replace(/\s+/g, " ").trim();
+        if (pendingMorningName) {
+          items.push({
+            rawName: pendingMorningName,
+            matchedHost: findMatchingHost(pendingMorningName),
+            shift: "Morning",
+            taskDetails: villasClean,
+            label: "Morning Duty",
+          });
+          pendingMorningName = null;
+          continue;
+        }
+      } else {
+        if (pendingMorningName) {
+          items.push({
+            rawName: pendingMorningName,
+            matchedHost: findMatchingHost(pendingMorningName),
+            shift: "Morning",
+            taskDetails: "",
+            label: "Morning Duty",
+          });
+        }
+        pendingMorningName = line.replace(/[:\-]/g, "").trim();
+      }
+    }
+
+    if (pendingMorningName) {
+      items.push({
+        rawName: pendingMorningName,
+        matchedHost: findMatchingHost(pendingMorningName),
+        shift: "Morning",
+        taskDetails: "",
+        label: "Morning Duty",
+      });
+    }
+
+    setParsedSchedule({
+      detectedDate,
+      items,
+    });
+  };
+
+  const handleUpdateMatchedHost = (index: number, hostId: string) => {
+    if (!parsedSchedule) return;
+    const selected = hosts.find((h) => h.id === hostId) || null;
+    const updated = [...parsedSchedule.items];
+    updated[index] = {
+      ...updated[index],
+      matchedHost: selected,
+      isManuallyChanged: true,
+    };
+    setParsedSchedule({ ...parsedSchedule, items: updated });
+  };
+
+  // --- CONFIRM, SAVE ASSIGNMENTS & SILENTLY REMEMBER NICKNAMES ---
+  const handleConfirmWaterSchedule = async () => {
+    if (!parsedSchedule) return;
+
+    try {
+      const targetDate = parsedSchedule.detectedDate;
+      const newAllocs: Allocation[] = [...allocations.filter((a) => a.report_date !== targetDate || a.area !== "water")];
+
+      for (const item of parsedSchedule.items) {
+        if (!item.matchedHost) continue;
+
+        const host = item.matchedHost;
+        const rawName = item.rawName.trim();
+
+        // 1. SILENT NICKNAME MEMORY
+        const existingNicks = (host.nicknames || "").split(",").map((n) => n.trim().toLowerCase());
+        const isDifferentName = host.full_name.toLowerCase() !== rawName.toLowerCase();
+
+        if (rawName.length >= 2 && !existingNicks.includes(rawName.toLowerCase()) && isDifferentName) {
+          const updatedNicks = host.nicknames ? `${host.nicknames}, ${rawName}` : rawName;
+
+          await supabase
+            .from("hsk_hosts")
+            .update({ nicknames: updatedNicks })
+            .eq("id", host.id);
+
+          if (setHosts) {
+            setHosts((prev: Host[]) =>
+              prev.map((h) => (h.id === host.id ? { ...h, nicknames: updatedNicks } : h))
+            );
+          }
+        }
+
+        // 2. Commit Duty Shifts with de-duplication
+        if (item.shift !== "OFF") {
+          const existingIdx = newAllocs.findIndex(
+            (alloc) => alloc.host_id === host.id && alloc.shift === item.shift && alloc.area === "water"
+          );
+
+          if (existingIdx !== -1) {
+            newAllocs[existingIdx].task_details = item.taskDetails || item.shift;
+          } else {
+            newAllocs.push({
+              host_id: host.id,
+              area: "water",
+              shift: item.shift,
+              task_details: item.taskDetails || item.shift,
+              report_date: targetDate,
+            });
+          }
+        }
+
+        // 3. Commit Day Off (OFF)
+        if (item.shift === "OFF") {
+          const hostKey = String(host.id || host.host_id || "");
+          const hostNameVal = host.full_name;
+
+          await supabase
+            .from("hsk_leave_requests")
+            .delete()
+            .eq("host_id", hostKey)
+            .lte("start_date", targetDate)
+            .gte("end_date", targetDate);
+
+          await supabase.from("hsk_leave_requests").insert([{
+            host_id: hostKey,
+            host_name: hostNameVal,
+            leave_type: "OFF",
+            start_date: targetDate,
+            end_date: targetDate,
+            total_days: 1,
+            days_count: 1,
+            status: "Approved",
+            reason: "Auto scheduled Day Off from Water Room Roster",
+          }]);
+        }
+      }
+
+      setAllocations(newAllocs);
+      setIsDirty(true);
+      fetchActiveLeaves();
+      setShowRosterModal(false);
+      setParsedSchedule(null);
+      setRosterRawText("");
+      toast.success(`Water Room Roster for ${targetDate} applied!`);
+    } catch (err: any) {
+      console.error("Water Room confirm error:", err);
+      toast.error("Failed to commit schedule: " + (err?.message || "Unknown error"));
+    }
   };
 
   const handleSaveLeave = async () => {
@@ -226,7 +733,6 @@ export default function WaterRoomBoard({
     }
   };
 
-  // Permanently persists host in Water Room pool in DB and updates state instantly
   const handleAddToPool = async (hostId: string) => {
     if (setHosts) {
       setHosts((prev: Host[]) =>
@@ -248,7 +754,6 @@ export default function WaterRoomBoard({
     setShowDraftModal(false);
   };
 
-  // Resets host back to general if removed from pool
   const handleRemoveFromPool = async (hostId: string) => {
     if (setHosts) {
       setHosts((prev: Host[]) =>
@@ -317,9 +822,13 @@ export default function WaterRoomBoard({
     setConflictModal(null);
   };
 
-  const handleUpdateVillas = (hostId: string, villasStr: string) => {
+  const handleUpdateVillas = (hostId: string, shift: string, villasStr: string, targetId?: string) => {
     const updated = allocations.map((a) => {
-      if (a.area === "water" && a.shift === "Morning" && a.host_id === hostId) {
+      const match = targetId 
+        ? a.id === targetId 
+        : a.area === "water" && (a.shift || "").toLowerCase().includes(shift.toLowerCase()) && a.host_id === hostId;
+
+      if (match) {
         return { ...a, task_details: villasStr.replace(/,/g, " ") };
       }
       return a;
@@ -328,10 +837,15 @@ export default function WaterRoomBoard({
     setIsDirty(true);
   };
 
-  const handleRemoveAllocation = (hostId: string, shift: string) => {
-    const updated = allocations.filter(
-      (a) => !(a.host_id === hostId && a.area === "water" && a.shift === shift)
-    );
+  // Robust removal filtering that matches ID or host + case-insensitive shift cleanly
+  const handleRemoveAllocation = (hostId: string, shift: string, targetId?: string) => {
+    const updated = allocations.filter((a) => {
+      if (targetId && a.id && a.id === targetId) return false;
+      const isSameHost = a.host_id === hostId;
+      const isSameArea = (a.area || "").toLowerCase() === "water";
+      const isSameShift = (a.shift || "").toLowerCase().includes(shift.toLowerCase());
+      return !(isSameHost && isSameArea && isSameShift);
+    });
     setAllocations(updated);
     setIsDirty(true);
   };
@@ -365,14 +879,14 @@ export default function WaterRoomBoard({
               No host assigned
             </div>
           ) : (
-            allocList.map((a) => {
+            allocList.map((a, idx) => {
               const h = hosts.find((host) => host.id === a.host_id);
               const name = h ? getHostLabel(h) : "Unknown Host";
               const contact = h?.mvpn || h?.company_mobile || h?.personal_mobile || "";
 
               return (
                 <div
-                  key={a.host_id}
+                  key={a.id || `${a.host_id}-${shiftName}-${idx}`}
                   className="flex items-center justify-between p-2 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors"
                 >
                   <div className="flex items-center gap-2">
@@ -389,8 +903,9 @@ export default function WaterRoomBoard({
                   </div>
 
                   <button
-                    onClick={() => handleRemoveAllocation(a.host_id, shiftName)}
-                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                    type="button"
+                    onClick={() => handleRemoveAllocation(a.host_id, shiftName, a.id)}
+                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                     title="Remove"
                   >
                     <Trash2 size={13} />
@@ -413,7 +928,7 @@ export default function WaterRoomBoard({
                   <button
                     key={h.id}
                     onClick={() => requestAssignDuty(h, shiftName, shiftName)}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 shadow-sm ${
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 shadow-sm cursor-pointer ${
                       leave
                         ? "bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100"
                         : "bg-slate-100 hover:bg-[#0284c7] hover:text-white border-slate-200 text-slate-700"
@@ -434,6 +949,7 @@ export default function WaterRoomBoard({
 
   return (
     <div className="w-full flex flex-col gap-6">
+      {/* HEADER BAR */}
       <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="p-2.5 bg-sky-50 text-sky-700 rounded-xl border border-sky-100">
@@ -447,18 +963,33 @@ export default function WaterRoomBoard({
           </div>
         </div>
 
-        <button
-          onClick={() => {
-            setSearchHostTerm("");
-            setShowDraftModal(true);
-          }}
-          className="flex items-center gap-1.5 bg-[#0284c7] hover:bg-[#0369a1] text-white px-3 py-1.5 rounded-xl text-xs font-black transition-all shadow-sm"
-        >
-          <UserPlus size={14} />
-          <span>Add Host to Pool</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              setRosterRawText("");
+              setParsedSchedule(null);
+              setShowRosterModal(true);
+            }}
+            className="flex items-center gap-1.5 bg-sky-700 hover:bg-sky-800 text-white px-3.5 py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
+          >
+            <ClipboardPaste size={15} />
+            <span>Import Water Room Roster</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSearchHostTerm("");
+              setShowDraftModal(true);
+            }}
+            className="flex items-center gap-1.5 bg-[#0284c7] hover:bg-[#0369a1] text-white px-3 py-1.5 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
+          >
+            <UserPlus size={14} />
+            <span>Add Host to Pool</span>
+          </button>
+        </div>
       </div>
 
+      {/* STAFF POOL DRAWER */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-3">
           <div className="flex items-center gap-2">
@@ -506,7 +1037,7 @@ export default function WaterRoomBoard({
                     e.stopPropagation();
                     handleRemoveFromPool(h.id);
                   }}
-                  className="text-slate-400 hover:text-rose-600 ml-1"
+                  className="text-slate-400 hover:text-rose-600 ml-1 cursor-pointer"
                   title="Remove from pool"
                 >
                   ✕
@@ -517,6 +1048,7 @@ export default function WaterRoomBoard({
         </div>
       </div>
 
+      {/* BOARDS */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-4">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -536,17 +1068,17 @@ export default function WaterRoomBoard({
           <div className="space-y-3 min-h-[140px]">
             {morningAllocs.length === 0 ? (
               <div className="text-center py-8 text-xs font-bold text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                No water room attendants assigned for morning duty yet. Click staff below to add.
+                No water room attendants assigned for morning duty yet. Click staff below or import roster.
               </div>
             ) : (
-              morningAllocs.map((a) => {
+              morningAllocs.map((a, idx) => {
                 const h = hosts.find((host) => host.id === a.host_id);
                 const name = h ? getHostLabel(h) : "Unknown Host";
                 const contact = h?.mvpn || h?.company_mobile || h?.personal_mobile || "";
 
                 return (
                   <div
-                    key={a.host_id}
+                    key={a.id || `${a.host_id}-morning-${idx}`}
                     className="p-3 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
                   >
                     <div className="flex items-center gap-2.5 min-w-[200px]">
@@ -568,14 +1100,15 @@ export default function WaterRoomBoard({
                           type="text"
                           placeholder="Assigned Villas / Area (e.g. 10 12 14 or Jetty A)"
                           value={a.task_details || ""}
-                          onChange={(e) => handleUpdateVillas(a.host_id, e.target.value)}
+                          onChange={(e) => handleUpdateVillas(a.host_id, "Morning", e.target.value, a.id)}
                           className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:border-[#0284c7]"
                         />
                       </div>
 
                       <button
-                        onClick={() => handleRemoveAllocation(a.host_id, "Morning")}
-                        className="p-2 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-white transition-colors"
+                        type="button"
+                        onClick={() => handleRemoveAllocation(a.host_id, "Morning", a.id)}
+                        className="p-2 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-white transition-colors cursor-pointer"
                         title="Remove attendant"
                       >
                         <Trash2 size={15} />
@@ -601,7 +1134,7 @@ export default function WaterRoomBoard({
                     <button
                       key={h.id}
                       onClick={() => requestAssignDuty(h, "Morning", "")}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 shadow-sm ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 shadow-sm cursor-pointer ${
                         leave
                           ? "bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100"
                           : "bg-slate-100 hover:bg-[#0284c7] hover:text-white border-slate-200 text-slate-700"
@@ -625,6 +1158,146 @@ export default function WaterRoomBoard({
         </div>
       </div>
 
+      {/* --- AUTO-DETECT WATER ROOM ROSTER IMPORT MODAL --- */}
+      {showRosterModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-sky-50">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-sky-700 text-white rounded-xl shadow-sm">
+                  <Waves size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-800">
+                    Auto-Detect Water Room Roster
+                  </h3>
+                  <p className="text-[10px] text-slate-500 font-bold">
+                    Parses Morning villa allocations, Continue duty, Night shift & Offs
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowRosterModal(false);
+                  setParsedSchedule(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-full cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto space-y-4 flex-1">
+              {!parsedSchedule ? (
+                <div className="space-y-3">
+                  <label className="text-[11px] font-black uppercase text-slate-500 block">
+                    Paste WhatsApp Water Room Roster
+                  </label>
+                  <textarea
+                    rows={12}
+                    value={rosterRawText}
+                    onChange={(e) => setRosterRawText(e.target.value)}
+                    placeholder={`Tomorrow’s Duty Schedule 06/11/2026\n\nBandi: Jetty A, B, C\n\nAbow 92,93,94,95,96,97\n\nSaamil\n57, 80, 82, 83, 84,\n\nJeeth: ,85,86,89,87,90,91\n\nEek : 36,51,52,53,54,55,\n\nContinue Duty\nMizyaan\nAbow\n\nNight Shift\nEek\nJeeth\nSaamil\n————————————————————\nOFF\nNauf`}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-2xl p-3.5 font-mono text-xs text-slate-800 outline-none focus:border-sky-600 focus:bg-white resize-none"
+                  />
+                  <button
+                    onClick={handleParseWaterRoster}
+                    className="w-full bg-sky-700 hover:bg-sky-800 text-white py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>Analyze & Match Water Attendants</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Summary Bar */}
+                  <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-black uppercase text-slate-400 block">Target Roster Date</span>
+                      <span className="text-sm font-black text-sky-800 font-mono">{parsedSchedule.detectedDate}</span>
+                    </div>
+                    <button
+                      onClick={() => setParsedSchedule(null)}
+                      className="text-[11px] font-bold text-slate-500 hover:underline cursor-pointer"
+                    >
+                      ← Re-paste text
+                    </button>
+                  </div>
+
+                  {/* Mapping Table with Type & Search */}
+                  <div className="border border-slate-200 rounded-2xl overflow-visible">
+                    <div className="bg-slate-100 p-2.5 border-b border-slate-200 flex justify-between items-center text-[10px] font-black uppercase text-slate-500">
+                      <span className="w-1/4">Message Name</span>
+                      <span className="w-1/3">Assigned Shift & Villas</span>
+                      <span className="w-5/12 text-right">Connected Staff (Type & Search)</span>
+                    </div>
+
+                    <div className="divide-y divide-slate-100 max-h-[340px] overflow-y-auto overflow-x-visible">
+                      {parsedSchedule.items.map((item, idx) => {
+                        return (
+                          <div key={idx} className="p-2.5 flex items-center justify-between gap-2.5 text-xs bg-white hover:bg-slate-50">
+                            <div className="w-1/4 min-w-0">
+                              <span className="font-bold text-slate-800 block truncate">{item.rawName}</span>
+                              <span className="text-[9px] text-slate-400 block truncate">From Schedule</span>
+                            </div>
+
+                            <div className="w-1/3 min-w-0">
+                              <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                                item.shift === "OFF"
+                                  ? "bg-slate-200 text-slate-700"
+                                  : item.shift === "Night"
+                                  ? "bg-indigo-100 text-indigo-800"
+                                  : item.shift === "Continue"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-sky-100 text-sky-800"
+                              }`}>
+                                {item.label}
+                              </span>
+                              {item.taskDetails && item.shift === "Morning" && (
+                                <span className="block text-[9px] font-mono text-slate-600 font-bold truncate mt-0.5">
+                                  {item.taskDetails}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* TYPE & SEARCH COMBOBOX: Click and type directly (Clean Names Only) */}
+                            <div className="w-5/12 min-w-0">
+                              <HostSearchSelect
+                                selectedHost={item.matchedHost}
+                                allHosts={hosts}
+                                poolHosts={currentPool}
+                                onSelect={(hostId) => handleUpdateMatchedHost(idx, hostId)}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      onClick={() => setShowRosterModal(false)}
+                      className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleConfirmWaterSchedule}
+                      className="bg-sky-700 hover:bg-sky-800 text-white px-5 py-2 rounded-xl text-xs font-black uppercase tracking-wider shadow-md flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <CheckCircle2 size={15} />
+                      <span>Confirm & Apply Schedule</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: SET LEAVE & RETURN DATE */}
       {selectedHostForLeave && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden flex flex-col p-5 gap-4">
@@ -644,7 +1317,7 @@ export default function WaterRoomBoard({
               </div>
               <button
                 onClick={() => setSelectedHostForLeave(null)}
-                className="text-slate-400 hover:text-slate-600 text-sm font-black"
+                className="text-slate-400 hover:text-slate-600 text-sm font-black cursor-pointer"
               >
                 ✕
               </button>
@@ -659,7 +1332,7 @@ export default function WaterRoomBoard({
                       key={lt.value}
                       type="button"
                       onClick={() => setLeaveForm({ ...leaveForm, leave_type: lt.value })}
-                      className={`p-2 rounded-xl text-xs font-black border text-left transition-all ${
+                      className={`p-2 rounded-xl text-xs font-black border text-left transition-all cursor-pointer ${
                         leaveForm.leave_type === lt.value
                           ? "bg-[#0284c7] text-white border-[#0284c7] shadow-sm"
                           : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
@@ -698,7 +1371,7 @@ export default function WaterRoomBoard({
                 <button
                   type="button"
                   onClick={() => handleRemoveLeave(getHostLeaveRecord(selectedHostForLeave.id)?.id)}
-                  className="text-rose-600 hover:text-rose-800 text-xs font-black"
+                  className="text-rose-600 hover:text-rose-800 text-xs font-black cursor-pointer"
                 >
                   Clear Active Leave
                 </button>
@@ -707,13 +1380,13 @@ export default function WaterRoomBoard({
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setSelectedHostForLeave(null)}
-                  className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSaveLeave}
-                  className="bg-[#0284c7] hover:bg-[#0369a1] text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-sm"
+                  className="bg-[#0284c7] hover:bg-[#0369a1] text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-sm cursor-pointer"
                 >
                   Apply Leave
                 </button>
@@ -723,6 +1396,7 @@ export default function WaterRoomBoard({
         </div>
       )}
 
+      {/* MODAL: BORROW HOST TO POOL */}
       {showDraftModal && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[80vh]">
@@ -737,7 +1411,7 @@ export default function WaterRoomBoard({
               </div>
               <button
                 onClick={() => setShowDraftModal(false)}
-                className="text-slate-400 hover:text-slate-600 font-black text-sm px-2 py-1"
+                className="text-slate-400 hover:text-slate-600 font-black text-sm px-2 py-1 cursor-pointer"
               >
                 ✕
               </button>
@@ -763,7 +1437,6 @@ export default function WaterRoomBoard({
                   const term = searchHostTerm.toLowerCase();
                   return (
                     h.full_name.toLowerCase().includes(term) ||
-                    (h.nicknames || "").toLowerCase().includes(term) ||
                     (h.sub_department || "").toLowerCase().includes(term)
                   );
                 })
@@ -800,6 +1473,7 @@ export default function WaterRoomBoard({
         </div>
       )}
 
+      {/* CONFLICT MODAL */}
       {conflictModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-sm overflow-hidden flex flex-col p-5 gap-4">
@@ -847,7 +1521,7 @@ export default function WaterRoomBoard({
                         true
                       )
                     }
-                    className="w-full bg-[#0284c7] hover:bg-[#0369a1] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm"
+                    className="w-full bg-[#0284c7] hover:bg-[#0369a1] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
                   >
                     Move to WATER ROOM (Remove from {conflictModal.existingAreas.join(", ")})
                   </button>
@@ -861,7 +1535,7 @@ export default function WaterRoomBoard({
                         false
                       )
                     }
-                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-xl text-xs font-black transition-all"
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-xl text-xs font-black transition-all cursor-pointer"
                   >
                     Keep in Both Areas
                   </button>
@@ -876,7 +1550,7 @@ export default function WaterRoomBoard({
                       false
                     )
                   }
-                  className="w-full bg-[#0284c7] hover:bg-[#0369a1] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm"
+                  className="w-full bg-[#0284c7] hover:bg-[#0369a1] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
                 >
                   Assign Anyway (Override Leave)
                 </button>
@@ -884,7 +1558,7 @@ export default function WaterRoomBoard({
 
               <button
                 onClick={() => setConflictModal(null)}
-                className="w-full text-slate-400 hover:text-slate-600 py-1 text-xs font-bold transition-all"
+                className="w-full text-slate-400 hover:text-slate-600 py-1 text-xs font-bold transition-all cursor-pointer"
               >
                 Cancel
               </button>

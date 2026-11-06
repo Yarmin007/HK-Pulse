@@ -315,17 +315,33 @@ export default function MyTasksHub() {
           } else { setLinenAssignments([]); }
       } else { setLinenAssignments([]); }
 
-      // --- BOTTLE ASSIGNMENTS ---
+      // --- BOTTLE ASSIGNMENTS (SHARED MULTI-HOST RECOGNITION) ---
       if (!isBottleLoc) {
-          let bQuery = supabase.from('hsk_bottle_assignments').select('*').eq('month_year', currentMonth);
-          if (isPA) bQuery = bQuery.eq('location_type', 'PA');
-          else if (isRunner) bQuery = bQuery.eq('location_type', 'Pantry');
-          else if (isWaterRoom) bQuery = bQuery.eq('location_type', 'Water Room');
-          else bQuery = bQuery.or(`host_id.eq.${host.host_id},host_id.eq.${host.id}`);
+          const orConditions = [
+              `host_id.eq.${host.host_id}`,
+              `host_id.eq.${host.id}`
+          ];
+          if (isPA) orConditions.push('host_id.eq.SHARED_PA', 'location_type.eq.PA');
+          if (isWaterRoom) orConditions.push('host_id.eq.SHARED_WATER_ROOM', 'location_type.eq.Water Room');
+          if (isRunner) orConditions.push('host_id.eq.SHARED_RUNNER');
 
-          const { data: bData } = await bQuery;
+          const { data: bData } = await supabase
+              .from('hsk_bottle_assignments')
+              .select('*')
+              .eq('month_year', currentMonth)
+              .or(orConditions.join(','));
+
           if (bData && bData.length > 0) {
-              const myLocs = bData.map(a => a.location_name);
+              // Deduplicate assignments so shared locations only show once in list
+              const uniqueLocMap = new Map();
+              bData.forEach(item => {
+                  if (!uniqueLocMap.has(item.location_name)) {
+                      uniqueLocMap.set(item.location_name, item);
+                  }
+              });
+              const uniqueBData = Array.from(uniqueLocMap.values());
+
+              const myLocs = uniqueBData.map(a => a.location_name);
               const { data: bRecords } = await supabase.from('hsk_bottle_counts')
                   .select('location_name')
                   .eq('month_year', currentMonth)
@@ -333,9 +349,13 @@ export default function MyTasksHub() {
                   .limit(10000); 
               
               const completedLocs = new Set((bRecords || []).map(r => r.location_name));
-              setBottleAssignments(bData.map(a => ({ ...a, is_submitted: completedLocs.has(a.location_name) })));
-          } else { setBottleAssignments([]); }
-      } else { setBottleAssignments([]); }
+              setBottleAssignments(uniqueBData.map(a => ({ ...a, is_submitted: completedLocs.has(a.location_name) })));
+          } else { 
+              setBottleAssignments([]); 
+          }
+      } else { 
+          setBottleAssignments([]); 
+      }
 
       // --- ASSET/MINIBAR SCHEDULES ---
       const { data: activeSchedules } = await supabase.from('hsk_inventory_schedules').select('id, inventory_type').eq('status', 'Active');
@@ -658,6 +678,7 @@ export default function MyTasksHub() {
 
       const initialCounts: Record<string, number | string> = {};
       
+      // Fetches the live shared record for this location without filtering by host_id
       const { data: existingRecords } = await supabase.from('hsk_bottle_counts')
           .select('article_number, in_circulation, new_stock')
           .eq('month_year', getDhakaDateStr().substring(0, 7))
@@ -740,7 +761,6 @@ export default function MyTasksHub() {
             
             return {
                 month_year: getDhakaDateStr().substring(0, 7),
-                // Removed host_id to prevent database rejection for Villa Attendants
                 article_number: artNo,
                 location_type: activeBottleTaskLocation.location_type,
                 location_name: activeBottleTaskLocation.location_name,
@@ -751,7 +771,7 @@ export default function MyTasksHub() {
             };
         });
 
-        // Use upsert instead of delete+insert to fix the permission issue
+        // Upsert on month_year,location_name,article_number so shared locations sync seamlessly
         const { error: insErr } = await supabase.from('hsk_bottle_counts')
             .upsert(recordsToInsert, { onConflict: 'month_year,location_name,article_number' });
 
@@ -761,7 +781,8 @@ export default function MyTasksHub() {
             return; 
         }
         
-        setBottleAssignments(prev => prev.map(a => a.id === activeBottleTaskLocation.id ? {...a, is_submitted: true} : a));
+        // Mark as submitted across all instances of this location name
+        setBottleAssignments(prev => prev.map(a => a.location_name === activeBottleTaskLocation.location_name ? {...a, is_submitted: true} : a));
     }
     else if (activeTaskType === 'Legacy Minibar') {
         const countedItems = Object.entries(counts).filter(([_, qty]) => Number(qty) > 0).map(([artNo, qty]) => {
@@ -910,7 +931,6 @@ export default function MyTasksHub() {
           list = list.filter(i => (i.article_name || '').toLowerCase().includes(q) || (i.generic_name || '').toLowerCase().includes(q) || (i.article_number || '').includes(q));
       }
 
-      // --- APPLY CUSTOM SORT ORDER HERE ---
       list.sort((a, b) => {
           const orderA = a.sort_order ?? 9999;
           const orderB = b.sort_order ?? 9999;
@@ -1140,7 +1160,7 @@ export default function MyTasksHub() {
             </div>
         )}
 
-        {/* ⚡ GREEN TIMER PILL - Fixed slightly above the bottom Nav Bar */}
+        {/* ⚡ GREEN TIMER PILL */}
         {activeCleaningVilla && (
             <div className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[120] px-4 md:px-6 py-3 rounded-full shadow-[0_10px_40px_rgba(0,0,0,0.3)] flex items-center gap-3 md:gap-5 animate-in slide-in-from-bottom-10 border-2 transition-all duration-300 ${
                 cleaningElapsedSeconds > 2700 ? 'bg-rose-600 border-rose-400' : 'bg-emerald-600 border-emerald-400'

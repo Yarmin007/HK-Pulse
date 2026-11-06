@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { 
   MapPin, 
@@ -15,7 +15,11 @@ import {
   UserCheck, 
   Calendar, 
   Plus,
-  Plane
+  Plane,
+  ClipboardPaste,
+  CheckCircle2,
+  X,
+  ChevronDown
 } from "lucide-react";
 import toast from "react-hot-toast";
 
@@ -58,6 +62,18 @@ interface PublicAreaBoardProps {
   selectedDate: string;
 }
 
+interface ParsedScheduleItem {
+  rawName: string;
+  matchedHost: Host | null;
+  sectionType: "DUTY" | "LEAVE" | "SPECIAL";
+  shift?: string;
+  task?: string;
+  leaveType?: string;
+  endDate?: string;
+  label: string;
+  isManuallyChanged?: boolean;
+}
+
 const LEAVE_TYPES = [
   { value: "AL", label: "Annual Leave (AL)" },
   { value: "OFF", label: "Day Off (OFF)" },
@@ -68,6 +84,158 @@ const LEAVE_TYPES = [
   { value: "SL", label: "Sick Leave (SL)" },
   { value: "EL", label: "Emergency Leave (EL)" },
 ];
+
+// Helper to determine if a line contains an actual task or just empty symbols / dashes
+const isMeaningfulTask = (line: string): boolean => {
+  const clean = line.trim();
+  if (!clean) return false;
+
+  // Filter out lines made solely of dashes, underscores, dots, slashes, or whitespace
+  const strippedSymbols = clean.replace(/[\s\-=_~\.*#:/|\\]/g, "");
+  if (!strippedSymbols || strippedSymbols.length < 2) return false;
+
+  // Filter out terms representing "none"
+  const upper = clean.toUpperCase();
+  const NONE_WORDS = [
+    "NONE", "NIL", "N/A", "NA", "NO", "NOTHING", 
+    "NO TASK", "NO TASKS", "NO DEEP CLEANING", "OFF"
+  ];
+  if (NONE_WORDS.includes(upper)) return false;
+
+  return true;
+};
+
+// --- SEARCHABLE COMBOBOX COMPONENT FOR CONNECTING STAFF ---
+function HostSearchSelect({
+  selectedHost,
+  allHosts,
+  poolHosts,
+  onSelect,
+}: {
+  selectedHost: Host | null;
+  allHosts: Host[];
+  poolHosts: Host[];
+  onSelect: (hostId: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState(selectedHost?.full_name || "");
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setQuery(selectedHost?.full_name || "");
+  }, [selectedHost]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+        setQuery(selectedHost?.full_name || "");
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [selectedHost]);
+
+  const cleanQuery = query.toLowerCase().trim();
+
+  const filteredPool = poolHosts.filter((h) =>
+    h.full_name.toLowerCase().includes(cleanQuery)
+  );
+  const filteredOther = allHosts
+    .filter((h) => !poolHosts.some((p) => p.id === h.id))
+    .filter((h) => h.full_name.toLowerCase().includes(cleanQuery));
+
+  return (
+    <div ref={wrapperRef} className="relative w-full">
+      <div className="relative">
+        <input
+          type="text"
+          value={query}
+          onFocus={() => setIsOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setIsOpen(true);
+          }}
+          placeholder="Type to search staff..."
+          className={`w-full py-1.5 pl-2.5 pr-7 rounded-xl text-xs font-bold outline-none border transition-colors ${
+            selectedHost
+              ? "bg-white border-slate-300 text-slate-800 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-500"
+              : "bg-rose-50 border-rose-300 text-rose-800 placeholder:text-rose-400"
+          }`}
+        />
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="absolute right-2 top-2.5 text-slate-400 hover:text-slate-600"
+        >
+          <ChevronDown size={13} />
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto z-50 divide-y divide-slate-100">
+          {filteredPool.length === 0 && filteredOther.length === 0 ? (
+            <div className="p-2.5 text-[11px] text-slate-400 font-bold text-center">
+              No staff found matching &quot;{query}&quot;
+            </div>
+          ) : (
+            <>
+              {filteredPool.length > 0 && (
+                <div>
+                  <div className="px-2.5 py-1 bg-slate-50 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Public Area Team Pool
+                  </div>
+                  {filteredPool.map((h) => (
+                    <button
+                      key={h.id}
+                      type="button"
+                      onClick={() => {
+                        onSelect(h.id);
+                        setQuery(h.full_name);
+                        setIsOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-xs font-bold text-slate-800 flex items-center justify-between transition-colors"
+                    >
+                      <span>{h.full_name}</span>
+                      {selectedHost?.id === h.id && (
+                        <CheckCircle2 size={13} className="text-emerald-600" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {filteredOther.length > 0 && (
+                <div>
+                  <div className="px-2.5 py-1 bg-slate-50 text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Other Resort Staff
+                  </div>
+                  {filteredOther.map((h) => (
+                    <button
+                      key={h.id}
+                      type="button"
+                      onClick={() => {
+                        onSelect(h.id);
+                        setQuery(h.full_name);
+                        setIsOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-xs font-bold text-slate-700 flex items-center justify-between transition-colors"
+                    >
+                      <span>{h.full_name}</span>
+                      {selectedHost?.id === h.id && (
+                        <CheckCircle2 size={13} className="text-emerald-600" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function PublicAreaBoard({
   hosts,
@@ -105,6 +273,15 @@ export default function PublicAreaBoard({
   // Special tasks list
   const [specialTasks, setSpecialTasks] = useState(["", "", "", ""]);
 
+  // --- AUTO ROSTER IMPORT STATE ---
+  const [showRosterModal, setShowRosterModal] = useState(false);
+  const [rosterRawText, setRosterRawText] = useState("");
+  const [parsedSchedule, setParsedSchedule] = useState<{
+    detectedDate: string;
+    items: ParsedScheduleItem[];
+    deepCleanTasks: string[];
+  } | null>(null);
+
   useEffect(() => {
     fetchActiveLeaves();
   }, [selectedDate]);
@@ -138,7 +315,6 @@ export default function PublicAreaBoard({
     ]);
   }, [allocations]);
 
-  // Current Area Staff Pool strictly driven by database sub_department / role
   const currentPool = React.useMemo(() => {
     if (activeSubTab === "public") {
       return hosts.filter((h) => {
@@ -156,7 +332,7 @@ export default function PublicAreaBoard({
   }, [activeSubTab, hosts]);
 
   const getHostLabel = (h: Host) => {
-    return h.nicknames ? h.nicknames.split(",")[0].trim() : h.full_name;
+    return h.full_name;
   };
 
   const getHostLeaveRecord = (hostId: string) => {
@@ -191,6 +367,311 @@ export default function PublicAreaBoard({
     );
   };
 
+  // --- SAFE & ACCURATE MATCHER (PA POOL FIRST) ---
+  const findMatchingHost = (rawSearch: string): Host | null => {
+    if (!rawSearch) return null;
+    const cleanSearch = rawSearch.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (cleanSearch.length < 2) return null;
+
+    // Search in PA Pool first, then fallback to general staff
+    const candidateLists = [currentPool, hosts];
+
+    for (const pool of candidateLists) {
+      // 1. Exact match on clean full name
+      for (const h of pool) {
+        const fullClean = (h.full_name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (fullClean && fullClean === cleanSearch) return h;
+      }
+
+      // 2. Exact match on stored nicknames (only non-empty entries)
+      for (const h of pool) {
+        if (!h.nicknames) continue;
+        const nicks = h.nicknames
+          .toLowerCase()
+          .split(",")
+          .map((n) => n.trim().replace(/[^a-z0-9]/g, ""))
+          .filter((n) => n.length >= 2);
+
+        if (nicks.includes(cleanSearch)) return h;
+      }
+
+      // 3. Maldivian name matching (e.g., "M Moosa" matches "Mohamed Moosa")
+      for (const h of pool) {
+        const parts = (h.full_name || "").toLowerCase().split(/\s+/).filter(Boolean);
+        if (parts.length >= 2) {
+          const firstInitialLast = `${parts[0].charAt(0)}${parts[parts.length - 1]}`;
+          if (cleanSearch === firstInitialLast) return h;
+          if (cleanSearch === parts[parts.length - 1] && parts[parts.length - 1].length >= 3) return h;
+        }
+      }
+
+      // 4. Safe word boundary match (only if search word is at least 3 characters)
+      if (cleanSearch.length >= 3) {
+        for (const h of pool) {
+          const full = (h.full_name || "").toLowerCase();
+          const words = full.split(/\s+/);
+          if (words.some((w) => w === cleanSearch)) return h;
+        }
+      }
+    }
+
+    return null;
+  };
+
+  // --- PARSE ROSTER TEXT ENGINE (SMART DETECTOR) ---
+  const handleParseRoster = () => {
+    if (!rosterRawText.trim()) {
+      toast.error("Please paste the roster text first");
+      return;
+    }
+
+    const lines = rosterRawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    
+    // Detect Target Date (DD.MM.YY or DD/MM/YY or DD-MM-YY)
+    let detectedDate = selectedDate;
+    const dateMatch = rosterRawText.match(/(\d{1,2})[\.\/\-]\s*(\d{1,2})[\.\/\-]\s*(\d{2,4})/);
+    if (dateMatch) {
+      const d = dateMatch[1].padStart(2, "0");
+      const m = dateMatch[2].padStart(2, "0");
+      let y = dateMatch[3].trim();
+      if (y.length === 2) y = `20${y}`;
+      detectedDate = `${y}-${m}-${d}`;
+    }
+
+    let currentSection: "NONE" | "MORN_OW" | "MORN_BOH" | "AFT_SHIFT" | "OFF" | "DEEP_CLEAN" | "VACATION" = "NONE";
+    const items: ParsedScheduleItem[] = [];
+    const deepClean: string[] = [];
+
+    for (const line of lines) {
+      const upper = line.toUpperCase().trim();
+
+      if (upper.includes("DUTY SCHEDULE") || (dateMatch && upper.includes(dateMatch[0]))) {
+        continue;
+      }
+
+      // Detect Section Headers flexibly
+      if (upper.includes("MORN") && (upper.includes("OW") || upper.includes("SHIFT") || upper.includes("FOH"))) {
+        currentSection = "MORN_OW";
+        continue;
+      }
+      if (upper.includes("BACK OF HOUSE") || upper.includes("BOH")) {
+        currentSection = "MORN_BOH";
+        continue;
+      }
+      if (upper.includes("AFTERNOON") || upper.includes("NIGHT") || upper.includes("EVENING")) {
+        currentSection = "AFT_SHIFT";
+        continue;
+      }
+      if (upper.startsWith("OFF") || upper === "OFF" || upper === "DAYS OFF") {
+        currentSection = "OFF";
+        continue;
+      }
+      if (upper.includes("DEEP CLEAN") || upper.includes("SPECIAL TASK") || upper.includes("PROJECT")) {
+        currentSection = "DEEP_CLEAN";
+        continue;
+      }
+      if (upper.includes("VACATION") || upper.includes("ANNUAL LEAVE") || upper === "AL" || upper.includes("LEAVE")) {
+        currentSection = "VACATION";
+        continue;
+      }
+
+      // If the line is purely decorative symbols (dashes, underscores, equals), skip it entirely
+      if (!isMeaningfulTask(line)) continue;
+
+      if (currentSection === "DEEP_CLEAN") {
+        deepClean.push(line);
+        continue;
+      }
+
+      if (currentSection !== "NONE") {
+        let cleanName = line;
+        let returnDate = detectedDate;
+
+        // Parse return date if present (e.g., "Ali Maah (D,17/11/26)")
+        const retDateMatch = line.match(/\((?:D,)?\s*(\d{1,2})[\.\/\-]\s*(\d{1,2})[\.\/\-]\s*(\d{2,4})\)/i);
+        if (retDateMatch) {
+          const rd = retDateMatch[1].padStart(2, "0");
+          const rm = retDateMatch[2].padStart(2, "0");
+          let ry = retDateMatch[3].trim();
+          if (ry.length === 2) ry = `20${ry}`;
+          returnDate = `${ry}-${rm}-${rd}`;
+          cleanName = line.replace(/\([^)]*\)/g, "").trim();
+        }
+
+        const matched = findMatchingHost(cleanName);
+
+        if (currentSection === "MORN_OW") {
+          items.push({
+            rawName: cleanName,
+            matchedHost: matched,
+            sectionType: "DUTY",
+            shift: "Morning",
+            task: "FOH",
+            label: "Morning FOH (OW)",
+          });
+        } else if (currentSection === "MORN_BOH") {
+          items.push({
+            rawName: cleanName,
+            matchedHost: matched,
+            sectionType: "DUTY",
+            shift: "Morning",
+            task: "BOH",
+            label: "Morning BOH",
+          });
+        } else if (currentSection === "AFT_SHIFT") {
+          items.push({
+            rawName: cleanName,
+            matchedHost: matched,
+            sectionType: "DUTY",
+            shift: "Afternoon",
+            task: "FOH",
+            label: "Afternoon Shift",
+          });
+        } else if (currentSection === "OFF") {
+          items.push({
+            rawName: cleanName,
+            matchedHost: matched,
+            sectionType: "LEAVE",
+            leaveType: "OFF",
+            endDate: returnDate,
+            label: "Day Off (OFF)",
+          });
+        } else if (currentSection === "VACATION") {
+          items.push({
+            rawName: cleanName,
+            matchedHost: matched,
+            sectionType: "LEAVE",
+            leaveType: "AL",
+            endDate: returnDate,
+            label: "Vacation (AL)",
+          });
+        }
+      }
+    }
+
+    setParsedSchedule({
+      detectedDate,
+      items,
+      deepCleanTasks: deepClean,
+    });
+  };
+
+  const handleUpdateMatchedHost = (index: number, hostId: string) => {
+    if (!parsedSchedule) return;
+    const selected = hosts.find((h) => h.id === hostId) || null;
+    const updated = [...parsedSchedule.items];
+    updated[index] = {
+      ...updated[index],
+      matchedHost: selected,
+      isManuallyChanged: true,
+    };
+    setParsedSchedule({ ...parsedSchedule, items: updated });
+  };
+
+  // --- CONFIRM, SAVE ALLOCATIONS & SILENTLY REMEMBER NICKNAMES ---
+  const handleConfirmSchedule = async () => {
+    if (!parsedSchedule) return;
+
+    try {
+      const targetDate = parsedSchedule.detectedDate;
+      const newAllocs: Allocation[] = [...allocations.filter((a) => a.report_date !== targetDate || a.area !== "public")];
+
+      for (const item of parsedSchedule.items) {
+        if (!item.matchedHost) continue;
+
+        const host = item.matchedHost;
+        const rawName = item.rawName.trim();
+
+        // SILENT NICKNAME MEMORY
+        const existingNicks = (host.nicknames || "").split(",").map((n) => n.trim().toLowerCase());
+        const isDifferentName = host.full_name.toLowerCase() !== rawName.toLowerCase();
+
+        if (rawName.length >= 2 && !existingNicks.includes(rawName.toLowerCase()) && isDifferentName) {
+          const updatedNicks = host.nicknames ? `${host.nicknames}, ${rawName}` : rawName;
+
+          await supabase
+            .from("hsk_hosts")
+            .update({ nicknames: updatedNicks })
+            .eq("id", host.id);
+
+          if (setHosts) {
+            setHosts((prev: Host[]) =>
+              prev.map((h) => (h.id === host.id ? { ...h, nicknames: updatedNicks } : h))
+            );
+          }
+        }
+
+        // Commit Leaves (OFF, AL)
+        if (item.sectionType === "LEAVE" && item.leaveType) {
+          const dStart = targetDate;
+          const dEnd = item.endDate || targetDate;
+          const diffTime = Math.abs(new Date(dEnd).getTime() - new Date(dStart).getTime());
+          const daysCount = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+          const hostKey = String(host.id || host.host_id || "");
+          const hostNameVal = host.full_name;
+
+          await supabase
+            .from("hsk_leave_requests")
+            .delete()
+            .eq("host_id", hostKey)
+            .lte("start_date", dEnd)
+            .gte("end_date", dStart);
+
+          await supabase.from("hsk_leave_requests").insert([{
+            host_id: hostKey,
+            host_name: hostNameVal,
+            leave_type: item.leaveType,
+            start_date: dStart,
+            end_date: dEnd,
+            total_days: daysCount,
+            days_count: daysCount,
+            status: "Approved",
+            reason: `Auto scheduled from roster: ${item.leaveType}`,
+          }]);
+        }
+
+        // Commit Duty Shifts
+        if (item.sectionType === "DUTY" && item.shift && item.task) {
+          newAllocs.push({
+            host_id: host.id,
+            area: "public",
+            shift: item.shift,
+            task_details: item.task,
+            report_date: targetDate,
+          });
+        }
+      }
+
+      // Commit Deep Cleaning Tasks cleanly (wipes old dashes/empty lines if none present)
+      const newSpecials = ["", "", "", ""];
+      if (parsedSchedule.deepCleanTasks.length > 0) {
+        parsedSchedule.deepCleanTasks.slice(0, 4).forEach((task, i) => {
+          newSpecials[i] = task;
+          newAllocs.push({
+            host_id: "special_task_placeholder",
+            area: "public",
+            shift: "Special Task",
+            task_details: `Special: ${task.trim()}`,
+            report_date: targetDate,
+          });
+        });
+      }
+      setSpecialTasks(newSpecials);
+
+      setAllocations(newAllocs);
+      setIsDirty(true);
+      fetchActiveLeaves();
+      setShowRosterModal(false);
+      setParsedSchedule(null);
+      setRosterRawText("");
+      toast.success(`Schedule for ${targetDate} applied!`);
+    } catch (err: any) {
+      console.error("Schedule confirm error:", err);
+      toast.error("Failed to commit schedule: " + (err?.message || "Unknown error"));
+    }
+  };
+
   const handleSaveLeave = async () => {
     if (!selectedHostForLeave) return;
 
@@ -201,7 +682,7 @@ export default function PublicAreaBoard({
       const daysCount = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
       const hostKey = String(selectedHostForLeave.id || selectedHostForLeave.host_id || "");
-      const hostNameVal = selectedHostForLeave.full_name || getHostLabel(selectedHostForLeave);
+      const hostNameVal = selectedHostForLeave.full_name;
 
       await supabase
         .from("hsk_leave_requests")
@@ -228,7 +709,7 @@ export default function PublicAreaBoard({
         throw new Error(error.message || error.details || "Database constraint error");
       }
 
-      toast.success(`${getHostLabel(selectedHostForLeave)} set to ${leaveForm.leave_type} until ${leaveForm.end_date}!`);
+      toast.success(`${selectedHostForLeave.full_name} set to ${leaveForm.leave_type} until ${leaveForm.end_date}!`);
       setSelectedHostForLeave(null);
       fetchActiveLeaves();
       setIsDirty(true);
@@ -251,7 +732,6 @@ export default function PublicAreaBoard({
     }
   };
 
-  // Permanently saves host into this sub_department in DB and updates state instantly
   const handleAddToPool = async (hostId: string) => {
     const newDepartment = activeSubTab === "public" ? "Public Area" : "Housemate";
     
@@ -275,7 +755,6 @@ export default function PublicAreaBoard({
     setShowDraftModal(false);
   };
 
-  // Resets host back to general if removed from pool
   const handleRemoveFromPool = async (hostId: string) => {
     if (setHosts) {
       setHosts((prev: Host[]) =>
@@ -431,7 +910,7 @@ export default function PublicAreaBoard({
 
                   <button
                     onClick={() => handleRemoveAllocation(a.host_id, area, shift, a.task_details)}
-                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                     title="Remove from shift"
                   >
                     <Trash2 size={13} />
@@ -454,7 +933,7 @@ export default function PublicAreaBoard({
                   <button
                     key={h.id}
                     onClick={() => requestAssignDuty(h, area, shift, taskMatch)}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 shadow-sm ${
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 shadow-sm cursor-pointer ${
                       leave
                         ? "bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100"
                         : "bg-slate-100 hover:bg-[#6D2158] hover:text-white border-slate-200 text-slate-700"
@@ -475,11 +954,12 @@ export default function PublicAreaBoard({
 
   return (
     <div className="w-full flex flex-col gap-6">
+      {/* SUB-TABS & ACTION BUTTONS */}
       <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <button
             onClick={() => setActiveSubTab("public")}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
               activeSubTab === "public"
                 ? "bg-[#6D2158] text-white shadow-sm"
                 : "text-slate-600 hover:bg-slate-100"
@@ -491,7 +971,7 @@ export default function PublicAreaBoard({
 
           <button
             onClick={() => setActiveSubTab("housemate")}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all ${
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
               activeSubTab === "housemate"
                 ? "bg-[#6D2158] text-white shadow-sm"
                 : "text-slate-600 hover:bg-slate-100"
@@ -502,18 +982,35 @@ export default function PublicAreaBoard({
           </button>
         </div>
 
-        <button
-          onClick={() => {
-            setSearchHostTerm("");
-            setShowDraftModal(true);
-          }}
-          className="flex items-center gap-1.5 bg-[#6D2158] hover:bg-[#521643] text-white px-3 py-1.5 rounded-xl text-xs font-black transition-all shadow-sm"
-        >
-          <UserPlus size={14} />
-          <span>Add Host to Pool</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {activeSubTab === "public" && (
+            <button
+              onClick={() => {
+                setRosterRawText("");
+                setParsedSchedule(null);
+                setShowRosterModal(true);
+              }}
+              className="flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-3.5 py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
+            >
+              <ClipboardPaste size={15} />
+              <span>Import Roster Schedule</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => {
+              setSearchHostTerm("");
+              setShowDraftModal(true);
+            }}
+            className="flex items-center gap-1.5 bg-[#6D2158] hover:bg-[#521643] text-white px-3.5 py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
+          >
+            <UserPlus size={15} />
+            <span>Add Host to Pool</span>
+          </button>
+        </div>
       </div>
 
+      {/* STAFF POOL PILLS */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-3">
           <div className="flex items-center gap-2">
@@ -561,7 +1058,7 @@ export default function PublicAreaBoard({
                     e.stopPropagation();
                     handleRemoveFromPool(h.id);
                   }}
-                  className="text-slate-400 hover:text-rose-600 ml-1"
+                  className="text-slate-400 hover:text-rose-600 ml-1 cursor-pointer"
                   title="Remove from pool"
                 >
                   ✕
@@ -636,7 +1133,7 @@ export default function PublicAreaBoard({
             )}
           </div>
 
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center text-center p-8 gap-3">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-center items-center text-center p-8 gap-3">
             <div className="p-4 bg-purple-50 text-[#6D2158] rounded-2xl">
               <Home size={32} />
             </div>
@@ -648,6 +1145,158 @@ export default function PublicAreaBoard({
         </div>
       )}
 
+      {/* --- AUTO-DETECT ROSTER IMPORT MODAL WITH TYPE & SEARCH COMBOBOX --- */}
+      {showRosterModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden animate-in zoom-in-95">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-emerald-50">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-600 text-white rounded-xl shadow-sm">
+                  <ClipboardPaste size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-800">
+                    Auto-Detect Roster & Schedule
+                  </h3>
+                  <p className="text-[10px] text-slate-500 font-bold">
+                    Type to search any staff member to quickly connect[cite: 21]
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowRosterModal(false);
+                  setParsedSchedule(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-full cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto space-y-4 flex-1">
+              {!parsedSchedule ? (
+                <div className="space-y-3">
+                  <label className="text-[11px] font-black uppercase text-slate-500 block">
+                    Paste Schedule Text Below
+                  </label>
+                  <textarea
+                    rows={12}
+                    value={rosterRawText}
+                    onChange={(e) => setRosterRawText(e.target.value)}
+                    placeholder={`TOMORROW DUTY SCHEDULE\n06.11.26\n\nMORNIG SHIFT(OW 2842\nM Moosa\nThoha\n\nBACK OF HOUSE (2848)\nMode\nJallu\n\nAFTERNOON SHIFT\nNafiu\nFaruhan\nRobi\n\nOFF\nBakuru\n\nDEEP CLEANING SCHEDULE\n--------------------  ----------------\n\nVACATION\nAli Maah (D,17/11/26)`}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-2xl p-3.5 font-mono text-xs text-slate-800 outline-none focus:border-emerald-600 focus:bg-white resize-none"
+                  />
+                  <button
+                    onClick={handleParseRoster}
+                    className="w-full bg-emerald-700 hover:bg-emerald-800 text-white py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>Analyze & Match Staff</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Summary Bar */}
+                  <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-black uppercase text-slate-400 block">Target Roster Date</span>
+                      <span className="text-sm font-black text-emerald-800 font-mono">{parsedSchedule.detectedDate}</span>
+                    </div>
+                    <button
+                      onClick={() => setParsedSchedule(null)}
+                      className="text-[11px] font-bold text-slate-500 hover:underline cursor-pointer"
+                    >
+                      ← Re-paste text
+                    </button>
+                  </div>
+
+                  {/* Editable Staff Mapping Table with Type & Search */}
+                  <div className="border border-slate-200 rounded-2xl overflow-visible">
+                    <div className="bg-slate-100 p-2.5 border-b border-slate-200 flex justify-between items-center text-[10px] font-black uppercase text-slate-500">
+                      <span className="w-1/3">Message Name</span>
+                      <span className="w-1/4">Assigned Shift</span>
+                      <span className="w-5/12 text-right">Connected Staff (Type & Search)</span>
+                    </div>
+
+                    <div className="divide-y divide-slate-100 max-h-[340px] overflow-y-auto overflow-x-visible">
+                      {parsedSchedule.items.map((item, idx) => {
+                        return (
+                          <div key={idx} className="p-2.5 flex items-center justify-between gap-2.5 text-xs bg-white hover:bg-slate-50">
+                            <div className="w-1/3 min-w-0">
+                              <span className="font-bold text-slate-800 block truncate">{item.rawName}</span>
+                              <span className="text-[9px] text-slate-400 block truncate">From Schedule</span>
+                            </div>
+
+                            <div className="w-1/4">
+                              <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                                item.sectionType === "LEAVE"
+                                  ? item.leaveType === "AL" ? "bg-rose-100 text-rose-800" : "bg-slate-200 text-slate-700"
+                                  : "bg-emerald-100 text-emerald-800"
+                              }`}>
+                                {item.label}
+                              </span>
+                              {item.endDate && item.endDate !== parsedSchedule.detectedDate && (
+                                <span className="block text-[8px] font-mono text-slate-400 mt-0.5">
+                                  Till: {item.endDate}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="w-5/12 min-w-0">
+                              <HostSearchSelect
+                                selectedHost={item.matchedHost}
+                                allHosts={hosts}
+                                poolHosts={currentPool}
+                                onSelect={(hostId) => handleUpdateMatchedHost(idx, hostId)}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {parsedSchedule.deepCleanTasks.length > 0 ? (
+                    <div className="p-3 bg-purple-50/60 rounded-xl border border-purple-100">
+                      <span className="text-[10px] font-black uppercase text-[#6D2158] block mb-1">
+                        Detected Deep Cleaning Tasks:
+                      </span>
+                      <ul className="text-xs text-slate-700 space-y-0.5 list-disc list-inside font-bold">
+                        {parsedSchedule.deepCleanTasks.map((t, i) => (
+                          <li key={i}>{t}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-400 font-bold text-center">
+                      No deep cleaning tasks scheduled (Dashes & empty separators filtered out)
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      onClick={() => setShowRosterModal(false)}
+                      className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleConfirmSchedule}
+                      className="bg-emerald-700 hover:bg-emerald-800 text-white px-5 py-2 rounded-xl text-xs font-black uppercase tracking-wider shadow-md flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <CheckCircle2 size={15} />
+                      <span>Confirm & Apply Schedule</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- LEAVE MODAL --- */}
       {selectedHostForLeave && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden flex flex-col p-5 gap-4">
@@ -667,7 +1316,7 @@ export default function PublicAreaBoard({
               </div>
               <button
                 onClick={() => setSelectedHostForLeave(null)}
-                className="text-slate-400 hover:text-slate-600 text-sm font-black"
+                className="text-slate-400 hover:text-slate-600 text-sm font-black cursor-pointer"
               >
                 ✕
               </button>
@@ -682,7 +1331,7 @@ export default function PublicAreaBoard({
                       key={lt.value}
                       type="button"
                       onClick={() => setLeaveForm({ ...leaveForm, leave_type: lt.value })}
-                      className={`p-2 rounded-xl text-xs font-black border text-left transition-all ${
+                      className={`p-2 rounded-xl text-xs font-black border text-left transition-all cursor-pointer ${
                         leaveForm.leave_type === lt.value
                           ? "bg-[#6D2158] text-white border-[#6D2158] shadow-sm"
                           : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
@@ -721,7 +1370,7 @@ export default function PublicAreaBoard({
                 <button
                   type="button"
                   onClick={() => handleRemoveLeave(getHostLeaveRecord(selectedHostForLeave.id)?.id)}
-                  className="text-rose-600 hover:text-rose-800 text-xs font-black"
+                  className="text-rose-600 hover:text-rose-800 text-xs font-black cursor-pointer"
                 >
                   Clear Active Leave
                 </button>
@@ -730,13 +1379,13 @@ export default function PublicAreaBoard({
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setSelectedHostForLeave(null)}
-                  className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSaveLeave}
-                  className="bg-[#6D2158] hover:bg-[#521643] text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-sm"
+                  className="bg-[#6D2158] hover:bg-[#521643] text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-sm cursor-pointer"
                 >
                   Apply Leave
                 </button>
@@ -746,6 +1395,7 @@ export default function PublicAreaBoard({
         </div>
       )}
 
+      {/* --- ADD TO POOL MODAL --- */}
       {showDraftModal && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[80vh]">
@@ -760,7 +1410,7 @@ export default function PublicAreaBoard({
               </div>
               <button
                 onClick={() => setShowDraftModal(false)}
-                className="text-slate-400 hover:text-slate-600 font-black text-sm px-2 py-1"
+                className="text-slate-400 hover:text-slate-600 font-black text-sm px-2 py-1 cursor-pointer"
               >
                 ✕
               </button>
@@ -786,7 +1436,6 @@ export default function PublicAreaBoard({
                   const term = searchHostTerm.toLowerCase();
                   return (
                     h.full_name.toLowerCase().includes(term) ||
-                    (h.nicknames || "").toLowerCase().includes(term) ||
                     (h.sub_department || "").toLowerCase().includes(term)
                   );
                 })
@@ -823,6 +1472,7 @@ export default function PublicAreaBoard({
         </div>
       )}
 
+      {/* --- CONFLICT MODAL --- */}
       {conflictModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-sm overflow-hidden flex flex-col p-5 gap-4">
@@ -871,7 +1521,7 @@ export default function PublicAreaBoard({
                         true
                       )
                     }
-                    className="w-full bg-[#6D2158] hover:bg-[#521643] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm"
+                    className="w-full bg-[#6D2158] hover:bg-[#521643] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
                   >
                     Move to {conflictModal.targetArea.toUpperCase()} (Remove from {conflictModal.existingAreas.join(", ")})
                   </button>
@@ -886,7 +1536,7 @@ export default function PublicAreaBoard({
                         false
                       )
                     }
-                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-xl text-xs font-black transition-all"
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-xl text-xs font-black transition-all cursor-pointer"
                   >
                     Keep in Both Areas
                   </button>
@@ -902,7 +1552,7 @@ export default function PublicAreaBoard({
                       false
                     )
                   }
-                  className="w-full bg-[#6D2158] hover:bg-[#521643] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm"
+                  className="w-full bg-[#6D2158] hover:bg-[#521643] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm cursor-pointer"
                 >
                   Assign Anyway (Override Leave)
                 </button>
@@ -910,7 +1560,7 @@ export default function PublicAreaBoard({
 
               <button
                 onClick={() => setConflictModal(null)}
-                className="w-full text-slate-400 hover:text-slate-600 py-1 text-xs font-bold transition-all"
+                className="w-full text-slate-400 hover:text-slate-600 py-1 text-xs font-bold transition-all cursor-pointer"
               >
                 Cancel
               </button>
