@@ -79,6 +79,8 @@ export interface AllocationSheetData {
     hosts: Array<{ name: string; contact: string; area: string }>;
   };
   laundry: Array<{ name: string; no: string }>;
+  laundryDutyTitle1?: string;
+  laundryDutyTitle2?: string;
   pestControl: Array<{ name: string; no: string }>;
   specialTasks: {
     task1: string;
@@ -106,19 +108,101 @@ const formatDateDdMm = (dateStr?: string) => {
   return dateStr;
 };
 
+// Formats leave dates into "7-Nov" style
+const formatLeaveDate = (dateStr?: string) => {
+  if (!dateStr || dateStr === "NA" || dateStr === "N/A" || dateStr === "-") return "NA";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const parts = String(dateStr).trim().split("-");
+  if (parts.length === 3 && parts[0].length === 4) {
+    const day = parseInt(parts[2], 10);
+    const monthIdx = parseInt(parts[1], 10) - 1;
+    if (!isNaN(day) && monthIdx >= 0 && monthIdx < 12) {
+      return `${day}-${months[monthIdx]}`;
+    }
+  }
+  const partsSlash = String(dateStr).trim().split("/");
+  if (partsSlash.length >= 2) {
+    const day = parseInt(partsSlash[0], 10);
+    const monthIdx = parseInt(partsSlash[1], 10) - 1;
+    if (!isNaN(day) && monthIdx >= 0 && monthIdx < 12) {
+      return `${day}-${months[monthIdx]}`;
+    }
+  }
+  return dateStr;
+};
+
+// Calculates remaining days
+const formatRemainingDays = (fromStr?: string, toStr?: string, duration?: string | number) => {
+  if (!toStr || toStr === "NA" || toStr === "N/A" || toStr === "-") {
+    if (duration) {
+      const num = parseInt(String(duration), 10) || 1;
+      return `${num} ${num > 1 ? "Days" : "Day"}`;
+    }
+    return "1 Day";
+  }
+
+  try {
+    let d1: Date | null = null;
+    let d2: Date | null = null;
+
+    if (fromStr && fromStr.includes("-")) {
+      const p = fromStr.split("-").map(Number);
+      if (p.length === 3) d1 = new Date(p[0], p[1] - 1, p[2]);
+    } else if (fromStr && fromStr.includes("/")) {
+      const p = fromStr.split("/").map(Number);
+      const yr = p[2] ? (p[2] < 100 ? 2000 + p[2] : p[2]) : new Date().getFullYear();
+      if (p.length >= 2) d1 = new Date(yr, p[1] - 1, p[0]);
+    }
+
+    if (toStr && toStr.includes("-")) {
+      const p = toStr.split("-").map(Number);
+      if (p.length === 3) d2 = new Date(p[0], p[1] - 1, p[2]);
+    } else if (toStr && toStr.includes("/")) {
+      const p = toStr.split("/").map(Number);
+      const yr = p[2] ? (p[2] < 100 ? 2000 + p[2] : p[2]) : new Date().getFullYear();
+      if (p.length >= 2) d2 = new Date(yr, p[1] - 1, p[0]);
+    }
+
+    if (d1 && d2) {
+      const diffTime = d2.getTime() - d1.getTime();
+      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+      if (diffDays <= 0) return "1 Day";
+      return `${diffDays} ${diffDays > 1 ? "Days" : "Day"}`;
+    }
+  } catch (e) {}
+
+  if (duration) {
+    const num = parseInt(String(duration), 10) || 1;
+    return `${num} ${num > 1 ? "Days" : "Day"}`;
+  }
+  return "1 Day";
+};
+
+// Natural casing converter for lower section staff
+const toNaturalCase = (name?: string) => {
+  if (!name) return "";
+  const str = String(name).trim();
+  if (str === str.toUpperCase() && /[A-Z]/.test(str)) {
+    return str
+      .split(" ")
+      .map((w) => (w.length <= 2 && w.toUpperCase() === w ? w : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+      .join(" ");
+  }
+  return str;
+};
+
 // Status Box Color Helper
 const getStatusTheme = (statusStr?: string) => {
   const st = String(statusStr || "").trim().toUpperCase();
   if (st.includes("ARR")) {
-    return { bg: "#22c55e", text: "#000000" }; // Green with Black text
+    return { bg: "#22c55e", text: "#000000" };
   }
   if (st.includes("DEP")) {
-    return { bg: "#ef4444", text: "#ffffff" }; // Red with White text
+    return { bg: "#ef4444", text: "#ffffff" };
   }
   if (st.includes("VAC") || st === "VM/VAC") {
-    return { bg: "#38bdf8", text: "#000000" }; // Blue with Black text
+    return { bg: "#38bdf8", text: "#000000" };
   }
-  // OCC / Default: Normal (White background with dark text)
   return { bg: "#ffffff", text: "#231f20" };
 };
 
@@ -126,27 +210,41 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
   const d = data;
   const s = d.summary || {};
 
-  // Tier 1: Jetty A (7 columns)
-  const t1 = [...(d.jettyA || [])];
+  // Tier 1: Jetty A (7 columns) - Pack left-to-right, keep empty slots on far right
+  const activeJA = (d.jettyA || []).filter(item => item.villas && item.villas.length > 0);
+  const t1 = activeJA.map((col) => ({
+    ...col,
+    name: (col.name || "").toUpperCase(),
+  }));
   while (t1.length < 7) t1.push({ name: "", contact: "", villas: [] });
 
-  // Tier 2: Jetty B (3 cols) + Jetty C (4 cols) = 7 columns
-  const t2 = [...(d.jettyB || []).slice(0, 3), ...(d.jettyC || []).slice(0, 4)];
-  while (t2.length < 7) t2.push({ name: "", contact: "", villas: [] });
+  // Tier 2: Jetty B (3 cols) + Jetty C (4 cols) = 7 columns - Pack left-to-right
+  const activeJB = (d.jettyB || []).filter(item => item.villas && item.villas.length > 0);
+  while (activeJB.length < 3) activeJB.push({ name: "", contact: "", villas: [] });
+  const activeJC = (d.jettyC || []).filter(item => item.villas && item.villas.length > 0);
+  while (activeJC.length < 4) activeJC.push({ name: "", contact: "", villas: [] });
+  const t2 = [...activeJB.slice(0, 3), ...activeJC.slice(0, 4)].map((col) => ({
+    ...col,
+    name: (col.name || "").toUpperCase(),
+  }));
 
-  // Tier 3: Beach (7 columns)
-  const t3 = [...(d.beach || [])];
+  // Tier 3: Beach (7 columns) - Pack left-to-right
+  const activeBeach = (d.beach || []).filter(item => item.villas && item.villas.length > 0);
+  const t3 = activeBeach.map((col) => ({
+    ...col,
+    name: (col.name || "").toUpperCase(),
+  }));
   while (t3.length < 7) t3.push({ name: "", contact: "", villas: [] });
 
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 595.28 841.89" className="w-full h-auto">
       <defs>
         <style>{`
-          .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11, .cls-contact {
+          .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11, .cls-contact, .cls-duty-val {
             font-family: BookAntiqua-Bold, 'Book Antiqua';
             font-weight: 700;
           }
-          .cls-1, .cls-4, .cls-9 {
+          .cls-1, .cls-4, .cls-9, .cls-duty-val {
             fill: #231f20;
           }
           .cls-1, .cls-5 {
@@ -159,9 +257,13 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
             fill: #fff;
           }
           .cls-contact {
-            font-size: 4px;
+            font-size: 6.2px;
             fill: #ffffff !important;
-            letter-spacing: -0.1px;
+            font-weight: 700;
+            letter-spacing: -0.15px;
+          }
+          .cls-duty-val {
+            font-size: 5.2px;
           }
           .cls-3 {
             font-size: 8.24px;
@@ -207,9 +309,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         `}</style>
       </defs>
 
-      {/* ========================================================================= */}
-      {/* 1. STRUCTURE                                                              */}
-      {/* ========================================================================= */}
+      {/* 1. STRUCTURE */}
       <g id="STRUCTURE">
         <rect className="cls-14" x="9" y="10.59" width="577.53" height="75.29"/>
         <rect className="cls-13" x="9" y="10.59" width="439.76" height="12.82"/>
@@ -1076,16 +1176,13 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="9" y="65.06" width="75.88" height="10.41"/>
       </g>
 
-      {/* ========================================================================= */}
-      {/* 2. DYNAMIC STATUS BOX OVERLAYS (EXACT FILL COLORS FOR ARR, DEP, VAC, OCC)*/}
-      {/* ========================================================================= */}
+      {/* 2. DYNAMIC STATUS BOX OVERLAYS */}
       <g id="STATUS_BOX_FILLS">
-        {/* Tier 1 Fills */}
         {t1.map((col, cIdx) => (
           col.villas?.map((v, rIdx) => {
             if (!v || !v.status) return null;
             const theme = getStatusTheme(v.status);
-            if (theme.bg === "#ffffff") return null; // OCC / default leaves untouched
+            if (theme.bg === "#ffffff") return null;
             const x = 36.53 + cIdx * 82.5;
             const y = 118.71 + rIdx * 15.88;
             return (
@@ -1103,7 +1200,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           })
         ))}
 
-        {/* Tier 2 Fills */}
         {t2.map((col, cIdx) => (
           col.villas?.map((v, rIdx) => {
             if (!v || !v.status) return null;
@@ -1126,7 +1222,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           })
         ))}
 
-        {/* Tier 3 Fills */}
         {t3.map((col, cIdx) => (
           col.villas?.map((v, rIdx) => {
             if (!v || !v.status) return null;
@@ -1150,9 +1245,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         ))}
       </g>
 
-      {/* ========================================================================= */}
-      {/* 3. STATIC LABELS + DYNAMIC HEADERS                                        */}
-      {/* ========================================================================= */}
+      {/* 3. STATIC LABELS + DYNAMIC HEADERS */}
       <g id="static">
         <text className="cls-4" transform="translate(10.66 30.33)"><tspan x="0" y="0">Date</tspan></text>
         <text className="cls-4" transform="translate(10.66 40.74)"><tspan x="0" y="0">Daily Occupancy %</tspan></text>
@@ -1194,7 +1287,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-11" textAnchor="middle" transform="translate(462.77 440.52)"><tspan x="0" y="0">{t3[5]?.name || ""}</tspan></text>
         <text className="cls-11" textAnchor="middle" transform="translate(545.28 440.52)"><tspan x="0" y="0">{t3[6]?.name || ""}</tspan></text>
 
-        {/* Dynamic Contact Headers (GUARANTEED WHITE TEXT) */}
+        {/* Contact Numbers Under VILLA Header */}
         <text className="cls-11" transform="translate(12.11 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
         <text className="cls-contact" textAnchor="middle" transform="translate(64.01 115.52)"><tspan x="0" y="0">{t1[0]?.contact || ""}</tspan></text>
         <text className="cls-11" transform="translate(94.62 115.52)"><tspan x="0" y="0">VILLA</tspan></text>
@@ -1240,25 +1333,89 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-11" transform="translate(507.14 451.16)"><tspan x="0" y="0">VILLA</tspan></text>
         <text className="cls-contact" textAnchor="middle" transform="translate(559.04 451.16)"><tspan x="0" y="0">{t3[6]?.contact || ""}</tspan></text>
 
-        {/* Lower Section Labels */}
+        {/* POOL DUTY TITLE & TOP SUB-HEADERS */}
         <text className="cls-2" transform="translate(73.26 571.7)"><tspan x="0" y="0">POOL DUTY</tspan></text>
-        <text className="cls-2" transform="translate(198.61 571.7)"><tspan x="0" y="0">PUBLIC AREA DUTY</tspan></text>
-        <text className="cls-2" transform="translate(317.76 571.78)"><tspan x="0" y="0">ADMIN DUTY</tspan></text>
-        <text className="cls-2" transform="translate(413.57 571.78)"><tspan x="0" y="0">TAILOR DUTY</tspan></text>
-        <text className="cls-2" transform="translate(498.57 570.86)"><tspan x="0" y="0">RUNNER / STEP DUTY</tspan></text>
-        <text className="cls-2" transform="translate(414.99 628.92)"><tspan x="0" y="0">HOUSEMATE</tspan></text>
-        <text className="cls-2" transform="translate(506.12 620.45)"><tspan x="0" y="0">LUGGAGE DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(36.5 579)"><tspan x="0" y="0">HOST</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(77.75 579)"><tspan x="0" y="0">MVPN</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(132.75 579)"><tspan x="0" y="0">ALLOCATION</tspan></text>
 
+        {/* POOL DUTY LOWER SHIFT BAR (WATER ROOM) */}
+        <text className="cls-5" textAnchor="middle" transform="translate(36.5 629.5)"><tspan x="0" y="0">NIGHT</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(91.52 629.5)"><tspan x="0" y="0">MOD</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(146.51 629.5)"><tspan x="0" y="0">CONTINUE</tspan></text>
+
+        {/* PUBLIC AREA DUTY TITLE & 3 SUB-HEADER BARS */}
+        <text className="cls-2" transform="translate(198.61 571.7)"><tspan x="0" y="0">PUBLIC AREA DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(201.48 579)"><tspan x="0" y="0">MORNING</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(256.43 579)"><tspan x="0" y="0">FOH</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(201.48 612.5)"><tspan x="0" y="0">MORNING</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(256.43 612.5)"><tspan x="0" y="0">BOH</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(201.49 638)"><tspan x="0" y="0">AFTERNOON</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(242.72 638)"><tspan x="0" y="0">FOH</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(270.17 638)"><tspan x="0" y="0">BOH</tspan></text>
+
+        {/* ADMIN DUTY TITLE & MORNING DUTY 8 AM BAR */}
+        <text className="cls-2" transform="translate(317.76 571.78)"><tspan x="0" y="0">ADMIN DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(338.84 579)"><tspan x="0" y="0">MORNING DUTY 8 AM</tspan></text>
+
+        {/* TAILOR DUTY TITLE & SUB-HEADERS */}
+        <text className="cls-2" transform="translate(413.57 571.78)"><tspan x="0" y="0">TAILOR DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(421.4 579)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(462.8 579)"><tspan x="0" y="0">NO</tspan></text>
+
+        {/* RUNNER / STEP DUTY TITLE & SUB-HEADERS */}
+        <text className="cls-2" transform="translate(498.57 570.86)"><tspan x="0" y="0">RUNNER / STEP DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(504.04 579)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(545.28 579)"><tspan x="0" y="0">DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(572.78 579)"><tspan x="0" y="0">MVPN</tspan></text>
+
+        {/* HOUSEMATE TITLE */}
+        <text className="cls-2" transform="translate(414.99 628.92)"><tspan x="0" y="0">HOUSEMATE</tspan></text>
+
+        {/* LUGGAGE DUTY TITLE & SUB-HEADERS */}
+        <text className="cls-2" transform="translate(506.12 620.45)"><tspan x="0" y="0">LUGGAGE DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(504.04 629.5)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(545.27 629.5)"><tspan x="0" y="0">DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(572.77 629.5)"><tspan x="0" y="0">MVPN</tspan></text>
+
+        {/* GARDEN DUTY TITLE, INCHARGE ROW & COLUMN HEADERS */}
         <text className="cls-2" transform="translate(54.35 662.8)"><tspan x="0" y="0">GARDEN DUTY</tspan></text>
         <text className="cls-5" transform="translate(12.98 671.5)"><tspan x="0" y="0">DUTY INCHARGE</tspan></text>
-        <text className="cls-5" transform="translate(66.22 671.5)"><tspan x="0" y="0">{d.garden?.incharge?.name || ""}</tspan></text>
+        <text className="cls-5" transform="translate(66.22 671.5)"><tspan x="0" y="0">{toNaturalCase(d.garden?.incharge?.name)}</tspan></text>
         <text className="cls-5" transform="translate(123.87 671.59)"><tspan x="0" y="0">{d.garden?.incharge?.contact || ""}</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(36.5 680.5)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(77.75 680.5)"><tspan x="0" y="0">NO</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(119 680.5)"><tspan x="0" y="0">DUTY AREA</tspan></text>
 
+        {/* LAUNDRY DUTY TITLE & SUB-HEADERS */}
         <text className="cls-2" transform="translate(182.05 662.8)"><tspan x="0" y="0">LAUNDRY DUTY</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(173.99 671.5)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(228.94 671.5)"><tspan x="0" y="0">NO</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(201.46 680.5)"><tspan x="0" y="0">{d.laundryDutyTitle1 || ""}</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(201.52 748)"><tspan x="0" y="0">{d.laundryDutyTitle2 || ""}</tspan></text>
+
         <text className="cls-2" transform="translate(177.61 789.86)"><tspan x="0" y="0">PEST CONTROL</tspan></text>
+
+        {/* ANNUAL LEAVE TITLE & SUB-HEADERS */}
         <text className="cls-2" transform="translate(314.26 662.8)"><tspan x="0" y="0">ANNUAL LEAVE</tspan></text>
-        <text className="cls-2" transform="translate(483.1 662.8)"><tspan x="0" y="0">DAY OFF / PH</tspan></text>
+        <text className="cls-5" transform="translate(258.8 671.5)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(341.95 671.5)"><tspan x="0" y="0">FROM:</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(373.71 671.5)"><tspan x="0" y="0">TO:</tspan></text>
+        <text className="cls-10" textAnchor="middle" transform="translate(405.54 671.5)"><tspan x="0" y="0">REMAINING</tspan></text>
+
+        {/* SICK / EL LEAVE TITLE & SUB-HEADERS */}
         <text className="cls-2" transform="translate(313.26 772.9)"><tspan x="0" y="0">SICK / EL LEAVE</tspan></text>
+        <text className="cls-5" transform="translate(258.8 781.5)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(341.86 781.5)"><tspan x="0" y="0">FROM:</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(373.69 781.5)"><tspan x="0" y="0">TO:</tspan></text>
+        <text className="cls-10" textAnchor="middle" transform="translate(405.52 781.5)"><tspan x="0" y="0">REMAINING</tspan></text>
+
+        {/* DAY OFF / PH TITLE & SUB-HEADERS */}
+        <text className="cls-2" transform="translate(483.1 662.8)"><tspan x="0" y="0">DAY OFF / PH</tspan></text>
+        <text className="cls-5" transform="translate(424.16 671.5)"><tspan x="0" y="0">NAME</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(506.91 671.5)"><tspan x="0" y="0">FROM:</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(538.75 671.5)"><tspan x="0" y="0">TO:</tspan></text>
+        <text className="cls-10" textAnchor="middle" transform="translate(570.59 671.5)"><tspan x="0" y="0">REMAINING</tspan></text>
 
         <text className="cls-2" transform="translate(33.25 765.45)"><tspan x="0" y="0">PUBLIC AREA SPECIAL TASK:</tspan></text>
         <text className="cls-2" transform="translate(45.24 806.8)"><tspan x="0" y="0">SPECIAL TASK VILLA</tspan></text>
@@ -1289,9 +1446,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-4" transform="translate(10.66 82.38)"><tspan x="0" y="0">No of Villa Moves</tspan></text>
       </g>
 
-      {/* ========================================================================= */}
-      {/* 4. DYNAMIC VALUES                                                         */}
-      {/* ========================================================================= */}
+      {/* 4. DYNAMIC VALUES */}
       <g id="Variable">
         {/* Top Summary Column 1 */}
         <text className="cls-4" textAnchor="middle" transform="translate(104.82 30.33)"><tspan x="0" y="0">{formatDateDdMm(s.report_date)}</tspan></text>
@@ -1400,14 +1555,18 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           );
         })}
 
+        {/* ========================================================================= */}
+        {/* LOWER SECTION DUTY ROWS (Using clean 5.2px font size)                     */}
+        {/* ========================================================================= */}
+
         {/* Pool Duty Block */}
         {[0, 1, 2, 3, 4].map((i) => {
           const y = 586.77 + i * 8.47;
           return (
             <React.Fragment key={`pool-h-${i}`}>
-              <text className="cls-4" transform={`translate(10.65 ${y})`}><tspan x="0" y="0">{d.pool?.hosts?.[i]?.name || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(67.2 ${y})`}><tspan x="0" y="0">{d.pool?.hosts?.[i]?.mvpn || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(96.06 ${y})`}><tspan x="0" y="0">{d.pool?.hosts?.[i]?.allocation || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(10.65 ${y})`}><tspan x="0" y="0">{toNaturalCase(d.pool?.hosts?.[i]?.name)}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(67.2 ${y})`}><tspan x="0" y="0">{d.pool?.hosts?.[i]?.mvpn || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(96.06 ${y})`}><tspan x="0" y="0">{d.pool?.hosts?.[i]?.allocation || ""}</tspan></text>
             </React.Fragment>
           );
         })}
@@ -1415,94 +1574,94 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           const y = 637.59 + i * 8.47;
           return (
             <React.Fragment key={`pool-sub-${i}`}>
-              <text className="cls-4" transform={`translate(10.65 ${y})`}><tspan x="0" y="0">{d.pool?.night?.[i] || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(66.22 ${y})`}><tspan x="0" y="0">{d.pool?.mod?.[i] || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(121.63 ${y})`}><tspan x="0" y="0">{d.pool?.continueShift?.[i] || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(10.65 ${y})`}><tspan x="0" y="0">{toNaturalCase(d.pool?.night?.[i])}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(66.22 ${y})`}><tspan x="0" y="0">{toNaturalCase(d.pool?.mod?.[i])}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(121.63 ${y})`}><tspan x="0" y="0">{toNaturalCase(d.pool?.continueShift?.[i])}</tspan></text>
             </React.Fragment>
           );
         })}
 
         {/* Public Area Duty */}
         {[0, 1, 2].map((i) => (
-          <text key={`pa-mf-${i}`} className="cls-4" transform={`translate(176.34 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.publicArea?.morningFoh?.[i] || ""}</tspan></text>
+          <text key={`pa-mf-${i}`} className="cls-duty-val" transform={`translate(176.34 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.publicArea?.morningFoh?.[i])}</tspan></text>
         ))}
         {[0, 1].map((i) => (
-          <text key={`pa-mb-${i}`} className="cls-4" transform={`translate(176.34 ${620.65 + i * 8.47})`}><tspan x="0" y="0">{d.publicArea?.morningBoh?.[i] || ""}</tspan></text>
+          <text key={`pa-mb-${i}`} className="cls-duty-val" transform={`translate(176.34 ${620.65 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.publicArea?.morningBoh?.[i])}</tspan></text>
         ))}
-        <text className="cls-4" transform="translate(176.34 646.06)"><tspan x="0" y="0">{d.publicArea?.afternoonFoh?.[0] || ""}</tspan></text>
-        <text className="cls-4" transform="translate(176.34 654.53)"><tspan x="0" y="0">{d.publicArea?.afternoonBoh?.[0] || ""}</tspan></text>
+        <text className="cls-duty-val" transform="translate(176.34 646.06)"><tspan x="0" y="0">{toNaturalCase(d.publicArea?.afternoonFoh?.[0])}</tspan></text>
+        <text className="cls-duty-val" transform="translate(176.34 654.53)"><tspan x="0" y="0">{toNaturalCase(d.publicArea?.afternoonBoh?.[0])}</tspan></text>
 
         {/* Public Area Extensions */}
-        <text className="cls-4" transform="translate(249.64 586.77)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-4" transform="translate(249.64 595.24)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-4" transform="translate(249.64 603.71)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-4" transform="translate(249.64 620.65)"><tspan x="0" y="0">2848</tspan></text>
-        <text className="cls-4" transform="translate(249.64 629.12)"><tspan x="0" y="0">2848</tspan></text>
-        <text className="cls-4" transform="translate(237.67 646.06)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-4" transform="translate(261.54 654.53)"><tspan x="0" y="0">2848</tspan></text>
+        <text className="cls-duty-val" transform="translate(249.64 586.77)"><tspan x="0" y="0">2842</tspan></text>
+        <text className="cls-duty-val" transform="translate(249.64 595.24)"><tspan x="0" y="0">2842</tspan></text>
+        <text className="cls-duty-val" transform="translate(249.64 603.71)"><tspan x="0" y="0">2842</tspan></text>
+        <text className="cls-duty-val" transform="translate(249.64 620.65)"><tspan x="0" y="0">2848</tspan></text>
+        <text className="cls-duty-val" transform="translate(249.64 629.12)"><tspan x="0" y="0">2848</tspan></text>
+        <text className="cls-duty-val" transform="translate(237.67 646.06)"><tspan x="0" y="0">2842</tspan></text>
+        <text className="cls-duty-val" transform="translate(261.54 654.53)"><tspan x="0" y="0">2848</tspan></text>
 
         {/* Admin Duty */}
         {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
           <React.Fragment key={`adm-${i}`}>
-            <text className="cls-4" transform={`translate(286.67 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.admin?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(340.58 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.admin?.[i]?.contact || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(286.67 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.admin?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(340.58 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.admin?.[i]?.contact || ""}</tspan></text>
           </React.Fragment>
         ))}
 
         {/* Tailor & Housemate */}
         {[0, 1, 2, 3, 4].map((i) => (
           <React.Fragment key={`tailor-${i}`}>
-            <text className="cls-4" transform={`translate(395.68 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.tailor?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(450.74 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.tailor?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(395.68 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.tailor?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(450.74 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.tailor?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
         {[0, 1, 2].map((i) => (
           <React.Fragment key={`hsm-${i}`}>
-            <text className="cls-4" transform={`translate(395.68 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{d.housemate?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(451.55 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{d.housemate?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(395.68 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{toNaturalCase(d.housemate?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(451.55 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{d.housemate?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
 
-        {/* Runner, Step, Luggage */}
-        <text className="cls-4" transform="translate(478.6 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.name || ""}</tspan></text>
-        <text className="cls-4" transform="translate(533.23 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.duty || ""}</tspan></text>
-        <text className="cls-4" transform="translate(560.91 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.mvpn || ""}</tspan></text>
-        <text className="cls-4" transform="translate(478.6 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.name || ""}</tspan></text>
-        <text className="cls-4" transform="translate(533.23 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.duty || ""}</tspan></text>
-        <text className="cls-4" transform="translate(560.91 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.mvpn || ""}</tspan></text>
-        <text className="cls-4" transform="translate(478.6 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.name || ""}</tspan></text>
-        <text className="cls-4" transform="translate(533.04 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.duty || ""}</tspan></text>
-        <text className="cls-4" transform="translate(561.3 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.mvpn || ""}</tspan></text>
+        {/* Runner, Step, Luggage (ONLY MVPN) */}
+        <text className="cls-duty-val" transform="translate(478.6 586.77)"><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.runner?.[0]?.name)}</tspan></text>
+        <text className="cls-duty-val" transform="translate(533.23 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.duty || ""}</tspan></text>
+        <text className="cls-duty-val" transform="translate(560.91 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.mvpn || ""}</tspan></text>
+        <text className="cls-duty-val" transform="translate(478.6 595.24)"><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.runner?.[1]?.name)}</tspan></text>
+        <text className="cls-duty-val" transform="translate(533.23 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.duty || ""}</tspan></text>
+        <text className="cls-duty-val" transform="translate(560.91 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.mvpn || ""}</tspan></text>
+        <text className="cls-duty-val" transform="translate(478.6 612.18)"><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.step?.[0]?.name)}</tspan></text>
+        <text className="cls-duty-val" transform="translate(533.04 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.duty || ""}</tspan></text>
+        <text className="cls-duty-val" transform="translate(561.3 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.mvpn || ""}</tspan></text>
         {[0, 1, 2].map((i) => (
           <React.Fragment key={`lug-${i}`}>
-            <text className="cls-4" transform={`translate(478.61 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(532.47 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.duty || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(565.99 ${637.59 + i * 8.47})`}><tspan x="0" y="0">2844</tspan></text>
+            <text className="cls-duty-val" transform={`translate(478.61 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.luggage?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(532.47 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.duty || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(565.99 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.mvpn || ""}</tspan></text>
           </React.Fragment>
         ))}
 
         {/* Garden Duty */}
         {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
           <React.Fragment key={`gar-${i}`}>
-            <text className="cls-4" transform={`translate(10.93 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.garden?.hosts?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(66.26 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.garden?.hosts?.[i]?.contact || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(96.59 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.garden?.hosts?.[i]?.area || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(10.93 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.garden?.hosts?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(66.26 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.garden?.hosts?.[i]?.contact || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(96.59 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.garden?.hosts?.[i]?.area || ""}</tspan></text>
           </React.Fragment>
         ))}
 
         {/* Laundry Duty */}
         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
           <React.Fragment key={`lnd-${i}`}>
-            <text className="cls-4" transform={`translate(148.32 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.laundry?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(211.67 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.laundry?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(148.32 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.laundry?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(211.67 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.laundry?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
 
         {/* Pest Control */}
         {[0, 1, 2, 3].map((i) => (
           <React.Fragment key={`pest-${i}`}>
-            <text className="cls-4" transform={`translate(148.32 ${807 + i * 8.47})`}><tspan x="0" y="0">{d.pestControl?.[i]?.name || ""}</tspan></text>
-            <text className="cls-4" transform={`translate(215.06 ${807 + i * 8.47})`}><tspan x="0" y="0">{d.pestControl?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(148.32 ${807 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.pestControl?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(215.06 ${807 + i * 8.47})`}><tspan x="0" y="0">{d.pestControl?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
 
@@ -1517,44 +1676,48 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-9" transform="translate(87.71 824.15)"><tspan x="0" y="0">{s.oos_villas || ""}</tspan></text>
         <text className="cls-9" transform="translate(89.73 832.62)"><tspan x="0" y="0">{d.specialTasks?.huVilla || ""}</tspan></text>
 
-        {/* Annual Leave */}
+        {/* Annual Leave Rows */}
         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((i) => {
           const y = 680.01 + i * 8.47;
           const al = d.annualLeave?.[i];
+          const hasRecord = Boolean(al?.name);
           return (
             <React.Fragment key={`al-${i}`}>
-              <text className="cls-4" transform={`translate(258.8 ${y})`}><tspan x="0" y="0">{al?.name || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(328 ${y})`}><tspan x="0" y="0">{formatDateDdMm(al?.from)}</tspan></text>
-              <text className="cls-4" transform={`translate(364.3 ${y})`}><tspan x="0" y="0">{formatDateDdMm(al?.to)}</tspan></text>
-              <text className="cls-4" transform={`translate(393.68 ${y})`}><tspan x="0" y="0">{al?.duration || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(258.8 ${y})`}><tspan x="0" y="0">{toNaturalCase(al?.name)}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(341.95 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(al?.from) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(373.71 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(al?.to) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(405.54 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(al?.from, al?.to, al?.duration) : ""}</tspan></text>
             </React.Fragment>
           );
         })}
 
-        {/* Sick / EL Leave */}
+        {/* Sick / EL Leave Rows */}
         {[0, 1, 2, 3, 4, 5].map((i) => {
           const y = 790.06 + i * 8.47;
           const sl = d.sickLeave?.[i];
+          const hasRecord = Boolean(sl?.name);
           return (
             <React.Fragment key={`sl-${i}`}>
-              <text className="cls-4" transform={`translate(258.92 ${y})`}><tspan x="0" y="0">{sl?.name || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(328.11 ${y})`}><tspan x="0" y="0">{formatDateDdMm(sl?.from)}</tspan></text>
-              <text className="cls-4" transform={`translate(364.46 ${y})`}><tspan x="0" y="0">{formatDateDdMm(sl?.to)}</tspan></text>
-              <text className="cls-4" transform={`translate(395.16 ${y})`}><tspan x="0" y="0">{sl?.duration || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(258.8 ${y})`}><tspan x="0" y="0">{toNaturalCase(sl?.name)}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(341.86 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(sl?.from) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(373.69 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(sl?.to) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(405.52 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(sl?.from, sl?.to, sl?.duration) : ""}</tspan></text>
             </React.Fragment>
           );
         })}
 
-        {/* Day Off / PH */}
+        {/* Day Off / PH Rows */}
         {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map((i) => {
           const y = 679.95 + i * 8.47;
           const off = d.dayOff?.[i];
+          const hasRecord = Boolean(off?.name);
+
           return (
             <React.Fragment key={`off-${i}`}>
-              <text className="cls-4" transform={`translate(424.16 ${y})`}><tspan x="0" y="0">{off?.name || ""}</tspan></text>
-              <text className="cls-4" transform={`translate(492.59 ${y})`}><tspan x="0" y="0">{formatDateDdMm(off?.from)}</tspan></text>
-              <text className="cls-4" transform={`translate(527.62 ${y})`}><tspan x="0" y="0">{formatDateDdMm(off?.to)}</tspan></text>
-              <text className="cls-4" transform={`translate(558.34 ${y})`}><tspan x="0" y="0">{off?.duration || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(424.16 ${y})`}><tspan x="0" y="0">{toNaturalCase(off?.name)}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(506.91 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(off?.from) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(538.75 ${y})`}><tspan x="0" y="0">{hasRecord ? (off?.to && off.to !== "NA" ? formatLeaveDate(off.to) : "NA") : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(570.59 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(off?.from, off?.to, off?.duration) : ""}</tspan></text>
             </React.Fragment>
           );
         })}
