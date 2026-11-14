@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import { getSpecialKind, isOpenStay, serviceRemarkFor } from '@/lib/specialVillas';
 
 const TOTAL_VILLAS = 97;
 const EXTENSION_VILLAS = ['56', '58', '88'];
@@ -54,7 +55,48 @@ const monthToNum = (mStr: string) => {
         'JUL':'07', 'AUG':'08', 'SEP':'09', 'OCT':'10', 'NOV':'11', 'DEC':'12'
     };
     const upperM = (mStr || '').toUpperCase();
-    return months[upperM] || mStr.padStart(2, '0');
+    return months[upperM] || (mStr || '').padStart(2, '0');
+};
+
+// Opera dates come as "14-11-26" (arrivals XML) or "12-NOV-26" (OCC XML). Returns { iso: 'YYYY-MM-DD', dm: 'DD/MM', id: 'YYMMDD' }
+const parseOperaDate = (raw: string): { iso: string; dm: string; id: string } | null => {
+    const parts = String(raw || '').trim().split('-');
+    if (parts.length !== 3) return null;
+    const dd = parts[0].padStart(2, '0');
+    const mm = monthToNum(parts[1]);
+    const yy = parts[2].length === 4 ? parts[2].slice(2) : parts[2].padStart(2, '0');
+    if (!/^\d{2}$/.test(dd) || !/^\d{2}$/.test(mm) || !/^\d{2}$/.test(yy)) return null;
+    return { iso: `20${yy}-${mm}-${dd}`, dm: `${dd}/${mm}`, id: `${yy}${mm}${dd}` };
+};
+
+export const MEAL_PLANS = ['RO', 'BB', 'HB', 'HBSI', 'HBSA', 'FB', 'FBSI', 'FBSA', 'AI'];
+
+const parseMealPlan = (raw: string): string => {
+    const u = String(raw || '').trim().toUpperCase();
+    if (!u) return '';
+    const compact = u.replace(/[\s\-_]/g, '');
+    if (MEAL_PLANS.includes(compact)) return compact;
+    const variant = u.match(/\b(HB|FB)\s*[-_]?\s*(SI|SA)\b/);
+    if (variant) return `${variant[1]}${variant[2]}`;
+    if (/\bAI\b|ALL\s*INC/.test(u)) return 'AI';
+    if (/\bFB\b|FULL\s*BOARD/.test(u)) return 'FB';
+    if (/\bHB\b|HALF\s*BOARD/.test(u)) return 'HB';
+    if (/\bBB\b|BED\s*(AND|&)\s*BREAKFAST/.test(u)) return 'BB';
+    if (/\bRO\b|ROOM\s*ONLY/.test(u)) return 'RO';
+    return '';
+};
+
+// Arrivals XML has no meal plan column; derive the base board from PRODUCTS (e.g. XBFS30RA = breakfast, XDIN30RA = dinner)
+const mealPlanFromProducts = (products: string): string => {
+    const codes = String(products || '').toUpperCase().split(',').map(c => c.trim().replace(/^-?\d+\*/, ''));
+    if (codes.some(c => /^X?AI\d|ALLINC/.test(c))) return 'AI';
+    const hasBf = codes.some(c => /^XBF/.test(c));
+    const hasLunch = codes.some(c => /^XLUN|^XLU\d/.test(c));
+    const hasDinner = codes.some(c => /^XDIN/.test(c));
+    if (hasBf && hasLunch && hasDinner) return 'FB';
+    if (hasBf && hasDinner) return 'HB';
+    if (hasBf) return 'BB';
+    return '';
 };
 
 const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any = null) => {
@@ -74,15 +116,17 @@ const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any
       else if (String(rawAgeNote).match(/^\d+$/)) age = String(rawAgeNote);
   }
 
+  // \p{L} keeps accented letters (Müller, José) instead of silently dropping them
   if (name.includes(',')) {
-      const parts = name.split(',').map(s => s.trim().replace(/[^a-zA-Z\s\-]/g, ""));
+      const parts = name.split(',').map(s => s.trim().replace(/[^\p{L}\s\-']/gu, ""));
       const last = parts[0];
       const first = parts[1] || '';
       if (parts.length > 2 && !title) title = parts[2];
       name = `${first} ${last}`;
   } else {
-      name = name.replace(/[^a-zA-Z\s\-]/g, "").replace(/\s+/g, " ").trim();
+      name = name.replace(/[^\p{L}\s\-']/gu, "");
   }
+  name = name.replace(/\s+/g, " ").trim();
 
   name = name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ').trim();
   let final = name;
@@ -92,59 +136,141 @@ const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any
   return final;
 };
 
-const cleanNameForMatch = (n: string) => String(n || '').toLowerCase().replace(/\b(mr|ms|mrs|miss|mstr|alfaalil|alfaalila|kokko|yrs)\b/g, '').replace(/[^a-z]/g, '');
+const cleanNameForMatch = (n: string) =>
+    String(n || '')
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\(\s*\d+\s*yrs?\s*\)/g, '')
+        .replace(/\b(mr|ms|mrs|miss|mstr|master|dr|prof|mstr\/miss|alfaalil|alfaalila|kokko)\b/g, '')
+        .replace(/[^a-z]/g, '');
 
+// Split a villa's "A & B & C" guest string into individual normalized names
+const splitGuests = (names: string): string[] =>
+    String(names || '').split('&').map(cleanNameForMatch).filter(n => n.length >= 3);
+
+// True when at least one individual person appears in both guest strings (order-independent)
 const isSameGuest = (n1: string, n2: string) => {
-    if (!n1 || !n2) return false;
-    const c1 = cleanNameForMatch(n1);
-    const c2 = cleanNameForMatch(n2);
-    if (c1.length < 4 || c2.length < 4) return false;
-    return c1.includes(c2.substring(0, 8)) || c2.includes(c1.substring(0, 8));
+    const a = splitGuests(n1);
+    const b = splitGuests(n2);
+    if (a.length === 0 || b.length === 0) return false;
+    return a.some(x => b.includes(x));
 };
 
-const getAssociatedVillas = (villa: string) => {
-    if (villa === '57') return ['56', '58'];
-    if (villa === '87') return ['88'];
-    return [];
+const ACTIVE_STATUSES = ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'];
+
+// Connected villas: 57 can extend into 56 / 58, 87 into 88. No other villa has link options.
+const LINKABLE_VILLAS: Record<string, string[]> = { '57': ['56', '58'], '87': ['88'] };
+const EXTENSION_PARENT: Record<string, string> = { '56': '57', '58': '57', '88': '87' };
+const getAssociatedVillas = (villa: string) => LINKABLE_VILLAS[villa] || [];
+
+// Helper to pack & unpack departing guest details into remarks column safely
+type DepInfo = { name: string; time: string; dates: string };
+
+const extractDepInfo = (remarksStr?: string): { cleanRemarks: string; depInfo: DepInfo | null } => {
+    const raw = String(remarksStr || '');
+    const match = raw.match(/\[DEP_INFO\](.*?)\[\/DEP_INFO\]/);
+    if (!match) return { cleanRemarks: raw.trim(), depInfo: null };
+    const cleanRemarks = raw.replace(/\[DEP_INFO\].*?\[\/DEP_INFO\]/g, '').trim();
+    try {
+        const parsed = JSON.parse(match[1]);
+        return {
+            cleanRemarks,
+            depInfo: {
+                name: parsed.name || '',
+                time: parsed.time || '',
+                dates: parsed.dates || ''
+            }
+        };
+    } catch {
+        return { cleanRemarks, depInfo: null };
+    }
 };
 
+const packRemarksWithDep = (cleanRemarks: string, depInfo: DepInfo | null): string => {
+    const base = String(cleanRemarks || '').replace(/\[DEP_INFO\].*?\[\/DEP_INFO\]/g, '').trim();
+    if (!depInfo || (!depInfo.name && !depInfo.time && !depInfo.dates)) return base;
+    const tag = `[DEP_INFO]${JSON.stringify(depInfo)}[/DEP_INFO]`;
+    return base ? `${base} ${tag}` : tag;
+};
+
+// stay_dates is "DD/MM - DD/MM" (no year). Years are inferred relative to the selected date so Dec→Jan stays work.
 const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: string): { isActive: boolean; isDepartingToday: boolean } => {
-    if (!stayDatesStr || !stayDatesStr.includes('-')) return { isActive: false, isDepartingToday: false };
+    const inactive = { isActive: false, isDepartingToday: false };
+    if (!stayDatesStr || !stayDatesStr.includes('-')) return inactive;
     const parts = stayDatesStr.split('-');
-    if (parts.length !== 2) return { isActive: false, isDepartingToday: false };
+    if (parts.length !== 2) return inactive;
 
-    const arrStr = parts[0].trim();
-    const depStr = parts[1].trim();
+    const parseDM = (str: string) => {
+        const p = str.trim().split('/').map(Number);
+        if (p.length < 2 || p.some(isNaN)) return null;
+        return { d: p[0], m: p[1], y: p.length === 3 ? (p[2] < 100 ? 2000 + p[2] : p[2]) : null as number | null };
+    };
+
+    const arr = parseDM(parts[0]);
+    const dep = parseDM(parts[1]);
+    if (!dep) return inactive;
 
     const [selY, selM, selD] = selectedDateStr.split('-').map(Number);
-    const depParts = depStr.split('/').map(Number);
+    const sel = new Date(selY, selM - 1, selD).getTime();
+    const HALF_YEAR = 182 * 86400000;
 
-    if (depParts.length >= 2) {
-        const depD = depParts[0];
-        const depM = depParts[1];
-        const depY = depParts.length === 3 ? (depParts[2] < 100 ? 2000 + depParts[2] : depParts[2]) : selY;
-
-        const selDateObj = new Date(selY, selM - 1, selD);
-        const depDateObj = new Date(depY, depM - 1, depD);
-
-        if (selDateObj.getTime() === depDateObj.getTime()) {
-            return { isActive: true, isDepartingToday: true };
-        } else if (selDateObj.getTime() < depDateObj.getTime()) {
-            const arrParts = arrStr.split('/').map(Number);
-            if (arrParts.length >= 2) {
-                const arrD = arrParts[0];
-                const arrM = arrParts[1];
-                const arrY = arrParts.length === 3 ? (arrParts[2] < 100 ? 2000 + arrParts[2] : arrParts[2]) : selY;
-                const arrDateObj = new Date(arrY, arrM - 1, arrD);
-                if (arrDateObj.getTime() <= selDateObj.getTime()) {
-                    return { isActive: true, isDepartingToday: false };
-                }
-                return { isActive: false, isDepartingToday: false };
-            }
-            return { isActive: true, isDepartingToday: false };
-        }
+    let arrTime: number | null = null;
+    if (arr) {
+        let arrY = arr.y ?? selY;
+        if (arr.y === null && new Date(arrY, arr.m - 1, arr.d).getTime() - sel > HALF_YEAR) arrY -= 1;
+        arrTime = new Date(arrY, arr.m - 1, arr.d).getTime();
     }
-    return { isActive: false, isDepartingToday: false };
+
+    let depY = dep.y ?? (arrTime !== null ? new Date(arrTime).getFullYear() : selY);
+    let depTime = new Date(depY, dep.m - 1, dep.d).getTime();
+    if (dep.y === null && arrTime !== null && depTime < arrTime) {
+        depY += 1;
+        depTime = new Date(depY, dep.m - 1, dep.d).getTime();
+    }
+
+    if (sel === depTime) return { isActive: true, isDepartingToday: true };
+    if (sel < depTime && (arrTime === null || arrTime <= sel)) return { isActive: true, isDepartingToday: false };
+    return inactive;
+};
+
+// Guarantees one person = one active villa. Villas in `authoritative` came straight from the uploaded report and win;
+// the same person lingering in any other active villa (stale data) is removed from it.
+const enforceUniqueGuests = (
+    currentMap: Map<string, GuestRecord>,
+    authoritative: Set<string>,
+    diffs: ChangeLog[]
+) => {
+    const owner = new Map<string, string>();
+    authoritative.forEach(v => {
+        const rec = currentMap.get(v);
+        if (!rec || !ACTIVE_STATUSES.includes(rec.status)) return;
+        splitGuests(rec.guest_name).forEach(n => { if (!owner.has(n)) owner.set(n, v); });
+    });
+
+    currentMap.forEach((rec, vNum) => {
+        if (authoritative.has(vNum) || !ACTIVE_STATUSES.includes(rec.status) || !rec.guest_name) return;
+        const individuals = String(rec.guest_name).split('&').map(s => s.trim()).filter(Boolean);
+        const kept = individuals.filter(n => !owner.has(cleanNameForMatch(n)));
+        if (kept.length === individuals.length) return;
+
+        const removed = individuals.filter(n => owner.has(cleanNameForMatch(n)));
+        const movedTo = owner.get(cleanNameForMatch(removed[0]));
+        const oldStatus = rec.status;
+        if (kept.length === 0) {
+            Object.assign(rec, {
+                status: 'VAC', guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '',
+                gem_name: '', stay_id: '', arrival_time: '', departure_time: '', dep_guest_name: '', dep_stay_dates: ''
+            });
+        } else {
+            rec.guest_name = kept.join(' & ');
+        }
+        diffs.push({
+            villa: vNum, type: 'DUPLICATE REMOVED',
+            oldGuest: removed.join(' & '),
+            newGuest: `Already in V${movedTo}${kept.length ? ` (kept: ${kept.join(' & ')})` : ''}`,
+            oldStatus, newStatus: rec.status
+        });
+    });
 };
 
 export type GuestProfileItem = {
@@ -169,14 +295,8 @@ export type GuestRecord = {
   arrival_time?: string;
   departure_time?: string;
   stay_id?: string;
-  incoming_guest_name?: string;
-  incoming_pax_adults?: number;
-  incoming_pax_kids?: number;
-  incoming_arrival_time?: string;
-  incoming_stay_dates?: string;
-  incoming_gem_name?: string;
-  incoming_meal_plan?: string;
-  incoming_preferences?: string;
+  dep_guest_name?: string;
+  dep_stay_dates?: string;
 };
 
 type ChangeLog = {
@@ -187,6 +307,35 @@ type ChangeLog = {
     oldStatus: string;
     newStatus: string;
     isMemoEdit?: boolean;
+};
+
+// Strips UI-only helper fields so Supabase only receives real hsk_daily_summary columns
+const buildDbRowPayload = (rec: GuestRecord, reportDate: string) => {
+    const depPayload: DepInfo | null =
+        rec.status === 'DEP/ARR' && (rec.dep_guest_name || rec.departure_time || rec.dep_stay_dates)
+            ? {
+                  name: rec.dep_guest_name || '',
+                  time: rec.departure_time || '',
+                  dates: rec.dep_stay_dates || '',
+              }
+            : null;
+
+    return {
+        report_date: reportDate,
+        villa_number: rec.villa_number,
+        status: rec.status || 'VAC',
+        guest_name: rec.guest_name || '',
+        pax_adults: Number(rec.pax_adults) || 0,
+        pax_kids: Number(rec.pax_kids) || 0,
+        gem_name: rec.gem_name || '',
+        meal_plan: rec.meal_plan || '',
+        stay_dates: rec.stay_dates || '',
+        arrival_time: rec.arrival_time || '',
+        departure_time: rec.departure_time || '',
+        preferences: rec.preferences || '',
+        remarks: packRemarksWithDep(rec.remarks || '', depPayload),
+        stay_id: rec.stay_id || '',
+    };
 };
 
 export default function HousekeepingSummaryPage() {
@@ -212,7 +361,7 @@ export default function HousekeepingSummaryPage() {
   const [isNewRegistration, setIsNewRegistration] = useState(false);
   const [editingRecord, setEditingRecord] = useState<GuestRecord | null>(null);
   const [linkedSuitesSelection, setLinkedSuitesSelection] = useState<string[]>([]);
-  const [customLinkInput, setCustomLinkInput] = useState('');
+  const [editOriginVilla, setEditOriginVilla] = useState<string>('');
   const [parsedGuestList, setParsedGuestList] = useState<GuestProfileItem[]>([]);
   const [activeTab, setActiveTab] = useState<'details' | 'prefs' | 'departing'>('details');
 
@@ -253,9 +402,17 @@ export default function HousekeepingSummaryPage() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_summary' }, (payload) => {
             const newRec = payload.new as any;
             if (newRec && newRec.report_date === selectedDate) {
+                const { cleanRemarks, depInfo } = extractDepInfo(newRec.remarks);
                 setMasterList(prev => prev.map(v => {
                     if (normalizeVilla(v.villa_number) === normalizeVilla(newRec.villa_number)) {
-                        return { ...v, ...newRec, villa_number: v.villa_number };
+                        return {
+                            ...v,
+                            ...newRec,
+                            villa_number: v.villa_number,
+                            remarks: cleanRemarks,
+                            dep_guest_name: depInfo?.name || '',
+                            dep_stay_dates: depInfo?.dates || '',
+                        };
                     }
                     return v;
                 }));
@@ -283,7 +440,9 @@ export default function HousekeepingSummaryPage() {
         if (error) console.error(error);
 
         let isProjected = false;
-        if (!dbRecords || dbRecords.length === 0) {
+        // A day holding only villas pre-registered on Special Villas is still projected from the last saved day.
+        const preRegistered = (dbRecords || []).filter(r => getSpecialKind(r.status));
+        if (!dbRecords || dbRecords.length === 0 || preRegistered.length === dbRecords.length) {
             const { data: recentRecords } = await supabase
               .from('hsk_daily_summary')
               .select('*')
@@ -295,34 +454,24 @@ export default function HousekeepingSummaryPage() {
                 const latestDate = recentRecords[0].report_date;
                 const sourceData = recentRecords.filter(r => r.report_date === latestDate);
 
-                dbRecords = sourceData.map(r => {
+                const projected = sourceData.map(r => {
                     const statusStr = String(r.status || 'VAC').trim().toUpperCase();
                     if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
-                        const effectiveDates = statusStr === 'DEP/ARR' && r.incoming_stay_dates ? r.incoming_stay_dates : (r.stay_dates || '');
-                        const check = checkStayStatusForDate(effectiveDates, selectedDate);
+                        const check = checkStayStatusForDate(r.stay_dates || '', selectedDate);
                         if (check.isActive) {
-                            const activeName = statusStr === 'DEP/ARR' && r.incoming_guest_name ? r.incoming_guest_name : (r.guest_name || '');
-                            const activeAdults = statusStr === 'DEP/ARR' && r.incoming_pax_adults ? r.incoming_pax_adults : (r.pax_adults || 0);
-                            const activeKids = statusStr === 'DEP/ARR' && r.incoming_pax_kids ? r.incoming_pax_kids : (r.pax_kids || 0);
-                            const activePrefs = statusStr === 'DEP/ARR' && r.incoming_preferences ? r.incoming_preferences : (r.preferences || '');
-
+                            const { cleanRemarks } = extractDepInfo(r.remarks);
                             return {
                                 ...r,
                                 report_date: selectedDate,
                                 status: check.isDepartingToday ? 'DEP' : (statusStr.includes('VM') ? statusStr : 'OCC'),
-                                guest_name: activeName,
-                                pax_adults: activeAdults,
-                                pax_kids: activeKids,
-                                stay_dates: effectiveDates,
-                                preferences: activePrefs,
                                 arrival_time: check.isDepartingToday ? '' : (r.arrival_time || ''),
                                 departure_time: check.isDepartingToday ? (r.departure_time || '') : '',
-                                incoming_guest_name: '',
-                                incoming_arrival_time: ''
+                                remarks: cleanRemarks,
                             };
                         }
-                    } else if (statusStr.includes('HOUSE') || statusStr === 'SHOW VILLA') {
-                        return { ...r, report_date: selectedDate };
+                    } else if (statusStr.includes('HOUSE') && (!r.stay_dates || isOpenStay(r.stay_dates) || checkStayStatusForDate(r.stay_dates, selectedDate).isActive)) {
+                        // House Use carries until its departure date (or forever while open); Show Villa / TMA / Fumigation are one-off
+                        return { ...r, report_date: selectedDate, arrival_time: '', remarks: serviceRemarkFor(r.preferences, selectedDate) };
                     }
                     return {
                         ...r,
@@ -340,7 +489,10 @@ export default function HousekeepingSummaryPage() {
                         remarks: '',
                         stay_id: ''
                     };
-                });
+                // Drop the source day's ids: saving a projected row must insert for this day, not move the previous day's row.
+                }).map(r => ({ ...r, id: undefined }));
+                const preVillas = new Set(preRegistered.map(r => normalizeVilla(r.villa_number)));
+                dbRecords = [...preRegistered, ...projected.filter(r => !preVillas.has(normalizeVilla(r.villa_number)))];
                 isProjected = true;
             }
         }
@@ -351,6 +503,7 @@ export default function HousekeepingSummaryPage() {
           const match = dbRecords?.find(r => normalizeVilla(r.villa_number) === villaNum);
           
           if (match) {
+            const { cleanRemarks, depInfo } = extractDepInfo(match.remarks);
             fullList.push({ 
                 ...match, 
                 villa_number: villaNum,
@@ -362,24 +515,19 @@ export default function HousekeepingSummaryPage() {
                 meal_plan: match.meal_plan || '',
                 stay_dates: match.stay_dates || '',
                 arrival_time: match.arrival_time || '',
-                departure_time: match.departure_time || '',
+                departure_time: depInfo?.time || match.departure_time || '',
                 preferences: match.preferences || '',
-                remarks: match.remarks || '',
+                remarks: cleanRemarks,
                 stay_id: match.stay_id || '',
-                incoming_guest_name: match.incoming_guest_name || '',
-                incoming_pax_adults: match.incoming_pax_adults || 0,
-                incoming_pax_kids: match.incoming_pax_kids || 0,
-                incoming_arrival_time: match.incoming_arrival_time || '',
-                incoming_stay_dates: match.incoming_stay_dates || '',
-                incoming_gem_name: match.incoming_gem_name || '',
-                incoming_meal_plan: match.incoming_meal_plan || '',
-                incoming_preferences: match.incoming_preferences || ''
+                dep_guest_name: depInfo?.name || '',
+                dep_stay_dates: depInfo?.dates || '',
             });
           } else {
             fullList.push({
               report_date: selectedDate, villa_number: villaNum, status: 'VAC', guest_name: '',
               pax_adults: 0, pax_kids: 0, gem_name: '', meal_plan: '', stay_dates: '', remarks: '',
-              preferences: '', arrival_time: '', departure_time: '', stay_id: ''
+              preferences: '', arrival_time: '', departure_time: '', stay_id: '',
+              dep_guest_name: '', dep_stay_dates: ''
             });
           }
         }
@@ -422,10 +570,12 @@ export default function HousekeepingSummaryPage() {
           preferences: '',
           arrival_time: '',
           departure_time: '',
-          stay_id: ''
+          stay_id: '',
+          dep_guest_name: '',
+          dep_stay_dates: ''
       });
-      setLinkedSuitesSelection(getAssociatedVillas(firstVacant));
-      setCustomLinkInput('');
+      setLinkedSuitesSelection([]);
+      setEditOriginVilla('');
       setParsedGuestList([]);
       setActiveTab('details');
       setIsEditOpen(true);
@@ -434,41 +584,30 @@ export default function HousekeepingSummaryPage() {
   const openEditModal = (row: GuestRecord) => {
       setIsNewRegistration(false);
       setEditingRecord({ ...row });
-      const activeName = row.status === 'DEP/ARR' && row.incoming_guest_name ? row.incoming_guest_name : (row.guest_name || '');
-      const names = activeName
+      const names = (row.guest_name || '')
           .split('&')
           .map(n => n.trim())
           .filter(Boolean)
           .map((n, idx) => ({ id: `g_${idx}_${Date.now()}`, name: n, is_departed: false }));
       setParsedGuestList(names);
-      setLinkedSuitesSelection(getAssociatedVillas(row.villa_number));
-      setCustomLinkInput('');
+      setLinkedSuitesSelection(getCurrentlyLinked(row.villa_number, row.stay_id));
+      setEditOriginVilla(row.villa_number);
       setActiveTab('details');
       setIsEditOpen(true);
   };
 
+  // Extension villas currently attached to this villa's stay (same stay_id)
+  const getCurrentlyLinked = (villa: string, stayId?: string) => {
+      if (!stayId) return [];
+      return getAssociatedVillas(villa).filter(ext => masterList.find(r => r.villa_number === ext)?.stay_id === stayId);
+  };
+
   const toggleLinkedSuite = (suiteNum: string) => {
       const norm = normalizeVilla(suiteNum);
-      if (!norm) return;
+      if (!norm || !editingRecord || !getAssociatedVillas(editingRecord.villa_number).includes(norm)) return;
       setLinkedSuitesSelection(prev =>
           prev.includes(norm) ? prev.filter(s => s !== norm) : [...prev, norm]
       );
-  };
-
-  const handleAddCustomLinkVilla = () => {
-      const norm = normalizeVilla(customLinkInput);
-      if (!norm || parseInt(norm, 10) < 1 || parseInt(norm, 10) > TOTAL_VILLAS) {
-          toast.error("Enter a valid villa number (1 - 97)");
-          return;
-      }
-      if (editingRecord && norm === editingRecord.villa_number) {
-          toast.error("Villa is already the primary room");
-          return;
-      }
-      if (!linkedSuitesSelection.includes(norm)) {
-          setLinkedSuitesSelection(prev => [...prev, norm]);
-      }
-      setCustomLinkInput('');
   };
 
   const handleSaveEdit = async () => {
@@ -482,59 +621,104 @@ export default function HousekeepingSummaryPage() {
     setIsProcessing(true);
     try {
         const remainingGuests = parsedGuestList.filter(g => !g.is_departed).map(g => g.name);
-        let finalPayload: GuestRecord = { ...editingRecord, villa_number: cleanVilla };
+        let finalRec: GuestRecord = { ...editingRecord, villa_number: cleanVilla };
         
         if (parsedGuestList.length > 0) {
-            const joined = remainingGuests.join(' & ');
-            if (finalPayload.status === 'DEP/ARR') {
-                finalPayload.incoming_guest_name = joined;
-            } else {
-                finalPayload.guest_name = joined;
-            }
-            if (remainingGuests.length === 0 && finalPayload.status !== 'VAC') {
-                finalPayload.status = 'DEP';
+            finalRec.guest_name = remainingGuests.join(' & ');
+            if (remainingGuests.length === 0 && finalRec.status !== 'VAC') {
+                finalRec.status = 'DEP';
             }
         }
 
-        if (!finalPayload.stay_id && finalPayload.stay_dates) {
-            const arrStr = finalPayload.stay_dates.split('-')[0].trim().replace(/\//g, '');
-            finalPayload.stay_id = `STAY_${finalPayload.villa_number}_${arrStr}`;
+        if (!finalRec.stay_id && finalRec.stay_dates) {
+            // Same STAY_<villa>_<YYMMDD> format the XML importers generate
+            const [dd, mm] = finalRec.stay_dates.split('-')[0].trim().split('/');
+            if (dd && mm) finalRec.stay_id = `STAY_${finalRec.villa_number}_${selectedDate.slice(2, 4)}${mm.padStart(2, '0')}${dd.padStart(2, '0')}`;
         }
-        
-        const masterRec = masterList.find(r => r.villa_number === finalPayload.villa_number);
-        const { id: mId, ...masterPayload } = finalPayload;
+
+        // One person = one active villa
+        if (ACTIVE_STATUSES.includes(finalRec.status) && finalRec.guest_name) {
+            const clash = masterList.find(r =>
+                r.villa_number !== finalRec.villa_number &&
+                r.villa_number !== editOriginVilla &&
+                ACTIVE_STATUSES.includes(r.status) &&
+                isSameGuest(r.guest_name, finalRec.guest_name)
+            );
+            if (clash) {
+                toast.error(`Guest already in-house in Villa ${clash.villa_number}. Use Villa Move instead.`);
+                setIsProcessing(false);
+                return;
+            }
+        }
+
+        const masterRec = masterList.find(r => r.villa_number === finalRec.villa_number);
+        if (!isNewRegistration && masterRec && editOriginVilla !== finalRec.villa_number &&
+            masterRec.guest_name && ACTIVE_STATUSES.includes(masterRec.status) && !isSameGuest(masterRec.guest_name, finalRec.guest_name)) {
+            toast.error(`Villa ${finalRec.villa_number} is occupied by ${masterRec.guest_name}. Use Villa Move instead.`);
+            setIsProcessing(false);
+            return;
+        }
+        const masterPayload = buildDbRowPayload(finalRec, selectedDate);
         
         const { error: masterErr } = masterRec?.id 
             ? await supabase.from('hsk_daily_summary').update(masterPayload).eq('id', masterRec.id) 
-            : await supabase.from('hsk_daily_summary').insert(masterPayload);
+            : await supabase.from('hsk_daily_summary').insert([masterPayload]);
 
         if (masterErr) throw masterErr;
 
-        // Sync any chosen linked villas/suites when registering or updating a guest
-        for (const v of linkedSuitesSelection) {
-            if (v === finalPayload.villa_number) continue;
+        const emptyRow = (villa: string, status = 'VAC') => ({
+            report_date: selectedDate, villa_number: villa, status, guest_name: '', pax_adults: 0, pax_kids: 0,
+            meal_plan: '', stay_dates: '', preferences: '', gem_name: '', stay_id: '', remarks: '',
+            arrival_time: '', departure_time: ''
+        });
+
+        // Villa changed inside the folio: free up the original villa so the guest isn't listed twice
+        if (!isNewRegistration && editOriginVilla && editOriginVilla !== finalRec.villa_number) {
+            const originRec = masterList.find(r => r.villa_number === editOriginVilla);
+            if (originRec?.id) {
+                const { error } = await supabase.from('hsk_daily_summary').update(emptyRow(editOriginVilla, 'VM/VAC')).eq('id', originRec.id);
+                if (error) throw error;
+            }
+            // Extensions that belonged to the old villa's stay are released too
+            for (const ext of getAssociatedVillas(editOriginVilla)) {
+                const extRec = masterList.find(r => r.villa_number === ext);
+                if (extRec?.id && originRec?.stay_id && extRec.stay_id === originRec.stay_id && !extRec.guest_name) {
+                    await supabase.from('hsk_daily_summary').update(emptyRow(ext)).eq('id', extRec.id);
+                }
+            }
+        }
+
+        // Linked extension villas: only 56/58 (for 57) and 88 (for 87)
+        const previousStayId = masterRec?.stay_id || editingRecord.stay_id || '';
+        for (const v of getAssociatedVillas(finalRec.villa_number)) {
             const targetRec = masterList.find(r => r.villa_number === v);
-            const assocPayload = { 
-                ...masterPayload, 
-                villa_number: v,
-                guest_name: '', 
-                pax_adults: 0, 
-                pax_kids: 0,
-                arrival_time: '',
-                departure_time: '',
-                preferences: '',
-                incoming_guest_name: '',
-                incoming_pax_adults: 0,
-                incoming_pax_kids: 0,
-                incoming_arrival_time: '',
-                incoming_stay_dates: '',
-                incoming_preferences: ''
-            };
-            
-            if (targetRec?.id) {
-                await supabase.from('hsk_daily_summary').update(assocPayload).eq('id', targetRec.id);
-            } else {
-                await supabase.from('hsk_daily_summary').insert(assocPayload);
+            const isSelected = linkedSuitesSelection.includes(v);
+            const wasLinked = !!targetRec?.stay_id && (targetRec.stay_id === previousStayId || targetRec.stay_id === finalRec.stay_id);
+
+            if (isSelected) {
+                if (targetRec?.guest_name && ACTIVE_STATUSES.includes(targetRec.status) && !wasLinked) {
+                    toast.error(`Villa ${v} has its own guest (${targetRec.guest_name}) — not linked.`);
+                    continue;
+                }
+                const assocPayload = {
+                    ...masterPayload,
+                    villa_number: v,
+                    guest_name: '',
+                    pax_adults: 0,
+                    pax_kids: 0,
+                    arrival_time: '',
+                    departure_time: '',
+                    preferences: '',
+                    remarks: ''
+                };
+                const { error } = targetRec?.id
+                    ? await supabase.from('hsk_daily_summary').update(assocPayload).eq('id', targetRec.id)
+                    : await supabase.from('hsk_daily_summary').insert([assocPayload]);
+                if (error) throw error;
+            } else if (wasLinked && targetRec?.id && !targetRec.guest_name) {
+                // Unticked: release the extension villa
+                const { error } = await supabase.from('hsk_daily_summary').update(emptyRow(v)).eq('id', targetRec.id);
+                if (error) throw error;
             }
         }
         
@@ -550,84 +734,94 @@ export default function HousekeepingSummaryPage() {
     }
   };
 
+  // SAFE & FAST APPROVAL: Updates existing rows by ID and batch-inserts new rows using exact DB columns
   const handleApproveUpdate = async () => {
       setIsProcessing(true);
       try {
           const finalPending = [...pendingData];
 
-          // Automatically sync empty extension suites 56/58 & 88 when master suite 57 or 87 is occupied
-          const v57 = finalPending.find(p => p.villa_number === '57');
-          if (v57 && v57.status !== 'VAC') {
-              ['56', '58'].forEach(ext => {
-                  const pExt = finalPending.find(p => p.villa_number === ext);
-                  if (pExt && (!pExt.guest_name || pExt.status === 'VAC')) {
-                      Object.assign(pExt, {
-                          status: v57.status,
-                          stay_dates: v57.stay_dates,
-                          stay_id: v57.stay_id,
-                          meal_plan: v57.meal_plan,
-                          gem_name: v57.gem_name
-                      });
-                  }
-              });
-          }
+          // Extension villas (56/58 → 57, 88 → 87) follow their parent ONLY if they were already linked to its stay.
+          // Nothing gets linked automatically — linking is a deliberate choice in the folio.
+          Object.entries(EXTENSION_PARENT).forEach(([ext, parent]) => {
+              const pExt = finalPending.find(p => p.villa_number === ext);
+              const pParent = finalPending.find(p => p.villa_number === parent);
+              const origParent = masterList.find(r => r.villa_number === parent);
+              if (!pExt || !pParent || pExt.guest_name || !pExt.stay_id) return;
+              if (pExt.stay_id !== origParent?.stay_id) return; // not linked to the parent's stay
 
-          const v87 = finalPending.find(p => p.villa_number === '87');
-          if (v87 && v87.status !== 'VAC') {
-              const p88 = finalPending.find(p => p.villa_number === '88');
-              if (p88 && (!p88.guest_name || p88.status === 'VAC')) {
-                  Object.assign(p88, {
-                      status: v87.status,
-                      stay_dates: v87.stay_dates,
-                      stay_id: v87.stay_id,
-                      meal_plan: v87.meal_plan,
-                      gem_name: v87.gem_name
+              if (pParent.stay_id === pExt.stay_id) {
+                  Object.assign(pExt, {
+                      status: pParent.status === 'DEP/ARR' ? 'DEP' : pParent.status,
+                      stay_dates: pParent.stay_dates,
+                      meal_plan: pParent.meal_plan,
+                      gem_name: pParent.gem_name
                   });
+              } else {
+                  // Parent now hosts a different stay: the old linked party leaves today (DEP/ARR) or is gone (VAC)
+                  Object.assign(pExt, {
+                      status: pParent.status === 'DEP/ARR' ? 'DEP' : 'VAC',
+                      ...(pParent.status === 'DEP/ARR' ? {} : { stay_dates: '', stay_id: '', meal_plan: '', gem_name: '' })
+                  });
+              }
+          });
+
+          // Re-fetch existing row IDs for selectedDate to guarantee accurate updates vs inserts
+          const { data: existingDbRows, error: fetchErr } = await supabase
+              .from('hsk_daily_summary')
+              .select('id, villa_number')
+              .eq('report_date', selectedDate);
+
+          if (fetchErr) throw fetchErr;
+
+          const existingIdByVilla = new Map<string, string>();
+          (existingDbRows || []).forEach((r: any) => {
+              const v = normalizeVilla(r.villa_number);
+              if (v && r.id) existingIdByVilla.set(v, r.id);
+          });
+
+          const updates: Array<{ id: string; payload: any }> = [];
+          const inserts: any[] = [];
+
+          for (const rec of finalPending) {
+              const dbId = rec.id || existingIdByVilla.get(rec.villa_number);
+              const payload = buildDbRowPayload(rec, selectedDate);
+
+              if (dbId) {
+                  updates.push({ id: dbId, payload });
+              } else if (rec.status !== 'VAC' || rec.guest_name || rec.meal_plan || rec.gem_name || rec.preferences) {
+                  inserts.push(payload);
               }
           }
 
-          const recordsToUpsert = finalPending.map(rec => {
-              const existingRow = masterList.find(m => m.villa_number === rec.villa_number);
-              return {
-                  ...(existingRow?.id ? { id: existingRow.id } : {}),
-                  report_date: selectedDate,
-                  villa_number: rec.villa_number,
-                  status: rec.status,
-                  guest_name: rec.guest_name || '',
-                  pax_adults: rec.pax_adults || 0,
-                  pax_kids: rec.pax_kids || 0,
-                  gem_name: rec.gem_name || '',
-                  meal_plan: rec.meal_plan || '',
-                  stay_dates: rec.stay_dates || '',
-                  arrival_time: rec.arrival_time || '',
-                  departure_time: rec.departure_time || '',
-                  preferences: rec.preferences || '',
-                  remarks: rec.remarks || '',
-                  stay_id: rec.stay_id || `STAY_${rec.villa_number}_${selectedDate.replace(/-/g, '')}`,
-                  incoming_guest_name: rec.incoming_guest_name || '',
-                  incoming_pax_adults: rec.incoming_pax_adults || 0,
-                  incoming_pax_kids: rec.incoming_pax_kids || 0,
-                  incoming_arrival_time: rec.incoming_arrival_time || '',
-                  incoming_stay_dates: rec.incoming_stay_dates || '',
-                  incoming_gem_name: rec.incoming_gem_name || '',
-                  incoming_meal_plan: rec.incoming_meal_plan || '',
-                  incoming_preferences: rec.incoming_preferences || '',
-                  updated_at: new Date().toISOString()
-              };
-          });
+          // Execute updates in parallel batches of 20
+          const BATCH_SIZE = 20;
+          for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+              const slice = updates.slice(i, i + BATCH_SIZE);
+              const results = await Promise.all(
+                  slice.map(u =>
+                      supabase
+                          .from('hsk_daily_summary')
+                          .update(u.payload)
+                          .eq('id', u.id)
+                  )
+              );
+              const firstErr = results.find(r => r.error)?.error;
+              if (firstErr) throw firstErr;
+          }
 
-          const { error } = await supabase
-              .from('hsk_daily_summary')
-              .upsert(recordsToUpsert, { onConflict: 'report_date,villa_number' });
-
-          if (error) throw error;
+          if (inserts.length > 0) {
+              const { error: insertErr } = await supabase
+                  .from('hsk_daily_summary')
+                  .insert(inserts);
+              if (insertErr) throw insertErr;
+          }
 
           await fetchDailyData();
           setDiffModalOpen(false);
-          toast.success("Synchronized successfully!");
+          toast.success("Synchronized & Updated Successfully!");
       } catch (err: any) {
           console.error("Approve update error:", err);
-          toast.error("Sync failed: " + (err?.message || "Check network/schema"));
+          toast.error("Sync failed: " + (err?.message || "Database error"));
       } finally {
           setIsProcessing(false);
       }
@@ -685,10 +879,7 @@ export default function HousekeepingSummaryPage() {
               }
           }
 
-          const upsertBatch: any[] = [];
-
           const toPayload = {
-              ...(toRec.id ? { id: toRec.id } : {}),
               report_date: selectedDate,
               villa_number: toVilla,
               status: moveData.type,
@@ -700,16 +891,21 @@ export default function HousekeepingSummaryPage() {
               gem_name: gemName,
               stay_dates: stayDates,
               stay_id: stayId || `STAY_VM_${toVilla}_${selectedDate.replace(/-/g, '')}`,
-              updated_at: new Date().toISOString()
           };
-          upsertBatch.push(toPayload);
+
+          if (toRec.id) {
+              const { error } = await supabase.from('hsk_daily_summary').update(toPayload).eq('id', toRec.id);
+              if (error) throw error;
+          } else {
+              const { error } = await supabase.from('hsk_daily_summary').insert([toPayload]);
+              if (error) throw error;
+          }
 
           if (!moveData.isPartial) {
               for (const v of fromVillas) {
                   const sRec = masterList.find(r => r.villa_number === v);
                   if (sRec) {
-                      upsertBatch.push({
-                          ...(sRec.id ? { id: sRec.id } : {}),
+                      const emptyPayload = {
                           report_date: selectedDate,
                           villa_number: v,
                           status: 'VM/VAC',
@@ -721,14 +917,16 @@ export default function HousekeepingSummaryPage() {
                           preferences: '',
                           gem_name: '',
                           stay_id: '',
-                          updated_at: new Date().toISOString()
-                      });
+                          remarks: ''
+                      };
+                      if (sRec.id) {
+                          await supabase.from('hsk_daily_summary').update(emptyPayload).eq('id', sRec.id);
+                      } else {
+                          await supabase.from('hsk_daily_summary').insert([emptyPayload]);
+                      }
                   }
               }
           }
-
-          const { error } = await supabase.from('hsk_daily_summary').upsert(upsertBatch, { onConflict: 'report_date,villa_number' });
-          if (error) throw error;
 
           setIsMoveModalOpen(false);
           setMoveData({ from: '', to: '', type: 'VM/OCC', isPartial: false, mergeDest: true });
@@ -782,19 +980,23 @@ export default function HousekeepingSummaryPage() {
       reader.readAsText(file);
   };
 
-  // OCC XML PARSER: Preserves preferences & NEVER flags 56, 58, 88 as missing
+  // OCC XML PARSER: In-house list. C9 villa, C27 GEM, C30 meal plan, C33 title, C36 name, C48 adults, C51 kids, C81 arr, C87 dep
   const processOCCXML = (xmlText: string) => {
       try {
           const parser = new DOMParser();
           const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+          if (xmlDoc.querySelector('parsererror')) throw new Error('Invalid XML file');
           const nodes = Array.from(xmlDoc.querySelectorAll('G_C9'));
+          if (nodes.length === 0) throw new Error('No in-house rows (G_C9) found — is this the OCC report?');
           
+          const originalMap = new Map(masterList.map(r => [r.villa_number, r]));
           const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
           const diffs: ChangeLog[] = [];
-          const resByVilla: Record<string, any[]> = {};
+          const resByVilla: Record<string, Element[]> = {};
+          const txt = (n: Element, tag: string) => n.querySelector(tag)?.textContent?.trim() || '';
           
-          nodes.forEach((node: any) => {
-              const v = node.querySelector('C9')?.textContent?.trim();
+          nodes.forEach(node => {
+              const v = normalizeVilla(txt(node, 'C9'));
               if (v) {
                   if (!resByVilla[v]) resByVilla[v] = [];
                   resByVilla[v].push(node);
@@ -803,142 +1005,157 @@ export default function HousekeepingSummaryPage() {
 
           const newOccList: any[] = [];
 
-          for (const [villa, resList] of Object.entries(resByVilla)) {
-              const cleanVilla = normalizeVilla(villa);
-              if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
+          for (const [cleanVilla, resList] of Object.entries(resByVilla)) {
+              if (!currentMap.has(cleanVilla)) continue;
               
               let totalAdults = 0; let totalKids = 0;
-              let names: string[] = []; let mealPlan = 'RO'; let gemName = '';
-              let arrDate = ''; let depDate = '';
+              const names: string[] = []; let mealPlan = ''; let gemName = '';
+              let arr: ReturnType<typeof parseOperaDate> = null;
+              let dep: ReturnType<typeof parseOperaDate> = null;
 
               resList.forEach(res => {
-                  const rawName = res.querySelector('C36')?.textContent || '';
-                  const title = res.querySelector('C33')?.textContent || '';
-                  if (rawName) names.push(formatGuestName(rawName, title));
+                  const rawName = txt(res, 'C36');
+                  const title = txt(res, 'C33');
+                  const formatted = rawName ? formatGuestName(rawName, title) : '';
+                  if (formatted && !names.some(n => cleanNameForMatch(n) === cleanNameForMatch(formatted))) names.push(formatted);
                   
-                  totalAdults += parseInt(res.querySelector('C48')?.textContent || '0', 10);
-                  totalKids += parseInt(res.querySelector('C51')?.textContent || '0', 10);
+                  totalAdults += parseInt(txt(res, 'C48') || '0', 10) || 0;
+                  totalKids += parseInt(txt(res, 'C51') || '0', 10) || 0;
                   
-                  const mPlan = res.querySelector('C30')?.textContent?.trim();
-                  if (mPlan && mPlan !== 'RO') mealPlan = mPlan;
+                  const parsedMp = parseMealPlan(txt(res, 'C30'));
+                  if (parsedMp && !mealPlan) mealPlan = parsedMp;
                   
-                  const gem = res.querySelector('C27')?.textContent?.trim();
+                  const gem = txt(res, 'C27');
                   if (gem) gemName = gem;
 
-                  if (!arrDate) arrDate = res.querySelector('C81')?.textContent || '';
-                  if (!depDate) depDate = res.querySelector('C87')?.textContent || '';
+                  // Sharers can arrive/leave on different days: stay spans earliest arrival → latest departure
+                  const a = parseOperaDate(txt(res, 'C81'));
+                  const d = parseOperaDate(txt(res, 'C87'));
+                  if (a && (!arr || a.iso < arr.iso)) arr = a;
+                  if (d && (!dep || d.iso > dep.iso)) dep = d;
               });
 
-              let stayDates = ''; let stayId = '';
-              if (arrDate && depDate) {
-                  const aParts = arrDate.split('-'); const dParts = depDate.split('-');
-                  if (aParts.length === 3 && dParts.length === 3) {
-                      const aMonth = monthToNum(aParts[1]);
-                      const dMonth = monthToNum(dParts[1]);
-                      stayDates = `${aParts[0].padStart(2, '0')}/${aMonth} - ${dParts[0].padStart(2, '0')}/${dMonth}`;
-                      stayId = `STAY_${cleanVilla}_${aParts[2]}${aMonth}${aParts[0].padStart(2, '0')}`; 
-                  }
-              }
-
+              const a = arr as ReturnType<typeof parseOperaDate>;
+              const d = dep as ReturnType<typeof parseOperaDate>;
               newOccList.push({
                   villa: cleanVilla,
                   names: names.join(' & '),
                   adults: totalAdults,
                   kids: totalKids,
-                  mealPlan: mealPlan,
-                  gemName: gemName,
-                  stayDates: stayDates,
-                  stayId: stayId
+                  mealPlan,
+                  gemName,
+                  stayDates: a && d ? `${a.dm} - ${d.dm}` : '',
+                  stayId: a ? `STAY_${cleanVilla}_${a.id}` : '',
+                  departsToday: !!d && d.iso === selectedDate
               });
           }
 
+          const occVillas = new Set(newOccList.map(n => n.villa));
+          // Is this person still listed in their old villa in the new report? Then it's not a move (e.g. same name in 2 villas)
+          const stillInVilla = (villa: string, names: string) => {
+              const occ = newOccList.find(n => n.villa === villa);
+              return !!occ && isSameGuest(occ.names, names);
+          };
+
           newOccList.forEach(newOcc => {
               const record = currentMap.get(newOcc.villa)!;
+              const original = originalMap.get(newOcc.villa)!;
+              const oldStatus = original.status || 'VAC';
+              const oldGuest = original.guest_name || '';
               let oldVillaMatch: GuestRecord | null = null;
 
-              if (!isSameGuest(record.guest_name, newOcc.names)) {
-                  for (const [vNum, rec] of currentMap.entries()) {
-                      if (vNum !== newOcc.villa && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
-                          if (isSameGuest(rec.guest_name, newOcc.names)) {
-                              oldVillaMatch = rec;
-                              break;
-                          }
+              if (!isSameGuest(oldGuest, newOcc.names)) {
+                  for (const [vNum, rec] of originalMap.entries()) {
+                      if (vNum !== newOcc.villa && ACTIVE_STATUSES.includes(rec.status) &&
+                          isSameGuest(rec.guest_name, newOcc.names) && !stillInVilla(vNum, rec.guest_name)) {
+                          oldVillaMatch = rec;
+                          break;
                       }
                   }
               }
 
-              const oldStatus = record.status || 'VAC';
-              if (!String(oldStatus).includes('ARR') && !String(oldStatus).includes('DEP')) record.status = 'OCC';
-              
-              const existingPrefs = record.preferences || '';
+              // Arrival already loaded for today and this OCC guest is the one checking out → keep arrival, store departing guest
+              const hasTodaysArrival = ['ARR', 'DEP/ARR', 'VM/ARR'].includes(oldStatus) && oldGuest && !isSameGuest(oldGuest, newOcc.names);
+              if (hasTodaysArrival && newOcc.departsToday) {
+                  record.status = 'DEP/ARR';
+                  record.dep_guest_name = newOcc.names;
+                  record.dep_stay_dates = newOcc.stayDates;
+                  diffs.push({
+                      villa: newOcc.villa, type: 'DEP/ARR DUAL',
+                      oldGuest: `Dep: ${newOcc.names}`, newGuest: `Arr: ${oldGuest}`,
+                      oldStatus, newStatus: 'DEP/ARR'
+                  });
+                  return;
+              }
+
+              if (newOcc.departsToday) record.status = oldStatus === 'DEP/ARR' ? 'DEP/ARR' : 'DEP';
+              else if (oldStatus.startsWith('VM/') && oldStatus !== 'VM/VAC') record.status = oldStatus;
+              else record.status = 'OCC';
+
+              const existingPrefs = original.preferences || '';
+              const sameStay = isSameGuest(oldGuest, newOcc.names);
 
               record.guest_name = newOcc.names;
               record.pax_adults = newOcc.adults;
               record.pax_kids = newOcc.kids;
-              record.meal_plan = newOcc.mealPlan;
+              record.meal_plan = newOcc.mealPlan || (sameStay ? original.meal_plan : '') || '';
               record.stay_dates = newOcc.stayDates;
               record.stay_id = newOcc.stayId;
+              record.gem_name = newOcc.gemName || (oldVillaMatch?.gem_name) || (sameStay ? original.gem_name : '') || '';
+              if (!sameStay && !oldVillaMatch) {
+                  // Different party in this villa: don't inherit the previous guest's notes/times
+                  record.preferences = '';
+                  record.arrival_time = '';
+                  record.departure_time = '';
+                  record.dep_guest_name = '';
+                  record.dep_stay_dates = '';
+              }
 
               if (oldVillaMatch) {
-                  if (!newOcc.gemName && oldVillaMatch.gem_name) record.gem_name = oldVillaMatch.gem_name;
-                  else record.gem_name = newOcc.gemName;
-                  
                   if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
                   if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
-                  record.preferences = existingPrefs || oldVillaMatch.preferences || '';
+                  record.preferences = oldVillaMatch.preferences || '';
 
                   diffs.push({
                       villa: newOcc.villa, type: 'ALLOC CHANGE',
-                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : (oldGuest || 'Vacant'),
                       newGuest: `${newOcc.names} (Moved from V${oldVillaMatch.villa_number})`,
-                      oldStatus: oldStatus, newStatus: record.status
+                      oldStatus, newStatus: record.status
                   });
               } else {
-                  record.gem_name = newOcc.gemName;
-                  record.preferences = existingPrefs;
-
+                  record.preferences = sameStay ? existingPrefs : '';
                   diffs.push({
-                      villa: newOcc.villa, type: 'SYNC',
-                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
-                      newGuest: record.guest_name, oldStatus: oldStatus, newStatus: record.status
+                      villa: newOcc.villa, type: newOcc.departsToday ? 'DEPARTURE' : 'SYNC',
+                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : (oldGuest || 'Vacant'),
+                      newGuest: record.guest_name, oldStatus, newStatus: record.status
                   });
               }
           });
 
-          // Discrepancy checks: Exclude 56, 58, 88
+          // Discrepancy checks: Exclude extension villas 56, 58, 88 (they are not separate Opera rooms)
           currentMap.forEach((rec, vNum) => {
-              if (EXTENSION_VILLAS.includes(vNum)) return;
+              if (EXTENSION_VILLAS.includes(vNum) || occVillas.has(vNum)) return;
 
-              const inOCC = newOccList.find(n => n.villa === vNum);
               const isTMA = String(rec?.status || '').toUpperCase().includes('TMA');
               const guestUpper = String(rec?.guest_name || '').toUpperCase();
               const isHouseUse = guestUpper.includes('HOUSE USE') || guestUpper.includes('H/U') || String(rec?.status || '').toUpperCase().includes('HOUSE');
+              // Today's arrivals are not in the in-house report yet — don't wipe them
+              const isTodaysArrival = ['ARR', 'VM/ARR'].includes(rec.status);
 
-              if (!inOCC && ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(rec.status)) {
-                  if (!isTMA && !isHouseUse) {
-                      const movedTo = newOccList.find(n => isSameGuest(n.names, rec.guest_name));
-                      
-                      if (movedTo) {
-                          diffs.push({
-                              villa: vNum, type: 'MOVED OUT',
-                              oldGuest: rec.guest_name,
-                              newGuest: `Moved to V${movedTo.villa}`,
-                              oldStatus: rec.status, newStatus: 'VAC'
-                          });
-                      } else {
-                          diffs.push({
-                              villa: vNum, type: 'DISCREPANCY',
-                              oldGuest: rec.guest_name || 'Expected Guest',
-                              newGuest: 'Not in OCC List (Checked out / No Show)',
-                              oldStatus: rec.status, newStatus: 'VAC'
-                          });
-                      }
-                      
-                      rec.status = 'VAC'; rec.guest_name = ''; rec.pax_adults = 0; rec.pax_kids = 0;
-                      rec.meal_plan = ''; rec.stay_dates = ''; rec.gem_name = ''; rec.stay_id = '';
-                  }
+              if (ACTIVE_STATUSES.includes(rec.status) && !isTMA && !isHouseUse && !isTodaysArrival) {
+                  const movedTo = newOccList.find(n => isSameGuest(n.names, rec.guest_name));
+                  diffs.push(movedTo
+                      ? { villa: vNum, type: 'MOVED OUT', oldGuest: rec.guest_name, newGuest: `Moved to V${movedTo.villa}`, oldStatus: rec.status, newStatus: 'VAC' }
+                      : { villa: vNum, type: 'DISCREPANCY', oldGuest: rec.guest_name || 'Expected Guest', newGuest: 'Not in OCC List (Checked out / No Show)', oldStatus: rec.status, newStatus: 'VAC' });
+
+                  Object.assign(rec, {
+                      status: movedTo ? 'VM/VAC' : 'VAC', guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '',
+                      gem_name: '', stay_id: '', preferences: '', arrival_time: '', departure_time: '', dep_guest_name: '', dep_stay_dates: ''
+                  });
               }
           });
+
+          enforceUniqueGuests(currentMap, occVillas, diffs);
 
           setChanges(diffs);
           setPendingData(Array.from(currentMap.values()));
@@ -951,23 +1168,30 @@ export default function HousekeepingSummaryPage() {
       }
   };
 
+  // ARRIVALS XML PARSER (Opera RES_DETAIL): DISP_ROOM_NO villa, ARRIVAL/DEPARTURE "DD-MM-YY", PRODUCTS → meal plan
   const processArrDepXML = (xmlText: string) => {
       try {
           const parser = new DOMParser();
           const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+          if (xmlDoc.querySelector('parsererror')) throw new Error('Invalid XML file');
           
           const reservations = Array.from(xmlDoc.querySelectorAll('G_RESERVATION'));
+          if (reservations.length === 0) throw new Error('No reservations (G_RESERVATION) found — is this the Arrivals report?');
+          const originalMap = new Map(masterList.map(r => [r.villa_number, r]));
           const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
           const diffs: ChangeLog[] = [];
-          const resByVilla: Record<string, any[]> = {};
+          const resByVilla: Record<string, Element[]> = {};
           
+          // Direct child lookup so nested lists (fixed charges, comments) never shadow reservation fields
           const getText = (node: Element, tag: string) => {
-              let el = node.querySelector(tag) || node.querySelector(tag.toLowerCase());
+              const el = Array.from(node.children).find(c => c.tagName.toUpperCase() === tag);
               return el ? el.textContent?.trim() || '' : '';
           };
 
-          reservations.forEach((res: any) => {
-              const v = getText(res, 'DISP_ROOM_NO');
+          reservations.forEach(res => {
+              const v = normalizeVilla(getText(res, 'DISP_ROOM_NO') || getText(res, 'ROOM_NO'));
+              const status = getText(res, 'SHORT_RESV_STATUS').toUpperCase();
+              if (['CXL', 'CANCEL', 'NS', 'NOSHOW'].includes(status)) return;
               if (v) {
                   if (!resByVilla[v]) resByVilla[v] = [];
                   resByVilla[v].push(res);
@@ -976,45 +1200,31 @@ export default function HousekeepingSummaryPage() {
 
           const newArrList: any[] = [];
 
-          for (const [villa, resList] of Object.entries(resByVilla)) {
-              const cleanVilla = normalizeVilla(villa);
-              if (!cleanVilla || !currentMap.has(cleanVilla)) continue;
+          for (const [cleanVilla, resList] of Object.entries(resByVilla)) {
+              if (!currentMap.has(cleanVilla)) continue;
 
               let isArr = false; let isDep = false;
               let isFullyDeparting = true;
-              let arrNames: string[] = []; let depNames: string[] = [];
+              const arrNames: string[] = []; const depNames: string[] = [];
               let isExtFromCarrier = false;
 
               resList.forEach(res => {
-                  const arrDate = getText(res, 'ARRIVAL');
-                  const depDate = getText(res, 'DEPARTURE');
-                  const arrCarrier = (getText(res, 'ARRIVAL_CARRIER_CODE') || '').toUpperCase();
-                  
-                  if (arrCarrier.includes('EXT') || arrCarrier.includes('STAY EXT')) {
-                      isExtFromCarrier = true;
-                  }
+                  const a = parseOperaDate(getText(res, 'ARRIVAL'));
+                  const d = parseOperaDate(getText(res, 'DEPARTURE'));
+                  const arrCarrier = getText(res, 'ARRIVAL_CARRIER_CODE').toUpperCase();
+                  if (/\bEXT\b|STAY\s*EXT/.test(arrCarrier)) isExtFromCarrier = true;
 
-                  if (arrDate && depDate) {
-                      const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
-                      const dFull = `20${depDate.split('-')[2]}-${monthToNum(depDate.split('-')[1])}-${depDate.split('-')[0].padStart(2, '0')}`;
-                      
-                      const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
-                      const formattedName = formatGuestName(rawName);
-
-                      if (aFull === selectedDate) { isArr = true; arrNames.push(formattedName); }
-                      if (dFull === selectedDate) { isDep = true; depNames.push(formattedName); }
-                      
-                      if (dFull > selectedDate) {
-                          isFullyDeparting = false;
-                      }
+                  if (a && d) {
+                      const formattedName = formatGuestName(getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME'));
+                      if (a.iso === selectedDate) { isArr = true; arrNames.push(formattedName); }
+                      if (d.iso === selectedDate) { isDep = true; depNames.push(formattedName); }
+                      if (d.iso > selectedDate) isFullyDeparting = false;
                   }
               });
 
               let isB2BExtension = isExtFromCarrier;
-              if (isArr && isDep) {
-                  if (arrNames.some(aName => depNames.some(dName => isSameGuest(aName, dName)))) {
-                      isB2BExtension = true;
-                  }
+              if (isArr && isDep && arrNames.some(aName => depNames.some(dName => isSameGuest(aName, dName)))) {
+                  isB2BExtension = true;
               }
 
               let finalStatus = 'OCC';
@@ -1025,77 +1235,103 @@ export default function HousekeepingSummaryPage() {
 
               let primaryResList = resList;
               if (finalStatus === 'DEP/ARR' || isB2BExtension) {
-                  primaryResList = resList.filter(res => {
-                      const arrDate = getText(res, 'ARRIVAL');
-                      if (!arrDate) return false;
-                      const aFull = `20${arrDate.split('-')[2]}-${monthToNum(arrDate.split('-')[1])}-${arrDate.split('-')[0].padStart(2, '0')}`;
-                      return aFull === selectedDate;
-                  });
+                  primaryResList = resList.filter(res => parseOperaDate(getText(res, 'ARRIVAL'))?.iso === selectedDate);
               }
 
               let totalAdults = 0; let totalKids = 0;
-              let names: string[] = []; let prefs: string[] = [];
-              let mealPlan = ''; let stayDates = ''; let stayId = '';
+              const names: string[] = []; const prefs: string[] = [];
+              let mealPlan = '';
+              let arr: ReturnType<typeof parseOperaDate> = null;
+              let dep: ReturnType<typeof parseOperaDate> = null;
 
               primaryResList.forEach(res => {
-                  const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
-                  if (rawName) names.push(formatGuestName(rawName));
+                  const formatted = formatGuestName(getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME'));
+                  if (formatted && !names.some(n => cleanNameForMatch(n) === cleanNameForMatch(formatted))) names.push(formatted);
                   
-                  totalAdults += parseInt(getText(res, 'ADULTS') || '0', 10);
-                  totalKids += parseInt(getText(res, 'CHILDREN') || '0', 10);
+                  totalAdults += parseInt(getText(res, 'ADULTS') || '0', 10) || 0;
+                  totalKids += parseInt(getText(res, 'CHILDREN') || '0', 10) || 0;
 
-                  const arrDate = getText(res, 'ARRIVAL');
-                  const depDate = getText(res, 'DEPARTURE');
-                  if (arrDate && depDate) {
-                      const aParts = arrDate.split('-'); const dParts = depDate.split('-');
-                      if (aParts.length === 3 && dParts.length === 3) {
-                          const aMonth = monthToNum(aParts[1]);
-                          const dMonth = monthToNum(dParts[1]);
-                          stayDates = `${aParts[0].padStart(2, '0')}/${aMonth} - ${dParts[0].padStart(2, '0')}/${dMonth}`;
-                          stayId = `STAY_${cleanVilla}_${aParts[2]}${aMonth}${aParts[0].padStart(2, '0')}`; 
-                      }
-                  }
+                  // RATE_CODE (IK60D, IW25PWT1…) is NOT a meal plan — never use it
+                  const parsedMp = parseMealPlan(getText(res, 'MEAL_PLAN')) || mealPlanFromProducts(getText(res, 'PRODUCTS'));
+                  if (parsedMp && !mealPlan) mealPlan = parsedMp;
 
-                  const comments = Array.from(res.querySelectorAll('RES_COMMENT'));
-                  comments.forEach((c: any) => { if (c.textContent) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
+                  const a = parseOperaDate(getText(res, 'ARRIVAL'));
+                  const d = parseOperaDate(getText(res, 'DEPARTURE'));
+                  if (a && (!arr || a.iso < arr.iso)) arr = a;
+                  if (d && (!dep || d.iso > dep.iso)) dep = d;
+
+                  [getText(res, 'SPECIAL_REQUESTS'), getText(res, 'PREFERENCES')].forEach(t => { if (t) prefs.push(t.replace(/\s+/g, ' ')); });
+                  res.querySelectorAll('RES_COMMENT').forEach(c => { if (c.textContent?.trim()) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
               });
 
+              const a = arr as ReturnType<typeof parseOperaDate>;
+              const d = dep as ReturnType<typeof parseOperaDate>;
               newArrList.push({
                   villa: cleanVilla,
                   names: names.join(' & '),
                   adults: totalAdults,
                   kids: totalKids,
-                  mealPlan: mealPlan,
-                  stayDates: stayDates,
-                  stayId: stayId,
+                  mealPlan,
+                  stayDates: a && d ? `${a.dm} - ${d.dm}` : '',
+                  stayId: a ? `STAY_${cleanVilla}_${a.id}` : '',
                   status: finalStatus,
                   isB2B: isB2BExtension,
                   prefs: Array.from(new Set(prefs)).join('\n\n')
               });
           }
 
+          // Base board from PRODUCTS is only "HB/FB/BB" — keep a richer manual/OCC value like HBSI for the same stay
+          const mergeMeal = (existing: string, incoming: string) =>
+              !incoming ? existing : (existing && existing.startsWith(incoming) ? existing : incoming);
+          const mergePrefs = (existing: string, incoming: string) =>
+              !incoming ? existing : !existing ? incoming : existing.includes(incoming) ? existing : `${existing}\n\n${incoming}`;
+
           newArrList.forEach(newArr => {
               const record = currentMap.get(newArr.villa)!;
-              const oldStatus = record.status || 'VAC';
-              let newStatus = newArr.status;
+              const original = originalMap.get(newArr.villa)!;
+              const oldStatus = original.status || 'VAC';
+              const oldGuest = original.guest_name || '';
+              const sameParty = isSameGuest(oldGuest, newArr.names);
+              const newStatus = newArr.status;
 
-              if (newStatus === 'DEP/ARR' || (String(oldStatus).includes('DEP') && String(newStatus).includes('ARR'))) {
+              const hasDepartingGuest = oldGuest && !sameParty && (String(oldStatus).includes('DEP') ||
+                  (ACTIVE_STATUSES.includes(oldStatus) && checkStayStatusForDate(original.stay_dates, selectedDate).isDepartingToday));
+
+              if (newStatus === 'DEP/ARR' || (String(newStatus).includes('ARR') && hasDepartingGuest)) {
+                  // Preserve departing guest in dep_guest_name, set arriving guest as primary guest_name
+                  if (hasDepartingGuest) {
+                      record.dep_guest_name = oldGuest;
+                      record.dep_stay_dates = original.stay_dates;
+                  }
                   record.status = 'DEP/ARR';
-                  record.incoming_guest_name = newArr.names;
-                  record.incoming_pax_adults = newArr.adults;
-                  record.incoming_pax_kids = newArr.kids;
-                  record.incoming_stay_dates = newArr.stayDates;
-                  record.incoming_preferences = newArr.prefs;
+                  record.guest_name = newArr.names;
+                  record.pax_adults = newArr.adults;
+                  record.pax_kids = newArr.kids;
+                  record.stay_dates = newArr.stayDates;
+                  record.stay_id = newArr.stayId;
+                  record.arrival_time = sameParty ? original.arrival_time : '';
+                  record.meal_plan = mergeMeal(sameParty ? original.meal_plan : '', newArr.mealPlan);
+                  record.preferences = mergePrefs(sameParty ? original.preferences || '' : '', newArr.prefs);
+                  if (!sameParty) record.gem_name = '';
 
                   diffs.push({
                       villa: newArr.villa,
                       type: 'DEP/ARR DUAL',
-                      oldGuest: record.guest_name ? `Dep: ${record.guest_name}` : 'Departing Guest',
+                      oldGuest: record.dep_guest_name ? `Dep: ${record.dep_guest_name}` : 'Departing Guest',
                       newGuest: `Arr: ${newArr.names}`,
-                      oldStatus: oldStatus,
+                      oldStatus,
                       newStatus: 'DEP/ARR'
                   });
                   return;
+              }
+
+              if (ACTIVE_STATUSES.includes(oldStatus) && oldGuest && !sameParty && newStatus === 'ARR') {
+                  // Villa still shows a staying guest who isn't checking out today — flag instead of silently overwriting
+                  diffs.push({
+                      villa: newArr.villa, type: 'CONFLICT',
+                      oldGuest: `${oldGuest} (in-house until ${original.stay_dates.split('-')[1]?.trim() || '?'})`,
+                      newGuest: `${newArr.names} arriving`, oldStatus, newStatus
+                  });
               }
 
               record.status = newStatus;
@@ -1104,19 +1340,27 @@ export default function HousekeepingSummaryPage() {
               record.pax_kids = newArr.kids;
               record.stay_dates = newArr.stayDates;
               record.stay_id = newArr.stayId;
-              if (newArr.prefs) {
-                  record.preferences = record.preferences ? `${record.preferences}\n\n${newArr.prefs}` : newArr.prefs;
+              record.meal_plan = mergeMeal(sameParty ? original.meal_plan : '', newArr.mealPlan);
+              record.preferences = mergePrefs(sameParty ? original.preferences || '' : '', newArr.prefs);
+              if (!sameParty) {
+                  record.gem_name = '';
+                  record.arrival_time = '';
+                  record.departure_time = '';
+                  record.dep_guest_name = '';
+                  record.dep_stay_dates = '';
               }
 
               diffs.push({
                   villa: newArr.villa,
                   type: newStatus === 'ARR' ? 'ARRIVAL' : 'SYNC',
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : record.guest_name,
+                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : (oldGuest || 'Vacant'),
                   newGuest: newArr.names,
-                  oldStatus: oldStatus,
-                  newStatus: newStatus
+                  oldStatus,
+                  newStatus
               });
           });
+
+          enforceUniqueGuests(currentMap, new Set(newArrList.map(n => n.villa)), diffs);
 
           setChanges(diffs);
           setPendingData(Array.from(currentMap.values()));
@@ -1136,6 +1380,7 @@ export default function HousekeepingSummaryPage() {
           const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
           const diffs: ChangeLog[] = [];
 
+          const memoTouched = new Set<string>();
           let section: 'ARRIVALS' | 'DEPARTURES' | 'MOVES' | 'NONE' = 'NONE';
           let headerRowIndex = -1;
 
@@ -1165,24 +1410,26 @@ export default function HousekeepingSummaryPage() {
                       const guestName = formatGuestName(rawName);
                       const gem = (row[9] || row[10] || '').trim();
                       const special = (row[11] || row[12] || '').trim();
+                      const mealRaw = (row[13] || row[14] || '').trim();
+                      const parsedMp = parseMealPlan(mealRaw);
                       const depDateStr = (row[5] || row[6] || '').trim();
                       const arrTime = extractTime(row[3] || row[4] || '');
 
                       if (guestName) {
                           if (record.status.includes('DEP')) {
+                              record.dep_guest_name = record.guest_name;
+                              record.dep_stay_dates = record.stay_dates;
                               record.status = 'DEP/ARR';
-                              record.incoming_guest_name = guestName;
-                              if (arrTime) record.incoming_arrival_time = arrTime;
-                              if (gem) record.incoming_gem_name = gem;
-                              if (special) record.incoming_preferences = special;
                           } else {
-                              record.guest_name = guestName;
                               record.status = 'ARR';
-                              if (arrTime) record.arrival_time = arrTime;
-                              if (gem) record.gem_name = gem;
-                              if (depDateStr) record.stay_dates = `${selectedDate.substring(5)} - ${depDateStr.replace(/\n/g, ' ')}`;
-                              if (special) record.preferences = record.preferences ? `${record.preferences}\n\n${special}` : special;
                           }
+                          record.guest_name = guestName;
+                          memoTouched.add(vNum);
+                          if (arrTime) record.arrival_time = arrTime;
+                          if (gem) record.gem_name = gem;
+                          if (parsedMp) record.meal_plan = parsedMp;
+                          if (depDateStr) record.stay_dates = `${selectedDate.slice(8, 10)}/${selectedDate.slice(5, 7)} - ${depDateStr.replace(/\n/g, ' ').trim()}`;
+                          if (special) record.preferences = record.preferences ? `${record.preferences}\n\n${special}` : special;
 
                           diffs.push({
                               villa: vNum,
@@ -1227,8 +1474,13 @@ export default function HousekeepingSummaryPage() {
                       dRec.gem_name = sRec.gem_name;
                       dRec.stay_dates = sRec.stay_dates;
 
-                      sRec.status = 'VM/VAC';
-                      sRec.guest_name = '';
+                      dRec.stay_id = sRec.stay_id;
+                      memoTouched.add(toV);
+
+                      Object.assign(sRec, {
+                          status: 'VM/VAC', guest_name: '', pax_adults: 0, pax_kids: 0, preferences: '', meal_plan: '',
+                          gem_name: '', stay_dates: '', stay_id: '', arrival_time: '', departure_time: ''
+                      });
 
                       diffs.push({
                           villa: toV,
@@ -1246,6 +1498,8 @@ export default function HousekeepingSummaryPage() {
               toast.error("No arrivals, departures, or room moves found in memo.");
               return;
           }
+
+          enforceUniqueGuests(currentMap, memoTouched, diffs);
 
           setChanges(diffs);
           setPendingData(Array.from(currentMap.values()));
@@ -1293,14 +1547,9 @@ export default function HousekeepingSummaryPage() {
                           madeChange = true;
                       }
                       const t = extractTime(arrTimeRaw);
-                      if (t) {
-                          if (record.status === 'DEP/ARR' && record.incoming_arrival_time !== t) {
-                              record.incoming_arrival_time = t;
-                              madeChange = true;
-                          } else if (record.arrival_time !== t) {
-                              record.arrival_time = t;
-                              madeChange = true;
-                          }
+                      if (t && record.arrival_time !== t) {
+                          record.arrival_time = t;
+                          madeChange = true;
                       }
 
                       if (madeChange) {
@@ -1378,90 +1627,82 @@ export default function HousekeepingSummaryPage() {
                   const lastDate = recentRecords[0].report_date;
                   const sourceData = recentRecords.filter(r => r.report_date === lastDate);
                   
-                  const batchPayload = [];
+                  const updates: Array<{ id: string; payload: any }> = [];
+                  const inserts: any[] = [];
 
                   for (let i = 1; i <= TOTAL_VILLAS; i++) {
                       const vNum = i.toString();
                       const prevRec = sourceData.find(r => normalizeVilla(r.villa_number) === vNum);
                       const existingRow = masterList.find(m => m.villa_number === vNum);
+                      // Villas already registered for this day on Special Villas stay as they are
+                      if (existingRow?.id && getSpecialKind(existingRow.status)) continue;
 
                       let newStatus = 'VAC';
                       let keepDetails = false;
-                      let carryName = '';
-                      let carryAdults = 0;
-                      let carryKids = 0;
-                      let carryGem = '';
-                      let carryMeal = '';
-                      let carryDates = '';
-                      let carryPrefs = '';
-                      let carryStayId = '';
 
                       if (prevRec) {
                           const statusStr = String(prevRec.status || 'VAC').trim().toUpperCase();
 
                           if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
-                              const effectiveDates = statusStr === 'DEP/ARR' && prevRec.incoming_stay_dates ? prevRec.incoming_stay_dates : (prevRec.stay_dates || '');
-                              const check = checkStayStatusForDate(effectiveDates, selectedDate);
+                              const check = checkStayStatusForDate(prevRec.stay_dates || '', selectedDate);
                               if (check.isActive) {
                                   newStatus = check.isDepartingToday ? 'DEP' : (statusStr.includes('VM') ? statusStr : 'OCC');
                                   keepDetails = true;
-                                  carryName = statusStr === 'DEP/ARR' && prevRec.incoming_guest_name ? prevRec.incoming_guest_name : (prevRec.guest_name || '');
-                                  carryAdults = statusStr === 'DEP/ARR' && prevRec.incoming_pax_adults ? prevRec.incoming_pax_adults : (prevRec.pax_adults || 0);
-                                  carryKids = statusStr === 'DEP/ARR' && prevRec.incoming_pax_kids ? prevRec.incoming_pax_kids : (prevRec.pax_kids || 0);
-                                  carryGem = statusStr === 'DEP/ARR' && prevRec.incoming_gem_name ? prevRec.incoming_gem_name : (prevRec.gem_name || '');
-                                  carryMeal = statusStr === 'DEP/ARR' && prevRec.incoming_meal_plan ? prevRec.incoming_meal_plan : (prevRec.meal_plan || '');
-                                  carryDates = effectiveDates;
-                                  carryPrefs = statusStr === 'DEP/ARR' && prevRec.incoming_preferences ? prevRec.incoming_preferences : (prevRec.preferences || '');
-                                  carryStayId = prevRec.stay_id || '';
                               }
                           } else if (['DEP', 'DAY USE', 'VM/VAC'].includes(statusStr) || statusStr.includes('TMA')) {
                               newStatus = 'VAC';
                               keepDetails = false;
-                          } else if (statusStr.includes('HOUSE') || statusStr === 'SHOW VILLA') {
+                          } else if (statusStr.includes('HOUSE') && (!prevRec.stay_dates || isOpenStay(prevRec.stay_dates) || checkStayStatusForDate(prevRec.stay_dates, selectedDate).isActive)) {
+                              // House Use carries until its departure date; Show Villa / Fumigation are one-off
                               newStatus = prevRec.status;
                               keepDetails = true;
-                              carryName = prevRec.guest_name || '';
-                              carryAdults = prevRec.pax_adults || 0;
-                              carryKids = prevRec.pax_kids || 0;
-                              carryGem = prevRec.gem_name || '';
-                              carryMeal = prevRec.meal_plan || '';
-                              carryDates = prevRec.stay_dates || '';
-                              carryPrefs = prevRec.preferences || '';
-                              carryStayId = prevRec.stay_id || '';
                           }
                       }
 
-                      batchPayload.push({
-                          ...(existingRow?.id ? { id: existingRow.id } : {}),
+                      const payload = {
                           report_date: selectedDate,
                           villa_number: vNum,
                           status: newStatus,
-                          guest_name: keepDetails ? carryName : '',
-                          pax_adults: keepDetails ? carryAdults : 0,
-                          pax_kids: keepDetails ? carryKids : 0,
-                          gem_name: keepDetails ? carryGem : '',
-                          meal_plan: keepDetails ? carryMeal : '',
-                          stay_dates: keepDetails ? carryDates : '',
-                          remarks: '',
-                          preferences: keepDetails ? carryPrefs : '',
+                          guest_name: keepDetails && prevRec ? (prevRec.guest_name || '') : '',
+                          pax_adults: keepDetails && prevRec ? (prevRec.pax_adults || 0) : 0,
+                          pax_kids: keepDetails && prevRec ? (prevRec.pax_kids || 0) : 0,
+                          gem_name: keepDetails && prevRec ? (prevRec.gem_name || '') : '',
+                          meal_plan: keepDetails && prevRec ? (prevRec.meal_plan || '') : '',
+                          stay_dates: keepDetails && prevRec ? (prevRec.stay_dates || '') : '',
+                          remarks: keepDetails && prevRec && getSpecialKind(prevRec.status) === 'HOUSE_USE' ? serviceRemarkFor(prevRec.preferences, selectedDate) : '',
+                          preferences: keepDetails && prevRec ? (prevRec.preferences || '') : '',
                           arrival_time: '',
                           departure_time: '',
-                          stay_id: keepDetails ? carryStayId : '',
-                          updated_at: new Date().toISOString()
-                      });
+                          stay_id: keepDetails && prevRec ? (prevRec.stay_id || '') : '',
+                      };
+
+                      if (existingRow?.id) {
+                          updates.push({ id: existingRow.id, payload });
+                      } else if (newStatus !== 'VAC') {
+                          inserts.push(payload);
+                      }
                   }
 
-                  const { error: upsertErr } = await supabase
-                      .from('hsk_daily_summary')
-                      .upsert(batchPayload, { onConflict: 'report_date,villa_number' });
+                  const BATCH_SIZE = 20;
+                  for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+                      const slice = updates.slice(i, i + BATCH_SIZE);
+                      const results = await Promise.all(
+                          slice.map(u => supabase.from('hsk_daily_summary').update(u.payload).eq('id', u.id))
+                      );
+                      const firstErr = results.find(r => r.error)?.error;
+                      if (firstErr) throw firstErr;
+                  }
 
-                  if (upsertErr) throw upsertErr;
+                  if (inserts.length > 0) {
+                      const { error: insertErr } = await supabase.from('hsk_daily_summary').insert(inserts);
+                      if (insertErr) throw insertErr;
+                  }
 
                   await fetchDailyData();
-                  toast.success("Rollover completed instantly!");
+                  toast.success("Rollover completed!");
               } catch (err: any) {
                   console.error("Rollover failed:", err);
-                  toast.error("Rollover failed: " + (err?.message || "Check network/schema"));
+                  toast.error("Rollover failed: " + (err?.message || "Database error"));
               } finally {
                   setIsRollingOver(false);
               }
@@ -1492,9 +1733,9 @@ export default function HousekeepingSummaryPage() {
           if (st === 'VAC' || (st.includes('DEP') && !st.includes('ARR'))) return;
           if (st === 'VM/VAC') return;
           if (st.includes('TMA')) return;
+          if (st === 'SHOW VILLA' || st === 'FUMIGATION') return;
           
-          const activeName = st === 'DEP/ARR' && rec.incoming_guest_name ? rec.incoming_guest_name : (rec?.guest_name || '');
-          const gUpper = String(activeName).toUpperCase();
+          const gUpper = String(rec?.guest_name || '').toUpperCase();
           if (gUpper && (gUpper.includes('HOUSE USE') || gUpper.includes('H/U') || st === 'HOUSE USE')) return;
 
           const v = parseInt(rec.villa_number, 10);
@@ -1505,8 +1746,8 @@ export default function HousekeepingSummaryPage() {
           else if (v >= 37 && v <= 50) area = 'jettyB';
           else if (v >= 59 && v <= 79) area = 'jettyC';
 
-          let adults = st === 'DEP/ARR' && rec.incoming_pax_adults ? rec.incoming_pax_adults : (rec.pax_adults || 0);
-          let kids = st === 'DEP/ARR' && rec.incoming_pax_kids ? rec.incoming_pax_kids : (rec.pax_kids || 0);
+          let adults = rec.pax_adults || 0;
+          let kids = rec.pax_kids || 0;
 
           let male = 0;
           let female = 0;
@@ -1579,8 +1820,9 @@ export default function HousekeepingSummaryPage() {
       if(st === 'VM/VAC') return 'text-slate-500 bg-slate-200 border border-slate-300';
       if(st === 'VM/OCC') return 'text-indigo-700 bg-indigo-100 border border-indigo-200';
       if(st === 'VM/ARR') return 'text-blue-700 bg-blue-100 border border-blue-200';
-      if(st === 'TMA (DAY)') return 'text-orange-700 bg-orange-100 border border-orange-200';
-      if(st === 'TMA (NIGHT)') return 'text-purple-700 bg-purple-100 border border-purple-200';
+      if(st === 'FUMIGATION') return 'text-teal-700 bg-teal-100 border border-teal-200';
+      if(st === 'TMA (DAY)' || st === 'TMA DAY') return 'text-orange-700 bg-orange-100 border border-orange-200';
+      if(st === 'TMA (NIGHT)' || st === 'TMA NIGHT') return 'text-purple-700 bg-purple-100 border border-purple-200';
       if(st.includes('DEP') && st.includes('ARR')) return 'text-purple-700 bg-purple-50 border border-purple-200';
       if(st.includes('TMA')) return 'text-orange-700 bg-orange-50'; 
       if(st === 'DAY USE') return 'text-amber-700 bg-amber-50'; 
@@ -1597,8 +1839,8 @@ export default function HousekeepingSummaryPage() {
           const st = String(r.status || 'VAC').toUpperCase();
           if (st.includes('DEP') && st.includes('ARR')) {
               deparr++;
-              paxAdults += (r.incoming_pax_adults || r.pax_adults || 0);
-              paxKids += (r.incoming_pax_kids || r.pax_kids || 0);
+              paxAdults += (r.pax_adults || 0);
+              paxKids += (r.pax_kids || 0);
           } else if (st.includes('ARR')) {
               arr++;
               paxAdults += (r.pax_adults || 0);
@@ -1630,7 +1872,7 @@ export default function HousekeepingSummaryPage() {
           if (searchQuery.trim()) {
               const q = searchQuery.toLowerCase();
               const matchVilla = row.villa_number === q.trim() || `v${row.villa_number}` === q.trim() || row.villa_number.includes(q);
-              const matchGuest = (row.guest_name || '').toLowerCase().includes(q) || (row.incoming_guest_name || '').toLowerCase().includes(q);
+              const matchGuest = (row.guest_name || '').toLowerCase().includes(q) || (row.dep_guest_name || '').toLowerCase().includes(q);
               const matchGem = (row.gem_name || '').toLowerCase().includes(q);
               return matchVilla || matchGuest || matchGem;
           }
@@ -1766,14 +2008,6 @@ export default function HousekeepingSummaryPage() {
             const isDepArr = row.status === 'DEP/ARR';
             const showDep = !!expandedDepVillas[row.villa_number];
 
-            // For DEP/ARR, show Arriving Guest info by default
-            const displayGuest = isDepArr ? (row.incoming_guest_name || 'Incoming Arrival Guest') : row.guest_name;
-            const displayAdults = isDepArr && row.incoming_pax_adults ? row.incoming_pax_adults : row.pax_adults;
-            const displayKids = isDepArr && row.incoming_pax_kids ? row.incoming_pax_kids : row.pax_kids;
-            const displayDates = isDepArr && row.incoming_stay_dates ? row.incoming_stay_dates : row.stay_dates;
-            const displayArrTime = isDepArr ? (row.incoming_arrival_time || row.arrival_time) : row.arrival_time;
-            const displayPrefs = isDepArr && row.incoming_preferences ? row.incoming_preferences : row.preferences;
-
             return (
           <div key={row.villa_number} onClick={() => { if(isAdmin){ openEditModal(row); } }} className={`bg-white rounded-2xl p-4 shadow-sm border flex flex-col gap-3 relative ${row.status === 'VAC' ? 'border-slate-100 bg-slate-50/30' : 'border-slate-200 active:scale-[0.98] transition-transform cursor-pointer'} ${isHouseUse ? 'bg-fuchsia-50/30 border-fuchsia-100' : ''}`}>
               
@@ -1806,7 +2040,7 @@ export default function HousekeepingSummaryPage() {
                       {isDepArr && (
                           <span className="text-[9px] font-black uppercase text-blue-600 tracking-wider">Arriving Guest</span>
                       )}
-                      {displayGuest ? displayGuest.split(' & ').map((name, idx) => {
+                      {row.guest_name ? row.guest_name.split(' & ').map((name, idx) => {
                           const isChild = name.includes('Mstr') || name.includes('Miss') || name.includes(' yrs)');
                           return (
                               <div key={idx} className="flex items-start gap-2">
@@ -1819,33 +2053,33 @@ export default function HousekeepingSummaryPage() {
                       {isDepArr && showDep && (
                           <div className="mt-2 p-2.5 bg-rose-50/90 rounded-xl border border-rose-200 space-y-1" onClick={e => e.stopPropagation()}>
                               <span className="text-[9px] font-black uppercase text-rose-700 block">Departing Guest Info</span>
-                              <span className="text-xs font-bold text-slate-800 block">{row.guest_name || 'No departing profile'}</span>
+                              <span className="text-xs font-bold text-slate-800 block">{row.dep_guest_name || 'No departing profile'}</span>
                               <div className="flex flex-wrap gap-2 text-[10px] font-mono text-rose-700 font-bold">
                                   {row.departure_time && <span>Dep Time: {row.departure_time}</span>}
-                                  {row.stay_dates && <span>Stay: {row.stay_dates}</span>}
+                                  {row.dep_stay_dates && <span>Stay: {row.dep_stay_dates}</span>}
                               </div>
                           </div>
                       )}
 
                       <div className="flex flex-wrap items-center gap-2 mt-2">
-                          {(displayAdults > 0 || displayKids > 0) && (
+                          {(row.pax_adults > 0 || row.pax_kids > 0) && (
                               <div className="bg-slate-100 px-2 py-1 rounded-md flex items-center gap-1 text-[10px] font-bold text-slate-600">
-                                  Pax: {displayAdults + displayKids} {displayKids > 0 && <span className="text-amber-500">({displayKids} K)</span>}
+                                  Pax: {row.pax_adults + row.pax_kids} {row.pax_kids > 0 && <span className="text-amber-500">({row.pax_kids} K)</span>}
                               </div>
                           )}
                           {row.meal_plan && <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-md text-[10px] font-black uppercase">{row.meal_plan}</span>}
                           {row.gem_name && <span className="bg-purple-50 text-purple-700 px-2 py-1 rounded-md text-[10px] font-black uppercase">GEM: {row.gem_name}</span>}
-                          {displayDates && <span className="text-[10px] font-mono font-bold text-slate-400 border border-slate-200 px-2 py-1 rounded-md">{displayDates}</span>}
+                          {row.stay_dates && <span className="text-[10px] font-mono font-bold text-slate-400 border border-slate-200 px-2 py-1 rounded-md">{row.stay_dates}</span>}
                       </div>
 
-                      {(displayArrTime || (!isDepArr && row.departure_time)) && (
+                      {(row.arrival_time || (!isDepArr && row.departure_time)) && (
                           <div className="flex gap-3 mt-2 text-[10px] font-bold font-mono">
-                              {displayArrTime && <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">Arr: {displayArrTime}</span>}
+                              {row.arrival_time && <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">Arr: {row.arrival_time}</span>}
                               {!isDepArr && row.departure_time && <span className="text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">Dep: {row.departure_time}</span>}
                           </div>
                       )}
 
-                      {displayPrefs && (<div className="flex items-center gap-1 mt-2 text-[10px] text-rose-500 font-bold bg-rose-50 p-2 rounded-lg border border-rose-100"><Heart size={12} fill="currentColor"/> Preferences Logged</div>)}
+                      {row.preferences && (<div className="flex items-center gap-1 mt-2 text-[10px] text-rose-500 font-bold bg-rose-50 p-2 rounded-lg border border-rose-100"><Heart size={12} fill="currentColor"/> Preferences Logged</div>)}
                   </div>
               )}
           </div>
@@ -1874,14 +2108,6 @@ export default function HousekeepingSummaryPage() {
                   const isHouseUse = row.status === 'HOUSE USE' || (row.guest_name && String(row.guest_name).toUpperCase().includes('HOUSE USE'));
                   const isDepArr = row.status === 'DEP/ARR';
                   const showDep = !!expandedDepVillas[row.villa_number];
-
-                  // For DEP/ARR, show Arriving Guest info only by default
-                  const displayGuest = isDepArr ? (row.incoming_guest_name || 'Incoming Arrival Guest') : row.guest_name;
-                  const displayAdults = isDepArr && row.incoming_pax_adults ? row.incoming_pax_adults : row.pax_adults;
-                  const displayKids = isDepArr && row.incoming_pax_kids ? row.incoming_pax_kids : row.pax_kids;
-                  const displayDates = isDepArr && row.incoming_stay_dates ? row.incoming_stay_dates : row.stay_dates;
-                  const displayArrTime = isDepArr ? (row.incoming_arrival_time || row.arrival_time) : row.arrival_time;
-                  const displayPrefs = isDepArr && row.incoming_preferences ? row.incoming_preferences : row.preferences;
 
                   return (
                 <tr key={row.villa_number} className={`hover:bg-slate-50 transition-colors group ${row.status === 'VAC' ? 'bg-slate-50/30' : ''} ${isHouseUse ? 'bg-fuchsia-50/30' : ''}`}>
@@ -1915,7 +2141,7 @@ export default function HousekeepingSummaryPage() {
                   
                   <td className="py-2 px-4 cursor-pointer" onClick={() => { if(isAdmin){ openEditModal(row); } }}>
                     <div className="flex flex-col gap-1 py-1">
-                        {displayGuest ? displayGuest.split(' & ').map((name, idx) => {
+                        {row.guest_name ? row.guest_name.split(' & ').map((name, idx) => {
                             const isChild = name.includes('Mstr') || name.includes('Miss') || name.includes(' yrs)');
                             return (
                                 <div key={idx} className="flex items-start gap-1.5">
@@ -1938,31 +2164,31 @@ export default function HousekeepingSummaryPage() {
                             <div onClick={e => e.stopPropagation()} className="mt-1 p-2 bg-rose-50/90 border border-rose-200 rounded-lg text-[10px] flex items-center justify-between gap-3">
                                 <div>
                                     <span className="font-black uppercase text-rose-700 mr-1.5">Departing:</span>
-                                    <span className="font-bold text-slate-800">{row.guest_name || 'No departing guest recorded'}</span>
+                                    <span className="font-bold text-slate-800">{row.dep_guest_name || 'No departing guest recorded'}</span>
                                 </div>
                                 <div className="font-mono font-bold text-rose-700 shrink-0">
-                                    {row.departure_time ? `ETD: ${row.departure_time}` : ''} {row.stay_dates ? `(${row.stay_dates})` : ''}
+                                    {row.departure_time ? `ETD: ${row.departure_time}` : ''} {row.dep_stay_dates ? `(${row.dep_stay_dates})` : ''}
                                 </div>
                             </div>
                         )}
 
-                        {displayPrefs && (<div className="flex items-center gap-1 mt-0.5 text-[9px] text-rose-500 font-bold"><Heart size={8} fill="currentColor"/> Preferences Saved</div>)}
+                        {row.preferences && (<div className="flex items-center gap-1 mt-0.5 text-[9px] text-rose-500 font-bold"><Heart size={8} fill="currentColor"/> Preferences Saved</div>)}
                     </div>
                   </td>
                   
                   <td className="py-2 px-4 text-center">
-                      {(displayAdults > 0 || displayKids > 0) && (
+                      {(row.pax_adults > 0 || row.pax_kids > 0) && (
                           <div className="flex flex-col items-center">
-                              <span className="text-[11px] font-black text-slate-700">{displayAdults + displayKids}</span>
-                              {displayKids > 0 && <span className="text-[8px] font-bold text-amber-500 uppercase">{displayKids} Kids</span>}
+                              <span className="text-[11px] font-black text-slate-700">{row.pax_adults + row.pax_kids}</span>
+                              {row.pax_kids > 0 && <span className="text-[8px] font-bold text-amber-500 uppercase">{row.pax_kids} Kids</span>}
                           </div>
                       )}
                   </td>
                   <td className="py-2 px-4 text-[10px] font-bold text-slate-600 uppercase">{row.gem_name}</td>
                   <td className="py-2 px-4 text-[10px] text-slate-600 font-bold">{row.meal_plan}</td>
-                  <td className="py-2 px-4 text-right text-[10px] font-mono font-bold text-slate-500">{displayDates}</td>
+                  <td className="py-2 px-4 text-right text-[10px] font-mono font-bold text-slate-500">{row.stay_dates}</td>
                   <td className="py-2 px-4 text-right text-[10px] font-mono font-bold text-slate-600">
-                      {displayArrTime && <span className="block text-emerald-600">ETA: {displayArrTime}</span>}
+                      {row.arrival_time && <span className="block text-emerald-600">ETA: {row.arrival_time}</span>}
                       {!isDepArr && row.departure_time && <span className="block text-rose-600">ETD: {row.departure_time}</span>}
                   </td>
                   <td className="py-2 px-4 text-right">
@@ -1977,7 +2203,7 @@ export default function HousekeepingSummaryPage() {
         </div>
       </div>
 
-      {/* CHANGES MODAL */}
+      {/* CHANGES REVIEW MODAL (WITH MEAL PLAN COLUMN) */}
       {diffModalOpen && isAdmin && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
            <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden max-h-[80vh] flex flex-col">
@@ -2007,7 +2233,7 @@ export default function HousekeepingSummaryPage() {
                                   <th className="p-4 w-32">Type</th>
                                   <th className="p-4 w-48">Current Data</th>
                                   <th className="p-4 w-8"></th>
-                                  <th className="p-4">New Data</th>
+                                  <th className="p-4">New Data & Meal Plan</th>
                                   <th className="p-4 w-12 text-right">Action</th>
                               </tr>
                           </thead>
@@ -2048,7 +2274,16 @@ export default function HousekeepingSummaryPage() {
                                                                   setChanges(newChanges);
                                                               }}
                                                           >
-                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA'].map(s=><option key={s} value={s}>{s}</option>)}
+                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA','FUMIGATION'].map(s=><option key={s} value={s}>{s}</option>)}
+                                                          </select>
+                                                          <select 
+                                                              className="p-1 border border-blue-200 bg-blue-50/50 text-blue-800 rounded text-[10px] font-black uppercase outline-none focus:border-blue-500"
+                                                              value={pendingRec.meal_plan || ''}
+                                                              onChange={(e) => updatePendingRecord(c.villa, 'meal_plan', e.target.value)}
+                                                              title="Meal Plan"
+                                                          >
+                                                              <option value="">MP</option>
+                                                              {MEAL_PLANS.map(mp => <option key={mp} value={mp}>{mp}</option>)}
                                                           </select>
                                                           <div className="text-xs leading-tight font-bold text-slate-700">{c.newGuest ? c.newGuest : 'Vacant'}</div>
                                                       </div>
@@ -2230,7 +2465,7 @@ export default function HousekeepingSummaryPage() {
                                     onChange={e => {
                                         const v = e.target.value;
                                         setEditingRecord({...editingRecord, villa_number: v});
-                                        setLinkedSuitesSelection(getAssociatedVillas(v));
+                                        setLinkedSuitesSelection(getCurrentlyLinked(v, editingRecord.stay_id));
                                     }}
                                 >
                                     {Array.from({ length: TOTAL_VILLAS }, (_, i) => String(i + 1)).map(v => (
@@ -2241,7 +2476,7 @@ export default function HousekeepingSummaryPage() {
                             <div>
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Status</label>
                                 <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none" value={editingRecord.status || 'VAC'} onChange={e => setEditingRecord({...editingRecord, status: e.target.value})}>
-                                    {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA'].map(s=><option key={s} value={s}>{s}</option>)}
+                                    {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA','FUMIGATION'].map(s=><option key={s} value={s}>{s}</option>)}
                                 </select>
                             </div>
                             <div>
@@ -2252,72 +2487,48 @@ export default function HousekeepingSummaryPage() {
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Meal Plan</label>
                                 <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none" value={editingRecord.meal_plan || ''} onChange={e => setEditingRecord({...editingRecord, meal_plan: e.target.value})}>
                                     <option value="">MP</option>
-                                    <option value="BB">BB</option>
-                                    <option value="HB">HB</option>
-                                    <option value="FB">FB</option>
-                                    <option value="RO">RO</option>
-                                    <option value="AI">AI</option>
+                                    {MEAL_PLANS.map(mp => <option key={mp} value={mp}>{mp}</option>)}
+                                    {editingRecord.meal_plan && !MEAL_PLANS.includes(editingRecord.meal_plan) && (
+                                        <option value={editingRecord.meal_plan}>{editingRecord.meal_plan}</option>
+                                    )}
                                 </select>
                             </div>
                         </div>
 
-                        {/* IN-FOLIO EXTENSION / LINKED VILLAS SELECTOR */}
+                        {/* IN-FOLIO EXTENSION / LINKED VILLAS SELECTOR — only 57 (→56/58) and 87 (→88) */}
+                        {getAssociatedVillas(editingRecord.villa_number).length > 0 && (
                         <div className="bg-purple-50/70 p-3.5 rounded-2xl border border-purple-100 space-y-2.5">
                             <div className="flex items-center justify-between">
                                 <span className="text-[10px] font-black text-[#6D2158] uppercase tracking-wider flex items-center gap-1.5">
-                                    <Link2 size={13}/> Choose / Link Additional Villas
+                                    <Link2 size={13}/> Link Connected Villa
                                 </span>
-                                <span className="text-[9px] text-slate-400 font-bold">Multi-villa reservation</span>
+                                <span className="text-[9px] text-slate-400 font-bold">Extension of V{editingRecord.villa_number}</span>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
-                                {['56', '58', '88'].filter(v => v !== editingRecord.villa_number).map(suite => {
+                                {getAssociatedVillas(editingRecord.villa_number).map(suite => {
                                     const isLinked = linkedSuitesSelection.includes(suite);
+                                    const suiteRec = masterList.find(r => r.villa_number === suite);
+                                    const hasOwnGuest = !!suiteRec?.guest_name && ACTIVE_STATUSES.includes(suiteRec.status) && suiteRec.stay_id !== editingRecord.stay_id;
                                     return (
                                         <button
                                             key={suite}
                                             type="button"
+                                            disabled={hasOwnGuest}
+                                            title={hasOwnGuest ? `Occupied by ${suiteRec?.guest_name}` : undefined}
                                             onClick={() => toggleLinkedSuite(suite)}
-                                            className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all cursor-pointer ${
+                                            className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                                                 isLinked
                                                     ? 'bg-[#6D2158] text-white border-[#6D2158] shadow-xs'
                                                     : 'bg-white text-slate-600 border-slate-200 hover:border-purple-300'
                                             }`}
                                         >
-                                            {isLinked ? `✓ Villa ${suite}` : `+ Villa ${suite}`}
+                                            {isLinked ? `✓ Villa ${suite}` : `+ Villa ${suite}`}{hasOwnGuest ? ' (occupied)' : ''}
                                         </button>
                                     );
                                 })}
-
-                                {linkedSuitesSelection.filter(v => !['56', '58', '88'].includes(v)).map(customV => (
-                                    <button
-                                        key={customV}
-                                        type="button"
-                                        onClick={() => toggleLinkedSuite(customV)}
-                                        className="px-3 py-1.5 rounded-xl text-xs font-black border bg-[#6D2158] text-white border-[#6D2158] cursor-pointer"
-                                    >
-                                        ✓ Villa {customV} ✕
-                                    </button>
-                                ))}
-
-                                <div className="flex items-center gap-1 ml-auto">
-                                    <input
-                                        type="text"
-                                        placeholder="Villa #"
-                                        value={customLinkInput}
-                                        onChange={e => setCustomLinkInput(e.target.value)}
-                                        onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), handleAddCustomLinkVilla())}
-                                        className="w-16 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-center outline-none focus:border-[#6D2158]"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={handleAddCustomLinkVilla}
-                                        className="px-2.5 py-1.5 bg-purple-100 hover:bg-purple-200 text-[#6D2158] rounded-lg text-xs font-black cursor-pointer"
-                                    >
-                                        Add
-                                    </button>
-                                </div>
                             </div>
                         </div>
+                        )}
 
                         {/* PARTIAL DEPARTURE PARTY MEMBER MANAGER */}
                         {parsedGuestList.length > 0 && (
@@ -2365,14 +2576,8 @@ export default function HousekeepingSummaryPage() {
                             <textarea 
                                 className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold h-16 resize-none text-slate-700 outline-none" 
                                 placeholder="e.g. Mr John Smith & Mrs Jane Smith"
-                                value={editingRecord.status === 'DEP/ARR' ? (editingRecord.incoming_guest_name || '') : (editingRecord.guest_name || '')} 
-                                onChange={e => {
-                                    if (editingRecord.status === 'DEP/ARR') {
-                                        setEditingRecord({...editingRecord, incoming_guest_name: e.target.value});
-                                    } else {
-                                        setEditingRecord({...editingRecord, guest_name: e.target.value});
-                                    }
-                                }}
+                                value={editingRecord.guest_name || ''} 
+                                onChange={e => setEditingRecord({...editingRecord, guest_name: e.target.value})}
                             />
                         </div>
 
@@ -2382,14 +2587,8 @@ export default function HousekeepingSummaryPage() {
                                 <input 
                                     type="time" 
                                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-emerald-700 text-center outline-none" 
-                                    value={editingRecord.status === 'DEP/ARR' ? (editingRecord.incoming_arrival_time || '') : (editingRecord.arrival_time || '')} 
-                                    onChange={e => {
-                                        if (editingRecord.status === 'DEP/ARR') {
-                                            setEditingRecord({...editingRecord, incoming_arrival_time: e.target.value});
-                                        } else {
-                                            setEditingRecord({...editingRecord, arrival_time: e.target.value});
-                                        }
-                                    }}
+                                    value={editingRecord.arrival_time || ''} 
+                                    onChange={e => setEditingRecord({...editingRecord, arrival_time: e.target.value})}
                                 />
                             </div>
                             <div>
@@ -2409,12 +2608,8 @@ export default function HousekeepingSummaryPage() {
                                 <input 
                                     type="number" 
                                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700 outline-none" 
-                                    value={editingRecord.status === 'DEP/ARR' ? (editingRecord.incoming_pax_adults || 0) : (editingRecord.pax_adults || 0)} 
-                                    onChange={e => {
-                                        const val = parseInt(e.target.value, 10) || 0;
-                                        if (editingRecord.status === 'DEP/ARR') setEditingRecord({...editingRecord, incoming_pax_adults: val});
-                                        else setEditingRecord({...editingRecord, pax_adults: val});
-                                    }}
+                                    value={editingRecord.pax_adults || 0} 
+                                    onChange={e => setEditingRecord({...editingRecord, pax_adults: parseInt(e.target.value, 10) || 0})}
                                 />
                             </div>
                             <div>
@@ -2422,12 +2617,8 @@ export default function HousekeepingSummaryPage() {
                                 <input 
                                     type="number" 
                                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700 outline-none" 
-                                    value={editingRecord.status === 'DEP/ARR' ? (editingRecord.incoming_pax_kids || 0) : (editingRecord.pax_kids || 0)} 
-                                    onChange={e => {
-                                        const val = parseInt(e.target.value, 10) || 0;
-                                        if (editingRecord.status === 'DEP/ARR') setEditingRecord({...editingRecord, incoming_pax_kids: val});
-                                        else setEditingRecord({...editingRecord, pax_kids: val});
-                                    }}
+                                    value={editingRecord.pax_kids || 0} 
+                                    onChange={e => setEditingRecord({...editingRecord, pax_kids: parseInt(e.target.value, 10) || 0})}
                                 />
                             </div>
                             <div>
@@ -2435,11 +2626,8 @@ export default function HousekeepingSummaryPage() {
                                 <input 
                                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-center text-slate-700 outline-none" 
                                     placeholder="DD/MM - DD/MM"
-                                    value={editingRecord.status === 'DEP/ARR' ? (editingRecord.incoming_stay_dates || '') : (editingRecord.stay_dates || '')} 
-                                    onChange={e => {
-                                        if (editingRecord.status === 'DEP/ARR') setEditingRecord({...editingRecord, incoming_stay_dates: e.target.value});
-                                        else setEditingRecord({...editingRecord, stay_dates: e.target.value});
-                                    }}
+                                    value={editingRecord.stay_dates || ''} 
+                                    onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}
                                 />
                             </div>
                         </div>
@@ -2457,16 +2645,13 @@ export default function HousekeepingSummaryPage() {
                          <textarea 
                             className="w-full h-56 p-4 bg-amber-50/80 border border-amber-200 rounded-2xl text-xs font-bold leading-relaxed text-slate-800 outline-none focus:border-amber-400 resize-none" 
                             placeholder="e.g. Extra feather pillows, sparkling water only, allergic to shellfish..." 
-                            value={editingRecord.status === 'DEP/ARR' ? (editingRecord.incoming_preferences || '') : (editingRecord.preferences || '')} 
-                            onChange={e => {
-                                if (editingRecord.status === 'DEP/ARR') setEditingRecord({...editingRecord, incoming_preferences: e.target.value});
-                                else setEditingRecord({...editingRecord, preferences: e.target.value});
-                            }}
+                            value={editingRecord.preferences || ''} 
+                            onChange={e => setEditingRecord({...editingRecord, preferences: e.target.value})}
                          />
                      </div>
                  ) : (
                      <div className="space-y-4">
-                         <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl space-y-2">
+                         <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl space-y-3">
                              <span className="text-[10px] font-black uppercase text-rose-700 tracking-wider block">
                                  Departing Guest Folio (Checking Out Today)
                              </span>
@@ -2474,8 +2659,8 @@ export default function HousekeepingSummaryPage() {
                                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Departing Guest Name</label>
                                  <input 
                                     className="w-full p-2.5 bg-white border border-rose-200 rounded-xl text-xs font-bold text-slate-800 outline-none" 
-                                    value={editingRecord.guest_name || ''} 
-                                    onChange={e => setEditingRecord({...editingRecord, guest_name: e.target.value})}
+                                    value={editingRecord.dep_guest_name || ''} 
+                                    onChange={e => setEditingRecord({...editingRecord, dep_guest_name: e.target.value})}
                                  />
                              </div>
                              <div className="grid grid-cols-2 gap-3 pt-1">
@@ -2492,8 +2677,8 @@ export default function HousekeepingSummaryPage() {
                                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Previous Stay Dates</label>
                                      <input 
                                         className="w-full p-2.5 bg-white border border-rose-200 rounded-xl text-xs font-bold text-center text-slate-700 outline-none" 
-                                        value={editingRecord.stay_dates || ''} 
-                                        onChange={e => setEditingRecord({...editingRecord, stay_dates: e.target.value})}
+                                        value={editingRecord.dep_stay_dates || ''} 
+                                        onChange={e => setEditingRecord({...editingRecord, dep_stay_dates: e.target.value})}
                                      />
                                  </div>
                              </div>

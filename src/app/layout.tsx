@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import ClientLayout from "@/components/ClientLayout";
@@ -21,6 +21,17 @@ export const metadata: Metadata = {
   title: "HK PULSE - Six Senses Laamu",
   description: "Housekeeping Operations Management System",
   manifest: "/manifest.json",
+};
+
+// App-like behaviour on phones: no zooming, and the on-screen keyboard resizes the page
+// (so bottom buttons stay visible) instead of covering it.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({

@@ -27,9 +27,22 @@ html, body {
   user-select: none; /* Prevents accidental text selection on UI elements */
 }
 
+html {
+  -webkit-text-size-adjust: 100%; /* no font inflation when the phone rotates */
+  text-size-adjust: 100%;
+  touch-action: manipulation;     /* no double-tap zoom */
+}
+
 /* Allow text selection ONLY inside input fields */
 input, textarea, select {
   user-select: auto; 
+}
+
+/* Phones: iOS zooms into any field with text smaller than 16px. Keep fields at 16px on small screens. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select {
+    font-size: 16px !important;
+  }
 }
 
 /* --- CUSTOM SLEEK SCROLLBARS --- */

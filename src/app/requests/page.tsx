@@ -4,7 +4,7 @@ import {
   Search, Plus, Minus, X, Wine, Wrench, Trash2, 
   Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
   CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles,
-  Settings, ArrowUp, ArrowDown, Eye, EyeOff
+  Settings, ArrowUp, ArrowDown, Eye, EyeOff, ChevronUp, Ticket, MapPin, History, Star
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useConfirm } from '@/components/ConfirmProvider';
@@ -79,6 +79,57 @@ const normalizeVillaNumber = (raw: string): string => {
   }
   const parsed = parseInt(str, 10);
   return isNaN(parsed) ? str : parsed.toString();
+};
+
+const TOTAL_VILLAS = 97;
+
+// What the "villa" box holds: a real villa (1–97, or a split like 12-1), a complimentary / account
+// code such as 9702, or free text such as "Beach".
+type Target = { kind: 'villa' | 'code' | 'other'; value: string; base: string; label: string };
+const classifyTarget = (raw: string): Target => {
+  const v = normalizeVillaNumber(raw || '');
+  const base = parseInt(v.split('-')[0], 10);
+  if (/^\d+(-\d+)?$/.test(v) && base >= 1 && base <= TOTAL_VILLAS) return { kind: 'villa', value: v, base: String(base), label: `V${v}` };
+  if (/^\d+$/.test(v)) return { kind: 'code', value: v, base: '', label: `Comp ${v}` };
+  return { kind: 'other', value: v, base: '', label: v };
+};
+
+const prevDateStr = (ymd: string) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+};
+
+const parseDepInfo = (remarks?: string): { name?: string; time?: string; dates?: string } | null => {
+  const m = String(remarks || '').match(/\[DEP_INFO\](.*?)\[\/DEP_INFO\]/);
+  if (!m) return null;
+  try { return JSON.parse(m[1]); } catch { return null; }
+};
+
+// Names saved when nobody specific was entered — replaced by the allocated VA when shown.
+const GENERIC_REQUESTERS = ['', 'VA', 'STAFF', 'GEM'];
+
+type GuestOption = {
+  role: 'Departing' | 'Arriving' | 'In-house';
+  mainName: string; fullName: string; mealPlan: string; stayDates: string;
+  gem: string; preferences: string; time: string;
+};
+
+const nowDhakaHHMM = () =>
+  new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+
+// Follows the on-screen keyboard on phones so the modal (and its Save button) stays visible above it.
+const useVisualViewport = (active: boolean) => {
+  const [vv, setVv] = useState<{ height: number; top: number } | null>(null);
+  useEffect(() => {
+    if (!active || typeof window === 'undefined' || !window.visualViewport) return;
+    const v = window.visualViewport;
+    const update = () => setVv({ height: v.height, top: v.offsetTop });
+    update();
+    v.addEventListener('resize', update);
+    v.addEventListener('scroll', update);
+    return () => { v.removeEventListener('resize', update); v.removeEventListener('scroll', update); setVv(null); };
+  }, [active]);
+  return vv ? { height: vv.height, top: vv.top } : undefined;
 };
 
 const analyzePackage = (mp: string) => {
@@ -165,7 +216,13 @@ export default function CoordinatorLog() {
   const [mbItemSearch, setMbItemSearch] = useState('');
   const [otherItemSearch, setOtherItemSearch] = useState('');
   const [villaNumber, setVillaNumber] = useState('');
-  const [guestInfo, setGuestInfo] = useState<any>(null); 
+  const [guestOptions, setGuestOptions] = useState<GuestOption[]>([]);
+  const [guestRole, setGuestRole] = useState('');
+  const [editingGuestName, setEditingGuestName] = useState('');
+  const [guestHistory, setGuestHistory] = useState<{ id: string; request_time: string; request_type: string; item_details: string }[]>([]);
+  const [doubleVillas, setDoubleVillas] = useState<string[]>([]);
+  const [mbTrayOpen, setMbTrayOpen] = useState(false);
+  const guestInfo = guestOptions.find(g => g.role === guestRole) || guestOptions[0] || null;
   const [manualTime, setManualTime] = useState('');
   const [requesterSearch, setRequesterSearch] = useState('');
   
@@ -184,6 +241,7 @@ export default function CoordinatorLog() {
   const [customMinibarOrder, setCustomMinibarOrder] = useState<string[]>([]);
   const [hiddenFromFrequent, setHiddenFromFrequent] = useState<string[]>([]);
   const [catalogSearchInManager, setCatalogSearchInManager] = useState('');
+  const modalViewport = useVisualViewport(isMinibarOpen || isOtherOpen);
 
   useEffect(() => { 
     const sessionStr = localStorage.getItem('hk_pulse_session');
@@ -240,82 +298,111 @@ export default function CoordinatorLog() {
       }
   };
 
+  // Villa -> Villa Attendant name. Only "villa" allocations count: water room, public area etc.
+  // also list villa numbers in their tasks but are not the villa's attendant.
+  const villaVA = useMemo(() => {
+      const map: Record<string, string> = {};
+      for (const alloc of dailyAllocations) {
+          if (String(alloc.area || '').toLowerCase() !== 'villa') continue;
+          const host = allHosts.find(h => String(h.id) === String(alloc.host_id) || String(h.host_id) === String(alloc.host_id));
+          const name = host ? (host.nicknames || host.full_name || host.name) : (hostMap[alloc.host_id] || '');
+          if (!name) continue;
+          for (const v of parseVillas(alloc.task_details || '', doubleVillas)) {
+              if (!map[v]) map[v] = name;
+          }
+      }
+      return map;
+  }, [dailyAllocations, allHosts, hostMap, doubleVillas]);
+
+  const vaFor = (villa: string) => {
+      const t = classifyTarget(villa);
+      return t.kind === 'villa' ? (villaVA[t.value] || villaVA[t.base] || '') : '';
+  };
+
   useEffect(() => {
     const fetchGuestAndVA = async () => {
-      const cleanVilla = normalizeVillaNumber(villaNumber);
-      
-      if (!cleanVilla || cleanVilla.length < 1) { 
-          setGuestInfo(null); 
-          if (!isEditing) setRequesterSearch(''); 
-          return; 
+      const target = classifyTarget(villaNumber);
+      if (target.kind !== 'villa') {
+          setGuestOptions([]);
+          if (!isEditing) setRequesterSearch('');
+          return;
       }
-      
+
       const dateStr = getDhakaDateStr(selectedDate);
-      
-      let assignedVA = '';
-      if (dailyAllocations.length > 0) {
-          const { data: constData } = await supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas').maybeSingle();
-          const dvList = constData?.label ? constData.label.split(',').map((s: string) => s.trim()) : [];
+      const assignedVA = villaVA[target.value] || villaVA[target.base] || '';
+      const { data } = await supabase.from('hsk_daily_summary')
+        .select('*')
+        .eq('report_date', dateStr)
+        .in('villa_number', [target.base, `0${target.base}`])
+        .limit(1)
+        .maybeSingle();
 
-          for (const alloc of dailyAllocations) {
-              const rawVillas = alloc.task_details || '';
-              const vList = parseVillas(rawVillas, dvList);
-              
-              const extractedDigits = cleanVilla.replace(/\D/g, '');
-              const numericBase = extractedDigits ? String(parseInt(extractedDigits, 10)) : '';
-              
-              let isMatch = false;
-              if (vList.includes(cleanVilla)) isMatch = true;
-              else if (numericBase && vList.includes(numericBase)) isMatch = true;
-              else if (numericBase && new RegExp(`\\b${numericBase}\\b`).test(rawVillas)) isMatch = true;
-              
-              if (isMatch) {
-                  const hostUUID = alloc.host_id; 
-                  const host = allHosts.find(h => String(h.id) === String(hostUUID) || String(h.host_id) === String(hostUUID));
-                  if (host) {
-                      assignedVA = host.nicknames || host.full_name || host.name || hostUUID;
-                  } else {
-                      assignedVA = hostMap[hostUUID] || hostUUID; 
-                  }
-                  break; 
+      const toOption = (role: GuestOption['role'], row: any, time = ''): GuestOption => ({
+          role,
+          fullName: row?.guest_name || '',
+          mainName: extractMainGuest(row?.guest_name || ''),
+          mealPlan: row?.meal_plan || '',
+          stayDates: row?.stay_dates || '',
+          gem: row?.gem_name || '',
+          preferences: row?.preferences || '',
+          time,
+      });
+
+      const opts: GuestOption[] = [];
+      if (data) {
+          const st = String(data.status || '').toUpperCase();
+          if (st === 'DEP/ARR') {
+              // Departing guest: saved in remarks, otherwise yesterday's guest in this villa.
+              const dep = parseDepInfo(data.remarks);
+              const { data: prev } = await supabase.from('hsk_daily_summary')
+                .select('guest_name, meal_plan, stay_dates, gem_name, preferences')
+                .eq('report_date', prevDateStr(dateStr))
+                .in('villa_number', [target.base, `0${target.base}`])
+                .limit(1)
+                .maybeSingle();
+              const depName = dep?.name || prev?.guest_name || '';
+              if (depName) {
+                  opts.push(toOption('Departing', { ...prev, guest_name: depName, stay_dates: dep?.dates || prev?.stay_dates }, dep?.time || data.departure_time || ''));
               }
+              if (data.guest_name) opts.push(toOption('Arriving', data, data.arrival_time || ''));
+          } else if (data.guest_name) {
+              const role = st.includes('DEP') ? 'Departing' : st.includes('ARR') ? 'Arriving' : 'In-house';
+              opts.push(toOption(role, data, role === 'Departing' ? data.departure_time || '' : role === 'Arriving' ? data.arrival_time || '' : ''));
           }
       }
+      setGuestOptions(opts);
 
-      if (/^\d+$/.test(cleanVilla) || cleanVilla.includes('-')) {
-          // Robust match for both "5" and "05"
-          const { data } = await supabase.from('hsk_daily_summary')
-            .select('*')
-            .eq('report_date', dateStr)
-            .or(`villa_number.eq.${cleanVilla},villa_number.eq.0${cleanVilla}`)
-            .limit(1)
-            .maybeSingle();
-          
-          if (data) {
-            setGuestInfo({ ...data, mainName: extractMainGuest(data.guest_name), pkg: analyzePackage(data.meal_plan), isCheckout: data.status.includes('DEP') });
-            if (!isEditing) {
-                if (otherModalType === 'GEM' && isOtherOpen) setRequesterSearch(data.gem_name || '');
-                else setRequesterSearch(assignedVA || '');
-            }
-          } else { 
-            setGuestInfo(null); 
-            if (!isEditing) {
-                if (otherModalType !== 'GEM' || isMinibarOpen) setRequesterSearch(assignedVA || '');
-                else setRequesterSearch('');
-            }
-          }
-      } else {
-          setGuestInfo(null);
-          if (!isEditing) {
-              if (otherModalType !== 'GEM' || isMinibarOpen) setRequesterSearch(assignedVA || '');
-              else setRequesterSearch('');
-          }
+      // Which guest by default: the one already on the record, else departing guest for minibar, arriving for requests.
+      const fromRecord = isEditing && editingGuestName ? opts.find(o => o.mainName === editingGuestName || o.fullName.includes(editingGuestName)) : undefined;
+      const chosen = fromRecord || (isMinibarOpen ? opts[0] : opts[opts.length - 1]);
+      setGuestRole(chosen?.role || '');
+
+      if (!isEditing) {
+          if (otherModalType === 'GEM' && isOtherOpen) setRequesterSearch(chosen?.gem || '');
+          else setRequesterSearch(assignedVA);
       }
     };
-    
+
     const timer = setTimeout(fetchGuestAndVA, 250);
     return () => clearTimeout(timer);
-  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, isOtherOpen, dailyAllocations, allHosts, hostMap, isEditing]);
+  }, [villaNumber, otherModalType, selectedDate, isMinibarOpen, isOtherOpen, villaVA, isEditing, editingGuestName]);
+
+  // Earlier requests of the same guest (last 30 days) — shows what was already sent to them.
+  useEffect(() => {
+    const target = classifyTarget(villaNumber);
+    if (!guestInfo?.mainName || target.kind !== 'villa' || !(isMinibarOpen || isOtherOpen)) { setGuestHistory([]); return; }
+    const since = new Date(Date.now() - 30 * 86400000).toISOString();
+    let cancelled = false;
+    supabase.from('hsk_daily_requests')
+      .select('id, request_time, request_type, item_details')
+      .eq('villa_number', target.value)
+      .eq('guest_name', guestInfo.mainName)
+      .gte('request_time', since)
+      .order('request_time', { ascending: false })
+      .limit(10)
+      .then(({ data }) => { if (!cancelled) setGuestHistory((data || []).filter(r => r.id !== editingId)); });
+    return () => { cancelled = true; };
+  }, [villaNumber, guestInfo?.mainName, isMinibarOpen, isOtherOpen, editingId]);
 
   const fetchCatalog = async () => {
     const { data } = await supabase.from('hsk_master_catalog').select('*').order('article_name');
@@ -323,8 +410,12 @@ export default function CoordinatorLog() {
   };
 
   const fetchSettings = async () => {
-    const { data } = await supabase.from('hsk_constants').select('type, label').in('type', ['gem']).order('label');
-    if (data) setGems(data.filter(c => c.type === 'gem').map(c => c.label));
+    const { data } = await supabase.from('hsk_constants').select('type, label').in('type', ['gem', 'double_mb_villas']).order('label');
+    if (data) {
+      setGems(data.filter(c => c.type === 'gem').map(c => c.label));
+      const dv = data.find(c => c.type === 'double_mb_villas')?.label || '';
+      setDoubleVillas(dv.split(',').map((x: string) => x.trim()).filter(Boolean));
+    }
   };
 
   const isOnlyRefills = (details: string) => {
@@ -341,8 +432,8 @@ export default function CoordinatorLog() {
     const [reqRes, overdueRes, guestRes, allocRes] = await Promise.all([
         supabase.from('hsk_daily_requests').select('*').gte('request_time', dayStartStr).lte('request_time', dayEndStr).order('request_time', { ascending: false }),
         supabase.from('hsk_daily_requests').select('*').lt('request_time', dayStartStr).order('request_time', { ascending: false }).limit(100),
-        supabase.from('hsk_daily_summary').select('villa_number, meal_plan, stay_dates, status, gem_name').eq('report_date', dateStr),
-        supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', dateStr) 
+        supabase.from('hsk_daily_summary').select('villa_number, guest_name, meal_plan, stay_dates, status, gem_name').eq('report_date', dateStr),
+        supabase.from('hsk_allocations').select('host_id, area, task_details').eq('report_date', dateStr) 
     ]);
     
     if (allocRes.data) setDailyAllocations(allocRes.data);
@@ -377,7 +468,7 @@ export default function CoordinatorLog() {
     const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
     setManualTime(dhakaTimeFormatter.format(getDhakaTime()));
     
-    setVillaNumber(''); setGuestInfo(null); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch(''); setOtherItemSearch('');
+    setVillaNumber(''); setGuestOptions([]); setGuestRole(''); setEditingGuestName(''); setMbTrayOpen(false); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch(''); setOtherItemSearch('');
     setOtherCategory('General'); setIsEditing(false); setEditingId(null);
     setMbCategory('Frequent');
     
@@ -391,7 +482,9 @@ export default function CoordinatorLog() {
     setVillaNumber(normalizeVillaNumber(record.villa_number));
     const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
     setManualTime(dhakaTimeFormatter.format(new Date(record.request_time)));
-    setRequesterSearch(record.attendant_name);
+    setRequesterSearch(GENERIC_REQUESTERS.includes((record.attendant_name || '').toUpperCase()) ? '' : record.attendant_name);
+    setEditingGuestName(record.guest_name || '');
+    setMbTrayOpen(false);
     
     if (record.request_type === 'Minibar') {
       const items = (record.item_details || '').split('\n').map(line => {
@@ -478,8 +571,9 @@ export default function CoordinatorLog() {
   };
 
   const submitRequest = async (type: 'Minibar' | 'Other') => {
-    const cleanV = normalizeVillaNumber(villaNumber);
-    if (!cleanV) { toast.error("Villa Required"); return; }
+    const target = classifyTarget(villaNumber);
+    const cleanV = target.value;
+    if (!cleanV) { toast.error("Villa or code required"); return; }
     
     let details = '';
     let reqType = 'General';
@@ -499,8 +593,9 @@ export default function CoordinatorLog() {
     
     let attendantName = requesterSearch;
     if (!attendantName) {
-        if (reqType === 'Minibar') attendantName = 'VA';
-        else if (reqType === 'GEM Request') attendantName = guestInfo?.gem_name || 'GEM';
+        if (target.kind === 'code') attendantName = 'Comp';
+        else if (reqType === 'Minibar') attendantName = vaFor(cleanV) || 'VA';
+        else if (reqType === 'GEM Request') attendantName = guestInfo?.gem || 'GEM';
         else attendantName = 'Staff';
     }
 
@@ -512,8 +607,8 @@ export default function CoordinatorLog() {
        item_details: details,
        request_time: dbTimeStr, 
        attendant_name: attendantName,
-       guest_name: guestInfo ? guestInfo.mainName : '',
-       package_tag: guestInfo?.pkg?.type || '',
+       guest_name: target.kind === 'villa' && guestInfo ? guestInfo.mainName : '',
+       package_tag: target.kind === 'villa' && guestInfo ? analyzePackage(guestInfo.mealPlan).type : '',
        logged_by: loggedByName
     };
 
@@ -572,28 +667,32 @@ export default function CoordinatorLog() {
   };
 
   const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
-      const cleanDetails = (record.item_details || '')
+      const target = classifyTarget(record.villa_number);
+      const items = (record.item_details || '')
           .split(/\n/)
-          .map(s => {
-              let clean = s.trim().replace(/^[•\-\*]\s*/, '');
-              if (clean.endsWith('(SENT)')) {
-                  clean = clean.replace(/\s*\(SENT\)$/, '') + ' ✅';
-              }
-              return clean;
-          })
+          .map(s => s.trim().replace(/^[•\-\*]\s*/, ''))
           .filter(Boolean)
-          .join('\n- ');
+          .map(s => s.endsWith('(SENT)') ? `• ${s.replace(/\s*\(SENT\)$/, '')} ✅` : `• ${s}`);
 
-      let text = '';
-      if (type === 'inform') {
-          text = `V${record.villa_number}\n- ${cleanDetails}`;
-          if (!record.is_sent) toggleStatus(record.id, 'is_sent'); 
-      } else {
-          text = `V${record.villa_number}\n- ${cleanDetails}\nDONE ✅`;
-          if (!record.is_done) toggleStatus(record.id, 'is_done');
-      }
+      const kind = record.request_type === 'GEM Request' ? 'GEM request' : record.request_type === 'General' ? 'Request' : record.request_type;
+      const title = `*${target.label}*${record.guest_name ? ` · ${record.guest_name}` : ''}`;
+      const g = dailyGuests[target.base] || dailyGuests[record.villa_number];
+      const requester = GENERIC_REQUESTERS.includes((record.attendant_name || '').toUpperCase()) ? '' : record.attendant_name;
+      const va = vaFor(record.villa_number);
+      const people = [
+          va ? `VA: ${va}` : '',
+          g?.gem_name ? `GEM: ${g.gem_name}` : '',
+          requester && requester !== va && requester !== g?.gem_name ? `Requested by: ${requester}` : '',
+      ].filter(Boolean).join('  |  ');
 
-      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+      const lines = type === 'inform'
+          ? [title, `_${kind} · ${formatDisplayTime(record.request_time)}_`, '', ...items, ...(people ? ['', people] : [])]
+          : [`✅ *DONE* — ${title}`, '', ...items, '', `_Completed ${nowDhakaHHMM()}_`];
+
+      if (type === 'inform' && !record.is_sent) toggleStatus(record.id, 'is_sent');
+      if (type === 'done' && !record.is_done) toggleStatus(record.id, 'is_done');
+
+      window.open(`https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`, '_blank');
   };
 
   const openPartialModal = (record: RequestRecord) => {
@@ -667,7 +766,7 @@ export default function CoordinatorLog() {
       if (jettyFilter === 'Jetty A' && !(vNum >= 1 && vNum <= 35)) return false;
       if (jettyFilter === 'Jetty B' && !(vNum >= 37 && vNum <= 50)) return false;
       if (jettyFilter === 'Jetty C' && !(vNum >= 59 && vNum <= 79)) return false;
-      if (jettyFilter === 'Beach' && ((vNum >= 1 && vNum <= 35) || (vNum >= 37 && vNum <= 50) || (vNum >= 59 && vNum <= 79))) return false;
+      if (jettyFilter === 'Beach' && (!(vNum >= 1 && vNum <= TOTAL_VILLAS) || (vNum >= 1 && vNum <= 35) || (vNum >= 37 && vNum <= 50) || (vNum >= 59 && vNum <= 79))) return false;
       return true;
   });
 
@@ -848,38 +947,94 @@ export default function CoordinatorLog() {
     toast.success("Updated visibility");
   };
 
-  const GuestCard = () => {
-      if (!guestInfo) return null;
-      let depDate = '-';
-      if (guestInfo.stay_dates) {
-          const parts = guestInfo.stay_dates.split('-');
-          if (parts.length > 1) depDate = parts[1].trim();
-          else depDate = guestInfo.stay_dates;
+  // Guest panel inside the modals. `full` adds preferences + earlier requests (used for extra-item requests).
+  const renderGuestCard = (full: boolean) => {
+      if (!villaNumber.trim()) return null;
+      const target = classifyTarget(villaNumber);
+      if (target.kind === 'code') {
+          return (
+            <div className="mt-2 px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800 flex items-center gap-2">
+              <Ticket size={14} className="shrink-0"/> Complimentary code {target.value} — not a villa, no guest linked
+            </div>
+          );
+      }
+      if (target.kind === 'other') {
+          return (
+            <div className="mt-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-600 flex items-center gap-2">
+              <MapPin size={14} className="shrink-0"/> {target.value} — not a villa, no guest linked
+            </div>
+          );
       }
 
-      const mealPlan = guestInfo.meal_plan || 'RO';
+      const va = villaVA[target.value] || villaVA[target.base] || '';
+      const people = (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-bold text-slate-600 mt-1">
+          <span>VA: <span className="text-slate-900">{va || '—'}</span></span>
+          <span>GEM: <span className="text-slate-900">{guestInfo?.gem || '—'}</span></span>
+        </div>
+      );
 
-      return (
-        <div className={`mt-2 p-2.5 rounded-xl border-l-4 shadow-xs animate-in zoom-in-95 text-xs ${guestInfo.isCheckout ? 'bg-rose-50/90 border-rose-500' : 'bg-blue-50/80 border-blue-500'}`}>
-            <div className="flex justify-between items-start gap-1">
-                <div className="min-w-0">
-                    <h3 className="font-black text-slate-800 flex items-center gap-1.5 truncate text-xs">
-                      <User size={12} className="text-slate-400 shrink-0"/>
-                      <span className="truncate">{guestInfo.mainName || 'Guest'}</span>
-                    </h3>
-                    <p className="text-[10px] text-slate-500 font-bold mt-0.5">
-                        Dep: <span className="text-slate-800 font-mono">{depDate}</span>
-                    </p>
-                </div>
-                <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider border bg-white shrink-0 ${guestInfo.pkg?.color || 'border-slate-200 text-slate-500'}`}>
-                    {mealPlan}
-                </span>
+      if (!guestInfo) {
+          return (
+            <div className="mt-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs">
+              <span className="font-bold text-slate-500">V{target.value} · no guest in today&apos;s Guest List</span>
+              {people}
             </div>
-            {guestInfo.isCheckout && (
-              <div className="mt-1 flex items-center gap-1 text-rose-600 font-black text-[9px] uppercase tracking-widest">
-                <AlertTriangle size={10}/> Checkout Today
+          );
+      }
+
+      const isDep = guestInfo.role === 'Departing';
+      return (
+        <div className="mt-2 rounded-xl border border-slate-200 overflow-hidden text-xs bg-white">
+          {guestOptions.length > 1 && (
+            <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100">
+              {guestOptions.map(g => (
+                <button key={g.role} type="button" onClick={() => setGuestRole(g.role)}
+                  className={`text-left px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${guestInfo.role === g.role ? 'bg-white shadow-xs ring-1 ring-slate-200' : 'text-slate-500'}`}>
+                  <span className={`block text-[9px] font-black uppercase tracking-wider ${g.role === 'Departing' ? 'text-rose-600' : 'text-blue-600'}`}>{g.role}{g.time ? ` · ${g.time}` : ''}</span>
+                  <span className="block font-bold truncate text-slate-800">{g.mainName}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className={`p-2.5 border-l-4 ${isDep ? 'border-rose-500 bg-rose-50/60' : 'border-blue-500 bg-blue-50/50'}`}>
+            <div className="flex justify-between items-start gap-2">
+              <div className="min-w-0">
+                <h3 className="font-black text-slate-800 flex items-center gap-1.5 text-[13px]">
+                  <User size={13} className="text-slate-400 shrink-0"/>
+                  <span className="truncate">{guestInfo.mainName || 'Guest'}</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 font-bold mt-0.5">
+                  {guestInfo.role}{guestInfo.stayDates ? ` · ${guestInfo.stayDates}` : ''}
+                </p>
+              </div>
+              {guestInfo.mealPlan && (
+                <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border bg-white shrink-0 ${analyzePackage(guestInfo.mealPlan).color}`}>{guestInfo.mealPlan}</span>
+              )}
+            </div>
+            {people}
+            {full && guestInfo.preferences && (
+              <details className="mt-2 group">
+                <summary className="cursor-pointer list-none flex items-start gap-1.5 text-[11px] text-slate-700">
+                  <Star size={12} className="text-amber-500 shrink-0 mt-0.5"/>
+                  <span className="line-clamp-2 group-open:line-clamp-none">{guestInfo.preferences}</span>
+                </summary>
+              </details>
+            )}
+            {full && guestHistory.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-slate-200/70">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1 mb-1"><History size={11}/> Already sent this stay</p>
+                <ul className="space-y-0.5 max-h-24 overflow-y-auto">
+                  {guestHistory.map(h => (
+                    <li key={h.id} className="text-[11px] text-slate-600 flex gap-2">
+                      <span className="font-mono text-slate-400 shrink-0">{new Date(h.request_time).toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'short' })}</span>
+                      <span className="truncate">{(h.item_details || '').replace(/\s*\(SENT\)/g, '').split('\n').map(x => x.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean).join(', ')}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
+          </div>
         </div>
       );
   };
@@ -1004,9 +1159,16 @@ export default function CoordinatorLog() {
            visibleRecords.map(r => {
              const allRefill = isOnlyRefills(r.item_details);
              const isGemReq = r.request_type === 'GEM Request';
-             const cleanV = normalizeVillaNumber(r.villa_number);
+             const target = classifyTarget(r.villa_number);
              
-             const gInfo = dailyGuests[cleanV] || dailyGuests[r.villa_number];
+             const gInfo = target.kind === 'villa' ? (dailyGuests[target.base] || dailyGuests[r.villa_number]) : null;
+             const cardVA = vaFor(r.villa_number);
+             const requester = GENERIC_REQUESTERS.includes((r.attendant_name || '').toUpperCase()) ? '' : r.attendant_name;
+             // On a DEP/ARR day, say which of the two guests this belongs to.
+             let guestRoleTag = '';
+             if (r.guest_name && String(gInfo?.status || '').toUpperCase() === 'DEP/ARR') {
+                 guestRoleTag = String(gInfo?.guest_name || '').includes(r.guest_name) ? 'Arr guest' : 'Dep guest';
+             }
              
              let depDate = '';
              if (gInfo?.stay_dates) {
@@ -1070,8 +1232,8 @@ export default function CoordinatorLog() {
                     <div className="flex justify-between items-start gap-2 mb-3">
                        <div className="flex flex-col gap-1">
                            <div className="flex items-center gap-1.5">
-                             <span className="text-xl font-black text-slate-900 font-mono tracking-tight leading-none">
-                               V{cleanV}
+                             <span className={`font-black font-mono tracking-tight leading-none ${target.kind === 'villa' ? 'text-xl text-slate-900' : 'text-base text-emerald-700 flex items-center gap-1'}`}>
+                               {target.kind === 'code' && <Ticket size={15}/>}{target.label}
                              </span>
                              <button 
                                onClick={() => handleEditRecord(r)} 
@@ -1109,6 +1271,16 @@ export default function CoordinatorLog() {
                        </div>
                     </div>
                     
+                    {r.guest_name && (
+                      <div className="-mt-1 mb-2 flex items-center gap-1.5 min-w-0">
+                        <User size={12} className="text-slate-400 shrink-0"/>
+                        <span className="text-xs font-bold text-slate-700 truncate">{r.guest_name}</span>
+                        {guestRoleTag && (
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${guestRoleTag === 'Dep guest' ? 'bg-rose-100 text-rose-700' : 'bg-blue-100 text-blue-700'}`}>{guestRoleTag}</span>
+                        )}
+                      </div>
+                    )}
+
                     <div className="mb-4 text-xs font-bold text-slate-700 leading-relaxed space-y-1 bg-slate-50/70 p-3 rounded-xl border border-slate-100">
                         {(r.item_details || '').split(/\n/).map((item: string, idx: number) => {
                             const cleanItem = item.trim().replace(/^[•\-\*]\s*/, '');
@@ -1128,7 +1300,17 @@ export default function CoordinatorLog() {
 
                     <div className="mt-auto pt-2.5 border-t border-slate-100 flex items-end justify-between gap-2">
                        <div className="min-w-0">
-                          <div className="text-[10px] text-slate-700 font-black uppercase truncate">{r.attendant_name}</div>
+                          {target.kind === 'villa' ? (
+                            <div className="text-[10px] font-bold text-slate-500 uppercase flex flex-wrap gap-x-2">
+                              <span>VA <span className="text-slate-800 font-black">{cardVA || (r.request_type === 'Minibar' ? requester : '') || '—'}</span></span>
+                              <span>GEM <span className="text-slate-800 font-black">{gInfo?.gem_name || '—'}</span></span>
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-slate-700 font-black uppercase truncate">{requester || (target.kind === 'code' ? 'Complimentary' : '')}</div>
+                          )}
+                          {requester && target.kind === 'villa' && requester !== cardVA && requester !== gInfo?.gem_name && (
+                            <div className="text-[9px] text-slate-400 font-semibold mt-0.5 truncate">Req: {requester}</div>
+                          )}
                           
                           <div className={`text-[10px] font-bold mt-0.5 flex flex-wrap items-center gap-1.5 ${isUrgent ? 'text-rose-600' : 'text-slate-400'}`}>
                               <span className="flex items-center font-mono">
@@ -1208,95 +1390,88 @@ export default function CoordinatorLog() {
       )}
 
       {/* ========================================================================= */}
-      {/* UPGRADED NATIVE MINIBAR MODAL (DESKTOP FIT + SMOOTH NO-JUMP MOBILE)       */}
+      {/* MINIBAR MODAL — fills large screens, follows the keyboard on phones */}
       {/* ========================================================================= */}
-      {isMinibarOpen && (
-         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-3 overflow-hidden">
-            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-6xl h-[100dvh] md:h-[88vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95">
-               
-               {/* Modal Header */}
-               <div className="px-4 py-2.5 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
-                      <Wine size={16}/>
+      {isMinibarOpen && (() => {
+         const cartCount = mbCart.reduce((sum, i) => sum + i.qty, 0);
+         const villaInput = (extra: string) => (
+           <input
+             type="text"
+             enterKeyHint="done"
+             autoComplete="off"
+             placeholder="Villa / code"
+             className={`w-28 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500 ${extra}`}
+             value={villaNumber}
+             onChange={e => setVillaNumber(e.target.value)}
+           />
+         );
+         const vaInput = (
+           <input
+             type="text"
+             placeholder="VA name"
+             className="flex-1 min-w-0 p-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-base md:text-sm text-slate-700 outline-none focus:border-rose-500"
+             value={requesterSearch}
+             onChange={e => setRequesterSearch(e.target.value)}
+           />
+         );
+         return (
+         <div className="fixed inset-x-0 top-0 h-[100dvh] bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4 overflow-hidden" style={modalViewport}>
+            <div className="bg-white md:rounded-3xl shadow-2xl w-full h-full md:h-[92vh] md:max-w-[min(96vw,1900px)] flex flex-col overflow-hidden md:border border-slate-200 md:animate-in md:zoom-in-95">
+
+               {/* Header */}
+               <div className="px-4 py-2.5 2xl:py-3.5 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-8 h-8 2xl:w-10 2xl:h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                      <Wine size={18}/>
                     </div>
-                    <div>
-                      <h3 className="text-sm sm:text-base font-black text-slate-800 leading-none">
-                        {isEditing ? 'Edit Minibar Log' : 'New Minibar Consumption Log'}
-                      </h3>
-                      <p className="text-[10px] text-slate-400 font-bold mt-0.5">
-                        {mbCategory === 'Frequent' ? 'Frequently consumed items • Category sequenced' : `Showing ${mbCategory} items`}
-                      </p>
-                    </div>
+                    <h3 className="text-base 2xl:text-xl font-black text-slate-800 leading-none truncate">
+                      {isEditing ? 'Edit Minibar Log' : 'Minibar Consumption'}
+                    </h3>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <button 
-                      onClick={() => setIsManageLayoutOpen(true)}
-                      className="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer"
-                      title="Manage Minibar Items & Order"
-                    >
+                    <button onClick={() => setIsManageLayoutOpen(true)} className="p-2 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer" title="Manage Minibar Items & Order">
                       <Settings size={16}/>
                     </button>
-                    <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-1.5 rounded-full text-slate-500 transition-colors cursor-pointer">
+                    <button onClick={() => setIsMinibarOpen(false)} className="bg-slate-100 hover:bg-slate-200 p-2 rounded-full text-slate-500 transition-colors cursor-pointer" aria-label="Close">
                       <X size={16}/>
                     </button>
                   </div>
                </div>
-               
-               {/* Split-Screen Terminal (Full Screen Fit on Desktop, Native Drawer on Mobile) */}
-               <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-                  
-                  {/* Left Side: Product Gallery */}
-                  <div className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
-                    
-                    {/* Mobile Only Villa Header - NO AUTOFOCUS to eliminate keyboard jump */}
+
+               <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+
+                  {/* Product gallery */}
+                  <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-slate-50/50">
+
+                    {/* Phone: villa + VA on top */}
                     <div className="md:hidden p-2.5 bg-white border-b border-slate-200 shrink-0">
-                      <div className="flex gap-2 items-center">
-                        <input 
-                          type="text" 
-                          placeholder="Villa #" 
-                          className="w-20 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-sm text-slate-800 outline-none focus:border-rose-500" 
-                          value={villaNumber} 
-                          onChange={e => setVillaNumber(e.target.value)}
-                        />
-                        <input 
-                          type="text" 
-                          placeholder="VA Name" 
-                          className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none" 
-                          value={requesterSearch} 
-                          onChange={e => setRequesterSearch(e.target.value)}
-                        />
-                      </div>
-                      <GuestCard />
+                      <div className="flex gap-2 items-center">{villaInput('')}{vaInput}</div>
+                      {renderGuestCard(false)}
                     </div>
 
-                    {/* Filter Bar with Clean Search Placeholder (NO BRACKETS) */}
-                    <div className="p-2.5 bg-white border-b border-slate-100 space-y-1.5 shrink-0">
+                    <div className="p-2.5 2xl:p-3.5 bg-white border-b border-slate-100 space-y-2 shrink-0">
                       <div className="relative">
-                        <Search size={14} className="absolute left-3 top-2 text-slate-400"/>
-                        <input 
-                          type="text" 
-                          placeholder="Search all items..." 
-                          className="w-full pl-8 pr-7 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-rose-500" 
-                          value={mbItemSearch} 
+                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
+                        <input
+                          type="text"
+                          placeholder="Search all items..."
+                          className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-base md:text-sm text-slate-700 outline-none focus:bg-white focus:border-rose-500"
+                          value={mbItemSearch}
                           onChange={(e) => setMbItemSearch(e.target.value)}
                         />
                         {mbItemSearch && (
-                          <button onClick={() => setMbItemSearch('')} className="absolute right-2.5 top-2 text-slate-400">
-                            <X size={12} />
+                          <button onClick={() => setMbItemSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 p-1" aria-label="Clear search">
+                            <X size={14} />
                           </button>
                         )}
                       </div>
-                      
-                      <div className="flex gap-1 overflow-x-auto no-scrollbar py-0.5">
+                      <div className="flex gap-1.5 overflow-x-auto no-scrollbar py-0.5">
                         {minibarTabs.map(c => (
-                          <button 
-                            key={c} 
-                            onClick={() => setMbCategory(c)} 
-                            className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
-                              mbCategory === c 
-                                ? 'bg-rose-600 text-white shadow-xs' 
-                                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                          <button
+                            key={c}
+                            onClick={() => setMbCategory(c)}
+                            className={`px-3 py-1.5 2xl:px-4 2xl:py-2 rounded-lg text-[11px] 2xl:text-xs font-black uppercase transition-all whitespace-nowrap cursor-pointer ${
+                              mbCategory === c ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                             }`}
                           >
                             {c}
@@ -1305,135 +1480,100 @@ export default function CoordinatorLog() {
                       </div>
                     </div>
 
-                    {/* Compact Image Grid (Fit on one screen without outer scroll) */}
-                    <div className="flex-1 overflow-y-auto p-2.5 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 gap-2 content-start">
+                    {/* Columns stretch to fill the width, so items grow on big monitors instead of leaving white space */}
+                    <div className="flex-1 min-h-0 overflow-y-auto p-2.5 2xl:p-4 grid gap-2 2xl:gap-3 content-start grid-cols-[repeat(auto-fill,minmax(100px,1fr))] sm:grid-cols-[repeat(auto-fill,minmax(124px,1fr))] 2xl:grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
                        {visibleMinibarItems.map(item => {
                           const itemName = item.generic_name || item.article_name;
                           const inCart = mbCart.find(c => c.name === itemName);
                           return (
-                            <button 
-                              key={item.article_number} 
-                              onClick={() => addToCart(itemName, 'MB')} 
-                              className={`bg-white p-1.5 rounded-xl border flex flex-col items-center justify-between gap-1 active:scale-95 transition-all group relative cursor-pointer select-none ${
-                                inCart 
-                                  ? 'border-rose-500 ring-2 ring-rose-100 shadow-sm' 
-                                  : 'border-slate-200/70 hover:border-rose-300'
+                            <button
+                              key={item.article_number}
+                              onClick={() => addToCart(itemName, 'MB')}
+                              className={`bg-white p-1.5 2xl:p-2.5 rounded-xl border flex flex-col items-center gap-1 active:scale-95 transition-all group relative cursor-pointer select-none ${
+                                inCart ? 'border-rose-500 ring-2 ring-rose-100 shadow-sm' : 'border-slate-200/70 hover:border-rose-300'
                               }`}
                             >
                                {inCart && (
-                                 <div className="absolute top-1 right-1 bg-rose-600 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center shadow-xs z-10">
+                                 <div className="absolute top-1 right-1 bg-rose-600 text-white text-[11px] 2xl:text-sm font-black min-w-5 h-5 2xl:min-w-7 2xl:h-7 px-1 rounded-full flex items-center justify-center shadow-xs z-10">
                                    {inCart.qty}
                                  </div>
                                )}
-                               <div className="w-full h-12 sm:h-14 bg-slate-50/60 rounded-lg flex items-center justify-center overflow-hidden p-1">
+                               <div className="w-full aspect-[4/3] bg-slate-50/60 rounded-lg flex items-center justify-center overflow-hidden p-1">
                                    {item.image_url ? (
                                      <img src={item.image_url} alt={itemName} className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-200"/>
                                    ) : (
-                                     <Wine size={16} className="text-rose-200"/>
+                                     <Wine size={22} className="text-rose-200"/>
                                    )}
                                </div>
-                               <span className="text-[10px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-6 flex items-center justify-center">
+                               <span className="text-[11px] 2xl:text-sm font-bold text-slate-700 text-center leading-tight line-clamp-2 min-h-[2.2em] flex items-center justify-center">
                                  {itemName}
-                                </span>
+                               </span>
                             </button>
                           );
                        })}
                     </div>
                   </div>
 
-                  {/* Right Side: Pinned Order Tray & Checkout */}
-                  <div className="w-full md:w-80 lg:w-84 bg-white border-t md:border-t-0 md:border-l border-slate-200 flex flex-col shrink-0 max-h-[46vh] md:max-h-none">
-                    
-                    {/* Desktop Villa Input Box */}
+                  {/* Order tray */}
+                  <div className="w-full md:w-80 xl:w-96 2xl:w-[440px] bg-white border-t md:border-t-0 md:border-l border-slate-200 flex flex-col shrink-0 min-h-0">
+
+                    {/* Desktop: villa + VA */}
                     <div className="hidden md:block p-3 border-b border-slate-100">
-                      <div className="flex gap-2">
-                        <input 
-                          type="text" 
-                          placeholder="Villa #" 
-                          className="w-20 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500" 
-                          value={villaNumber} 
-                          onChange={e => setVillaNumber(e.target.value)}
-                        />
-                        <input 
-                          type="text" 
-                          placeholder="VA Name" 
-                          className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-slate-700 outline-none focus:border-rose-500" 
-                          value={requesterSearch} 
-                          onChange={e => setRequesterSearch(e.target.value)}
-                        />
-                      </div>
-                      <GuestCard />
+                      <div className="flex gap-2">{villaInput('')}{vaInput}</div>
+                      {renderGuestCard(false)}
                     </div>
 
-                    {/* Pinned Selection Tray */}
-                    <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider">
-                          Selected Items ({mbCart.reduce((sum, i) => sum + i.qty, 0)})
-                        </span>
-                        {mbCart.length > 0 && (
-                          <button onClick={() => setMbCart([])} className="text-[9px] font-bold text-rose-500 hover:underline">
-                            Clear
-                          </button>
-                        )}
-                      </div>
+                    {/* Phone: collapsible cart summary */}
+                    <button type="button" onClick={() => setMbTrayOpen(o => !o)} className="md:hidden flex items-center justify-between gap-2 px-3 py-2 text-xs font-bold text-slate-600 cursor-pointer">
+                      <span className="truncate">
+                        {cartCount === 0 ? 'Tap items to add' : `${cartCount} item${cartCount > 1 ? 's' : ''} · ${mbCart.map(i => `${i.qty}x ${i.name}`).join(', ')}`}
+                      </span>
+                      {cartCount > 0 && <ChevronUp size={16} className={`shrink-0 transition-transform ${mbTrayOpen ? '' : 'rotate-180'}`}/>}
+                    </button>
 
+                    <div className={`${mbTrayOpen ? 'block max-h-[35vh]' : 'hidden'} md:block md:flex-1 md:max-h-none overflow-y-auto px-3 pb-2 md:p-3 space-y-1.5`}>
+                      <div className="hidden md:flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Selected items ({cartCount})</span>
+                        {mbCart.length > 0 && <button onClick={() => setMbCart([])} className="text-[10px] font-bold text-rose-500 hover:underline cursor-pointer">Clear</button>}
+                      </div>
                       {mbCart.length === 0 ? (
-                        <div className="py-6 md:py-16 text-center text-slate-300 text-xs font-bold">
-                          Tap product picture to add
-                        </div>
+                        <div className="hidden md:block py-16 text-center text-slate-300 text-xs font-bold">Tap a product to add it</div>
                       ) : (
                         mbCart.map(i => (
                           <div key={i.name} className="p-2 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
                             <div className="min-w-0 flex-1">
-                              <span className="text-xs font-bold text-slate-800 block truncate leading-tight">{i.name}</span>
-                              <button 
-                                onClick={() => toggleRefill(i.name)} 
-                                className={`mt-0.5 px-1.5 py-0.5 rounded text-[8px] font-black uppercase transition-all cursor-pointer ${
-                                  i.isRefill ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'
-                                }`}
+                              <span className="text-xs 2xl:text-sm font-bold text-slate-800 block truncate leading-tight">{i.name}</span>
+                              <button
+                                onClick={() => toggleRefill(i.name)}
+                                className={`mt-1 px-1.5 py-0.5 rounded text-[9px] font-black uppercase transition-all cursor-pointer ${i.isRefill ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
                               >
                                 {i.isRefill ? '✓ Refill' : '+ Refill'}
                               </button>
                             </div>
-
-                            <div className="flex items-center gap-1 bg-white px-1 py-0.5 rounded-lg border border-slate-200 shrink-0">
-                              <button 
-                                onClick={() => updateCartQty(i.name, -1, 'MB')} 
-                                className="w-5 h-5 rounded bg-slate-100 hover:bg-rose-100 hover:text-rose-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
-                              >
-                                <Minus size={10}/>
-                              </button>
-                              <span className="w-5 text-center font-mono font-black text-xs text-slate-800">
-                                {i.qty}
-                              </span>
-                              <button 
-                                onClick={() => updateCartQty(i.name, 1, 'MB')} 
-                                className="w-5 h-5 rounded bg-slate-100 hover:bg-emerald-100 hover:text-emerald-600 flex items-center justify-center font-black text-slate-600 cursor-pointer"
-                              >
-                                <Plus size={10}/>
-                              </button>
+                            <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shrink-0">
+                              <button onClick={() => updateCartQty(i.name, -1, 'MB')} className="w-8 h-8 md:w-6 md:h-6 rounded bg-slate-100 hover:bg-rose-100 hover:text-rose-600 flex items-center justify-center text-slate-600 cursor-pointer" aria-label="Less"><Minus size={12}/></button>
+                              <span className="w-6 text-center font-mono font-black text-sm text-slate-800">{i.qty}</span>
+                              <button onClick={() => updateCartQty(i.name, 1, 'MB')} className="w-8 h-8 md:w-6 md:h-6 rounded bg-slate-100 hover:bg-emerald-100 hover:text-emerald-600 flex items-center justify-center text-slate-600 cursor-pointer" aria-label="More"><Plus size={12}/></button>
                             </div>
                           </div>
                         ))
                       )}
                     </div>
 
-                    {/* Bottom Action Footer */}
-                    <div className="p-3 border-t border-slate-200 bg-white">
-                      <button 
-                        onClick={() => submitRequest('Minibar')} 
-                        className="w-full py-3 bg-rose-600 hover:bg-rose-700 active:scale-98 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all cursor-pointer"
+                    <div className="p-3 border-t border-slate-200 bg-white" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
+                      <button
+                        onClick={() => submitRequest('Minibar')}
+                        className="w-full py-3.5 2xl:py-4 bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white rounded-xl text-sm 2xl:text-base font-black uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all cursor-pointer"
                       >
-                        {isEditing ? 'Confirm Update' : `Save Minibar (${mbCart.reduce((s, i) => s + i.qty, 0)})`}
+                        {isEditing ? 'Confirm Update' : `Save Minibar (${cartCount})`}
                       </button>
                     </div>
                   </div>
-
                </div>
             </div>
          </div>
-      )}
+         );
+      })()}
 
       {/* ========================================================================= */}
       {/* MANAGE MINIBAR LAYOUT & ITEMS MODAL                                      */}
@@ -1546,8 +1686,8 @@ export default function CoordinatorLog() {
       {/* GENERAL & GEM REQUEST MODAL                                               */}
       {/* ========================================================================= */}
       {isOtherOpen && (
-         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4">
-            <div className={`bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-4xl h-[90vh] md:h-[82vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95 ${otherModalType === 'GEM' ? 'border-t-4 border-t-amber-400' : ''}`}>
+         <div className="fixed inset-x-0 top-0 h-[100dvh] bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4" style={modalViewport}>
+            <div className={`bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-4xl 2xl:max-w-6xl h-full max-h-full md:h-[82vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95 ${otherModalType === 'GEM' ? 'border-t-4 border-t-amber-400' : ''}`}>
                
                <div className="px-5 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
                   <h3 className={`text-base sm:text-lg font-black flex items-center gap-2 uppercase tracking-tight ${otherModalType === 'GEM' ? 'text-amber-600' : 'text-[#6D2158]'}`}>
@@ -1560,7 +1700,9 @@ export default function CoordinatorLog() {
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
                      <input 
                        type="text" 
-                       placeholder="Villa #" 
+                       enterKeyHint="done"
+                       autoComplete="off"
+                       placeholder="Villa / code" 
                        className="col-span-1 p-3 bg-slate-50 border-2 border-slate-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-[#6D2158]" 
                        value={villaNumber} 
                        onChange={e => setVillaNumber(e.target.value)}
@@ -1592,7 +1734,7 @@ export default function CoordinatorLog() {
                      />
                   </div>
                   
-                  <GuestCard />
+                  {renderGuestCard(true)}
                   
                   <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
                      <button 

@@ -82,6 +82,7 @@ export default function PublicDashboard() {
 
         if (st.includes('ARR')) { colorClass = 'text-emerald-600'; if(match?.arrival_time) timeStr = match.arrival_time; }
         else if (st.includes('VAC') || st === 'VM/VAC') { colorClass = 'text-sky-600'; shortStatus = 'VAC'; }
+        else if (st.includes('FUMIG')) { colorClass = 'text-teal-600'; shortStatus = 'FUMIG'; }
         else if (st.includes('TMA')) { colorClass = 'text-amber-600'; }
         else if (st.includes('DEP')) { colorClass = 'text-rose-600'; if(match?.departure_time) timeStr = match.departure_time; }
 

@@ -16,6 +16,17 @@ export default function ClientLayout({
 }: ClientLayoutProps) {
   const [impersonatingData, setImpersonatingData] = useState<any | null>(null);
 
+  // iOS Safari ignores user-scalable=no for pinch gestures — block them so the app never zooms.
+  useEffect(() => {
+    const block = (e: Event) => e.preventDefault();
+    document.addEventListener("gesturestart", block);
+    document.addEventListener("gesturechange", block);
+    return () => {
+      document.removeEventListener("gesturestart", block);
+      document.removeEventListener("gesturechange", block);
+    };
+  }, []);
+
   useEffect(() => {
     const checkSession = () => {
       try {

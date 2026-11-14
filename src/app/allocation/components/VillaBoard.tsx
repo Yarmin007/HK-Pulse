@@ -321,6 +321,7 @@ export default function VillaBoard({
 
         if (st.includes('ARR')) { colorClass = 'bg-green-500 text-white'; if(match?.arrival_time) timeStr = match.arrival_time; }
         else if (st.includes('VAC') || st === 'VM/VAC') { colorClass = 'bg-sky-500 text-white'; shortStatus = 'VAC'; }
+        else if (st.includes('FUMIG')) { colorClass = 'bg-teal-600 text-white'; shortStatus = 'FUMIG'; }
         else if (st.includes('TMA')) { colorClass = 'bg-yellow-400 text-slate-900'; }
         else if (st.includes('DEP')) { colorClass = 'bg-rose-500 text-white'; if(match?.departure_time) timeStr = match.departure_time; }
 

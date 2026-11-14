@@ -863,6 +863,7 @@ export default function MyTasksHub() {
 
       if (st.includes('ARR')) { headerColor = 'bg-green-500 text-white'; if(match?.arrival_time) timeStr = match.arrival_time; } 
       else if (st.includes('VAC') || st === 'VM/VAC') { headerColor = 'bg-sky-500 text-white'; shortStatus = 'VAC'; } 
+      else if (st.includes('FUMIG')) { headerColor = 'bg-teal-600 text-white'; shortStatus = 'FUMIGATION'; }
       else if (st.includes('TMA')) { headerColor = 'bg-yellow-400 text-slate-900'; } 
       else if (st.includes('DEP')) { headerColor = 'bg-rose-500 text-white'; if(match?.departure_time) timeStr = match.departure_time; } 
       else if (st.includes('HOUSE USE') || st.includes('SHOW')) { headerColor = 'bg-[#6D2158] text-white'; }

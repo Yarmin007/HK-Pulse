@@ -39,6 +39,14 @@ export const getStatusColors = (status: string) => {
     };
   }
 
+  if (st.includes("FUMIG")) {
+    return {
+      bg: "#0d9488",
+      text: "#ffffff",
+      colorClass: "bg-teal-600 text-white",
+    };
+  }
+
   if (st.includes("TMA")) {
     return {
       bg: "#facc15",
