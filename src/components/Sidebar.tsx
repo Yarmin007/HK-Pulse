@@ -8,9 +8,20 @@ import {
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
   Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
-  Eye, ArrowLeft, UserCog
+  Eye, ArrowLeft, UserCog, Search
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+
+type Tone = 'brand' | 'emerald' | 'purple' | 'sky' | 'rose' | 'blue' | 'amber';
+const TONES: Record<Tone, { text: string; soft: string; chip: string; hover: string }> = {
+  brand:   { text: 'text-[#6D2158]',  soft: 'bg-[#6D2158]/10 text-[#6D2158]', chip: 'bg-[#6D2158]/10 text-[#6D2158] border border-[#6D2158]/20', hover: 'hover:text-[#6D2158]' },
+  emerald: { text: 'text-emerald-700', soft: 'bg-emerald-50 text-emerald-700', chip: 'bg-emerald-50 text-emerald-700 border border-emerald-100', hover: 'hover:text-emerald-700' },
+  purple:  { text: 'text-purple-700',  soft: 'bg-purple-50 text-purple-700',   chip: 'bg-purple-50 text-purple-700 border border-purple-100',   hover: 'hover:text-purple-700' },
+  sky:     { text: 'text-sky-700',     soft: 'bg-sky-50 text-sky-700',         chip: 'bg-sky-50 text-sky-700 border border-sky-100',            hover: 'hover:text-sky-700' },
+  rose:    { text: 'text-rose-600',    soft: 'bg-rose-50 text-rose-600',       chip: 'bg-rose-50 text-rose-600 border border-rose-100',         hover: 'hover:text-rose-600' },
+  blue:    { text: 'text-blue-700',    soft: 'bg-blue-50 text-blue-700',       chip: 'bg-blue-50 text-blue-700 border border-blue-100',         hover: 'hover:text-blue-700' },
+  amber:   { text: 'text-amber-700',   soft: 'bg-amber-50 text-amber-700',     chip: 'bg-amber-50 text-amber-700 border border-amber-100',      hover: 'hover:text-amber-700' },
+};
 
 // --- ADMIN SPECIFIC MENUS ---
 const ADMIN_CORE_TABS = [
@@ -118,6 +129,7 @@ export default function Sidebar() {
   // Sub-menu state for switching hosts inside Team Hub
   const [isSimulateOpen, setIsSimulateOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [mobileSearch, setMobileSearch] = useState('');
 
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [allHosts, setAllHosts] = useState<any[]>([]);
@@ -134,7 +146,7 @@ export default function Sidebar() {
                 supabase
                   .from("hsk_hosts")
                   .select("id, host_id, full_name, role, system_role, allowed_modules, jetty_allocation")
-                  .eq("status", "On Duty")
+                  .neq("status", "Resigned")
                   .order("full_name")
                   .then(({ data }) => setAllHosts(data || []));
               }
@@ -161,6 +173,7 @@ export default function Sidebar() {
 
   useEffect(() => {
       setIsMobileMenuOpen(false);
+      setMobileSearch('');
   }, [pathname]);
 
   const handleLogout = () => {
@@ -244,7 +257,8 @@ export default function Sidebar() {
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: ClipboardList, path: "/requests" },
-      { name: "Task Hub", icon: CheckSquare, path: "/tasks" },
+      { name: "Guests", icon: Users, path: "/guests" },
+      { name: "Tasks", icon: CheckSquare, path: "/tasks" },
   ];
 
   const STAFF_BOTTOM_TABS = isPoolAttendant ? [
@@ -263,8 +277,30 @@ export default function Sidebar() {
 
   if (!isLoaded) return null; 
 
-  const CORE_TABS = isAdmin ? ADMIN_CORE_TABS : activeStaffTabs;
   const BOTTOM_TABS = isAdmin ? ADMIN_BOTTOM_TABS : STAFF_BOTTOM_TABS;
+
+  // One menu definition for desktop sidebar AND the mobile drawer, so they always match.
+  type NavSection = { key: string; group: string; title: string; icon: React.ElementType; tone: Tone; items: { name: string; icon: React.ElementType; path: string }[]; collapsible: boolean; open?: boolean; toggle?: () => void };
+  const sections: NavSection[] = [];
+  const core = isAdmin ? ADMIN_CORE_TABS : activeStaffTabs;
+  sections.push({ key: 'core', group: isAdmin ? 'Core' : 'Staff Portal', title: isAdmin ? 'Core' : 'My Work', icon: LayoutDashboard, tone: 'brand', items: core, collapsible: false });
+  sections.push({ key: 'allocation', group: 'Departments', title: 'Allocation Hub', icon: ListChecks, tone: 'brand', items: ALLOCATION_ITEMS, collapsible: true, open: isAllocationOpen, toggle: () => setIsAllocationOpen(o => !o) });
+  if (canAccessInventory) sections.push({ key: 'inventory', group: 'Departments', title: 'Inventory Hub', icon: Warehouse, tone: 'emerald', items: INVENTORY_ITEMS, collapsible: true, open: isInventoryOpen, toggle: () => setIsInventoryOpen(o => !o) });
+  if (canAccessLaundry) sections.push({ key: 'laundry', group: 'Departments', title: 'Laundry Hub', icon: Droplets, tone: 'purple', items: LAUNDRY_ITEMS, collapsible: true, open: isLaundryOpen, toggle: () => setIsLaundryOpen(o => !o) });
+  if (canAccessWater) sections.push({ key: 'water', group: 'Departments', title: 'Water Production', icon: Droplets, tone: 'sky', items: [{ name: 'Water Production', icon: Droplets, path: '/water' }], collapsible: false });
+  if (canAccessMinibar) sections.push({ key: 'minibar', group: 'Departments', title: 'Minibar', icon: Wine, tone: 'rose', items: MINIBAR_ITEMS, collapsible: true, open: isMinibarOpen, toggle: () => setIsMinibarOpen(o => !o) });
+  if (isAdmin || isSuperAdmin) sections.push({ key: 'team', group: 'Departments', title: 'Team Hub', icon: Briefcase, tone: 'blue', items: TEAM_ITEMS, collapsible: true, open: isTeamOpen, toggle: () => setIsTeamOpen(o => !o) });
+  if (isAdmin) sections.push({ key: 'ops', group: 'Operations', title: 'Operations', icon: Settings, tone: 'brand', items: OPERATIONS_ITEMS, collapsible: false });
+  if (!isAdmin) {
+    sections.push({ key: 'profile', group: 'Personal', title: 'Profile & Org', icon: Contact, tone: 'amber', items: STAFF_PROFILE_ITEMS, collapsible: true, open: isProfileOpen, toggle: () => setIsProfileOpen(o => !o) });
+    sections.push({ key: 'more', group: 'More Options', title: 'More', icon: Menu, tone: 'brand', items: dynamicStaffMenuItems, collapsible: false });
+  }
+
+  const isActivePath = (path: string) => pathname === path || (path !== '/' && !!pathname?.startsWith(`${path}/`));
+  const q = mobileSearch.trim().toLowerCase();
+  const mobileSections = sections
+    .map(sec => ({ ...sec, items: sec.items.filter((it, i, arr) => arr.findIndex(x => x.path === it.path) === i && (!q || it.name.toLowerCase().includes(q) || sec.title.toLowerCase().includes(q))) }))
+    .filter(sec => sec.items.length);
 
   const Logo = ({ className }: { className: string }) => (
     <svg viewBox="0 0 779.0408 559.8364" className={className}>
@@ -272,556 +308,167 @@ export default function Sidebar() {
     </svg>
   );
 
+  const simulateBlock = isSuperAdmin && (
+    <div className="pt-1 border-t border-slate-100 mt-1">
+      {currentUser?.impersonating_from ? (
+        <button onClick={handleExitSimulation} className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-amber-500 text-slate-950 font-black text-[11px] active:scale-95 transition-all">
+          <div className="flex items-center gap-2 truncate"><Eye size={13} className="animate-pulse shrink-0" /><span className="truncate">Exit ({currentUser.full_name})</span></div>
+          <ArrowLeft size={12} className="shrink-0" />
+        </button>
+      ) : (
+        <>
+          <button onClick={() => setIsSimulateOpen(!isSimulateOpen)} className={`w-full flex items-center justify-between px-4 py-2 rounded-xl text-[11px] font-bold transition-all ${isSimulateOpen ? "bg-blue-100 text-blue-900" : "text-blue-700 hover:bg-blue-50"}`}>
+            <div className="flex items-center gap-2.5"><UserCog size={14} /><span>Simulate Host View</span></div>
+            {isSimulateOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </button>
+          {isSimulateOpen && (
+            <div className="mt-1 pl-2 space-y-0.5 max-h-48 overflow-y-auto no-scrollbar py-1">
+              {allHosts.length === 0 && <p className="px-2.5 py-1.5 text-[10.5px] text-slate-400">No hosts loaded.</p>}
+              {allHosts.map((h) => (
+                <button key={h.id} onClick={() => { setIsSimulateOpen(false); handleSimulateHost(h); }} className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-blue-100/70 text-[10.5px] flex flex-col transition-colors">
+                  <span className="font-bold truncate text-slate-900">{h.full_name}</span>
+                  <span className="text-[9px] text-slate-400 uppercase truncate">{h.role} • {h.jetty_allocation || "General"}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  let lastGroup = '';
   return (
     <>
       {/* DESKTOP SIDEBAR */}
-      <aside className="print:hidden hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50 shadow-[4px_0_24px_rgba(0,0,0,0.01)] transition-transform duration-300 ease-in-out">
-        
-        {/* TOP LOGO (Clean & Uncluttered) */}
-        <div className="h-20 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158]">
+      <aside className="print:hidden hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50">
+        <div className="h-20 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158] shrink-0">
           <Logo className="h-9 w-auto drop-shadow-sm" />
         </div>
 
-        {/* SIDEBAR NAVIGATION LIST */}
-        <nav className="flex-1 px-4 py-4 space-y-1.5 overflow-y-auto no-scrollbar">
-          
-          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mb-3 px-2">
-              {isAdmin ? 'Core' : 'Staff Portal'}
-          </div>
-          
-          {CORE_TABS.map((item) => {
-            const isActive = pathname === item.path || (item.path !== '/' && pathname?.startsWith(`${item.path}/`));
+        <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto no-scrollbar">
+          {sections.map((sec, idx) => {
+            const heading = sec.group !== lastGroup ? sec.group : '';
+            lastGroup = sec.group;
+            const t = TONES[sec.tone];
+            const sectionActive = sec.items.some(it => isActivePath(it.path));
             return (
-              <Link 
-                key={item.path} href={item.path}
-                className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                  isActive 
-                    ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" 
-                    : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                }`}
-              >
-                <item.icon size={18} className={isActive ? "text-white" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                <span className="text-xs font-bold tracking-wide">{item.name}</span>
-              </Link>
-            );
-          })}
-
-          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Departments</div>
-          
-          {/* ALLOCATION HUB */}
-          <div className="pt-1">
-            <button 
-              onClick={() => setIsAllocationOpen(!isAllocationOpen)}
-              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                isAllocationRoute && !isAllocationOpen
-                  ? "bg-[#6D2158]/10 text-[#6D2158] border border-[#6D2158]/20" 
-                  : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <ListChecks size={18} className={isAllocationRoute ? "text-[#6D2158]" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                <span className="text-xs font-bold tracking-wide">Allocation Hub</span>
-              </div>
-              {isAllocationOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
-
-            {isAllocationOpen && (
-              <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                {ALLOCATION_ITEMS.map((item) => {
-                  const isActive = pathname === item.path;
-                  return (
-                    <Link 
-                      key={item.path} href={item.path}
-                      className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                        isActive 
-                          ? "bg-[#6D2158]/5 text-[#6D2158] font-black shadow-sm" 
-                          : "text-slate-500 hover:text-[#6D2158] hover:bg-slate-50"
-                      }`}
-                    >
-                      <item.icon size={14} className={isActive ? "text-[#6D2158]" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                      <span className="text-[11px] tracking-wide">{item.name}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* INVENTORY HUB */}
-          {canAccessInventory && (
-              <div className="pt-1">
-                <button 
-                  onClick={() => setIsInventoryOpen(!isInventoryOpen)}
-                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                    isInventoryRoute && !isInventoryOpen
-                      ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
-                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Warehouse size={18} className={isInventoryRoute ? "text-emerald-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                    <span className="text-xs font-bold tracking-wide">Inventory Hub</span>
-                  </div>
-                  {isInventoryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
-
-                {isInventoryOpen && (
-                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                    {INVENTORY_ITEMS.map((item) => {
-                      const isActive = pathname === item.path;
-                      return (
-                        <Link 
-                          key={item.path} href={item.path}
-                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                            isActive 
-                              ? "bg-emerald-50 text-emerald-700 font-black shadow-sm" 
-                              : "text-slate-500 hover:text-emerald-700 hover:bg-slate-50"
-                          }`}
-                        >
-                          <item.icon size={14} className={isActive ? "text-emerald-700" : "group-hover:text-emerald-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                          <span className="text-[11px] tracking-wide">{item.name}</span>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-          )}
-
-          {/* LAUNDRY HUB */}
-          {canAccessLaundry && (
-              <div className="pt-1">
-                <button 
-                  onClick={() => setIsLaundryOpen(!isLaundryOpen)}
-                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                    isLaundryRoute && !isLaundryOpen
-                      ? "bg-purple-50 text-purple-700 border border-purple-100" 
-                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Droplets size={18} className={isLaundryRoute ? "text-purple-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                    <span className="text-xs font-bold tracking-wide">Laundry Hub</span>
-                  </div>
-                  {isLaundryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
-
-                {isLaundryOpen && (
-                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                    {LAUNDRY_ITEMS.map((item) => {
-                      const isActive = pathname === item.path;
-                      return (
-                        <Link 
-                          key={item.path} href={item.path}
-                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                            isActive 
-                              ? "bg-purple-50 text-purple-700 font-black shadow-sm" 
-                              : "text-slate-500 hover:text-purple-700 hover:bg-slate-50"
-                          }`}
-                        >
-                          <item.icon size={14} className={isActive ? "text-purple-700" : "group-hover:text-purple-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                          <span className="text-[11px] tracking-wide">{item.name}</span>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-          )}
-
-          {/* WATER PRODUCTION */}
-          {canAccessWater && (
-              <div className="pt-1">
-                <Link 
-                  href="/water"
-                  className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                    pathname === '/water' || pathname?.startsWith('/water/')
-                      ? "bg-sky-50 text-sky-700 font-black shadow-xs border border-sky-100" 
-                      : "text-slate-500 hover:bg-slate-100 hover:text-sky-700"
-                  }`}
-                >
-                  <Droplets size={18} className={pathname?.startsWith('/water') ? "text-sky-600" : "group-hover:text-sky-600 transition-colors"} strokeWidth={2} />
-                  <span className="text-xs font-bold tracking-wide">Water Production</span>
-                </Link>
-              </div>
-          )}
-
-          {/* MINIBAR HUB */}
-          {canAccessMinibar && (
-              <div className="pt-1 pb-1">
-                <button 
-                  onClick={() => setIsMinibarOpen(!isMinibarOpen)}
-                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                    isMinibarRoute && !isMinibarOpen
-                      ? "bg-rose-50 text-rose-600 border border-rose-100" 
-                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Wine size={18} className={isMinibarRoute ? "text-rose-600" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                    <span className="text-xs font-bold tracking-wide">Minibar</span>
-                  </div>
-                  {isMinibarOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
-
-                {isMinibarOpen && (
-                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                    {MINIBAR_ITEMS.map((item) => {
-                      const isActive = pathname === item.path;
-                      return (
-                        <Link 
-                          key={item.path} href={item.path}
-                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                            isActive 
-                              ? "bg-rose-50 text-rose-600 font-black shadow-sm" 
-                              : "text-slate-500 hover:text-rose-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          <item.icon size={14} className={isActive ? "text-rose-600" : "group-hover:text-rose-600 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                          <span className="text-[11px] tracking-wide">{item.name}</span>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-          )}
-
-          {/* TEAM HUB (WITH EMBEDDED SIMULATION BUTTON) */}
-          {(isAdmin || isSuperAdmin) && (
-              <div className="pt-1">
-                <button 
-                  onClick={() => setIsTeamOpen(!isTeamOpen)}
-                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                    isTeamRoute && !isTeamOpen
-                      ? "bg-blue-50 text-blue-700 border border-blue-100" 
-                      : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Briefcase size={18} className={isTeamRoute ? "text-blue-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                    <span className="text-xs font-bold tracking-wide">Team Hub</span>
-                  </div>
-                  {isTeamOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                </button>
-
-                {isTeamOpen && (
-                  <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                    {TEAM_ITEMS.map((item) => {
-                      const isActive = pathname === item.path;
-                      return (
-                        <Link 
-                          key={item.path} href={item.path}
-                          className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                            isActive 
-                              ? "bg-blue-50 text-blue-700 font-black shadow-sm" 
-                              : "text-slate-500 hover:text-blue-700 hover:bg-slate-50"
-                          }`}
-                        >
-                          <item.icon size={14} className={isActive ? "text-blue-700" : "group-hover:text-blue-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                          <span className="text-[11px] tracking-wide">{item.name}</span>
-                        </Link>
-                      );
-                    })}
-
-                    {/* --- CLEAN INTEGRATED SIMULATION BUTTON NEXT TO LEAVE ITEMS --- */}
-                    {isSuperAdmin && (
-                      <div className="pt-1 border-t border-slate-100 mt-1">
-                        {currentUser?.impersonating_from ? (
-                          <button
-                            onClick={handleExitSimulation}
-                            className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-amber-500 text-slate-950 font-black text-[11px] shadow-xs active:scale-95 transition-all"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <Eye size={13} className="animate-pulse shrink-0" />
-                              <span className="truncate">Exit ({currentUser.full_name})</span>
-                            </div>
-                            <ArrowLeft size={12} className="shrink-0" />
-                          </button>
-                        ) : (
-                          <>
-                            <button
-                              onClick={() => setIsSimulateOpen(!isSimulateOpen)}
-                              className={`w-full flex items-center justify-between px-4 py-2 rounded-xl text-[11px] font-bold transition-all ${
-                                isSimulateOpen
-                                  ? "bg-blue-100 text-blue-900 font-black"
-                                  : "text-blue-700 hover:bg-blue-50"
-                              }`}
-                            >
-                              <div className="flex items-center gap-2.5">
-                                <UserCog size={14} className="text-blue-700" />
-                                <span>Simulate Host View</span>
-                              </div>
-                              {isSimulateOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                            </button>
-
-                            {isSimulateOpen && (
-                              <div className="mt-1 pl-2 space-y-0.5 max-h-48 overflow-y-auto no-scrollbar py-1">
-                                {allHosts.map((h) => (
-                                  <button
-                                    key={h.id}
-                                    onClick={() => {
-                                      setIsSimulateOpen(false);
-                                      handleSimulateHost(h);
-                                    }}
-                                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-blue-100/70 text-[10.5px] flex flex-col text-slate-700 transition-colors"
-                                  >
-                                    <span className="font-bold truncate text-slate-900">{h.full_name}</span>
-                                    <span className="text-[9px] text-slate-400 uppercase truncate">
-                                      {h.role} • {h.jetty_allocation || "General"}
-                                    </span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-          )}
-
-          {/* OPERATIONS SECTION */}
-          {isAdmin && (
-              <>
-                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-4 mb-3 px-2">Operations</div>
-                  {OPERATIONS_ITEMS.filter(item => item.key === 'settings' ? isAdmin : true).map((item) => {
-                    const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
-                    return (
-                      <Link 
-                        key={item.path} href={item.path}
-                        className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                          isActive 
-                            ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" 
-                            : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                        }`}
-                      >
-                        <item.icon size={18} className={isActive ? "text-white" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                        <span className="text-xs font-bold tracking-wide">{item.name}</span>
-                      </Link>
-                    );
-                  })}
-              </>
-          )}
-
-          {/* STAFF MORE OPTIONS */}
-          {!isAdmin && (
-              <>
-                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-6 mb-3 px-2">Personal</div>
-                  
-                  <div className="pt-1 pb-4">
-                    <button 
-                      onClick={() => setIsProfileOpen(!isProfileOpen)}
-                      className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                        isProfileRoute && !isProfileOpen
-                          ? "bg-amber-50 text-amber-700 border border-amber-100" 
-                          : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Contact size={18} className={isProfileRoute ? "text-amber-700" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={2} />
-                        <span className="text-xs font-bold tracking-wide">Profile & Org</span>
-                      </div>
-                      {isProfileOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <div key={sec.key}>
+                {heading && <div className={`text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 ${idx === 0 ? "" : "mt-5"} mb-2 px-2`}>{heading}</div>}
+                {sec.collapsible ? (
+                  <div className="pt-0.5">
+                    <button onClick={sec.toggle} className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all group ${sectionActive && !sec.open ? t.chip : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"}`}>
+                      <span className="flex items-center gap-3"><sec.icon size={18} className={sectionActive ? t.text : ''} /><span className="text-xs font-bold tracking-wide">{sec.title}</span></span>
+                      {sec.open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                     </button>
-
-                    {isProfileOpen && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-1 animate-in-up duration-200">
-                        {STAFF_PROFILE_ITEMS.map((item) => {
-                          const isActive = pathname === item.path;
+                    {sec.open && (
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-0.5 animate-in-up">
+                        {sec.items.map((item) => {
+                          const on = pathname === item.path;
                           return (
-                            <Link 
-                              key={item.path} href={item.path}
-                              className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 group ${
-                                isActive 
-                                  ? "bg-amber-50 text-amber-700 font-black shadow-sm" 
-                                  : "text-slate-500 hover:text-amber-700 hover:bg-slate-50"
-                              }`}
-                            >
-                              <item.icon size={14} className={isActive ? "text-amber-700" : "group-hover:text-amber-700 transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                              <span className="text-[11px] tracking-wide">{item.name}</span>
+                            <Link key={item.path} href={item.path} className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all ${on ? `${t.soft} font-black` : `text-slate-500 hover:bg-slate-50 ${t.hover}`}`}>
+                              <item.icon size={14} strokeWidth={on ? 2.5 : 2} /><span className="text-[11px] tracking-wide">{item.name}</span>
                             </Link>
                           );
                         })}
+                        {sec.key === 'team' && simulateBlock}
                       </div>
                     )}
                   </div>
-
-                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 mt-2 mb-3 px-2">More Options</div>
-                  {dynamicStaffMenuItems.map((item) => {
-                    const isActive = pathname === item.path || pathname?.startsWith(`${item.path}/`);
+                ) : (
+                  sec.items.map((item) => {
+                    const on = isActivePath(item.path);
                     return (
-                      <Link 
-                        key={item.path} href={item.path}
-                        className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group ${
-                          isActive 
-                            ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" 
-                            : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"
-                        }`}
-                      >
-                        <item.icon size={18} className={isActive ? "text-white" : "group-hover:text-[#6D2158] transition-colors"} strokeWidth={isActive ? 2.5 : 2} />
-                        <span className="text-xs font-bold tracking-wide">{item.name}</span>
+                      <Link key={item.path} href={item.path} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all group ${on ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"}`}>
+                        <item.icon size={18} strokeWidth={on ? 2.5 : 2} /><span className="text-xs font-bold tracking-wide">{item.name}</span>
                       </Link>
                     );
-                  })}
-              </>
-          )}
-
+                  })
+                )}
+              </div>
+            );
+          })}
         </nav>
 
-        {/* LOGOUT BUTTON */}
-        <div className="p-4 border-t border-slate-200/50 bg-white/50">
+        <div className="p-4 border-t border-slate-200/50 bg-white/50 shrink-0">
           <button onClick={handleLogout} className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-all active:scale-95">
-            <LogOut size={18} strokeWidth={2} />
-            <span className="text-xs font-bold tracking-wide">Sign Out</span>
+            <LogOut size={18} /><span className="text-xs font-bold tracking-wide">Sign Out</span>
           </button>
         </div>
       </aside>
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      <div className="print:hidden md:hidden fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-slate-200/50 pb-safe pt-2 px-2 z-[999] flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] overflow-x-auto no-scrollbar">
-         {BOTTOM_TABS.map((tab) => {
-            const isActive = pathname === tab.path || (tab.path !== '/' && pathname?.startsWith(`${tab.path}/`));
+      <nav className="print:hidden md:hidden fixed bottom-0 inset-x-0 z-[999] bg-white/95 backdrop-blur-xl border-t border-slate-200/70 shadow-[0_-8px_30px_rgba(0,0,0,0.05)]" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="grid h-16" style={{ gridTemplateColumns: `repeat(${BOTTOM_TABS.length + 1}, minmax(0, 1fr))` }}>
+          {BOTTOM_TABS.map((tab) => {
+            const on = isActivePath(tab.path) && !isMobileMenuOpen;
             return (
-              <Link key={tab.path} href={tab.path} className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform">
-                <div className={`p-1.5 rounded-xl transition-all ${isActive ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
-                  <tab.icon size={22} strokeWidth={isActive ? 2.5 : 2} />
-                </div>
-                <span className={`text-[10px] mt-1 font-bold ${isActive ? 'text-[#6D2158]' : 'text-slate-400'}`}>{tab.name}</span>
+              <Link key={tab.path} href={tab.path} className="flex flex-col items-center justify-center gap-0.5 active:scale-90 transition-transform">
+                <span className={`px-4 py-1 rounded-full transition-colors ${on ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}><tab.icon size={21} strokeWidth={on ? 2.5 : 2} /></span>
+                <span className={`text-[10px] font-bold truncate max-w-full px-1 ${on ? 'text-[#6D2158]' : 'text-slate-400'}`}>{tab.name}</span>
               </Link>
-            )
-         })}
-         
-         <button 
-            onClick={() => setIsMobileMenuOpen(true)}
-            className="flex flex-col items-center justify-center min-w-[60px] w-full py-1 active:scale-90 transition-transform"
-         >
-            <div className={`p-1.5 rounded-xl transition-all ${isMobileMenuOpen ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}>
-               <Menu size={22} strokeWidth={2} />
-            </div>
-            <span className={`text-[10px] mt-1 font-bold ${isMobileMenuOpen ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
-         </button>
-      </div>
+            );
+          })}
+          <button onClick={() => setIsMobileMenuOpen(true)} className="flex flex-col items-center justify-center gap-0.5 active:scale-90 transition-transform">
+            <span className={`px-4 py-1 rounded-full transition-colors ${isMobileMenuOpen ? 'bg-[#6D2158]/10 text-[#6D2158]' : 'text-slate-400'}`}><Menu size={21} /></span>
+            <span className={`text-[10px] font-bold ${isMobileMenuOpen ? 'text-[#6D2158]' : 'text-slate-400'}`}>Menu</span>
+          </button>
+        </div>
+      </nav>
 
-      {/* FULL MOBILE DRAWER */}
+      {/* FULL MOBILE MENU — every section from the desktop sidebar */}
       {isMobileMenuOpen && (
-        <div className="fixed inset-0 z-[1000] bg-black/60 backdrop-blur-xs flex flex-col justify-end md:hidden animate-in fade-in duration-200">
-          <div className="bg-white w-full max-h-[85vh] rounded-t-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-[#6D2158] text-white flex items-center justify-center font-bold text-xs">
-                  HK
+        <div className="fixed inset-0 z-[1000] md:hidden flex flex-col justify-end bg-black/50 backdrop-blur-[2px] animate-in fade-in duration-150" onClick={() => setIsMobileMenuOpen(false)}>
+          <div className="bg-[#FDFBFD] w-full h-[92dvh] rounded-t-[1.75rem] shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300" onClick={e => e.stopPropagation()}>
+            <div className="pt-2.5 pb-3 px-4 bg-white border-b border-slate-100 shrink-0">
+              <div className="w-10 h-1.5 bg-slate-200 rounded-full mx-auto mb-3" />
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#6D2158] text-white flex items-center justify-center font-black text-sm shrink-0">
+                  {String(currentUser?.full_name || 'HK').split(' ').map((w: string) => w[0]).slice(0, 2).join('')}
                 </div>
-                <span className="font-black text-sm text-slate-800">Navigation Hub</span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-black text-sm text-slate-800 truncate">{currentUser?.full_name || 'HK Pulse'}</div>
+                  <div className="text-[11px] text-slate-400 truncate">{currentUser?.role || (isAdmin ? 'Admin' : 'Staff')}</div>
+                </div>
+                <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 rounded-full bg-slate-100 text-slate-500"><X size={18} /></button>
               </div>
-              <button 
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="p-1.5 bg-white rounded-full text-slate-400 hover:text-slate-600 shadow-2xs"
-              >
-                <X size={16} />
-              </button>
+              <div className="relative mt-3">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={mobileSearch} onChange={e => setMobileSearch(e.target.value)} placeholder="Find a page…" className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-100 border border-transparent focus:border-[#6D2158] focus:bg-white outline-none text-sm font-semibold text-slate-700" />
+              </div>
             </div>
 
-            <div className="p-4 overflow-y-auto space-y-3 pb-12">
+            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5" style={{ paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}>
               {currentUser?.impersonating_from && (
                 <div className="p-3 bg-amber-500 text-slate-950 rounded-xl flex items-center justify-between text-xs font-bold">
-                  <span>Viewing As: <strong>{currentUser.full_name}</strong></span>
-                  <button onClick={handleExitSimulation} className="bg-black text-white px-2 py-1 rounded text-[10px] uppercase font-black">
-                    Exit
-                  </button>
+                  <span className="truncate">Viewing as <strong>{currentUser.full_name}</strong></span>
+                  <button onClick={handleExitSimulation} className="bg-black text-white px-2.5 py-1 rounded-lg text-[10px] uppercase font-black shrink-0">Exit</button>
                 </div>
               )}
-
-              {/* WATER PRODUCTION */}
-              {canAccessWater && (
-                <div className="p-2.5 bg-sky-50 border border-sky-100 rounded-2xl">
-                  <Link
-                    href="/water"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className="flex items-center gap-2.5 p-2 rounded-xl text-xs font-black text-sky-800"
-                  >
-                    <Droplets size={16} className="text-sky-600" />
-                    <span>Water Production</span>
-                  </Link>
-                </div>
-              )}
-
-              {/* LAUNDRY HUB */}
-              {canAccessLaundry && (
-                <div className="p-3 bg-purple-50/70 border border-purple-100 rounded-2xl space-y-2">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-[#6D2158] flex items-center gap-1.5">
-                    <Droplets size={13} /> Laundry Hub
-                  </div>
-                  <div className="grid grid-cols-1 gap-1">
-                    {LAUNDRY_ITEMS.map((item) => (
-                      <Link
-                        key={item.path}
-                        href={item.path}
-                        onClick={() => setIsMobileMenuOpen(false)}
-                        className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-purple-100/70"
-                      >
-                        <item.icon size={15} />
-                        <span>{item.name}</span>
-                      </Link>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* ALLOCATION HUB */}
-              <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl space-y-2">
-                <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-                  <ListChecks size={13} /> Allocation
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  {ALLOCATION_ITEMS.map((item) => (
-                    <Link
-                      key={item.path}
-                      href={item.path}
-                      onClick={() => setIsMobileMenuOpen(false)}
-                      className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100"
-                    >
-                      <item.icon size={14} className="text-slate-400" />
-                      <span className="truncate">{item.name}</span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-
-              {/* INVENTORY HUB */}
-              {canAccessInventory && (
-                <div className="p-3 bg-emerald-50/50 border border-emerald-100 rounded-2xl space-y-2">
-                  <div className="text-[10px] font-black uppercase tracking-widest text-emerald-800 flex items-center gap-1.5">
-                    <Warehouse size={13} /> Inventory
-                  </div>
-                  <div className="grid grid-cols-2 gap-1">
-                    {INVENTORY_ITEMS.map((item) => (
-                      <Link
-                        key={item.path}
-                        href={item.path}
-                        onClick={() => setIsMobileMenuOpen(false)}
-                        className="flex items-center gap-2 p-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-emerald-100/60"
-                      >
-                        <item.icon size={14} className="text-emerald-700" />
-                        <span className="truncate">{item.name}</span>
-                      </Link>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* SIGN OUT */}
-              <div className="pt-2">
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center justify-center gap-2 p-3 bg-rose-50 text-rose-600 rounded-xl text-xs font-black uppercase tracking-wider"
-                >
-                  <LogOut size={15} />
-                  <span>Sign Out</span>
-                </button>
-              </div>
+              {mobileSections.length === 0 && <p className="text-center text-sm text-slate-400 py-10">No page matches “{mobileSearch}”.</p>}
+              {mobileSections.map(sec => {
+                const t = TONES[sec.tone];
+                return (
+                  <section key={sec.key}>
+                    <h3 className={`text-[11px] font-black uppercase tracking-widest mb-2 px-1 flex items-center gap-1.5 ${t.text}`}><sec.icon size={13} /> {sec.title}</h3>
+                    <div className="grid grid-cols-3 gap-2">
+                      {sec.items.map(item => {
+                        const on = isActivePath(item.path);
+                        return (
+                          <Link key={item.path} href={item.path} onClick={() => setIsMobileMenuOpen(false)}
+                            className={`flex flex-col items-center justify-center text-center gap-1.5 px-1.5 py-3 rounded-2xl border transition active:scale-95 min-h-[78px] ${on ? 'bg-[#6D2158] border-[#6D2158] text-white shadow-md' : 'bg-white border-slate-200/80 text-slate-600'}`}>
+                            <span className={`w-9 h-9 rounded-xl flex items-center justify-center ${on ? 'bg-white/15' : t.soft}`}><item.icon size={18} /></span>
+                            <span className="text-[11px] font-bold leading-tight line-clamp-2">{item.name}</span>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
+              <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 p-3.5 bg-rose-50 text-rose-600 rounded-2xl text-xs font-black uppercase tracking-wider border border-rose-100">
+                <LogOut size={15} /> Sign Out
+              </button>
             </div>
           </div>
         </div>

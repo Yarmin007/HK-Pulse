@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo } from 'react';
 import { ChevronLeft, ChevronRight, Loader2, Printer, ArrowLeft, Download, CalendarDays, Filter, X } from 'lucide-react';
+import { isOnAttendance } from '@/lib/hostProfile';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
 import Link from 'next/link';
@@ -100,7 +101,7 @@ export default function MonthlyAttendanceSheet() {
 
       const [constRes, hostRes, rpcRes] = await Promise.all([
           supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank', 'team_viewer_config']),
-          supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
+          supabase.from('hsk_hosts').select('*'),
           supabase.rpc('get_all_attendance_stats', { p_target_date: targetDateStr })
       ]);
       
@@ -130,7 +131,9 @@ export default function MonthlyAttendanceSheet() {
 
       let sortedHosts = [];
       if (hostRes.data) {
-          sortedHosts = hostRes.data.sort((a, b) => {
+          // Permanent hosts only; resigned hosts stay for periods that started before their last working day.
+          const periodStart = format(new Date(year, month - 1, 21), 'yyyy-MM-dd');
+          sortedHosts = hostRes.data.filter((h: any) => isOnAttendance(config, h, periodStart)).sort((a, b) => {
               const rankA = ranks[(a.role || '').toLowerCase().trim()] ?? 999;
               const rankB = ranks[(b.role || '').toLowerCase().trim()] ?? 999;
               if (rankA !== rankB) return rankA - rankB;

@@ -118,7 +118,7 @@ export default function LadderCleaningPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-24 md:pl-64">
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-24">
       
       {/* HEADER */}
       <div className="bg-[#6D2158] text-white p-6 rounded-b-[2.5rem] shadow-lg sticky top-0 z-20">

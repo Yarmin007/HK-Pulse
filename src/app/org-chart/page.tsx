@@ -1,10 +1,19 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Loader2, Maximize, ZoomIn, ZoomOut, Phone, Hash, Building2, Download, Star, RefreshCw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import PageHeader from '@/components/PageHeader';
 import { format } from 'date-fns';
 import Image from 'next/image';
+import { getProfileType, type TeamConfig } from '@/lib/hostProfile';
+
+// Printable sheet sizes in mm (landscape) and margin.
+const PAPER = { A4: { w: 297, h: 210 }, A3: { w: 420, h: 297 } } as const;
+type Paper = keyof typeof PAPER;
+const MARGIN_MM = 7;
+const MM = 96 / 25.4; // CSS px per mm
+const SHEET_HEADER_PX = 58;
 
 type Host = {
   id: string;
@@ -44,8 +53,14 @@ export default function OrgChartPage() {
 
   const fetchHosts = async () => {
     setIsLoading(true);
-    const { data } = await supabase.from('hsk_hosts').select('*').neq('status', 'Resigned');
-    if (data) setHosts(data);
+    const [{ data }, cfgRes] = await Promise.all([
+      supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
+      supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').limit(1),
+    ]);
+    let cfg: TeamConfig = {};
+    try { cfg = JSON.parse(cfgRes.data?.[0]?.label || '{}'); } catch { /* none */ }
+    // Shared / system logins (e.g. Pest Control) are not people: keep them off the chart.
+    if (data) setHosts(data.filter((h: Host) => getProfileType(cfg, h.host_id) !== 'ACCOUNT'));
     setIsLoading(false);
   };
 
@@ -198,42 +213,43 @@ export default function OrgChartPage() {
     setDisplayScale(newScale);
   };
 
-  // --- AUTOMATIC 1-PAGE CENTERING FOR PRINT/PDF ---
-  const handlePrint = () => {
-    if (treeRef.current) {
-      // Temporarily clear inline transform so browser print stylesheet calculates true size
-      const oldTransform = treeRef.current.style.transform;
-      treeRef.current.style.transform = 'none';
+  // --- ONE-PAGE LANDSCAPE PRINT / PDF ---
+  // A hidden copy of the chart lives in a print-only sheet (portal on <body>). Before printing we
+  // measure it and set CSS `zoom` so it fills exactly one landscape page. Output stays vector (sharp).
+  const [paper, setPaper] = useState<Paper>('A4');
+  const printTreeRef = useRef<HTMLDivElement>(null);
 
-      const treeWidth = treeRef.current.scrollWidth || 2100;
-      const treeHeight = treeRef.current.scrollHeight || 1000;
+  const preparePrint = useCallback(() => {
+    const el = printTreeRef.current;
+    if (!el) return;
+    const { w, h } = PAPER[paper];
+    const pageW = (w - MARGIN_MM * 2) * MM;
+    const pageH = (h - MARGIN_MM * 2) * MM;
+    el.style.zoom = '1';
+    const treeW = el.scrollWidth || 1;
+    const treeH = el.scrollHeight || 1;
+    const zoom = Math.min(pageW / treeW, (pageH - SHEET_HEADER_PX - 8) / treeH, 2);
+    el.style.zoom = String(Math.floor(zoom * 1000) / 1000);
 
-      // Restore
-      treeRef.current.style.transform = oldTransform;
-
-      // Available printable dimensions for A3 landscape (approx 1500px x 1000px usable)
-      const pagePrintWidth = 1450;
-      const pagePrintHeight = 920;
-
-      const scaleFactor = Math.min(pagePrintWidth / treeWidth, pagePrintHeight / treeHeight, 0.45);
-
-      // Inject custom exact print scale before triggering print dialog
-      let printStyleTag = document.getElementById('dynamic-print-scale');
-      if (!printStyleTag) {
-        printStyleTag = document.createElement('style');
-        printStyleTag.id = 'dynamic-print-scale';
-        document.head.appendChild(printStyleTag);
-      }
-      printStyleTag.innerHTML = `
-        @media print {
-          .org-tree {
-            transform: scale(${scaleFactor.toFixed(3)}) !important;
-            transform-origin: top center !important;
-            margin: 0 auto !important;
-          }
-        }
-      `;
+    let tag = document.getElementById('org-print-page');
+    if (!tag) {
+      tag = document.createElement('style');
+      tag.id = 'org-print-page';
+      document.head.appendChild(tag);
     }
+    tag.textContent = `@media print {
+      @page { size: ${paper} landscape; margin: ${MARGIN_MM}mm; }
+      #org-print-root .print-sheet { width: ${pageW.toFixed(1)}px; height: ${(pageH - 4).toFixed(1)}px; }
+    }`;
+  }, [paper]);
+
+  useEffect(() => {
+    window.addEventListener('beforeprint', preparePrint); // also covers Ctrl/Cmd+P
+    return () => window.removeEventListener('beforeprint', preparePrint);
+  }, [preparePrint]);
+
+  const handlePrint = () => {
+    preparePrint();
     window.print();
   };
 
@@ -304,8 +320,8 @@ export default function OrgChartPage() {
     </div>
   );
 
-  const HostNode = ({ host, isTBA = false }: { host: Host; isTBA?: boolean }) => {
-    const isMe = host.host_id === loggedInId;
+  const HostNode = ({ host, isTBA = false, print = false }: { host: Host; isTBA?: boolean; print?: boolean }) => {
+    const isMe = !print && host.host_id === loggedInId;
     let borderColor = 'border-slate-200';
     let levelBadge = '';
 
@@ -336,6 +352,7 @@ export default function OrgChartPage() {
             sizes="128px"
             quality={100}
             unoptimized={true}
+            loading="eager"
             className="object-cover"
           />
         </div>
@@ -360,17 +377,22 @@ export default function OrgChartPage() {
     );
   };
 
-  const GroupNode = ({ title, hosts, colorClass }: { title: string; hosts: Host[]; colorClass: string }) => (
-    <div className={`bg-white border-t-4 rounded-2xl shadow-sm w-[215px] p-3 relative mx-auto mt-3 print:shadow-none print:border-2 print:border-slate-300 ${colorClass}`}>
+  // Big teams wrap into several columns (max 10 per column) so the chart stays wide rather than tall,
+  // which is what lets it fill a landscape page.
+  const GroupNode = ({ title, hosts, colorClass, print = false }: { title: string; hosts: Host[]; colorClass: string; print?: boolean }) => {
+    const cols = Math.max(1, Math.ceil(hosts.length / 10));
+    const rows = Math.max(1, Math.ceil(hosts.length / cols));
+    return (
+    <div style={{ width: `${cols * 196 + (cols - 1) * 6 + 24}px` }} className={`bg-white border-t-4 rounded-2xl shadow-sm p-3 relative mx-auto mt-3 print:shadow-none print:border-2 print:border-slate-300 ${colorClass}`}>
       <div className={`absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full text-[8.5px] font-black uppercase tracking-widest shadow-sm whitespace-nowrap bg-white border print:shadow-none ${colorClass}`}>
         {title} ({hosts.length})
       </div>
-      <div className="flex flex-col gap-1 mt-2.5">
+      <div className="grid gap-1.5 mt-2.5" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${rows}, auto)`, gridAutoFlow: 'column' }}>
         {hosts.length === 0 ? (
           <p className="text-center text-xs font-bold text-slate-300 italic py-2">No Staff</p>
         ) : (
           hosts.map(h => {
-            const isMe = h.host_id === loggedInId;
+            const isMe = !print && h.host_id === loggedInId;
             return (
               <div key={h.id} className={`flex items-center gap-2 p-1.5 rounded-xl border shadow-2xs transition-colors print:shadow-none print:border-slate-200 ${isMe ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200' : 'bg-slate-50 border-slate-100'}`}>
                 <div className="w-8 h-8 rounded-full overflow-hidden shadow-2xs border-2 border-white shrink-0 relative print:border-slate-200">
@@ -381,6 +403,7 @@ export default function OrgChartPage() {
                     sizes="64px"
                     quality={100}
                     unoptimized={true}
+                    loading="eager"
                     className="object-cover" 
                   />
                 </div>
@@ -400,6 +423,111 @@ export default function OrgChartPage() {
         )}
       </div>
     </div>
+    );
+  };
+
+  const renderTree = (print: boolean) => (
+          <ul>
+            <li className="tree-root">
+              
+              {/* LEVEL 1: EXEC HK */}
+              <FixedWrapper height={175}>
+                <HostNode print={print} host={execHK} isTBA={execHK.host_id === 'TBA'} />
+              </FixedWrapper>
+
+              <ul>
+                {/* --- BRANCH 1: ASST EXEC (Left) --- */}
+                <li>
+                  <FixedWrapper height={175}>
+                    <HostNode print={print} host={asstExec} isTBA={asstExec.host_id === 'TBA'} />
+                  </FixedWrapper>
+                  
+                  <ul>
+                    {/* LEVEL 3: COMBINED HK SUPERVISORS */}
+                    <li>
+                      <FixedWrapper height={260}>
+                        <div className="flex flex-wrap justify-center gap-3 bg-blue-50/60 pt-6 pb-3.5 px-4 rounded-3xl border-2 border-blue-200 shadow-inner relative z-10 w-max max-w-[720px] print:bg-white print:border-2 print:shadow-none">
+                          <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-100 text-blue-800 text-[8.5px] font-black px-3.5 py-0.5 rounded-full uppercase tracking-widest border border-blue-200 shadow-2xs whitespace-nowrap print:bg-white print:border">
+                            Housekeeping Supervisors
+                          </div>
+                          {hkSups.length > 0 ? (
+                            hkSups.map(sup => <HostNode print={print} key={sup.id} host={sup} />)
+                          ) : (
+                            <p className="text-slate-400 font-bold italic text-xs py-3 px-8">No HK Supervisors Assigned</p>
+                          )}
+                        </div>
+                      </FixedWrapper>
+
+                      <ul>
+                        {/* LEVEL 4: Sub-Departments under HK Sups */}
+                        {atmGroups.map((group, idx) => (
+                          <li key={idx}>
+                            <FixedWrapper height={0} hideLine>
+                              <div className="mt-2">
+                                <GroupNode print={print} title={group.title} hosts={group.hosts} colorClass={group.color} />
+                              </div>
+                            </FixedWrapper>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+
+                    {/* LEVEL 3: COORDINATOR */}
+                    <li>
+                      <FixedWrapper height={260} />
+                      <ul>
+                        <li>
+                          <FixedWrapper height={0} hideLine>
+                            <div className="mt-2">
+                              <HostNode print={print} host={coordinator} isTBA={coordinator.host_id === 'TBA'} />
+                            </div>
+                          </FixedWrapper>
+                        </li>
+                      </ul>
+                    </li>
+
+                    {/* LEVEL 3: LAUNDRY SUPERVISOR */}
+                    <li>
+                      <FixedWrapper height={260}>
+                        <HostNode print={print} host={laundrySup} isTBA={laundrySup.host_id === 'TBA'} />
+                      </FixedWrapper>
+                      <ul>
+                        <li>
+                          <FixedWrapper height={0} hideLine>
+                            <div className="mt-2">
+                              <GroupNode print={print} title="Laundry" hosts={laundryStaff} colorClass="border-[#6D2158] text-[#6D2158]" />
+                            </div>
+                          </FixedWrapper>
+                        </li>
+                      </ul>
+                    </li>
+                  </ul>
+                </li>
+
+                {/* --- BRANCH 2: SUSTAINABILITY / LANDUSE MGR (Right) --- */}
+                <li>
+                  <FixedWrapper height={175}>
+                    <HostNode print={print} host={landuseMgr} isTBA={landuseMgr.host_id === 'TBA'} />
+                  </FixedWrapper>
+                  <ul>
+                    <li>
+                      <FixedWrapper height={260} />
+                      <ul>
+                        <li>
+                          <FixedWrapper height={0} hideLine>
+                            <div className="mt-2">
+                              <GroupNode print={print} title="Garden" hosts={gardeners} colorClass="border-[#6D2158] text-[#6D2158]" />
+                            </div>
+                          </FixedWrapper>
+                        </li>
+                      </ul>
+                    </li>
+                  </ul>
+                </li>
+
+              </ul>
+            </li>
+          </ul>
   );
 
   if (isLoading) {
@@ -488,57 +616,17 @@ export default function OrgChartPage() {
           margin-left: -1px; 
         }
 
-        /* --- PERFECT SINGLE-PAGE VECTOR PRINT / PDF RULES --- */
+        /* Print-only sheet: hidden (but laid out, so it can be measured) on screen. */
+        #org-print-root { position: fixed; left: -100000px; top: 0; visibility: hidden; pointer-events: none; }
+        #org-print-root .print-sheet { width: 1062px; height: 733px; }
+
         @media print {
-          @page { 
-            size: A3 landscape; 
-            margin: 6mm 10mm; 
-          }
-          html, body {
-            width: 100% !important;
-            height: 100% !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow: hidden !important;
-            background: white !important;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-          }
-          .no-print, nav, aside, header, .canvas-controls { 
-            display: none !important; 
-          }
-          
-          #printable-area { 
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100% !important;
-            height: 100% !important;
-            background: white !important; 
-            overflow: visible !important; 
-            display: block !important;
-            margin: 0 !important;
-            padding: 0 !important;
-          }
-
-          .print-header {
-            display: block !important;
-            text-align: center;
-            margin-top: 4px;
-            margin-bottom: 6px;
-          }
-          
-          .org-tree {
-            position: relative !important;
-            display: table !important;
-            margin: 0 auto !important;
-            transform-origin: top center !important;
-            padding-bottom: 0 !important;
-          }
-
-          .org-tree li::before, .org-tree li::after, .org-tree ul ul::before { 
-            border-color: #64748b !important; 
-          }
+          html, body { margin: 0 !important; padding: 0 !important; height: auto !important; overflow: visible !important; background: white !important; }
+          body > *:not(#org-print-root) { display: none !important; }
+          #org-print-root { position: static !important; left: auto !important; visibility: visible !important; }
+          #org-print-root, #org-print-root * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          #org-print-root .print-sheet { overflow: hidden; break-inside: avoid; page-break-after: avoid; }
+          .org-tree li::before, .org-tree li::after, .org-tree ul ul::before { border-color: #64748b !important; }
         }
       `}} />
 
@@ -556,11 +644,19 @@ export default function OrgChartPage() {
               >
                 <Maximize size={14}/> Fit Screen
               </button>
+ <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200/60" title="Paper size (landscape)">
+                {(['A4', 'A3'] as Paper[]).map(p => (
+                  <button key={p} onClick={() => setPaper(p)}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${paper === p ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                    {p}
+                  </button>
+                ))}
+              </div>
               <button 
                 onClick={handlePrint} 
                 className="flex items-center gap-1.5 bg-[#6D2158] hover:bg-[#5a1b49] text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow-md cursor-pointer"
               >
-                <Download size={14}/> Save 1-Page PDF
+                <Download size={14}/> Print / PDF ({paper} landscape)
               </button>
             </div>
           }
@@ -603,119 +699,39 @@ export default function OrgChartPage() {
         id="printable-area"
         className="flex-1 overflow-hidden bg-slate-50/50 cursor-grab active:cursor-grabbing relative touch-none select-none print:bg-white"
       >
-        {/* PRINT HEADER */}
-        <div className="hidden print-header w-full text-center">
-          <h1 className="text-3xl font-black text-[#6D2158] uppercase tracking-tight">Housekeeping Organizational Chart</h1>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mt-0.5">Six Senses Laamu • {format(new Date(), 'MMMM yyyy')}</p>
-        </div>
-
         <div 
           ref={treeRef}
           className="org-tree absolute left-0 top-0 origin-top-left transition-transform duration-75 pb-24" 
         >
-          <ul>
-            <li className="tree-root">
-              
-              {/* LEVEL 1: EXEC HK */}
-              <FixedWrapper height={175}>
-                <HostNode host={execHK} isTBA={execHK.host_id === 'TBA'} />
-              </FixedWrapper>
-
-              <ul>
-                {/* --- BRANCH 1: ASST EXEC (Left) --- */}
-                <li>
-                  <FixedWrapper height={175}>
-                    <HostNode host={asstExec} isTBA={asstExec.host_id === 'TBA'} />
-                  </FixedWrapper>
-                  
-                  <ul>
-                    {/* LEVEL 3: COMBINED HK SUPERVISORS */}
-                    <li>
-                      <FixedWrapper height={260}>
-                        <div className="flex flex-wrap justify-center gap-3 bg-blue-50/60 pt-6 pb-3.5 px-4 rounded-3xl border-2 border-blue-200 shadow-inner relative z-10 w-max max-w-[720px] print:bg-white print:border-2 print:shadow-none">
-                          <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-100 text-blue-800 text-[8.5px] font-black px-3.5 py-0.5 rounded-full uppercase tracking-widest border border-blue-200 shadow-2xs whitespace-nowrap print:bg-white print:border">
-                            Housekeeping Supervisors
-                          </div>
-                          {hkSups.length > 0 ? (
-                            hkSups.map(sup => <HostNode key={sup.id} host={sup} />)
-                          ) : (
-                            <p className="text-slate-400 font-bold italic text-xs py-3 px-8">No HK Supervisors Assigned</p>
-                          )}
-                        </div>
-                      </FixedWrapper>
-
-                      <ul>
-                        {/* LEVEL 4: Sub-Departments under HK Sups */}
-                        {atmGroups.map((group, idx) => (
-                          <li key={idx}>
-                            <FixedWrapper height={0} hideLine>
-                              <div className="mt-2">
-                                <GroupNode title={group.title} hosts={group.hosts} colorClass={group.color} />
-                              </div>
-                            </FixedWrapper>
-                          </li>
-                        ))}
-                      </ul>
-                    </li>
-
-                    {/* LEVEL 3: COORDINATOR */}
-                    <li>
-                      <FixedWrapper height={260} />
-                      <ul>
-                        <li>
-                          <FixedWrapper height={0} hideLine>
-                            <div className="mt-2">
-                              <HostNode host={coordinator} isTBA={coordinator.host_id === 'TBA'} />
-                            </div>
-                          </FixedWrapper>
-                        </li>
-                      </ul>
-                    </li>
-
-                    {/* LEVEL 3: LAUNDRY SUPERVISOR */}
-                    <li>
-                      <FixedWrapper height={260}>
-                        <HostNode host={laundrySup} isTBA={laundrySup.host_id === 'TBA'} />
-                      </FixedWrapper>
-                      <ul>
-                        <li>
-                          <FixedWrapper height={0} hideLine>
-                            <div className="mt-2">
-                              <GroupNode title="Laundry" hosts={laundryStaff} colorClass="border-[#6D2158] text-[#6D2158]" />
-                            </div>
-                          </FixedWrapper>
-                        </li>
-                      </ul>
-                    </li>
-                  </ul>
-                </li>
-
-                {/* --- BRANCH 2: SUSTAINABILITY / LANDUSE MGR (Right) --- */}
-                <li>
-                  <FixedWrapper height={175}>
-                    <HostNode host={landuseMgr} isTBA={landuseMgr.host_id === 'TBA'} />
-                  </FixedWrapper>
-                  <ul>
-                    <li>
-                      <FixedWrapper height={260} />
-                      <ul>
-                        <li>
-                          <FixedWrapper height={0} hideLine>
-                            <div className="mt-2">
-                              <GroupNode title="Garden" hosts={gardeners} colorClass="border-[#6D2158] text-[#6D2158]" />
-                            </div>
-                          </FixedWrapper>
-                        </li>
-                      </ul>
-                    </li>
-                  </ul>
-                </li>
-
-              </ul>
-            </li>
-          </ul>
+          {renderTree(false)}
         </div>
       </div>
+
+      {/* ONE-PAGE PRINT SHEET (only visible when printing) */}
+      {/* only reached after data loads, i.e. on the client */}
+      {typeof document !== 'undefined' && createPortal(
+        <div id="org-print-root" aria-hidden>
+          <div className="print-sheet flex flex-col bg-white font-sans">
+            <div className="flex items-end justify-between border-b-2 border-[#6D2158] pb-1.5 shrink-0" style={{ height: SHEET_HEADER_PX - 8 }}>
+              <div>
+                <h1 className="text-2xl font-black text-[#6D2158] uppercase tracking-tight leading-none">Housekeeping Organizational Chart</h1>
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Six Senses Laamu · {format(new Date(), 'd MMMM yyyy')} · {hosts.length} hosts</p>
+              </div>
+              <div className="flex items-center gap-3 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                <span className="flex items-center gap-1"><span className="w-3 h-1.5 rounded-sm bg-amber-400" /> DA</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-1.5 rounded-sm bg-blue-400" /> DB</span>
+                <span className="flex items-center gap-1"><span className="w-3 h-1.5 rounded-sm bg-[#6D2158]" /> ATM</span>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0 flex items-start justify-center pt-2">
+              <div ref={printTreeRef} className="org-tree w-max">
+                {renderTree(true)}
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

@@ -450,7 +450,7 @@ export default function LinenMasterInventory() {
                         </button>
                     </div>
 
-                    <div className="flex gap-3">
+                    <div className="flex flex-wrap gap-2 sm:gap-3">
                         <button onClick={openNewStockModal} className="flex items-center gap-2 bg-purple-50 text-purple-700 px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-sm hover:bg-purple-100 transition-colors shrink-0">
                             <Plus size={16}/> Add New Stock
                         </button>

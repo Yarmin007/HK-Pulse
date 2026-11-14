@@ -5,7 +5,7 @@ import {
   Layers, MapPin, Briefcase, Tag, AlertTriangle, Calendar, Building,
   Coffee, Droplet, Beer, Wine, Cookie, Zap, User, Eye, CheckCircle2,
   Cloud, Moon, Sun, Umbrella, Baby, Star, Box, Users, CheckCircle, Loader2, UploadCloud, Lock, Clock, ShoppingCart,
-  Shield, KeyRound, History, Plane, Download, FileSpreadsheet, Merge, QrCode
+  Shield, KeyRound, History, Plane, Download, FileSpreadsheet, Merge, QrCode, ChevronUp, ChevronDown
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -47,82 +47,133 @@ type MasterItem = {
 };
 
 type Constant = { id: string; type: string; label: string; };
-type Host = { id: string; full_name: string; host_id: string; role: string; system_role?: string; pin?: string; requires_pin_change?: boolean; };
+type Host = { id: string; full_name: string; host_id: string; role: string; status?: string; image_url?: string | null; system_role?: string; pin?: string; requires_pin_change?: boolean; };
 
 // --- HELPER COMPONENTS ---
-const ListManager = ({ type, title, icon: Icon, placeholder, constants, newConstantValue, activeConstantType, setActiveConstantType, setNewConstantValue, handleAddConstant, handleDeleteConstant }: any) => {
+const ListManager = ({ type, title, description, icon, placeholder, constants, newConstantValue, activeConstantType, setActiveConstantType, setNewConstantValue, handleAddConstant, handleDeleteConstant }: any) => {
   const list = constants.filter((c: any) => c.type === type);
   return (
-    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
-      <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
-      <div className="flex gap-2 mb-4">
-        <input type="text" placeholder={placeholder} className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={activeConstantType === type ? newConstantValue : ''} onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }}/>
-        <button onClick={() => handleAddConstant(type)} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs">Add</button>
+    <SettingsCard icon={icon} title={title} description={description}>
+      <div className="flex gap-2 mb-3">
+        <input type="text" placeholder={placeholder} className="flex-1 min-w-0 px-3 py-2.5 border border-slate-200 rounded-xl font-semibold text-sm bg-slate-50 outline-none focus:border-[#6D2158] focus:bg-white" value={activeConstantType === type ? newConstantValue : ''} onChange={(e) => { setActiveConstantType(type); setNewConstantValue(e.target.value); }} onKeyDown={(e) => { if (e.key === 'Enter') handleAddConstant(type); }}/>
+        <button onClick={() => handleAddConstant(type)} className="px-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs flex items-center gap-1"><Plus size={14}/> Add</button>
       </div>
-      <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+      <div className="flex flex-wrap gap-1.5 max-h-64 overflow-y-auto">
+         {list.length === 0 && <p className="text-xs text-slate-400 italic">Nothing added yet.</p>}
          {list.map((item: any) => (
-           <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
-              <span className="font-bold text-slate-600 text-sm">{item.label}</span>
-              <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
-           </div>
+           <span key={item.id} className="inline-flex items-center gap-1 pl-3 pr-1 py-1 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700">
+              {item.label}
+              <button onClick={() => handleDeleteConstant(item.id)} className="p-1 rounded text-slate-300 hover:text-rose-500 hover:bg-rose-50" title="Remove"><X size={13}/></button>
+           </span>
          ))}
       </div>
-    </div>
+    </SettingsCard>
   );
 };
 
-const RankManager = ({ type, title, icon: Icon, constants, hosts, fetchConstants, handleDeleteConstant }: any) => {
-  const list = constants.filter((c: any) => c.type === type).sort((a: Constant, b: Constant) => {
-      const rankA = parseInt(a.label.split('::')[1] || '999');
-      const rankB = parseInt(b.label.split('::')[1] || '999');
-      return rankA - rankB;
-  });
-  const [roleName, setRoleName] = useState('');
-  const [roleRank, setRoleRank] = useState('');
-  const uniqueRoles = Array.from(new Set(hosts.map((h: any) => h.role).filter(Boolean))).sort((a: any, b: any) => a.localeCompare(b));
+// Designation order (role_rank constants "Name::rank"). Rank 1 = top; used to sort hosts everywhere.
+const DesignationOrder = ({ constants, hosts, fetchConstants, handleDeleteConstant }: { constants: Constant[]; hosts: Host[]; fetchConstants: () => void; handleDeleteConstant: (id: string) => void }) => {
+  const list = constants.filter(c => c.type === 'role_rank')
+    .map(c => { const [name, rank] = c.label.split('::'); return { id: c.id, name: (name || '').trim(), rank: parseInt(rank || '999', 10) }; })
+    .sort((a, b) => a.rank - b.rank);
+  const [busy, setBusy] = useState(false);
+  const counts = new Map<string, number>();
+  hosts.filter(h => h.status !== 'Resigned').forEach(h => { const k = (h.role || '').trim().toLowerCase(); counts.set(k, (counts.get(k) || 0) + 1); });
+  const unranked = Array.from(new Set(hosts.filter(h => h.status !== 'Resigned').map(h => (h.role || '').trim()).filter(Boolean)))
+    .filter(r => !list.some(l => l.name.toLowerCase() === r.toLowerCase()));
 
-  const handleAdd = async () => {
-      if (!roleName.trim() || !roleRank.trim()) return;
-      const label = `${roleName.trim()}::${roleRank.trim()}`;
-      const { error } = await supabase.from('hsk_constants').insert({ type, label });
-      if (!error) { setRoleName(''); setRoleRank(''); fetchConstants(); toast.success("Role rank added!"); }
+  // Rewrites ranks as 1..n in the new order.
+  const saveOrder = async (ordered: typeof list) => {
+    setBusy(true);
+    const changed = ordered.map((d, i) => ({ ...d, newRank: i + 1 })).filter(d => d.rank !== d.newRank);
+    await Promise.all(changed.map(d => supabase.from('hsk_constants').update({ label: `${d.name}::${d.newRank}` }).eq('id', d.id)));
+    await fetchConstants();
+    setBusy(false);
+  };
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    const next = [...list];
+    [next[i], next[j]] = [next[j], next[i]];
+    saveOrder(next);
+  };
+  const addUnranked = async (name: string) => {
+    const rank = Math.max(0, ...list.map(l => (l.rank < 999 ? l.rank : 0))) + 1;
+    await supabase.from('hsk_constants').insert({ type: 'role_rank', label: `${name}::${rank}` });
+    fetchConstants();
   };
 
   return (
-    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
-      <div className="flex items-center gap-2 mb-4 text-[#6D2158]"><Icon size={20} /><h3 className="text-lg font-bold">{title}</h3></div>
-      <p className="text-[10px] text-slate-400 mb-3 font-bold">Assign a rank (1 = Top) to sort roles across all lists.</p>
-      <div className="flex gap-2 mb-4">
-        <select className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleName} onChange={(e) => setRoleName(e.target.value)}>
-            <option value="" disabled>Select Role...</option>
-            {uniqueRoles.map((role: any) => (
-                <option key={role} value={role}>{role}</option>
+    <SettingsCard icon={Briefcase} title="Designation order" description="Top to bottom is how hosts are sorted on attendance, allocation and the hosts page. Add or rename designations on the Hosts page.">
+      {unranked.length > 0 && (
+        <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-100">
+          <p className="text-[11px] font-bold text-amber-700 mb-2">In use but not in the order yet:</p>
+          <div className="flex flex-wrap gap-1.5">
+            {unranked.map(r => (
+              <button key={r} onClick={() => addUnranked(r)} className="px-2.5 py-1 rounded-lg bg-white border border-amber-200 text-[11px] font-bold text-amber-800 hover:bg-amber-100 flex items-center gap-1"><Plus size={12}/> {r}</button>
             ))}
-        </select>
-        <input type="number" placeholder="Rank" className="w-20 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158]" value={roleRank} onChange={(e) => setRoleRank(e.target.value)}/>
-        <button onClick={handleAdd} className="px-4 py-2 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:bg-[#5a1b49] transition-colors">Add</button>
-      </div>
-      <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
-         {list.map((item: any) => {
-           const [name, rank] = item.label.split('::');
-           return (
-           <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all">
-              <div>
-                <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs mr-3">Rank {rank}</span>
-                <span className="font-bold text-slate-600 text-sm">{name}</span>
+          </div>
+        </div>
+      )}
+      <div className={`divide-y divide-slate-100 border border-slate-100 rounded-xl ${busy ? 'opacity-60 pointer-events-none' : ''}`}>
+        {list.map((d, i) => {
+          const n = counts.get(d.name.toLowerCase()) || 0;
+          return (
+            <div key={d.id} className="flex items-center gap-3 px-3 py-2 group">
+              <span className="w-6 text-center text-[11px] font-mono font-bold text-slate-300">{i + 1}</span>
+              <span className="flex-1 min-w-0 truncate text-sm font-semibold text-slate-700">{d.name}</span>
+              <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">{n} host{n === 1 ? '' : 's'}</span>
+              <div className="flex">
+                <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-[#6D2158] disabled:opacity-20" title="Move up"><ChevronUp size={15}/></button>
+                <button onClick={() => move(i, 1)} disabled={i === list.length - 1} className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-[#6D2158] disabled:opacity-20" title="Move down"><ChevronDown size={15}/></button>
+                <button onClick={() => n ? toast.error('Still in use — change those hosts first') : handleDeleteConstant(d.id)} className={`p-1.5 rounded-lg ${n ? 'text-slate-200' : 'text-slate-400 hover:bg-rose-50 hover:text-rose-500'}`} title={n ? 'In use' : 'Remove'}><Trash2 size={14}/></button>
               </div>
-              <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16}/></button>
-           </div>
-         )})}
+            </div>
+          );
+        })}
       </div>
-    </div>
+    </SettingsCard>
   );
 };
+
+const SettingsCard = ({ icon: Icon, title, description, children, className = '' }: { icon: React.ElementType; title: string; description?: string; children: React.ReactNode; className?: string }) => (
+  <section className={`bg-white rounded-2xl border border-slate-200/70 shadow-sm p-5 ${className}`}>
+    <div className="flex items-start gap-3 mb-4">
+      <div className="w-9 h-9 rounded-xl bg-[#6D2158]/5 text-[#6D2158] flex items-center justify-center shrink-0"><Icon size={18}/></div>
+      <div className="min-w-0">
+        <h3 className="text-base font-bold text-slate-800 leading-tight">{title}</h3>
+        {description && <p className="text-xs text-slate-500 mt-0.5 leading-snug">{description}</p>}
+      </div>
+    </div>
+    {children}
+  </section>
+);
+
+type SectionKey = 'Master List' | 'Minibar Menu' | 'Linen Catalog' | 'Bottle Catalog' | 'Expiry Setup' | 'Access Control' | 'GEM Directory' | 'General' | 'Lists';
+const SECTIONS: { group: string; items: { key: SectionKey; label: string; icon: React.ElementType; desc: string }[] }[] = [
+  { group: 'Catalog', items: [
+    { key: 'Master List', label: 'Amenities & items', icon: Box, desc: 'Guest amenities, requests and general items used across the app.' },
+    { key: 'Minibar Menu', label: 'Minibar menu', icon: Coffee, desc: 'Minibar products, prices and sort order.' },
+    { key: 'Linen Catalog', label: 'Linen', icon: Layers, desc: 'Linen items counted in linen inventory.' },
+    { key: 'Bottle Catalog', label: 'Bottles', icon: Droplet, desc: 'Bottle items counted in bottle inventory.' },
+    { key: 'Expiry Setup', label: 'Expiry batches', icon: Calendar, desc: 'Items with expiry tracking and their active batch dates.' },
+  ]},
+  { group: 'Team', items: [
+    { key: 'Access Control', label: 'Logins & access', icon: Shield, desc: 'Who is admin, whose team each person can see on the dashboard, and PIN resets. Resigned hosts are not listed and cannot log in.' },
+    { key: 'GEM Directory', label: 'GEM directory', icon: Star, desc: 'Guest Experience Makers shown on requests and the guest list.' },
+  ]},
+  { group: 'System', items: [
+    { key: 'General', label: 'General', icon: Settings, desc: 'Timezone and public holidays.' },
+    { key: 'Lists', label: 'Lists & order', icon: Briefcase, desc: 'Dropdown lists used across the app and the designation order.' },
+  ]},
+];
+const ALL_SECTIONS = SECTIONS.flatMap(g => g.items);
 
 // --- MAIN PAGE ---
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState('Master List');
+  const [activeTab, setActiveTab] = useState<SectionKey>('Master List');
+  const [accessFilter, setAccessFilter] = useState<'all' | 'admin' | 'team' | 'pin'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   
   const [masterList, setMasterList] = useState<MasterItem[]>([]);
@@ -629,7 +680,7 @@ export default function SettingsPage() {
       setIsLoadingLogs(false);
   };
 
-  const saveTeamConfig = async () => {
+  const saveTeamConfig = async (access: Record<string, string[]> = supervisorAccess) => {
       setIsUploading(true);
       try {
           let currentConfig: any = {};
@@ -637,7 +688,7 @@ export default function SettingsPage() {
               const { data } = await supabase.from('hsk_constants').select('label').eq('id', configId).single();
               if (data && data.label) { try { currentConfig = JSON.parse(data.label); } catch(e){} }
           }
-          currentConfig.supervisorAccess = supervisorAccess;
+          currentConfig.supervisorAccess = access;
           const payload = JSON.stringify(currentConfig);
           
           if (configId) {
@@ -648,7 +699,7 @@ export default function SettingsPage() {
               if (error) throw error;
               if (data) setConfigId(data.id);
           }
-          toast.success("View Access Settings Saved!");
+          toast.success("Team view saved");
       } catch (err: any) {
           toast.error("Failed to save: " + err.message);
       } finally {
@@ -722,198 +773,216 @@ export default function SettingsPage() {
       toast.success(`${activeTab} exported as CSV!`);
   };
 
+  // --- LOGINS & ACCESS (active hosts only) ---
+  const activeHosts = hosts.filter(h => h.status !== 'Resigned');
+  const activeIds = new Set(activeHosts.map(h => h.host_id));
+  const teamCount = (h: Host) => (supervisorAccess[h.host_id] || []).filter(id => activeIds.has(id)).length;
+  const accessCounts = {
+    all: activeHosts.length,
+    admin: activeHosts.filter(h => h.system_role === 'admin').length,
+    team: activeHosts.filter(h => h.system_role !== 'admin' && teamCount(h) > 0).length,
+    pin: activeHosts.filter(h => h.requires_pin_change).length,
+  };
+  const accessList = activeHosts
+    .filter(h => accessFilter === 'all' || (accessFilter === 'admin' ? h.system_role === 'admin' : accessFilter === 'team' ? h.system_role !== 'admin' && teamCount(h) > 0 : !!h.requires_pin_change))
+    .filter(h => { const q = hostSearch.toLowerCase().trim(); return !q || h.full_name.toLowerCase().includes(q) || h.host_id.toLowerCase().includes(q) || (h.role || '').toLowerCase().includes(q); })
+    .sort((a, b) => (a.system_role === 'admin' ? 0 : 1) - (b.system_role === 'admin' ? 0 : 1));
+
+  const closeAccessModal = async () => {
+      if (!accessModalHost) return;
+      // Drop people who have since resigned, then save straight away.
+      const cleaned = { ...supervisorAccess, [accessModalHost.host_id]: (supervisorAccess[accessModalHost.host_id] || []).filter(id => activeIds.has(id)) };
+      if (!cleaned[accessModalHost.host_id].length) delete cleaned[accessModalHost.host_id];
+      setSupervisorAccess(cleaned);
+      setAccessModalHost(null);
+      await saveTeamConfig(cleaned);
+  };
+
+  const section = ALL_SECTIONS.find(x => x.key === activeTab)!;
+  const isCatalog = SECTIONS[0].items.some(x => x.key === activeTab);
+  const inputCls = 'px-3 py-2.5 border border-slate-200 rounded-xl font-semibold text-sm bg-slate-50 outline-none focus:border-[#6D2158] focus:bg-white';
+
   return (
-    <div className="h-screen w-full overflow-hidden flex flex-col bg-[#FDFBFD] font-antiqua text-[#6D2158]">
-      
-      {/* 1. FIXED HEADER */}
-      <div className="p-6 border-b border-slate-200 shrink-0 flex flex-col md:flex-row justify-between md:items-end gap-4">
-        <div>
-            <h1 className="text-3xl font-bold tracking-tight text-slate-800">System Settings</h1>
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configuration & Master Data</p>
+    <div className="h-[calc(100dvh-4rem-env(safe-area-inset-bottom))] md:h-[100dvh] w-full overflow-hidden flex flex-col md:flex-row bg-[#FDFBFD] font-antiqua text-[#6D2158]">
+
+      {/* SETTINGS MENU — side column on desktop, scrolling strip on phones */}
+      <aside className="md:w-60 lg:w-64 shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-white md:overflow-y-auto">
+        <div className="px-4 pt-4 pb-2 md:px-5 md:pt-6 md:pb-4">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-800">Settings</h1>
+          <p className="hidden md:block text-[11px] text-slate-400 mt-0.5">Configuration & master data</p>
         </div>
-        {activeTab === 'Access Control' && (
-            <button onClick={saveTeamConfig} disabled={isUploading} className="bg-emerald-600 text-white px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-widest shadow-md flex items-center justify-center gap-2 hover:bg-emerald-500 transition-colors">
-                {isUploading ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>} Save View Access
-            </button>
-        )}
-      </div>
+        <nav className="flex md:flex-col gap-1 overflow-x-auto no-scrollbar px-3 pb-3 md:px-3 md:pb-6">
+          {SECTIONS.map(g => (
+            <div key={g.group} className="flex md:flex-col gap-1 md:mb-3 shrink-0">
+              <div className="hidden md:block px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">{g.group}</div>
+              {g.items.map(item => {
+                const Icon = item.icon;
+                const on = activeTab === item.key;
+                return (
+                  <button key={item.key} onClick={() => { setActiveTab(item.key); setIsFormOpen(false); setSearchQuery(''); }}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold whitespace-nowrap transition-colors ${on ? 'bg-[#6D2158] text-white md:bg-[#6D2158]/10 md:text-[#6D2158]' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800 bg-slate-50 md:bg-transparent'}`}>
+                    <Icon size={16} className="shrink-0"/> {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+      </aside>
 
-      {/* 2. SIDE-SCROLLING TABS ONLY */}
-      <div className="w-full overflow-x-auto border-b border-slate-100 bg-white no-scrollbar shrink-0">
-         <div className="flex gap-2 p-4 px-6 w-max">
-           {['Master List', 'Minibar Menu', 'Linen Catalog', 'Bottle Catalog', 'Expiry Setup', 'GEM Directory', 'System Config', 'Access Control'].map(tab => (
-              <button key={tab} onClick={() => { setActiveTab(tab); setIsFormOpen(false); }} className={`px-6 py-3 rounded-xl text-xs font-bold uppercase tracking-wider whitespace-nowrap transition-all ${activeTab === tab ? 'bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20' : 'bg-white text-slate-400 border border-slate-100 hover:border-[#6D2158]'}`}>{tab}</button>
-           ))}
-         </div>
-      </div>
-
-      {/* 3. SCROLLABLE CONTENT AREA */}
-      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-        <div className="max-w-7xl mx-auto space-y-6 pb-20">
+      {/* CONTENT */}
+      <main className="flex-1 min-w-0 overflow-y-auto custom-scrollbar">
+        <div className={`${isCatalog ? 'max-w-7xl' : 'max-w-4xl'} mx-auto px-4 md:px-8 py-5 md:py-8 pb-24 space-y-5`}>
+          <header>
+            <h2 className="text-xl md:text-2xl font-bold text-slate-800 flex items-center gap-2">{section.label}</h2>
+            <p className="text-sm text-slate-500 mt-1">{section.desc}</p>
+          </header>
 
           {activeTab === 'Access Control' ? (
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-in slide-in-from-right-4 duration-300">
-                  <div className="p-5 border-b border-slate-100 flex flex-col md:flex-row justify-between md:items-center gap-4 bg-slate-50">
-                      <div>
-                          <h3 className="font-bold text-[#6D2158] uppercase tracking-widest text-sm flex items-center gap-2"><Shield size={16}/> Access & Roles</h3>
-                          <p className="text-[10px] font-bold text-slate-400 mt-1">Manage admin privileges, Dashboard Team View Access, and logs.</p>
+              <div className="space-y-4">
+                  <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+                      <div className="flex gap-1 bg-slate-100 p-1 rounded-xl overflow-x-auto no-scrollbar">
+                          {([['all', 'Everyone'], ['admin', 'Admins'], ['team', 'Sees team'], ['pin', 'PIN reset']] as const).map(([k, label]) => (
+                              <button key={k} onClick={() => setAccessFilter(k)} className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition ${accessFilter === k ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                  {label} <span className="opacity-60">{accessCounts[k]}</span>
+                              </button>
+                          ))}
                       </div>
-                      <div className="flex items-center gap-4 w-full md:w-auto">
-                          <div className="relative w-full md:w-64">
-                              <Search className="absolute left-3 top-2.5 text-slate-400" size={16}/>
-                              <input type="text" placeholder="Search staff..." className="w-full pl-10 pr-4 py-2 border border-slate-200 bg-white rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" value={hostSearch} onChange={e => setHostSearch(e.target.value)} />
-                          </div>
+                      <div className="relative sm:w-64">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/>
+                          <input type="text" placeholder="Search name, SSL, designation" className={`${inputCls} w-full pl-9`} value={hostSearch} onChange={e => setHostSearch(e.target.value)} />
                       </div>
                   </div>
-                  <div className="overflow-x-auto pb-32">
-                      <div className="min-w-[800px]">
-                          <table className="w-full text-left">
-                              <thead className="bg-slate-50 border-b border-slate-100">
-                                  <tr>
-                                      <th className="p-4 text-xs font-bold text-slate-400 uppercase">Staff Member</th>
-                                      <th className="p-4 text-xs font-bold text-slate-400 uppercase">Dashboard View Access</th>
-                                      <th className="p-4 text-xs font-bold text-slate-400 uppercase">System Role</th>
-                                      <th className="p-4 text-xs font-bold text-slate-400 uppercase">PIN Status</th>
-                                      <th className="p-4 text-xs font-bold text-slate-400 uppercase text-right">Actions</th>
-                                  </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-50">
-                                  {hosts.filter(h => h.full_name.toLowerCase().includes(hostSearch.toLowerCase()) || h.host_id.includes(hostSearch)).map(host => (
-                                      <tr key={host.id} className="hover:bg-slate-50 transition-colors">
-                                          <td className="p-4">
-                                              <div className="font-bold text-slate-800 text-sm">{host.full_name}</div>
-                                              <div className="text-[10px] text-slate-400 uppercase tracking-widest mt-0.5">{host.host_id} • {host.role}</div>
-                                          </td>
-                                          <td className="p-4">
-                                              {host.system_role === 'admin' ? (
-                                                  <span className="px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5 bg-emerald-50 text-emerald-600 border border-emerald-200 w-max">
-                                                      <CheckCircle2 size={14}/> Full Access
-                                                  </span>
-                                              ) : (
-                                                  <button 
-                                                      onClick={() => { setAccessSearchQuery(''); setAccessModalHost(host); }}
-                                                      className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 transition-colors border ${
-                                                          (supervisorAccess[host.host_id] || []).length > 0 
-                                                          ? 'bg-purple-50 text-[#6D2158] border-purple-200 hover:bg-purple-100' 
-                                                          : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
-                                                      }`}
-                                                  >
-                                                      <Eye size={14}/> 
-                                                      {(supervisorAccess[host.host_id] || []).length} Visible
-                                                  </button>
-                                              )}
-                                          </td>
-                                          <td className="p-4">
-                                              <select className="p-2 bg-white border border-slate-200 rounded-lg text-[10px] font-bold text-slate-700 outline-none focus:border-[#6D2158] cursor-pointer" value={host.system_role || 'staff'} onChange={(e) => updateHostRole(host.id, e.target.value)}>
-                                                  <option value="staff">Staff</option>
-                                                  <option value="admin">Admin</option>
-                                              </select>
-                                          </td>
-                                          <td className="p-4">
-                                              {host.requires_pin_change ? <span className="bg-amber-100 text-amber-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-amber-200">Needs Reset</span> : <span className="bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border border-emerald-200">Active</span>}
-                                          </td>
-                                          <td className="p-4 text-right flex justify-end gap-2">
-                                              <button onClick={() => resetHostPin(host.id, host.full_name)} className={`p-2 bg-white border rounded-lg shadow-sm transition-colors ${host.requires_pin_change ? 'border-amber-300 text-amber-500' : 'border-slate-200 text-slate-400 hover:border-amber-200 hover:text-amber-600'}`} title="Reset PIN to 0000"><KeyRound size={16}/></button>
-                                              <button onClick={() => viewHostLogs(host)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-200 rounded-lg shadow-sm hover:border-blue-200 transition-colors" title="View Logs"><History size={16}/></button>
-                                          </td>
-                                      </tr>
-                                  ))}
-                              </tbody>
-                          </table>
-                      </div>
+
+                  <div className="bg-white rounded-2xl border border-slate-200/70 shadow-sm divide-y divide-slate-100">
+                      {accessList.length === 0 && <p className="p-8 text-center text-sm text-slate-400 italic">No one matches.</p>}
+                      {accessList.map(host => {
+                          const isAdmin = host.system_role === 'admin';
+                          const n = teamCount(host);
+                          return (
+                              <div key={host.id} className="flex flex-col md:flex-row md:items-center gap-3 p-3 md:px-4">
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                      <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${isAdmin ? 'bg-[#6D2158] text-white' : 'bg-slate-100 text-slate-500'}`}>
+                                          {host.full_name.split(' ').map(w => w[0]).slice(0, 2).join('')}
+                                      </div>
+                                      <div className="min-w-0">
+                                          <div className="font-bold text-slate-800 text-sm truncate">{host.full_name}</div>
+                                          <div className="text-[11px] text-slate-400 truncate">{host.host_id} · {host.role}</div>
+                                      </div>
+                                  </div>
+                                  <div className="flex items-center gap-2 flex-wrap md:flex-nowrap pl-12 md:pl-0">
+                                      <div className="flex bg-slate-100 p-0.5 rounded-lg" title="System role">
+                                          {(['staff', 'admin'] as const).map(r => (
+                                              <button key={r} onClick={() => (host.system_role || 'staff') !== r && updateHostRole(host.id, r)}
+                                                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold capitalize transition ${(host.system_role || 'staff') === r ? (r === 'admin' ? 'bg-[#6D2158] text-white shadow-sm' : 'bg-white text-slate-700 shadow-sm') : 'text-slate-400'}`}>{r}</button>
+                                          ))}
+                                      </div>
+                                      {isAdmin ? (
+                                          <span className="w-32 text-center px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">Sees everyone</span>
+                                      ) : (
+                                          <button onClick={() => { setAccessSearchQuery(''); setAccessModalHost(host); }}
+                                              className={`w-32 flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition ${n ? 'bg-[#6D2158]/5 text-[#6D2158] border-[#6D2158]/20 hover:bg-[#6D2158]/10' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
+                                              <Eye size={13}/> {n ? `Sees ${n} host${n === 1 ? '' : 's'}` : 'Own tasks only'}
+                                          </button>
+                                      )}
+                                      <button onClick={() => resetHostPin(host.id, host.full_name)} title="Reset PIN to 0000"
+                                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition ${host.requires_pin_change ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-white text-slate-500 border-slate-200 hover:text-amber-700 hover:border-amber-200'}`}>
+                                          <KeyRound size={13}/> {host.requires_pin_change ? 'Reset pending' : 'Reset PIN'}
+                                      </button>
+                                      <button onClick={() => viewHostLogs(host)} className="p-1.5 rounded-lg text-slate-400 border border-slate-200 hover:text-[#6D2158] hover:border-[#6D2158]/30" title="Recent activity"><History size={15}/></button>
+                                  </div>
+                              </div>
+                          );
+                      })}
                   </div>
               </div>
-          ) : activeTab === 'System Config' ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-in slide-in-from-right-4 duration-300">
-               <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 mb-2">
-                  <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Settings size={20}/> Core System & Security</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
-                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                          <label className="text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Clock size={14}/> Global Website Timezone</label>
-                          <div className="flex flex-col sm:flex-row gap-2">
-                              <select className="flex-1 p-3 rounded-lg border font-bold text-slate-700 outline-none focus:border-[#6D2158]" value={systemTimezone} onChange={e => setSystemTimezone(e.target.value)}>
-                                  <option value="Indian/Maldives">Maldives Time (GMT+5)</option>
-                                  <option value="Asia/Dhaka">Bangladesh Time (GMT+6)</option>
-                                  <option value="Asia/Colombo">Sri Lanka Time (GMT+5:30)</option>
-                                  <option value="UTC">Universal Time (UTC)</option>
-                              </select>
-                              <button onClick={() => handleSaveSystemConfig('system_timezone', systemTimezone)} className="px-6 py-3 sm:py-0 bg-[#6D2158] text-white rounded-lg font-bold text-xs uppercase shadow-md hover:bg-[#5a1b49]">Save</button>
-                          </div>
-                      </div>
+          ) : activeTab === 'General' ? (
+            <div className="space-y-5">
+               <SettingsCard icon={Clock} title="Timezone" description="Used for times and dates across the whole app.">
+                  <div className="flex flex-col sm:flex-row gap-2">
+                      <select className={`${inputCls} flex-1`} value={systemTimezone} onChange={e => setSystemTimezone(e.target.value)}>
+                          <option value="Indian/Maldives">Maldives Time (GMT+5)</option>
+                          <option value="Asia/Dhaka">Bangladesh Time (GMT+6)</option>
+                          <option value="Asia/Colombo">Sri Lanka Time (GMT+5:30)</option>
+                          <option value="UTC">Universal Time (UTC)</option>
+                      </select>
+                      <button onClick={() => handleSaveSystemConfig('system_timezone', systemTimezone)} className="px-5 py-2.5 bg-[#6D2158] text-white rounded-xl font-bold text-xs uppercase hover:bg-[#5a1b49] flex items-center justify-center gap-1.5"><Save size={14}/> Save</button>
                   </div>
-               </div>
+               </SettingsCard>
 
-               <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-fit">
-                  <h3 className="text-lg font-bold text-[#6D2158] mb-4 flex items-center gap-2"><Plane size={20}/> Declared Public Holidays</h3>
-                  <div className="flex flex-col sm:flex-row gap-3 mb-4">
-                     <input type="date" className="p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayDate} onChange={e=>setHolidayDate(e.target.value)} />
-                     <input type="text" placeholder="Holiday Name" className="flex-1 p-3 border rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-[#6D2158] transition-colors" value={holidayName} onChange={e=>setHolidayName(e.target.value)} />
-                     <button onClick={handleAddHoliday} className="px-6 py-3 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-[#5a1b49]">Add</button>
+               <SettingsCard icon={Plane} title="Public holidays" description="Counted as PH on attendance and leave balances.">
+                  <div className="flex flex-col sm:flex-row gap-2 mb-3">
+                     <input type="date" className={inputCls} value={holidayDate} onChange={e=>setHolidayDate(e.target.value)} />
+                     <input type="text" placeholder="Holiday name" className={`${inputCls} flex-1`} value={holidayName} onChange={e=>setHolidayName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleAddHoliday(); }} />
+                     <button onClick={handleAddHoliday} className="px-5 py-2.5 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:bg-[#5a1b49] flex items-center justify-center gap-1"><Plus size={14}/> Add</button>
                   </div>
-                  <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
-                     {constants.filter(c => c.type === 'public_holiday').map(item => {
-                        const [d, n] = item.label.split('::');
+                  <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl max-h-80 overflow-y-auto">
+                     {constants.filter(c => c.type === 'public_holiday').length === 0 && <p className="p-4 text-xs text-slate-400 italic">No holidays added.</p>}
+                     {constants.filter(c => c.type === 'public_holiday')
+                        .map(item => { const [d, n] = item.label.split('::'); return { item, d, n }; })
+                        .sort((x, y) => (y.d || '').localeCompare(x.d || ''))
+                        .map(({ item, d, n }) => {
+                        let pretty = d;
+                        try { pretty = format(parseISO(d), 'EEE d MMM yyyy'); } catch { /* keep raw */ }
                         return (
-                         <div key={item.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg group hover:bg-white border border-transparent hover:border-slate-200 transition-all">
-                            <div className="flex items-center gap-4">
-                                <span className="font-bold text-[#6D2158] bg-[#6D2158]/10 px-3 py-1 rounded text-xs">{d}</span>
-                                <span className="font-bold text-slate-700 text-sm">{n}</span>
-                            </div>
-                            <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 transition-opacity p-2"><Trash2 size={16}/></button>
+                         <div key={item.id} className="flex items-center gap-3 px-3 py-2">
+                            <span className="w-32 shrink-0 text-xs font-bold text-[#6D2158]">{pretty}</span>
+                            <span className="flex-1 text-sm font-semibold text-slate-700 truncate">{n}</span>
+                            <button onClick={() => handleDeleteConstant(item.id)} className="p-1.5 rounded-lg text-slate-300 hover:text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button>
                          </div>
                         )
                      })}
                   </div>
+               </SettingsCard>
+            </div>
+          ) : activeTab === 'Lists' ? (
+            <div className="space-y-5">
+               <DesignationOrder constants={constants} hosts={hosts} fetchConstants={fetchConstants} handleDeleteConstant={handleDeleteConstant} />
+               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                 <ListManager type="sub_department" title="Sub-departments" description="Teams a host can belong to (Hosts page)." icon={Building} placeholder="e.g. Water Room" constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
+                 <ListManager type="category" title="Item categories" description="Categories for catalog items." icon={Layers} placeholder="e.g. Bottle" constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
+                 <ListManager type="requester" title="Requested-by names" description="Extra names offered in the “requested by” field on requests." icon={Users} placeholder="Add a name" constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
                </div>
-
-               <ListManager type="sub_department" title="Sub Departments" icon={Building} placeholder="Add sub department..." constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
-               <RankManager type="role_rank" title="Role Sorting Ranks" icon={Briefcase} constants={constants} hosts={hosts} fetchConstants={fetchConstants} handleDeleteConstant={handleDeleteConstant} />
-               <ListManager type="requester" title="Staff List" icon={Users} placeholder="Add staff name..." constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
-               <ListManager type="category" title="Categories" icon={Layers} placeholder="Add category (e.g. Bottle)..." constants={constants} newConstantValue={newConstantValue} activeConstantType={activeConstantType} setActiveConstantType={setActiveConstantType} setNewConstantValue={setNewConstantValue} handleAddConstant={handleAddConstant} handleDeleteConstant={handleDeleteConstant} />
             </div>
           ) : activeTab === 'GEM Directory' ? (
-            <div className="animate-in slide-in-from-right-4 duration-300">
-               <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 max-w-2xl">
-                  <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                     <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center"><Briefcase size={20} /></div>
-                     <div><h3 className="text-lg font-bold text-slate-800">GEM Directory</h3><p className="text-[10px] font-bold text-slate-400 uppercase">Manage Guest Experience Makers</p></div>
+               <SettingsCard icon={Star} title="GEMs" description="Name and MVPN.">
+                  <div className="flex flex-col sm:flex-row gap-2 mb-3">
+                    <input type="text" placeholder="GEM name" className={`${inputCls} flex-1`} value={gemName} onChange={(e) => setGemName(e.target.value)}/>
+                    <input type="number" inputMode="numeric" placeholder="MVPN" className={`${inputCls} sm:w-36`} value={gemMvpn} onChange={(e) => setGemMvpn(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddGem(); }}/>
+                    <button onClick={handleAddGem} className="px-5 py-2.5 bg-[#6D2158] text-white rounded-xl font-bold uppercase text-xs hover:bg-[#5a1b49] flex items-center justify-center gap-1"><Plus size={14}/> Add</button>
                   </div>
-                  <div className="flex flex-col sm:flex-row gap-2 mb-6">
-                    <input type="text" placeholder="GEM Name" className="flex-1 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 transition-colors" value={gemName} onChange={(e) => setGemName(e.target.value)}/>
-                    <input type="number" placeholder="MVPN" className="w-full sm:w-48 p-4 border border-slate-200 rounded-xl font-bold text-sm bg-slate-50 outline-none focus:border-amber-500 transition-colors" value={gemMvpn} onChange={(e) => setGemMvpn(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddGem(); }}/>
-                    <button onClick={handleAddGem} className="px-6 py-4 bg-amber-500 text-white rounded-xl font-bold uppercase text-xs shadow-md hover:bg-amber-600 whitespace-nowrap">Add</button>
-                  </div>
-                  <div className="space-y-2">
+                  <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl">
+                     {constants.filter(c => c.type === 'gem').length === 0 && <p className="p-4 text-xs text-slate-400 italic">No GEMs added.</p>}
                      {constants.filter(c => c.type === 'gem').map(item => (
-                       <div key={item.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-xl group hover:bg-white border border-transparent hover:border-slate-200 transition-all">
-                          <div className="flex items-center gap-3"><User size={16} className="text-slate-400" /><span className="font-bold text-slate-700">{item.label}</span></div>
-                          <button onClick={() => handleDeleteConstant(item.id)} className="text-slate-300 hover:text-rose-500 transition-opacity p-2"><Trash2 size={18}/></button>
+                       <div key={item.id} className="flex items-center gap-3 px-3 py-2.5">
+                          <User size={15} className="text-slate-300"/>
+                          <span className="flex-1 text-sm font-semibold text-slate-700">{item.label}</span>
+                          <button onClick={() => handleDeleteConstant(item.id)} className="p-1.5 rounded-lg text-slate-300 hover:text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button>
                        </div>
                      ))}
                   </div>
-               </div>
-            </div>
+               </SettingsCard>
           ) : (
             <div className="animate-in slide-in-from-right-4 duration-300">
                
-               <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-6">
-                  <div className="relative w-full max-w-md">
+               <div className="flex flex-col lg:flex-row justify-between lg:items-center gap-3 mb-5">
+                  <div className="relative w-full lg:max-w-md">
                      <Search className="absolute left-3 top-3 text-slate-400" size={18}/>
                      <input type="text" placeholder={`Search ${activeTab}...`} className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl font-bold text-sm outline-none focus:border-[#6D2158]" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}/>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                      
                      {/* EXPORT LIST BUTTON */}
                      {['Master List', 'Minibar Menu', 'Linen Catalog', 'Bottle Catalog'].includes(activeTab) && !isFormOpen && (
-                         <button onClick={handleExportCSV} className="bg-slate-100 text-slate-600 px-4 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-sm border border-slate-200 transition-all hover:bg-slate-200 mr-2" title="Export Current List to CSV">
+                         <button onClick={handleExportCSV} className="bg-slate-100 text-slate-600 px-4 py-3 rounded-xl text-xs font-bold uppercase flex items-center justify-center gap-2 shadow-sm border border-slate-200 transition-all hover:bg-slate-200" title="Export Current List to CSV">
                              <FileSpreadsheet size={16}/> Export CSV
                          </button>
                      )}
 
                      {/* CSV BULK UPLOAD BUTTONS */}
                      {activeTab === 'Master List' && !isFormOpen && (
-                         <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mr-2">
+                         <div className="flex items-center bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
                              <button onClick={downloadCSVFormat} className="px-4 py-3 text-slate-500 hover:text-blue-600 hover:bg-blue-50 transition-colors flex items-center gap-2 text-xs font-bold uppercase tracking-widest border-r border-slate-200" title="Download CSV Template">
                                  <Download size={16}/> Format
                              </button>
@@ -1090,7 +1159,7 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
-      </div>
+      </main>
 
       {/* --- MERGE MODAL --- */}
       {mergeModalItem && (
@@ -1226,7 +1295,7 @@ export default function SettingsPage() {
               <div className="bg-[#FDFBFD] w-full max-w-2xl rounded-[2.5rem] shadow-2xl flex flex-col max-h-[85vh] overflow-hidden animate-in zoom-in-95">
                   <div className="p-6 md:p-8 bg-[#6D2158] text-white flex justify-between items-center shrink-0">
                       <div><h3 className="font-black text-xl tracking-tight flex items-center gap-2"><Eye size={20}/> Manage View Access</h3><p className="text-[10px] text-white/70 uppercase tracking-widest mt-1">For: {accessModalHost.full_name}</p></div>
-                      <button onClick={() => setAccessModalHost(null)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
+                      <button onClick={closeAccessModal} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"><X size={18}/></button>
                   </div>
                   <div className="p-6 border-b border-slate-200 bg-white shrink-0 flex gap-4 items-center">
                        <div className="relative flex-1">
@@ -1236,7 +1305,7 @@ export default function SettingsPage() {
                   </div>
                   <div className="p-6 overflow-y-auto flex-1 custom-scrollbar bg-slate-50">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {hosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || h.host_id.includes(accessSearchQuery))).map(targetHost => {
+                          {activeHosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || h.host_id.toLowerCase().includes(accessSearchQuery.toLowerCase()) || (h.role || '').toLowerCase().includes(accessSearchQuery.toLowerCase()))).map(targetHost => {
                               const isSelected = (supervisorAccess[accessModalHost.host_id] || []).includes(targetHost.host_id);
                               return (
                                   <label key={targetHost.id} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${isSelected ? 'bg-purple-50 border-purple-200 shadow-sm' : 'bg-white border-slate-200 hover:border-[#6D2158]'}`}>
@@ -1254,7 +1323,14 @@ export default function SettingsPage() {
                           })}
                       </div>
                   </div>
-                  <div className="p-6 bg-white border-t border-slate-200 shrink-0"><button onClick={() => setAccessModalHost(null)} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all">Done</button></div>
+                  <div className="p-4 bg-white border-t border-slate-200 shrink-0 flex gap-2">
+                      <button onClick={() => {
+                          const shown = activeHosts.filter(h => h.id !== accessModalHost.id && (h.full_name.toLowerCase().includes(accessSearchQuery.toLowerCase()) || (h.role || '').toLowerCase().includes(accessSearchQuery.toLowerCase()))).map(h => h.host_id);
+                          setSupervisorAccess(prev => ({ ...prev, [accessModalHost.host_id]: Array.from(new Set([...(prev[accessModalHost.host_id] || []), ...shown])) }));
+                      }} className="px-4 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold text-xs uppercase hover:bg-slate-200">Select shown</button>
+                      <button onClick={() => setSupervisorAccess(prev => ({ ...prev, [accessModalHost.host_id]: [] }))} className="px-4 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold text-xs uppercase hover:bg-slate-200">Clear</button>
+                      <button onClick={closeAccessModal} disabled={isUploading} className="flex-1 py-3 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2">{isUploading ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>} Save · {(supervisorAccess[accessModalHost.host_id] || []).filter(id => activeIds.has(id)).length} selected</button>
+                  </div>
               </div>
           </div>
       )}

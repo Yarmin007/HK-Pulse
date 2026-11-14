@@ -1,12 +1,16 @@
 "use client";
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Search, Plus, X, CreditCard, Briefcase, 
-  Smartphone, Building2, Save, Crown, Shield, User, Trash2, Calendar, Hash, Tag, Camera, Loader2, Building, EyeOff, Users
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Search, Plus, X, Save, Crown, Shield, User, Trash2, Camera, Loader2, Users,
+  FileSpreadsheet, Briefcase, Pencil, Check, CalendarX, UserCog,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import Image from 'next/image';
+import {
+  PROFILE_TYPES, getProfileType, getResignedOn, renameHostKey,
+  type ProfileType, type TeamConfig,
+} from '@/lib/hostProfile';
 
 // --- TYPES ---
 type Host = {
@@ -15,743 +19,679 @@ type Host = {
   host_id: string;
   role: string;
   host_level: 'DA' | 'DB' | 'ATM';
-  status: 'Active' | 'Resigned'; 
-  joining_date?: string; 
-  personal_mobile?: string;
-  company_mobile?: string;
-  mvpn?: string;
-  image_url?: string;
-  nicknames?: string;
+  status: 'Active' | 'Resigned';
+  joining_date?: string | null;
+  personal_mobile?: string | null;
+  company_mobile?: string | null;
+  mvpn?: string | null;
+  image_url?: string | null;
+  nicknames?: string | null;
+  sub_department?: string | null;
 };
+
+type Designation = { id: string; name: string; rank: number };
+
+type Draft = {
+  host: Partial<Host>;
+  displayName: string;
+  subDept: string;
+  profileType: ProfileType;
+  resignedOn: string;
+};
+
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const prettyDate = (ymd?: string | null) =>
+  ymd ? new Date(`${ymd}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : typeof e === 'object' && e && 'message' in e ? String((e as { message: unknown }).message) : 'Something went wrong');
+
+const emptyDraft = (): Draft => ({
+  host: { full_name: '', host_id: '', role: '', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: todayStr() },
+  displayName: '', subDept: '', profileType: 'PERMANENT', resignedOn: '',
+});
+
+const NEW_ROLE = '__new__';
 
 export default function HostsProfilePage() {
   const [hostList, setHostList] = useState<Host[]>([]);
-  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
-  const [availableSubDepts, setAvailableSubDepts] = useState<string[]>([]);
+  const [designations, setDesignations] = useState<Designation[]>([]);
+  const [subDepts, setSubDepts] = useState<string[]>([]);
+  const [configId, setConfigId] = useState<string | null>(null);
+  const [teamConfig, setTeamConfig] = useState<TeamConfig>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  
-  // Tab State for Active vs Resigned
   const [activeTab, setActiveTab] = useState<'Active' | 'Resigned'>('Active');
 
-  // DYNAMIC CONFIG STATE
-  const [configId, setConfigId] = useState<string | null>(null);
-  const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {}, excludeAttendance: {} });
+  // Profile modal: `original` is null when creating a new profile.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [original, setOriginal] = useState<Host | null>(null);
+  const [newRoleName, setNewRoleName] = useState('');
+  const [addingRole, setAddingRole] = useState(false);
 
-  // Modal State
-  const [selectedHost, setSelectedHost] = useState<Host | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  
-  // Image Upload State
+  // Designation manager
+  const [showRoles, setShowRoles] = useState(false);
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const [roleToAdd, setRoleToAdd] = useState('');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
-  // New Host & Config State for Modals
-  const [newHost, setNewHost] = useState<Partial<Host>>({
-    role: '',
-    host_level: 'ATM',
-    status: 'Active',
-    personal_mobile: '',
-    company_mobile: '',
-    mvpn: '',
-    nicknames: '',
-    joining_date: new Date().toISOString().split('T')[0] 
-  });
-  const [tempSubDept, setTempSubDept] = useState('');
-  const [tempDisplayName, setTempDisplayName] = useState('');
-  const [tempExcludeAtt, setTempExcludeAtt] = useState(false);
-
-  // --- FETCH DATA ---
-  const fetchHosts = async () => {
-    setIsLoading(true);
+  // --- FETCH ---
+  const fetchAll = async () => {
     const [hostRes, constRes] = await Promise.all([
-        supabase.from('hsk_hosts').select('*'),
-        supabase.from('hsk_constants').select('*')
+      supabase.from('hsk_hosts').select('*'),
+      supabase.from('hsk_constants').select('*').in('type', ['role_rank', 'sub_department', 'team_viewer_config']),
     ]);
-    
-    if (hostRes.data) {
-        let roleRanks: Record<string, number> = {};
-        let roles: string[] = [];
-        let subDepts: string[] = [];
-        
-        if (constRes.data) {
-            constRes.data.forEach((c: any) => {
-                if (c.type === 'role_rank') {
-                    const [role, rank] = c.label.split('::');
-                    if (role && rank) {
-                        roleRanks[role.toLowerCase().trim()] = parseInt(rank, 10);
-                        roles.push(role.trim());
-                    }
-                }
-                if (c.type === 'sub_department') {
-                    subDepts.push(c.label.trim());
-                }
-                if (c.type === 'team_viewer_config') {
-                    setConfigId(c.id);
-                    try { setTeamConfig(JSON.parse(c.label)); } catch(e) {}
-                }
-            });
-            setAvailableRoles(roles.sort((a,b) => a.localeCompare(b)));
-            setAvailableSubDepts(subDepts.sort((a,b) => a.localeCompare(b)));
-        }
 
-        const sortedHosts = hostRes.data.sort((a, b) => {
-            const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
-            const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
-            
-            if (rankA !== rankB) return rankA - rankB;
+    const roles: Designation[] = [];
+    const depts: string[] = [];
+    (constRes.data || []).forEach((c: { id: string; type: string; label: string }) => {
+      if (c.type === 'role_rank') {
+        const [name, rank] = c.label.split('::');
+        if (name) roles.push({ id: c.id, name: name.trim(), rank: parseInt(rank, 10) || 999 });
+      } else if (c.type === 'sub_department') depts.push(c.label.trim());
+      else if (c.type === 'team_viewer_config') {
+        setConfigId(c.id);
+        try { setTeamConfig(JSON.parse(c.label)); } catch { /* keep previous */ }
+      }
+    });
+    roles.sort((a, b) => a.rank - b.rank);
+    setDesignations(roles);
+    setSubDepts(depts.sort((a, b) => a.localeCompare(b)));
 
-            const numA = parseInt((a.host_id || '').replace(/\D/g, ''), 10) || 999999;
-            const numB = parseInt((b.host_id || '').replace(/\D/g, ''), 10) || 999999;
-            return numA - numB;
-        });
-
-        setHostList(sortedHosts);
-    }
+    const rankOf = new Map(roles.map(r => [r.name.toLowerCase(), r.rank]));
+    const hosts = ((hostRes.data || []) as Host[]).sort((a, b) => {
+      const ra = rankOf.get((a.role || '').toLowerCase().trim()) ?? 999;
+      const rb = rankOf.get((b.role || '').toLowerCase().trim()) ?? 999;
+      if (ra !== rb) return ra - rb;
+      const na = parseInt((a.host_id || '').replace(/\D/g, ''), 10) || 999999;
+      const nb = parseInt((b.host_id || '').replace(/\D/g, ''), 10) || 999999;
+      return na - nb;
+    });
+    setHostList(hosts);
     setIsLoading(false);
   };
 
-  useEffect(() => { fetchHosts(); }, []);
+  useEffect(() => { fetchAll(); }, []);
 
-  // Prepopulate temp config values when a host is selected
-  useEffect(() => {
-      if (selectedHost) {
-          setTempDisplayName(teamConfig.nicknames?.[selectedHost.host_id] || '');
-          setTempSubDept(teamConfig.hostDepartments?.[selectedHost.host_id] || '');
-          setTempExcludeAtt(!!teamConfig.excludeAttendance?.[selectedHost.host_id]);
-      }
-  }, [selectedHost, teamConfig]);
-
-  // --- IMAGE UPLOAD LOGIC ---
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-
-      setIsUploadingImage(true);
-      try {
-          const fileExt = file.name.split('.').pop();
-          const targetHostId = selectedHost ? selectedHost.host_id : (newHost.host_id || 'new');
-          const fileName = `${targetHostId}-${Date.now()}.${fileExt}`;
-
-          const { error: uploadError } = await supabase.storage
-              .from('avatars')
-              .upload(fileName, file, { upsert: true });
-
-          if (uploadError) throw uploadError;
-
-          const { data: publicUrlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
-          const publicUrl = publicUrlData.publicUrl;
-
-          if (selectedHost) {
-              setSelectedHost({ ...selectedHost, image_url: publicUrl });
-          } else {
-              setNewHost({ ...newHost, image_url: publicUrl });
-          }
-          toast.success("Image uploaded successfully!");
-      } catch (error: any) {
-          console.error("Upload error:", error);
-          toast.error("Failed to upload image.");
-      } finally {
-          setIsUploadingImage(false);
-          if (fileInputRef.current) fileInputRef.current.value = '';
-      }
+  // --- CONFIG (read fresh before writing so other pages' changes are not overwritten) ---
+  const updateConfig = async (mutate: (cfg: TeamConfig) => TeamConfig) => {
+    let current: TeamConfig = teamConfig;
+    let id = configId;
+    const { data } = await supabase.from('hsk_constants').select('id, label').eq('type', 'team_viewer_config').limit(1);
+    if (data?.[0]) {
+      id = data[0].id;
+      try { current = JSON.parse(data[0].label); } catch { /* use local copy */ }
+    }
+    const next = mutate(current);
+    const payload = JSON.stringify(next);
+    if (id) {
+      const { error } = await supabase.from('hsk_constants').update({ label: payload }).eq('id', id);
+      if (error) throw error;
+    } else {
+      const { data: ins, error } = await supabase.from('hsk_constants').insert({ type: 'team_viewer_config', label: payload }).select().single();
+      if (error) throw error;
+      id = ins.id;
+    }
+    setConfigId(id);
+    setTeamConfig(next);
   };
 
-  // --- SAVE DYNAMIC CONFIG ---
-  const saveHostConfig = async (hostId: string, displayName: string, subDept: string, excludeAtt: boolean) => {
-      const updatedConfig = { ...teamConfig };
-      
-      updatedConfig.nicknames = updatedConfig.nicknames || {};
-      updatedConfig.hostDepartments = updatedConfig.hostDepartments || {};
-      updatedConfig.excludeAttendance = updatedConfig.excludeAttendance || {};
-      
-      if (displayName) updatedConfig.nicknames[hostId] = displayName;
-      else delete updatedConfig.nicknames[hostId];
-
-      if (subDept) updatedConfig.hostDepartments[hostId] = subDept;
-      else delete updatedConfig.hostDepartments[hostId];
-
-      if (excludeAtt) updatedConfig.excludeAttendance[hostId] = true;
-      else delete updatedConfig.excludeAttendance[hostId];
-
-      const payload = JSON.stringify(updatedConfig);
-      
-      if (configId) {
-          await supabase.from('hsk_constants').update({ label: payload }).eq('id', configId);
-      } else {
-          const { data } = await supabase.from('hsk_constants').insert({ type: 'team_viewer_config', label: payload }).select().single();
-          if (data) setConfigId(data.id);
-      }
-      setTeamConfig(updatedConfig);
-  };
-
-  // --- CREATE HOST ---
-  const handleCreateHost = async () => {
-    if (!newHost.full_name) return toast.error("Full Name is required");
-    if (!newHost.host_id) return toast.error("Host No is required");
-    if (!newHost.role) return toast.error("Designation is required");
-
-    const hostToSave = {
-      ...newHost,
-      image_url: newHost.image_url || `https://ui-avatars.com/api/?name=${newHost.full_name}&background=6D2158&color=fff`
+  const applyHostSettings = (cfg: TeamConfig, hostId: string, d: Draft, isResigned: boolean): TeamConfig => {
+    const set = <T,>(map: Record<string, T> | undefined, val: T | '' | false | undefined) => {
+      const m = { ...(map || {}) };
+      if (val) m[hostId] = val as T; else delete m[hostId];
+      return m;
     };
+    return {
+      ...cfg,
+      nicknames: set(cfg.nicknames, d.displayName.trim()),
+      hostDepartments: set(cfg.hostDepartments, d.subDept),
+      profileTypes: set(cfg.profileTypes, d.profileType),
+      // Attendance pages read this flag: only permanent hosts are on the sheet.
+      excludeAttendance: set(cfg.excludeAttendance, d.profileType !== 'PERMANENT'),
+      resignedOn: set(cfg.resignedOn, isResigned ? d.resignedOn : ''),
+    };
+  };
 
-    const { error } = await supabase.from('hsk_hosts').insert(hostToSave);
-    if (error) {
-        toast.error(error.message);
-    } else {
-      if (tempDisplayName || tempSubDept || tempExcludeAtt) {
-          await saveHostConfig(newHost.host_id as string, tempDisplayName, tempSubDept, tempExcludeAtt);
+  // --- OPEN MODALS ---
+  const openHost = (h: Host) => {
+    setOriginal(h);
+    setDraft({
+      host: { ...h },
+      displayName: teamConfig.nicknames?.[h.host_id] || '',
+      subDept: teamConfig.hostDepartments?.[h.host_id] || '',
+      profileType: getProfileType(teamConfig, h.host_id),
+      resignedOn: getResignedOn(teamConfig, h.host_id),
+    });
+    setAddingRole(false);
+  };
+  const openCreate = () => { setOriginal(null); setDraft(emptyDraft()); setAddingRole(false); };
+  const closeModal = () => { setDraft(null); setOriginal(null); setAddingRole(false); setNewRoleName(''); };
+
+  const patchHost = (p: Partial<Host>) => setDraft(d => (d ? { ...d, host: { ...d.host, ...p } } : d));
+  const patchDraft = (p: Partial<Draft>) => setDraft(d => (d ? { ...d, ...p } : d));
+
+  // --- IMAGE UPLOAD ---
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !draft) return;
+    setIsUploadingImage(true);
+    try {
+      const fileName = `${draft.host.host_id || 'new'}-${Date.now()}.${file.name.split('.').pop()}`;
+      const { error } = await supabase.storage.from('avatars').upload(fileName, file, { upsert: true });
+      if (error) throw error;
+      patchHost({ image_url: supabase.storage.from('avatars').getPublicUrl(fileName).data.publicUrl });
+      toast.success('Photo uploaded');
+    } catch (err) {
+      toast.error(`Upload failed: ${errMsg(err)}`);
+    } finally {
+      setIsUploadingImage(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  // --- DESIGNATIONS ---
+  const addDesignation = async (raw: string): Promise<string | null> => {
+    const name = raw.trim().replace(/\s+/g, ' ');
+    if (!name) return null;
+    const existing = designations.find(r => r.name.toLowerCase() === name.toLowerCase());
+    if (existing) return existing.name;
+    const rank = Math.max(0, ...designations.map(r => (r.rank < 999 ? r.rank : 0))) + 1;
+    const { data, error } = await supabase.from('hsk_constants').insert({ type: 'role_rank', label: `${name}::${rank}` }).select().single();
+    if (error) { toast.error(error.message); return null; }
+    setDesignations(prev => [...prev, { id: data.id, name, rank }].sort((a, b) => a.rank - b.rank));
+    toast.success(`Designation "${name}" added`);
+    return name;
+  };
+
+  // Renames the designation everywhere: the list, every host holding it, and their uniform records.
+  const renameDesignation = async (d: Designation, raw: string) => {
+    const name = raw.trim().replace(/\s+/g, ' ');
+    setRenaming(null);
+    if (!name || name === d.name) return;
+    if (designations.some(r => r.id !== d.id && r.name.toLowerCase() === name.toLowerCase())) {
+      toast.error('That designation already exists'); return;
+    }
+    setIsSaving(true);
+    try {
+      const holders = hostList.filter(h => (h.role || '').trim().toLowerCase() === d.name.toLowerCase());
+      const r1 = await supabase.from('hsk_constants').update({ label: `${name}::${d.rank}` }).eq('id', d.id);
+      if (r1.error) throw r1.error;
+      if (holders.length) {
+        const r2 = await supabase.from('hsk_hosts').update({ role: name }).in('id', holders.map(h => h.id));
+        if (r2.error) throw r2.error;
+        await supabase.from('hsk_laundry_uniforms').update({ designation: name.toUpperCase() }).in('ssl_no', holders.map(h => h.host_id));
       }
-
-      setIsCreateModalOpen(false);
-      setNewHost({ role: '', host_level: 'ATM', status: 'Active', personal_mobile: '', company_mobile: '', mvpn: '', nicknames: '', joining_date: new Date().toISOString().split('T')[0] });
-      setTempDisplayName('');
-      setTempSubDept('');
-      setTempExcludeAtt(false);
-      fetchHosts();
-      toast.success("Host Profile Created");
+      toast.success(`Renamed to "${name}"${holders.length ? ` for ${holders.length} host${holders.length > 1 ? 's' : ''}` : ''}`);
+      await fetchAll();
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setIsSaving(false);
     }
   };
 
-  // --- UPDATE HOST ---
-  const handleUpdateHost = async () => {
-    if (!selectedHost) return;
-
-    const { error } = await supabase
-      .from('hsk_hosts')
-      .update({
-        full_name: selectedHost.full_name,
-        host_id: selectedHost.host_id,
-        role: selectedHost.role,
-        host_level: selectedHost.host_level,
-        status: selectedHost.status,
-        personal_mobile: selectedHost.personal_mobile,
-        company_mobile: selectedHost.company_mobile,
-        mvpn: selectedHost.mvpn,
-        nicknames: selectedHost.nicknames,
-        joining_date: selectedHost.joining_date,
-        image_url: selectedHost.image_url
-      })
-      .eq('id', selectedHost.id);
-
-    if (error) {
-        toast.error(error.message);
-    } else {
-      await saveHostConfig(selectedHost.host_id, tempDisplayName, tempSubDept, tempExcludeAtt);
-      setIsEditing(false);
-      fetchHosts();
-      toast.success("Profile Updated");
-    }
+  const deleteDesignation = async (d: Designation, holders: number) => {
+    if (holders > 0) { toast.error('Move these hosts to another designation first'); return; }
+    if (!confirm(`Remove the designation "${d.name}"?`)) return;
+    await supabase.from('hsk_constants').delete().eq('id', d.id);
+    setDesignations(prev => prev.filter(r => r.id !== d.id));
   };
 
-  // --- DELETE HOST ---
-  const handleDeleteHost = async (id: string) => {
-      if(!confirm("Are you sure you want to permanently delete this host? This cannot be undone.")) return;
-      
-      const { error } = await supabase.from('hsk_hosts').delete().eq('id', id);
-      if (error) {
-          toast.error("Error deleting host.");
+  const roleCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    hostList.filter(h => h.status !== 'Resigned').forEach(h => {
+      const k = (h.role || '').trim().toLowerCase();
+      m.set(k, (m.get(k) || 0) + 1);
+    });
+    return m;
+  }, [hostList]);
+
+  // --- SAVE PROFILE ---
+  const handleSave = async () => {
+    if (!draft) return;
+    const h = draft.host;
+    const fullName = (h.full_name || '').trim();
+    const hostId = (h.host_id || '').trim();
+    if (!fullName) return toast.error('Full name is required');
+    if (!hostId) return toast.error('SSL No is required');
+    if (!h.role) return toast.error('Designation is required');
+    const isResigned = h.status === 'Resigned';
+    if (isResigned && !draft.resignedOn) return toast.error('Set the last working day');
+    if (hostList.some(x => x.host_id.trim().toLowerCase() === hostId.toLowerCase() && x.id !== original?.id)) {
+      return toast.error(`SSL No ${hostId} is already used`);
+    }
+
+    setIsSaving(true);
+    try {
+      const prevSubDept = original ? (teamConfig.hostDepartments?.[original.host_id] || '') : '';
+      const row = {
+        full_name: fullName,
+        host_id: hostId,
+        role: h.role,
+        host_level: h.host_level || 'ATM',
+        status: h.status || 'Active',
+        personal_mobile: h.personal_mobile || null,
+        company_mobile: h.company_mobile || null,
+        mvpn: h.mvpn || null,
+        nicknames: h.nicknames || null,
+        joining_date: h.joining_date || null,
+        image_url: h.image_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName)}&background=6D2158&color=fff`,
+        // Allocation boards group by this column; keep it in step with the sub-department chosen here.
+        ...(draft.subDept && draft.subDept !== prevSubDept ? { sub_department: draft.subDept } : {}),
+      };
+
+      if (original) {
+        const { error } = await supabase.from('hsk_hosts').update(row).eq('id', original.id);
+        if (error) throw error;
+
+        // Uniform records keep their own copy of name / SSL / designation / status.
+        const uni: Record<string, string> = {};
+        if (row.role !== original.role) uni.designation = row.role.toUpperCase();
+        if (row.full_name !== original.full_name) uni.host_name = row.full_name.toUpperCase();
+        if (row.host_id !== original.host_id) uni.ssl_no = row.host_id;
+        if (row.status !== original.status) uni.status = isResigned ? 'Resigned' : 'Active';
+        if (Object.keys(uni).length) await supabase.from('hsk_laundry_uniforms').update(uni).eq('ssl_no', original.host_id);
+
+        await updateConfig(cfg => applyHostSettings(renameHostKey(cfg, original.host_id, hostId), hostId, draft, isResigned));
+        toast.success('Profile saved');
       } else {
-          setSelectedHost(null);
-          fetchHosts();
-          toast.success("Host permanently deleted.");
+        const { error } = await supabase.from('hsk_hosts').insert(row);
+        if (error) throw error;
+        await updateConfig(cfg => applyHostSettings(cfg, hostId, draft, isResigned));
+        toast.success('Profile created');
       }
+      closeModal();
+      await fetchAll();
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!original) return;
+    if (!confirm(`Permanently delete ${original.full_name}? Mark them as resigned instead if you want to keep their history.`)) return;
+    const { error } = await supabase.from('hsk_hosts').delete().eq('id', original.id);
+    if (error) return toast.error(error.message);
+    closeModal();
+    fetchAll();
+    toast.success('Profile deleted');
   };
 
   // --- FILTERING ---
-  const filteredHosts = hostList.filter(host => {
-    if (activeTab === 'Active' && host.status === 'Resigned') return false;
-    if (activeTab === 'Resigned' && host.status !== 'Resigned') return false;
+  const filteredHosts = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return hostList.filter(h => {
+      if (activeTab === 'Active' ? h.status === 'Resigned' : h.status !== 'Resigned') return false;
+      if (!q) return true;
+      return [h.full_name, h.host_id, h.role, h.nicknames, teamConfig.nicknames?.[h.host_id], teamConfig.hostDepartments?.[h.host_id]]
+        .some(v => (v || '').toLowerCase().includes(q));
+    });
+  }, [hostList, activeTab, searchQuery, teamConfig]);
 
-    const query = searchQuery.toLowerCase();
-    const activeNick = teamConfig.nicknames?.[host.host_id] || '';
-    const activeDept = teamConfig.hostDepartments?.[host.host_id] || '';
-
-    return (
-      host.full_name.toLowerCase().includes(query) || 
-      (host.host_id && host.host_id.toLowerCase().includes(query)) ||
-      host.role.toLowerCase().includes(query) ||
-      activeNick.toLowerCase().includes(query) ||
-      activeDept.toLowerCase().includes(query) ||
-      (host.nicknames && host.nicknames.toLowerCase().includes(query))
-    );
-  });
-
-  const activeHosts = hostList.filter(s => s.status !== 'Resigned');
-
+  const activeHosts = hostList.filter(h => h.status !== 'Resigned');
+  const people = activeHosts.filter(h => getProfileType(teamConfig, h.host_id) !== 'ACCOUNT');
   const stats = {
-    total: activeHosts.length,
-    da: activeHosts.filter(s => s.host_level === 'DA').length,
-    db: activeHosts.filter(s => s.host_level === 'DB').length,
-    atm: activeHosts.filter(s => s.host_level === 'ATM').length
+    total: people.length,
+    da: people.filter(h => h.host_level === 'DA').length,
+    db: people.filter(h => h.host_level === 'DB').length,
+    atm: people.filter(h => h.host_level === 'ATM').length,
+    resigned: hostList.length - activeHosts.length,
   };
 
+  // --- EXCEL EXPORT: No, SSL No, Name, Designation ---
+  const exportExcel = async () => {
+    const rows = filteredHosts.filter(h => getProfileType(teamConfig, h.host_id) !== 'ACCOUNT');
+    if (!rows.length) return toast.error('No hosts to export');
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Hosts', { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = [
+      { header: 'No', key: 'no', width: 6 },
+      { header: 'SSL No', key: 'ssl', width: 14 },
+      { header: 'Name', key: 'name', width: 38 },
+      { header: 'Designation', key: 'role', width: 32 },
+    ];
+    rows.forEach((h, i) => ws.addRow({ no: i + 1, ssl: h.host_id, name: h.full_name, role: h.role }));
+    const border = { style: 'thin' as const, color: { argb: 'FFCBD5E1' } };
+    ws.eachRow((row, n) => {
+      row.height = 20;
+      row.eachCell(cell => {
+        cell.border = { top: border, left: border, bottom: border, right: border };
+        cell.alignment = { vertical: 'middle', horizontal: Number(cell.col) === 1 ? 'center' : 'left' };
+        if (n === 1) {
+          cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6D2158' } };
+        }
+      });
+    });
+    ws.autoFilter = 'A1:D1';
+    const buf = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeTab === 'Active' ? 'Host List' : 'Resigned Hosts'} - ${prettyDate(todayStr())}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // --- UI PIECES ---
   const LevelBadge = ({ level }: { level: string }) => {
-    if (level === 'DA') return <span className="flex items-center gap-1 px-2 py-1 rounded bg-amber-100 text-amber-700 text-[10px] font-bold border border-amber-200"><Crown size={10}/> DA</span>;
-    if (level === 'DB') return <span className="flex items-center gap-1 px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px] font-bold border border-slate-200"><Shield size={10}/> DB</span>;
-    return <span className="flex items-center gap-1 px-2 py-1 rounded bg-blue-50 text-blue-600 text-[10px] font-bold border border-blue-100"><User size={10}/> ATM</span>;
+    if (level === 'DA') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[10px] font-bold border border-amber-200"><Crown size={10} /> DA</span>;
+    if (level === 'DB') return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 text-[10px] font-bold border border-sky-200"><Shield size={10} /> DB</span>;
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-50 text-slate-600 text-[10px] font-bold border border-slate-200"><User size={10} /> ATM</span>;
+  };
+
+  const label = 'block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1';
+  const input = 'w-full px-3 py-2.5 bg-white rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 outline-none focus:border-[#6D2158] focus:ring-2 focus:ring-[#6D2158]/10 transition';
+
+  const renderDesignationField = () => {
+    if (!draft) return null;
+    const value = draft.host.role || '';
+    const known = designations.some(r => r.name === value);
+    if (addingRole) {
+      return (
+        <div className="flex gap-2">
+          <input autoFocus className={input} placeholder="New designation, e.g. Butler" value={newRoleName}
+            onChange={e => setNewRoleName(e.target.value)}
+            onKeyDown={async e => {
+              if (e.key === 'Enter') { const n = await addDesignation(newRoleName); if (n) { patchHost({ role: n }); setAddingRole(false); setNewRoleName(''); } }
+              if (e.key === 'Escape') setAddingRole(false);
+            }} />
+          <button type="button" className="px-3 rounded-xl bg-[#6D2158] text-white" title="Add"
+            onClick={async () => { const n = await addDesignation(newRoleName); if (n) { patchHost({ role: n }); setAddingRole(false); setNewRoleName(''); } }}>
+            <Check size={16} />
+          </button>
+          <button type="button" className="px-3 rounded-xl bg-slate-100 text-slate-500" title="Cancel" onClick={() => setAddingRole(false)}><X size={16} /></button>
+        </div>
+      );
+    }
+    return (
+      <select className={input} value={value}
+        onChange={e => (e.target.value === NEW_ROLE ? setAddingRole(true) : patchHost({ role: e.target.value }))}>
+        <option value="" disabled>Select designation</option>
+        {!known && value && <option value={value}>{value}</option>}
+        {designations.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
+        <option value={NEW_ROLE}>+ Add new designation…</option>
+      </select>
+    );
   };
 
   return (
     <div className="min-h-screen p-4 md:p-6 pb-20 bg-[#FDFBFD] font-antiqua text-[#6D2158]">
-      
       <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
 
-      {/* --- HEADER --- */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-6 gap-6">
+      {/* HEADER */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-slate-200 pb-5 gap-5">
         <div>
           <h1 className="text-3xl md:text-4xl font-bold italic tracking-tight">Host Profiles</h1>
-          <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">
-            Master Directory • {stats.total} Active Staff
-          </p>
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">Master Directory · {stats.total} Active Hosts</p>
         </div>
-        
-        <div className="flex gap-4 px-6 py-3 bg-white rounded-xl border border-slate-100 shadow-sm w-full md:w-auto justify-between md:justify-start">
-            <div className="text-center flex-1 md:flex-none">
-                <span className="block text-xl font-bold text-amber-600">{stats.da}</span>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Exec (DA)</span>
+        <div className="flex gap-5 px-5 py-3 bg-white rounded-2xl border border-slate-100 shadow-sm w-full md:w-auto justify-between">
+          {[['DA', stats.da, 'text-amber-600'], ['DB', stats.db, 'text-sky-600'], ['ATM', stats.atm, 'text-slate-700'], ['Resigned', stats.resigned, 'text-rose-500']].map(([k, v, c]) => (
+            <div key={k as string} className="text-center">
+              <span className={`block text-xl font-bold ${c}`}>{v}</span>
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{k}</span>
             </div>
-            <div className="w-px bg-slate-100 hidden md:block"></div>
-            <div className="text-center flex-1 md:flex-none">
-                <span className="block text-xl font-bold text-slate-600">{stats.db}</span>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Sup (DB)</span>
-            </div>
-            <div className="w-px bg-slate-100 hidden md:block"></div>
-            <div className="text-center flex-1 md:flex-none">
-                <span className="block text-xl font-bold text-blue-600">{stats.atm}</span>
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Hosts (ATM)</span>
-            </div>
+          ))}
         </div>
       </div>
 
-      {/* --- CONTROLS & TABS --- */}
-      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mt-6 flex flex-col lg:flex-row justify-between items-center gap-4">
-        
-        <div className="flex bg-slate-100 p-1.5 rounded-xl w-full lg:w-auto">
-            <button 
-                onClick={() => setActiveTab('Active')}
-                className={`flex-1 lg:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'Active' ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-            >
-                <Users size={16}/> Active
+      {/* CONTROLS */}
+      <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 mt-5 flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3">
+        <div className="flex bg-slate-100 p-1 rounded-xl">
+          {(['Active', 'Resigned'] as const).map(t => (
+            <button key={t} onClick={() => setActiveTab(t)}
+              className={`flex-1 lg:flex-none flex items-center justify-center gap-2 px-5 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition ${activeTab === t ? `bg-white shadow-sm ${t === 'Active' ? 'text-[#6D2158]' : 'text-rose-600'}` : 'text-slate-400 hover:text-slate-600'}`}>
+              {t === 'Active' ? <Users size={15} /> : <CalendarX size={15} />} {t === 'Active' ? 'Active' : 'Resigned'}
             </button>
-            <button 
-                onClick={() => setActiveTab('Resigned')}
-                className={`flex-1 lg:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${activeTab === 'Resigned' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-            >
-                <User size={16}/> Inactive
-            </button>
+          ))}
         </div>
-
-        <div className="flex flex-col sm:flex-row items-center gap-4 w-full lg:w-auto">
-            <div className="relative w-full sm:w-80">
-              <Search className="absolute left-3 top-3 text-slate-300" size={16} />
-              <input 
-                type="text" 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search Name, Role, or ID..." 
-                className="w-full pl-10 pr-4 py-2.5 text-xs font-bold border border-slate-200 rounded-xl focus:outline-none focus:border-[#6D2158] text-[#6D2158] placeholder-slate-300 transition-all shadow-inner"
-              />
-            </div>
-            <button onClick={() => { 
-                setTempDisplayName(''); 
-                setTempSubDept(''); 
-                setTempExcludeAtt(false);
-                setIsCreateModalOpen(true); 
-            }} className="flex items-center gap-2 px-6 py-2.5 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-[#6D2158]/40 transition-all w-full sm:w-auto justify-center shrink-0">
-                 <Plus size={16} /> New Profile
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="relative sm:w-72">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+            <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search name, SSL, designation…"
+              className="w-full pl-9 pr-3 py-2.5 text-xs font-bold border border-slate-200 rounded-xl outline-none focus:border-[#6D2158] text-[#6D2158] placeholder-slate-300" />
+          </div>
+          <div className="grid grid-cols-3 sm:flex gap-2">
+            <button onClick={exportExcel} className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-bold uppercase tracking-wider hover:bg-emerald-100">
+              <FileSpreadsheet size={15} /> Excel
             </button>
+            <button onClick={() => setShowRoles(true)} className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs font-bold uppercase tracking-wider hover:bg-slate-50">
+              <Briefcase size={15} /> Designations
+            </button>
+            <button onClick={openCreate} className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-[#6D2158] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-md hover:bg-[#5a1b49]">
+              <Plus size={15} /> New
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* --- GRID --- */}
+      {/* GRID */}
       {isLoading ? (
-         <div className="text-center py-20 opacity-50 italic">Loading Profiles...</div>
+        <div className="flex justify-center py-20"><Loader2 className="animate-spin text-[#6D2158]" /></div>
       ) : (
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-6">
-        {filteredHosts.map((host) => {
-          const configNick = teamConfig.nicknames?.[host.host_id];
-          const configDept = teamConfig.hostDepartments?.[host.host_id];
-          const isExcluded = teamConfig.excludeAttendance?.[host.host_id];
-
-          return (
-          <div key={host.id} onClick={() => { setSelectedHost(host); setIsEditing(false); }}
-               className={`group relative rounded-2xl p-0 shadow-sm hover:shadow-xl transition-all duration-300 cursor-pointer overflow-hidden flex flex-col border-2 ${host.status === 'Resigned' ? 'border-rose-100 bg-rose-50/30 grayscale-[50%]' : 'bg-white border-slate-100 hover:border-[#6D2158]/30'}`}>
-             
-             <div className={`h-20 relative ${host.status === 'Resigned' ? 'bg-slate-400' : 'bg-gradient-to-r from-[#6D2158] to-[#902468]'}`}>
-                <div className="absolute -bottom-8 left-5">
-                   <div className="relative w-16 h-16 rounded-2xl border-4 border-white shadow-md overflow-hidden bg-white">
-                      <Image 
-                          src={host.image_url || `https://ui-avatars.com/api/?name=${host.full_name}&background=random`} 
-                          width={64} height={64} 
-                          className="object-cover"
-                          alt="Avatar"
-                      />
-                   </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 mt-5">
+          {filteredHosts.map(host => {
+            const nick = teamConfig.nicknames?.[host.host_id];
+            const dept = teamConfig.hostDepartments?.[host.host_id];
+            const type = getProfileType(teamConfig, host.host_id);
+            const resignedOn = getResignedOn(teamConfig, host.host_id);
+            const resigned = host.status === 'Resigned';
+            return (
+              <button key={host.id} onClick={() => openHost(host)}
+                className={`text-left group rounded-2xl border bg-white p-4 flex gap-3 shadow-sm hover:shadow-lg hover:border-[#6D2158]/30 transition ${resigned ? 'border-rose-100 bg-rose-50/30' : 'border-slate-100'}`}>
+                <div className={`relative w-14 h-14 rounded-2xl overflow-hidden shrink-0 bg-slate-100 ${resigned ? 'grayscale' : ''}`}>
+                  <Image src={host.image_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(host.full_name)}&background=6D2158&color=fff`} fill sizes="56px" className="object-cover" alt="" unoptimized />
                 </div>
-                <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
-                    <span className="text-[10px] text-white/70 font-bold uppercase tracking-wider">HOST NO</span>
-                    <span className="text-sm text-white font-bold font-mono">{host.host_id}</span>
-                </div>
-             </div>
-
-             <div className="pt-10 px-5 pb-5 flex-1 flex flex-col">
-                <div className="flex justify-between items-start mb-1">
-                    <h3 className="text-lg font-bold text-slate-800 leading-tight group-hover:text-[#6D2158] transition-colors line-clamp-1">
-                        {configNick || host.full_name.split(' ')[0]}
-                    </h3>
-                </div>
-                <p className="text-[10px] font-medium text-slate-500 mb-1 line-clamp-1">{host.full_name}</p>
-                <div className="flex flex-wrap gap-1 mb-2">
-                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50 px-2 py-0.5 rounded border border-slate-100">{host.role}</span>
-                    {configDept && <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">{configDept}</span>}
-                </div>
-                
-                {host.nicknames && <p className="text-[10px] font-bold text-emerald-600 mb-2 italic">AI Knows as: "{host.nicknames}"</p>}
-                
-                {isExcluded && host.status !== 'Resigned' && (
-                    <div className="flex items-center gap-1 text-[9px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded-md w-fit mb-2 border border-amber-100">
-                        <EyeOff size={10}/> Excluded from Roster
-                    </div>
-                )}
-
-                {host.status === 'Resigned' && <span className="text-[10px] font-black uppercase text-rose-500 tracking-widest mb-2">Resigned</span>}
-                <div className="mt-auto pt-3 flex items-center justify-between">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-bold text-slate-800 leading-tight truncate group-hover:text-[#6D2158]">{nick || host.full_name.split(' ')[0]}</h3>
+                    <span className="text-[10px] font-mono font-bold text-slate-400 shrink-0">{host.host_id}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 truncate">{host.full_name}</p>
+                  <p className="text-[10px] font-bold text-[#6D2158] uppercase tracking-wide truncate mt-1">{host.role}</p>
+                  <div className="flex flex-wrap gap-1 mt-2">
                     <LevelBadge level={host.host_level || 'ATM'} />
-                    {host.mvpn && <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100">#{host.mvpn}</span>}
+                    {dept && <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 text-[10px] font-bold border border-indigo-100">{dept}</span>}
+                    {type === 'TEMPORARY' && <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[10px] font-bold border border-amber-200">Temporary</span>}
+                    {type === 'ACCOUNT' && <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[10px] font-bold border border-slate-200">Not a person</span>}
+                    {resigned && (
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${resignedOn ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                        {resignedOn ? `Left ${prettyDate(resignedOn)}` : 'Leaving date not set'}
+                      </span>
+                    )}
+                  </div>
                 </div>
-             </div>
-          </div>
-        )})}
-        
-        {filteredHosts.length === 0 && (
-            <div className="col-span-full py-12 text-center text-slate-400 font-bold italic">No profiles found.</div>
-        )}
-      </div>
+              </button>
+            );
+          })}
+          {filteredHosts.length === 0 && <div className="col-span-full py-12 text-center text-slate-400 font-bold italic">No profiles found.</div>}
+        </div>
       )}
 
-      {/* --- EDIT MODAL --- */}
-      {selectedHost && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
-            <div className={`h-32 relative shrink-0 ${selectedHost.status === 'Resigned' ? 'bg-slate-500' : 'bg-[#6D2158]'}`}>
-               <button onClick={() => setSelectedHost(null)} className="absolute top-6 right-6 p-2 bg-black/20 text-white rounded-full hover:bg-black/40 transition-colors"><X size={20}/></button>
-               <div className="absolute -bottom-10 left-8 flex items-end gap-6">
-                 
-                 <div 
-                     onClick={() => isEditing && !isUploadingImage && fileInputRef.current?.click()}
-                     className={`relative w-28 h-28 rounded-3xl border-4 border-white shadow-xl bg-white overflow-hidden group ${isEditing ? 'cursor-pointer' : ''}`}
-                 >
-                     {isUploadingImage ? (
-                         <div className="w-full h-full flex items-center justify-center bg-slate-100"><Loader2 className="animate-spin text-[#6D2158]" size={24}/></div>
-                     ) : (
-                         <Image 
-                            src={selectedHost.image_url || `https://ui-avatars.com/api/?name=${selectedHost.full_name}`} 
-                            width={112} height={112} 
-                            className="object-cover"
-                            alt="Profile"
-                         />
-                     )}
-                     {isEditing && !isUploadingImage && (
-                         <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
-                             <Camera size={20}/>
-                             <span className="text-[8px] font-black uppercase mt-1">Upload</span>
-                         </div>
-                     )}
-                 </div>
-
-                 <div className="mb-3 text-white">
-                     <h2 className="text-3xl font-bold italic tracking-tight drop-shadow-md">{selectedHost.full_name}</h2>
-                     <div className="flex gap-2 mt-1 items-center">
-                         <LevelBadge level={selectedHost.host_level || 'ATM'} />
-                         <span className="text-xs font-bold opacity-80 uppercase tracking-widest drop-shadow-md">{selectedHost.role}</span>
-                     </div>
-                 </div>
-               </div>
+      {/* PROFILE MODAL (create + edit) */}
+      {draft && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-end sm:items-center justify-center sm:p-4" onClick={closeModal}>
+          <div className="bg-white w-full sm:max-w-3xl rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[94dvh] sm:max-h-[90vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-4 p-5 border-b border-slate-100">
+              <button type="button" onClick={() => !isUploadingImage && fileInputRef.current?.click()}
+                className="relative w-16 h-16 rounded-2xl overflow-hidden bg-slate-100 shrink-0 group" title="Change photo">
+                {isUploadingImage ? <Loader2 className="animate-spin text-[#6D2158] m-auto" size={20} />
+                  : draft.host.image_url ? <Image src={draft.host.image_url} fill sizes="64px" className="object-cover" alt="" unoptimized />
+                    : <Camera className="m-auto text-slate-400 absolute inset-0" size={22} />}
+                <span className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white"><Camera size={18} /></span>
+              </button>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-xl font-bold italic truncate">{original ? draft.host.full_name || 'Host profile' : 'New host profile'}</h2>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider truncate">{draft.host.role || 'No designation'} {draft.host.host_id ? `· ${draft.host.host_id}` : ''}</p>
+              </div>
+              <button onClick={closeModal} className="p-2 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"><X size={18} /></button>
             </div>
-            
-            <div className="pt-16 p-8 overflow-y-auto custom-scrollbar">
-               <div className="flex justify-between items-center mb-6 border-b border-slate-100 pb-4">
-                  <h3 className="font-bold uppercase tracking-widest text-sm text-slate-400">Profile Details</h3>
-                  <div className="flex gap-2">
-                      {isEditing && (
-                          <button onClick={() => handleDeleteHost(selectedHost.id)} className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider bg-rose-50 text-rose-600 hover:bg-rose-100 flex items-center gap-1 transition-colors">
-                              <Trash2 size={14}/> Delete
-                          </button>
-                      )}
-                      <button onClick={() => isEditing ? handleUpdateHost() : setIsEditing(true)} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-colors shadow-sm ${isEditing ? 'bg-emerald-600 text-white shadow-emerald-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
-                        {isEditing ? <><Save size={14} className="inline mr-1"/> Save Profile</> : 'Edit Profile'}
-                      </button>
+
+            <div className="p-5 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+              <div className="md:col-span-2">
+                <label className={label}>Full name</label>
+                <input className={input} value={draft.host.full_name || ''} onChange={e => patchHost({ full_name: e.target.value })} placeholder="e.g. Ahmed Ihsaan" />
+              </div>
+              <div>
+                <label className={label}>SSL No</label>
+                <input className={`${input} font-mono`} value={draft.host.host_id || ''} onChange={e => patchHost({ host_id: e.target.value })} placeholder="SSL 1234" />
+              </div>
+              <div>
+                <label className={label}>Designation</label>
+                {renderDesignationField()}
+                {original && draft.host.role !== original.role && (
+                  <p className="text-[10px] text-slate-500 mt-1">Updates the uniform record too. Allocation, attendance and org chart read it from here.</p>
+                )}
+              </div>
+              <div>
+                <label className={label}>Level</label>
+                <select className={input} value={draft.host.host_level || 'ATM'} onChange={e => patchHost({ host_level: e.target.value as Host['host_level'] })}>
+                  <option value="DA">DA (Dinomosphere A)</option>
+                  <option value="DB">DB (Dinomosphere B)</option>
+                  <option value="ATM">ATM (Atmosphere)</option>
+                </select>
+              </div>
+              <div>
+                <label className={label}>Sub-department</label>
+                <select className={input} value={draft.subDept} onChange={e => patchDraft({ subDept: e.target.value })}>
+                  <option value="">Unassigned</option>
+                  {subDepts.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+
+              {/* PROFILE TYPE */}
+              <div className="md:col-span-2">
+                <label className={label}>Profile type</label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {PROFILE_TYPES.map(t => (
+                    <button key={t.value} type="button" onClick={() => patchDraft({ profileType: t.value })}
+                      className={`text-left p-3 rounded-xl border transition ${draft.profileType === t.value ? 'border-[#6D2158] bg-[#6D2158]/5 ring-2 ring-[#6D2158]/10' : 'border-slate-200 hover:border-slate-300'}`}>
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5"><UserCog size={13} className="text-[#6D2158]" /> {t.label}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5 leading-snug">{t.hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* EMPLOYMENT */}
+              <div>
+                <label className={label}>Joining date</label>
+                <input type="date" className={input} value={draft.host.joining_date || ''} onChange={e => patchHost({ joining_date: e.target.value })} />
+              </div>
+              <div>
+                <label className={label}>Status</label>
+                <div className="flex bg-slate-100 p-1 rounded-xl">
+                  {(['Active', 'Resigned'] as const).map(s => (
+                    <button key={s} type="button"
+                      onClick={() => { patchHost({ status: s }); if (s === 'Resigned' && !draft.resignedOn) patchDraft({ resignedOn: todayStr() }); }}
+                      className={`flex-1 py-2 rounded-lg text-xs font-bold transition ${draft.host.status === s ? `bg-white shadow-sm ${s === 'Active' ? 'text-emerald-600' : 'text-rose-600'}` : 'text-slate-400'}`}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {draft.host.status === 'Resigned' && (
+                <div className="md:col-span-2 p-3 rounded-xl bg-rose-50 border border-rose-100 grid sm:grid-cols-2 gap-3 items-end">
+                  <div>
+                    <label className={`${label} !text-rose-500`}>Last working day</label>
+                    <input type="date" className={input} value={draft.resignedOn} onChange={e => patchDraft({ resignedOn: e.target.value })} />
                   </div>
-               </div>
-               
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                 
-                 {/* WORK INFO */}
-                 <div className="space-y-4">
-                     <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Work Information</h4>
-                     
-                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                         <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><CreditCard size={16} /><span className="text-[10px] font-bold uppercase">Host No (SSL)</span></div>
-                         {isEditing ? <input className="w-full p-2 border rounded-xl font-mono font-bold outline-none focus:border-[#6D2158]" value={selectedHost.host_id} onChange={(e) => setSelectedHost({...selectedHost, host_id: e.target.value})} /> : <p className="text-lg font-bold font-mono text-slate-700">{selectedHost.host_id}</p>}
-                     </div>
+                  <p className="text-[11px] text-rose-700 leading-snug">They stay on attendance sheets up to this date, then drop off. Their login stops working once saved.</p>
+                </div>
+              )}
 
-                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                         <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Briefcase size={16} /><span className="text-[10px] font-bold uppercase">Designation</span></div>
-                         {isEditing ? (
-                             <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.role} onChange={(e) => setSelectedHost({...selectedHost, role: e.target.value})}>
-                                 <option value="" disabled>Select Role</option>
-                                 {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
-                             </select>
-                         ) : <p className="text-sm font-bold text-slate-700">{selectedHost.role}</p>}
-                     </div>
+              {/* NAMES */}
+              <div>
+                <label className={label}>Dashboard name</label>
+                <input className={input} value={draft.displayName} onChange={e => patchDraft({ displayName: e.target.value })} placeholder={(draft.host.full_name || '').split(' ')[0] || 'e.g. Ali'} />
+              </div>
+              <div>
+                <label className={label}>Also known as (attendance bot)</label>
+                <input className={input} value={draft.host.nicknames || ''} onChange={e => patchHost({ nicknames: e.target.value })} placeholder="e.g. Kappi, Abow" />
+              </div>
 
-                     {/* IDENTIFIERS (AI + UI) */}
-                     <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100 space-y-4">
-                         <div>
-                             <div className="flex items-center gap-2 mb-2 text-emerald-700"><Tag size={16} /><span className="text-[10px] font-bold uppercase">AI Known As (For Attendance Bot)</span></div>
-                             {isEditing ? (
-                                 <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={selectedHost.nicknames || ''} onChange={(e) => setSelectedHost({...selectedHost, nicknames: e.target.value})} />
-                             ) : (
-                                 <p className="text-sm font-bold text-emerald-800">{selectedHost.nicknames || 'None set'}</p>
-                             )}
-                         </div>
+              {/* CONTACT */}
+              <div>
+                <label className={label}>Personal mobile</label>
+                <input className={input} inputMode="tel" value={draft.host.personal_mobile || ''} onChange={e => patchHost({ personal_mobile: e.target.value })} placeholder="+960…" />
+              </div>
+              <div>
+                <label className={label}>Company mobile</label>
+                <input className={input} inputMode="tel" value={draft.host.company_mobile || ''} onChange={e => patchHost({ company_mobile: e.target.value })} placeholder="+960…" />
+              </div>
+              <div>
+                <label className={label}>MVPN</label>
+                <input className={`${input} font-mono`} inputMode="numeric" value={draft.host.mvpn || ''} onChange={e => patchHost({ mvpn: e.target.value })} placeholder="e.g. 2843" />
+              </div>
+            </div>
 
-                         <div className="grid grid-cols-2 gap-4 border-t border-emerald-200 pt-4">
-                             <div>
-                                 <div className="flex items-center gap-2 mb-2 text-emerald-700"><User size={14} /><span className="text-[10px] font-bold uppercase">Dashboard Name</span></div>
-                                 {isEditing ? (
-                                     <input className="w-full p-2 border rounded-xl text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Ali" value={tempDisplayName} onChange={(e) => setTempDisplayName(e.target.value)} />
-                                 ) : (
-                                     <p className="text-sm font-bold text-emerald-800">{tempDisplayName || selectedHost.full_name.split(' ')[0]}</p>
-                                 )}
-                             </div>
-                             <div>
-                                 <div className="flex items-center gap-2 mb-2 text-emerald-700"><Building size={14} /><span className="text-[10px] font-bold uppercase">Sub-Dept</span></div>
-                                 {isEditing ? (
-                                     <select className="w-full p-2 border rounded-xl text-sm font-bold outline-none focus:border-emerald-500 cursor-pointer" value={tempSubDept} onChange={(e) => setTempSubDept(e.target.value)}>
-                                         <option value="">Unassigned</option>
-                                         {availableSubDepts.map(d => <option key={d} value={d}>{d}</option>)}
-                                     </select>
-                                 ) : (
-                                     <p className="text-sm font-bold text-emerald-800">{tempSubDept || 'Unassigned'}</p>
-                                 )}
-                             </div>
-                         </div>
-                         
-                         {/* SYSTEM ACCESS ONLY TOGGLE */}
-                         <div className="border-t border-emerald-200 pt-4">
-                             <label className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${tempExcludeAtt ? 'bg-amber-100 border-amber-300' : 'bg-white border-emerald-200'}`}>
-                                <div>
-                                    <div className={`text-xs font-bold flex items-center gap-2 ${tempExcludeAtt ? 'text-amber-800' : 'text-emerald-800'}`}>
-                                        <EyeOff size={14}/> Exclude from Attendance
-                                    </div>
-                                    <div className={`text-[9px] mt-0.5 ${tempExcludeAtt ? 'text-amber-700' : 'text-emerald-600'}`}>
-                                        Hide this user from the daily roster.
-                                    </div>
-                                </div>
-                                {isEditing ? (
-                                    <div className={`w-10 h-6 rounded-full p-1 transition-colors ${tempExcludeAtt ? 'bg-amber-500' : 'bg-slate-300'}`}>
-                                        <div className={`w-4 h-4 rounded-full bg-white transition-transform ${tempExcludeAtt ? 'translate-x-4' : ''}`}></div>
-                                    </div>
-                                ) : (
-                                    <span className={`text-[10px] font-black uppercase ${tempExcludeAtt ? 'text-amber-600' : 'text-slate-400'}`}>
-                                        {tempExcludeAtt ? 'EXCLUDED' : 'INCLUDED'}
-                                    </span>
-                                )}
-                                {isEditing && (
-                                    <input type="checkbox" className="hidden" checked={tempExcludeAtt} onChange={(e) => setTempExcludeAtt(e.target.checked)}/>
-                                )}
-                             </label>
-                         </div>
-                     </div>
-
-                     <div className="grid grid-cols-2 gap-4">
-                         <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                             <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Crown size={16} /><span className="text-[10px] font-bold uppercase">Level</span></div>
-                             {isEditing ? (
-                                 <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.host_level || 'ATM'} onChange={(e) => setSelectedHost({...selectedHost, host_level: e.target.value as any})}>
-                                    <option value="DA">DA (Dinomosphere A)</option>
-                                    <option value="DB">DB (Dinomosphere B)</option>
-                                    <option value="ATM">ATM (Atmosphere)</option>
-                                 </select>
-                             ) : (
-                                <p className="text-sm font-bold text-slate-700">{selectedHost.host_level || 'ATM'}</p>
-                             )}
-                         </div>
-                         
-                         <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                             <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><User size={16} /><span className="text-[10px] font-bold uppercase">Status</span></div>
-                             {isEditing ? (
-                                 <select className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.status || 'Active'} onChange={(e) => setSelectedHost({...selectedHost, status: e.target.value as any})}>
-                                    <option value="Active">Active</option>
-                                    <option value="Resigned">Resigned</option>
-                                 </select>
-                             ) : (
-                                <p className={`text-sm font-bold ${selectedHost.status === 'Resigned' ? 'text-rose-600' : 'text-emerald-600'}`}>{selectedHost.status || 'Active'}</p>
-                             )}
-                         </div>
-                     </div>
-
-                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                         <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Calendar size={16} /><span className="text-[10px] font-bold uppercase">Joining Date</span></div>
-                         {isEditing ? <input type="date" className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" value={selectedHost.joining_date || ''} onChange={(e) => setSelectedHost({...selectedHost, joining_date: e.target.value})} /> : <p className="text-sm font-bold text-slate-700">{selectedHost.joining_date ? new Date(selectedHost.joining_date).toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'}) : '-'}</p>}
-                     </div>
-                 </div>
-
-                 {/* CONTACT INFO */}
-                 <div className="space-y-4">
-                     <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Contact Information</h4>
-                     
-                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                         <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Smartphone size={16} /><span className="text-[10px] font-bold uppercase">Personal Mobile</span></div>
-                         {isEditing ? <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={selectedHost.personal_mobile || ''} onChange={(e) => setSelectedHost({...selectedHost, personal_mobile: e.target.value})} /> : <p className="text-sm font-bold text-slate-700">{selectedHost.personal_mobile || '-'}</p>}
-                     </div>
-
-                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                         <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Building2 size={16} /><span className="text-[10px] font-bold uppercase">Company Mobile</span></div>
-                         {isEditing ? <input className="w-full p-2 border rounded-xl font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={selectedHost.company_mobile || ''} onChange={(e) => setSelectedHost({...selectedHost, company_mobile: e.target.value})} /> : <p className="text-sm font-bold text-slate-700">{selectedHost.company_mobile || '-'}</p>}
-                     </div>
-
-                     <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                         <div className="flex items-center gap-2 mb-2 text-[#6D2158]"><Hash size={16} /><span className="text-[10px] font-bold uppercase">MVPN (Short Code)</span></div>
-                         {isEditing ? <input className="w-full p-2 border rounded-xl font-mono font-bold outline-none focus:border-[#6D2158]" placeholder="e.g. 2843" value={selectedHost.mvpn || ''} onChange={(e) => setSelectedHost({...selectedHost, mvpn: e.target.value})} /> : <p className="text-lg font-bold font-mono text-slate-700">{selectedHost.mvpn || '-'}</p>}
-                     </div>
-                 </div>
-
-               </div>
+            <div className="flex items-center gap-2 p-4 border-t border-slate-100 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              {original && (
+                <button onClick={handleDelete} className="px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider text-rose-600 hover:bg-rose-50 flex items-center gap-1.5">
+                  <Trash2 size={14} /> Delete
+                </button>
+              )}
+              <div className="flex-1" />
+              <button onClick={closeModal} className="px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-500 hover:bg-slate-200">Cancel</button>
+              <button onClick={handleSave} disabled={isSaving}
+                className="px-6 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider bg-[#6D2158] text-white hover:bg-[#5a1b49] disabled:opacity-50 flex items-center gap-1.5">
+                {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} {original ? 'Save' : 'Create'}
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* --- CREATE MODAL --- */}
-      {isCreateModalOpen && (
-        <div className="fixed inset-0 bg-[#6D2158]/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white w-full max-w-xl rounded-[2rem] shadow-2xl overflow-hidden animate-in zoom-in-95">
-             <div className="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-               <h3 className="font-bold uppercase tracking-widest text-sm text-[#6D2158] flex items-center gap-2"><Plus size={18}/> New Host Profile</h3>
-               <button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-white rounded-full shadow-sm text-slate-400 hover:text-rose-500 transition-colors"><X size={18}/></button>
-             </div>
-            
-             <div className="p-8 space-y-5 max-h-[70vh] overflow-y-auto custom-scrollbar">
-               
-                {/* CREATE AVATAR UPLOAD */}
-                <div className="flex justify-center mb-6">
-                    <div 
-                        onClick={() => !isUploadingImage && fileInputRef.current?.click()}
-                        className="relative w-24 h-24 rounded-full border-4 border-slate-200 bg-slate-100 flex flex-col items-center justify-center overflow-hidden cursor-pointer group transition-all hover:border-[#6D2158]"
-                    >
-                        {isUploadingImage ? (
-                            <Loader2 className="animate-spin text-[#6D2158]" size={24}/>
-                        ) : newHost.image_url ? (
-                            <Image src={newHost.image_url} width={96} height={96} className="object-cover" alt="Upload" />
-                        ) : (
-                            <Camera size={24} className="text-slate-400 group-hover:text-[#6D2158]"/>
-                        )}
-                    </div>
-                </div>
-
-                {/* Core Info */}
-                <div className="space-y-4">
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Full Name</label>
-                        <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="e.g. Abdulla Yamin" value={newHost.full_name || ''} onChange={e => setNewHost({...newHost, full_name: e.target.value})} />
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Host No (SSL)</label>
-                            <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold font-mono outline-none focus:border-[#6D2158]" placeholder="12345" value={newHost.host_id || ''} onChange={e => setNewHost({...newHost, host_id: e.target.value})} />
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Host Level</label>
-                            <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.host_level} onChange={e => setNewHost({...newHost, host_level: e.target.value as any})}>
-                                 <option value="ATM">ATM (Atmosphere)</option>
-                                 <option value="DB">DB (Dinomosphere B)</option>
-                                 <option value="DA">DA (Dinomosphere A)</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Designation</label>
-                            <select className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.role || ''} onChange={e => setNewHost({...newHost, role: e.target.value})}>
-                                <option value="" disabled>Select Role</option>
-                                {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Joining Date</label>
-                            <input type="date" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" value={newHost.joining_date || ''} onChange={e => setNewHost({...newHost, joining_date: e.target.value})} />
-                        </div>
-                    </div>
-
-                    {/* DYNAMIC CONFIG & IDENTIFIERS FOR NEW HOST */}
-                    <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 space-y-4">
-                        <div>
-                            <label className="text-[10px] font-bold text-emerald-700 uppercase ml-1">AI Known As (For Attendance Bot)</label>
-                            <input type="text" className="w-full p-3 bg-white rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Kappi, Abow" value={newHost.nicknames || ''} onChange={e => setNewHost({...newHost, nicknames: e.target.value})} />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4 border-t border-emerald-200 pt-4">
-                            <div>
-                                <label className="text-[10px] font-bold text-emerald-700 uppercase ml-1">Dashboard Display Name</label>
-                                <input type="text" className="w-full p-3 bg-white rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500" placeholder="e.g. Ali" value={tempDisplayName} onChange={e => setTempDisplayName(e.target.value)} />
-                            </div>
-                            <div>
-                                <label className="text-[10px] font-bold text-emerald-700 uppercase ml-1">Sub-Department</label>
-                                <select className="w-full p-3 bg-white rounded-xl border border-emerald-200 text-sm font-bold outline-none focus:border-emerald-500 cursor-pointer" value={tempSubDept} onChange={e => setTempSubDept(e.target.value)}>
-                                    <option value="">Unassigned</option>
-                                    {availableSubDepts.map(d => <option key={d} value={d}>{d}</option>)}
-                                </select>
-                            </div>
-                        </div>
-                        <div className="border-t border-emerald-200 pt-4">
-                             <label className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${tempExcludeAtt ? 'bg-amber-100 border-amber-300' : 'bg-white border-emerald-200'}`}>
-                                <div>
-                                    <div className={`text-xs font-bold flex items-center gap-2 ${tempExcludeAtt ? 'text-amber-800' : 'text-emerald-800'}`}>
-                                        <EyeOff size={14}/> Exclude from Attendance
-                                    </div>
-                                    <div className={`text-[9px] mt-0.5 ${tempExcludeAtt ? 'text-amber-700' : 'text-emerald-600'}`}>
-                                        Hide this user from the daily roster.
-                                    </div>
-                                </div>
-                                <div className={`w-10 h-6 rounded-full p-1 transition-colors ${tempExcludeAtt ? 'bg-amber-500' : 'bg-slate-300'}`}>
-                                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${tempExcludeAtt ? 'translate-x-4' : ''}`}></div>
-                                </div>
-                                <input type="checkbox" className="hidden" checked={tempExcludeAtt} onChange={(e) => setTempExcludeAtt(e.target.checked)}/>
-                             </label>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="border-t border-slate-100 my-4"></div>
-
-                {/* Contact Info */}
-                <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Personal Mobile</label>
-                            <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={newHost.personal_mobile || ''} onChange={e => setNewHost({...newHost, personal_mobile: e.target.value})} />
-                        </div>
-                        <div>
-                            <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">Company Mobile</label>
-                            <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" placeholder="+960..." value={newHost.company_mobile || ''} onChange={e => setNewHost({...newHost, company_mobile: e.target.value})} />
-                        </div>
-                    </div>
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">MVPN</label>
-                        <input type="text" className="w-full p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158] font-mono" placeholder="e.g. 2843" value={newHost.mvpn || ''} onChange={e => setNewHost({...newHost, mvpn: e.target.value})} />
-                    </div>
-                </div>
-
-                <button onClick={handleCreateHost} className="w-full py-4 bg-[#6D2158] text-white rounded-xl font-bold uppercase tracking-widest mt-6 shadow-xl shadow-purple-900/20 hover:bg-[#5a1b49] transition-colors">
-                    Create Profile
-                </button>
-             </div>
+      {/* DESIGNATION MANAGER */}
+      {showRoles && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-end sm:items-center justify-center sm:p-4" onClick={() => { setShowRoles(false); setRenaming(null); }}>
+          <div className="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[90dvh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-5 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-bold italic">Designations</h3>
+                <p className="text-[11px] text-slate-500">Renaming one updates every host who has it. Order follows the ranks in Settings.</p>
+              </div>
+              <button onClick={() => { setShowRoles(false); setRenaming(null); }} className="p-2 rounded-full bg-slate-100 text-slate-500"><X size={18} /></button>
+            </div>
+            <div className="p-4 border-b border-slate-100 flex gap-2">
+              <input className={input} placeholder="Add a designation…" value={roleToAdd} onChange={e => setRoleToAdd(e.target.value)}
+                onKeyDown={async e => { if (e.key === 'Enter' && await addDesignation(roleToAdd)) setRoleToAdd(''); }} />
+              <button onClick={async () => { if (await addDesignation(roleToAdd)) setRoleToAdd(''); }}
+                className="px-4 rounded-xl bg-[#6D2158] text-white text-xs font-bold uppercase flex items-center gap-1"><Plus size={14} /> Add</button>
+            </div>
+            <div className="overflow-y-auto p-2">
+              {designations.map(d => {
+                const count = roleCounts.get(d.name.toLowerCase()) || 0;
+                const isRen = renaming?.id === d.id;
+                return (
+                  <div key={d.id} className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-slate-50">
+                    <span className="w-6 text-[10px] font-mono text-slate-300">{d.rank}</span>
+                    {isRen ? (
+                      <input autoFocus className={`${input} !py-1.5`} value={renaming.value}
+                        onChange={e => setRenaming({ id: d.id, value: e.target.value })}
+                        onKeyDown={e => { if (e.key === 'Enter') renameDesignation(d, renaming.value); if (e.key === 'Escape') setRenaming(null); }} />
+                    ) : (
+                      <span className="flex-1 text-sm font-semibold text-slate-800">{d.name}</span>
+                    )}
+                    <span className="text-[10px] font-bold text-slate-400 w-14 text-right">{count} host{count === 1 ? '' : 's'}</span>
+                    {isRen ? (
+                      <button disabled={isSaving} onClick={() => renameDesignation(d, renaming.value)} className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50"><Check size={15} /></button>
+                    ) : (
+                      <button onClick={() => setRenaming({ id: d.id, value: d.name })} className="p-1.5 rounded-lg text-slate-400 hover:text-[#6D2158] hover:bg-white" title="Rename"><Pencil size={14} /></button>
+                    )}
+                    <button onClick={() => deleteDesignation(d, count)} className={`p-1.5 rounded-lg ${count ? 'text-slate-200 cursor-not-allowed' : 'text-slate-400 hover:text-rose-600 hover:bg-white'}`} title={count ? 'In use' : 'Remove'}><Trash2 size={14} /></button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

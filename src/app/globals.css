@@ -38,6 +38,12 @@ input, textarea, select {
   user-select: auto; 
 }
 
+/* A select sizes itself to its longest option; never let that push a phone layout sideways. */
+select { min-width: 0; max-width: 100%; }
+
+/* Images and media never wider than their container. */
+img, video { max-width: 100%; }
+
 /* Phones: iOS zooms into any field with text smaller than 16px. Keep fields at 16px on small screens. */
 @media (max-width: 767px) {
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select {

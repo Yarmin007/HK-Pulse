@@ -587,7 +587,7 @@ export default function LinenControlPanel() {
                             
                             <div className="flex gap-2 mb-4">
                                 <select 
-                                    className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs outline-none focus:border-emerald-500 text-slate-700"
+                                    className="flex-1 min-w-0 p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs outline-none focus:border-emerald-500 text-slate-700"
                                     value={selectedPaItem}
                                     onChange={e => setSelectedPaItem(e.target.value)}
                                 >
@@ -617,7 +617,7 @@ export default function LinenControlPanel() {
                             
                             <div className="flex gap-2 mb-4">
                                 <select 
-                                    className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs outline-none focus:border-rose-500 text-slate-700"
+                                    className="flex-1 min-w-0 p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs outline-none focus:border-rose-500 text-slate-700"
                                     value={selectedVaExcludedItem}
                                     onChange={e => setSelectedVaExcludedItem(e.target.value)}
                                 >

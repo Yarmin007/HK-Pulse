@@ -155,7 +155,8 @@ export default function ClientLayout({
       {/* MAIN VIEWPORT LAYOUT */}
       <div className="flex-1 flex">
         <Sidebar />
-        <main className="flex-1 md:pl-64 w-full min-w-0">{children}</main>
+        {/* On phones, leave room for the bottom navigation bar so nothing is hidden behind it. */}
+        <main className="flex-1 md:pl-64 w-full min-w-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 print:p-0">{children}</main>
       </div>
     </div>
   );
