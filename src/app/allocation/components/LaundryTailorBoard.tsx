@@ -551,7 +551,13 @@ export default function LaundryTailorBoard({
     if (!parsedSchedule) return;
 
     try {
-      const targetDate = parsedSchedule.detectedDate;
+      // The board only holds the day being viewed. A roster dated for another day
+      // is applied to the viewed day (after asking), never mixed in under its own date.
+      if (parsedSchedule.detectedDate && parsedSchedule.detectedDate !== selectedDate &&
+          !confirm(`This roster is dated ${parsedSchedule.detectedDate}, but you are viewing ${selectedDate}.\n\nApply it to ${selectedDate}?`)) {
+        return;
+      }
+      const targetDate = selectedDate;
       const newAllocs: Allocation[] = [...allocations.filter((a) => a.report_date !== targetDate || a.area !== "laundry")];
 
       for (const item of parsedSchedule.items) {
@@ -845,7 +851,7 @@ export default function LaundryTailorBoard({
                   </div>
 
                   <button
-                    onClick={() => handleRemoveAllocation(a.host_id, area, shift)}
+                    onClick={() => handleRemoveAllocation(a.host_id, area, a.shift)}
                     className="p-1 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                     title="Remove from shift"
                   >

@@ -587,7 +587,13 @@ export default function WaterRoomBoard({
     if (!parsedSchedule) return;
 
     try {
-      const targetDate = parsedSchedule.detectedDate;
+      // The board only holds the day being viewed. A roster dated for another day
+      // is applied to the viewed day (after asking), never mixed in under its own date.
+      if (parsedSchedule.detectedDate && parsedSchedule.detectedDate !== selectedDate &&
+          !confirm(`This roster is dated ${parsedSchedule.detectedDate}, but you are viewing ${selectedDate}.\n\nApply it to ${selectedDate}?`)) {
+        return;
+      }
+      const targetDate = selectedDate;
       const newAllocs: Allocation[] = [...allocations.filter((a) => a.report_date !== targetDate || a.area !== "water")];
 
       for (const item of parsedSchedule.items) {

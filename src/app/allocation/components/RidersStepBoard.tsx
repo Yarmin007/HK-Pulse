@@ -14,9 +14,14 @@ import {
   UserCheck, 
   Calendar, 
   Plus, 
-  Plane 
+  Plane,
+  Bike,
+  Luggage,
+  Footprints,
+  X
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { RIDER_DUTIES, RIDER_SHIFTS, defaultDutyForHost, riderDutyOf, isOffShift, isRiderPoolHost, type RiderDuty } from "@/app/allocation/lib/riders";
 
 interface Host {
   id: string;
@@ -120,23 +125,8 @@ export default function RidersStepBoard({
     }
   };
 
-  // Riders & Step pool
-  const currentPool = React.useMemo(() => {
-    return hosts.filter((h) => {
-      const sub = (h.sub_department || "").toLowerCase();
-      const role = (h.role || "").toLowerCase();
-      return (
-        sub.includes("rider") || 
-        sub.includes("step") || 
-        sub.includes("buggy") || 
-        sub.includes("driver") ||
-        role.includes("rider") || 
-        role.includes("step") || 
-        role.includes("buggy") || 
-        role.includes("driver")
-      );
-    });
-  }, [hosts]);
+  // Riders pool: runners, luggage porters and step cleaners
+  const currentPool = React.useMemo(() => hosts.filter((h) => isRiderPoolHost(h)), [hosts]);
 
   const getHostLabel = (h: Host) => {
     return h.nicknames ? h.nicknames.split(",")[0].trim() : h.full_name;
@@ -272,9 +262,15 @@ export default function RidersStepBoard({
     toast.success("Host removed from pool");
   };
 
-  const requestAssignDuty = (host: Host, shift: string, task: string) => {
+  // Duty rows on this tab (ignores Off / leave rows)
+  const dutyAllocs = allocations.filter((a) => a.area === "riders" && !isOffShift(a.shift));
+  const hostById = (id: string) => hosts.find((h) => h.id === id);
+  const dutyOfAlloc = (a: Allocation) => riderDutyOf(a, hostById(a.host_id));
+  const shiftKeyOf = (shift: string) => RIDER_SHIFTS.find((s) => shift.toLowerCase().includes(s.key.toLowerCase()))?.key || shift;
+
+  const requestAssignDuty = (host: Host, shift: string, duty: RiderDuty) => {
     const leave = getHostLeaveRecord(host.id);
-    const existingOtherAllocs = allocations.filter((a) => a.host_id === host.id && a.area !== "riders");
+    const existingOtherAllocs = allocations.filter((a) => a.host_id === host.id && a.area !== "riders" && !isOffShift(a.shift));
 
     if (leave || existingOtherAllocs.length > 0) {
       const existingAreas = Array.from(new Set(existingOtherAllocs.map((a) => a.area.toUpperCase())));
@@ -282,148 +278,107 @@ export default function RidersStepBoard({
         host,
         targetArea: "riders",
         targetShift: shift,
-        targetTask: task,
+        targetTask: duty,
         existingAreas,
         leaveWarning: leave ? `${leave.leave_type} (till ${leave.end_date})` : undefined,
       });
       return;
     }
 
-    executeAssignment(host.id, shift, task, false);
+    executeAssignment(host.id, shift, duty, false);
   };
 
-  const executeAssignment = (
-    hostId: string,
-    shift: string,
-    task: string,
-    removeOtherAreas: boolean
-  ) => {
+  // One duty per host per shift: assigning again moves them to the new duty.
+  const executeAssignment = (hostId: string, shift: string, task: string, removeOtherAreas: boolean) => {
     let cleanAllocs = [...allocations];
-
-    if (removeOtherAreas) {
-      cleanAllocs = cleanAllocs.filter((a) => a.host_id !== hostId);
-    }
-
-    const alreadyThere = cleanAllocs.some(
-      (a) => a.host_id === hostId && a.area === "riders" && a.shift === shift
+    if (removeOtherAreas) cleanAllocs = cleanAllocs.filter((a) => a.host_id !== hostId);
+    cleanAllocs = cleanAllocs.filter(
+      (a) => !(a.host_id === hostId && a.area === "riders" && (isOffShift(a.shift) || shiftKeyOf(a.shift || "") === shift))
     );
-
-    if (!alreadyThere) {
-      cleanAllocs.push({
-        host_id: hostId,
-        area: "riders",
-        shift,
-        task_details: task,
-        report_date: selectedDate,
-      });
-    }
-
+    cleanAllocs.push({ host_id: hostId, area: "riders", shift, task_details: task, report_date: selectedDate });
     setAllocations(cleanAllocs);
     setIsDirty(true);
     setConflictModal(null);
   };
 
-  const handleRemoveAllocation = (hostId: string, shift: string) => {
-    const updated = allocations.filter(
-      (a) => !(a.host_id === hostId && a.area === "riders" && a.shift === shift)
-    );
-    setAllocations(updated);
+  const handleRemoveAllocation = (target: Allocation) => {
+    setAllocations(allocations.filter((a) => a !== target));
     setIsDirty(true);
   };
 
-  // Reusable shift card renderer
-  const renderDutySlotCard = (
-    title: string,
-    icon: React.ReactNode,
-    shift: string,
-    badgeColor: string
-  ) => {
-    const assigned = allocations.filter(
-      (a) => a.area === "riders" && (a.shift || "").toLowerCase().includes(shift.toLowerCase())
-    );
+  const DUTY_META: Record<RiderDuty, { icon: React.ReactNode; color: string; soft: string; desc: string }> = {
+    Runner: { icon: <Bike size={16} />, color: "text-orange-700", soft: "bg-orange-50 border-orange-200", desc: "Delivers guest requests — sees the Runner page" },
+    Luggage: { icon: <Luggage size={16} />, color: "text-sky-700", soft: "bg-sky-50 border-sky-200", desc: "Arrival & departure luggage" },
+    Step: { icon: <Footprints size={16} />, color: "text-emerald-700", soft: "bg-emerald-50 border-emerald-200", desc: "Jetty & villa steps / ladders" },
+  };
 
-    const assignedHostIds = assigned.map((a) => a.host_id);
-    const availableFromPool = currentPool.filter((h) => !assignedHostIds.includes(h.id));
-
+  const renderDutyColumn = (duty: RiderDuty) => {
+    const meta = DUTY_META[duty];
+    const total = dutyAllocs.filter((a) => dutyOfAlloc(a) === duty).length;
     return (
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col gap-3">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-          <span className={`text-xs font-black uppercase tracking-wider flex items-center gap-1.5 ${badgeColor}`}>
-            {icon} {title}
-          </span>
-          <span className="text-[10px] font-black bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
-            {assigned.length} on duty
-          </span>
+      <div key={duty} className="bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col overflow-hidden">
+        <div className={`px-4 py-3 border-b flex items-center justify-between gap-2 ${meta.soft}`}>
+          <div className="min-w-0">
+            <div className={`text-sm font-black flex items-center gap-1.5 ${meta.color}`}>{meta.icon} {duty}{duty === "Runner" ? "s" : ""}</div>
+            <p className="text-[10px] font-semibold text-slate-500 truncate">{meta.desc}</p>
+          </div>
+          <span className="text-[10px] font-black bg-white text-slate-600 px-2 py-0.5 rounded-full border border-slate-200 shrink-0">{total} on duty</span>
         </div>
 
-        <div className="space-y-1.5 min-h-[44px]">
-          {assigned.length === 0 ? (
-            <div className="text-center py-2.5 text-[10px] font-bold text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-              No staff assigned
-            </div>
-          ) : (
-            assigned.map((a) => {
-              const h = hosts.find((host) => host.id === a.host_id);
-              const name = h ? getHostLabel(h) : "Unknown Host";
-              const contact = h?.mvpn || h?.company_mobile || h?.personal_mobile || "";
-
-              return (
-                <div
-                  key={a.host_id}
-                  className="flex items-center justify-between p-2 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="w-5 h-5 rounded-lg bg-[#ea580c] text-white flex items-center justify-center font-black text-[10px]">
-                      {name.charAt(0)}
-                    </div>
-                    <div>
-                      <p className="text-xs font-black text-slate-800">{name}</p>
-                      <div className="flex items-center gap-1.5">
-                        {contact && <span className="text-[9px] font-bold text-slate-400">{contact}</span>}
-                        {getLeaveBadge(a.host_id)}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => handleRemoveAllocation(a.host_id, shift)}
-                    className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
-                    title="Remove from shift"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+        <div className="p-3 space-y-3">
+          {RIDER_SHIFTS.map((sh) => {
+            const assigned = dutyAllocs.filter((a) => dutyOfAlloc(a) === duty && shiftKeyOf(a.shift || "") === sh.key);
+            const busyThisShift = new Set(dutyAllocs.filter((a) => shiftKeyOf(a.shift || "") === sh.key).map((a) => a.host_id));
+            // People who normally do this duty first
+            const candidates = currentPool
+              .filter((h) => !busyThisShift.has(h.id))
+              .sort((x, y) => Number(defaultDutyForHost(y) === duty) - Number(defaultDutyForHost(x) === duty));
+            return (
+              <div key={sh.key} className="rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[11px] font-black text-slate-700 flex items-center gap-1">
+                    {sh.key === "Morning" ? <Sun size={12} className="text-amber-500" /> : sh.key === "Split" ? <Clock size={12} className="text-indigo-500" /> : <Sunset size={12} className="text-orange-500" />}
+                    {sh.label}
+                  </span>
+                  <span className="text-[10px] font-semibold text-slate-400">{sh.time}</span>
                 </div>
-              );
-            })
-          )}
-        </div>
 
-        <div className="pt-2 border-t border-slate-100 flex flex-col gap-1.5">
-          <span className="text-[9px] font-black uppercase text-slate-400">Click to assign from pool:</span>
-          {availableFromPool.length === 0 ? (
-            <span className="text-[10px] text-slate-400 font-bold italic">All pool members assigned</span>
-          ) : (
-            <div className="flex flex-wrap gap-1.5 max-h-[90px] overflow-y-auto">
-              {availableFromPool.map((h) => {
-                const leave = getHostLeaveRecord(h.id);
-                return (
-                  <button
-                    key={h.id}
-                    onClick={() => requestAssignDuty(h, shift, "Rider/Step Operation")}
-                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 shadow-sm ${
-                      leave
-                        ? "bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100"
-                        : "bg-slate-100 hover:bg-[#ea580c] hover:text-white border-slate-200 text-slate-700"
-                    }`}
-                  >
-                    <Plus size={10} />
-                    <span>{getHostLabel(h)}</span>
-                    {leave && <span className="text-[8px] bg-rose-200 px-1 rounded font-black">{leave.leave_type}</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+                <div className="space-y-1">
+                  {assigned.map((a) => {
+                    const h = hostById(a.host_id);
+                    const contact = h?.mvpn || h?.company_mobile || "";
+                    return (
+                      <div key={`${a.host_id}-${a.shift}`} className="flex items-center gap-2 bg-white rounded-lg border border-slate-200 px-2 py-1.5">
+                        <span className="w-6 h-6 rounded-md bg-slate-800 text-white flex items-center justify-center text-[10px] font-black shrink-0">{(h ? getHostLabel(h) : "?").charAt(0)}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-black text-slate-800 truncate">{h ? getHostLabel(h) : "Unknown host"}</p>
+                          <div className="flex items-center gap-1.5">{contact && <span className="text-[9px] font-bold text-slate-400">{contact}</span>}{getLeaveBadge(a.host_id)}</div>
+                        </div>
+                        <button onClick={() => handleRemoveAllocation(a)} className="p-1 text-slate-300 hover:text-rose-600" title="Remove"><X size={14} /></button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {candidates.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {candidates.map((h) => {
+                      const leave = getHostLeaveRecord(h.id);
+                      const usual = defaultDutyForHost(h) === duty;
+                      return (
+                        <button key={h.id} onClick={() => requestAssignDuty(h, sh.key, duty)}
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-0.5 transition-colors ${
+                            leave ? "bg-rose-50 border-rose-200 text-rose-700" : usual ? "bg-white border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white" : "bg-transparent border-dashed border-slate-300 text-slate-400 hover:text-slate-700 hover:border-slate-400"
+                          }`}>
+                          <Plus size={9} /> {getHostLabel(h)}{leave && <span className="text-[8px] font-black ml-0.5">{leave.leave_type}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -439,9 +394,9 @@ export default function RidersStepBoard({
             <Car size={20} />
           </div>
           <div>
-            <h2 className="text-sm font-black text-slate-800">Riders & Step Attendants</h2>
+            <h2 className="text-sm font-black text-slate-800">Runners, Luggage & Step</h2>
             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
-              Guest Transport, Buggy Operations & Housekeeping Logistics
+              Three separate duties — pick a person under each shift
             </p>
           </div>
         </div>
@@ -454,7 +409,7 @@ export default function RidersStepBoard({
           className="flex items-center gap-1.5 bg-[#ea580c] hover:bg-[#c2410c] text-white px-3 py-1.5 rounded-xl text-xs font-black transition-all shadow-sm"
         >
           <UserPlus size={14} />
-          <span>Add Host to Riders Pool</span>
+          <span>Add host to pool</span>
         </button>
       </div>
 
@@ -464,7 +419,7 @@ export default function RidersStepBoard({
           <div className="flex items-center gap-2">
             <span className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
               <UserCheck size={16} className="text-[#ea580c]" /> 
-              Riders & Step Staff Pool
+              Pool
             </span>
             <span className="text-[10px] font-black bg-orange-50 text-orange-700 px-2 py-0.5 rounded-full">
               {currentPool.length} Hosts
@@ -477,7 +432,7 @@ export default function RidersStepBoard({
 
         <div className="flex flex-wrap gap-2 max-h-[160px] overflow-y-auto p-1">
           {currentPool.map((h) => {
-            const isAssigned = allocations.some((a) => a.host_id === h.id && a.area === "riders");
+            const isAssigned = dutyAllocs.some((a) => a.host_id === h.id);
             const leave = getHostLeaveRecord(h.id);
 
             return (
@@ -517,28 +472,9 @@ export default function RidersStepBoard({
         </div>
       </div>
 
-      {/* SHIFTS GRID: MORNING, SPLIT & AFTERNOON */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {renderDutySlotCard(
-          "Morning Shift (06:30 - 15:00)",
-          <Sun size={15} />,
-          "Morning",
-          "text-amber-700"
-        )}
-
-        {renderDutySlotCard(
-          "Split Duty (Shift Coverage)",
-          <Clock size={15} />,
-          "Split",
-          "text-indigo-700"
-        )}
-
-        {renderDutySlotCard(
-          "Afternoon Shift (14:30 - 23:00)",
-          <Sunset size={15} />,
-          "Afternoon",
-          "text-orange-700"
-        )}
+      {/* THREE DUTIES, EACH WITH ITS SHIFTS */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {RIDER_DUTIES.map(renderDutyColumn)}
       </div>
 
       {/* MODAL: SET LEAVE & RETURN DATE */}

@@ -17,6 +17,7 @@ import { getPayrollPeriod, getUpcomingLeave, computeLeaveBalancesRPC, LEAVE_CODE
 import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
 import OccasionBanner from '@/components/OccasionBanner';
 import { getProfileType, type ProfileType } from '@/lib/hostProfile';
+import { fetchROEvents, isWorkedLeave } from '@/lib/attendanceData';
 
 // =========================================================================
 // ⚡ PERFORMANCE FIX: LIVE CLOCK
@@ -54,6 +55,7 @@ export default function Dashboard() {
   const [rpcStats, setRpcStats] = useState<any[]>([]);
   const [futureLeaves, setFutureLeaves] = useState<any[]>([]);
   const [anniversaryLeaves, setAnniversaryLeaves] = useState<any[]>([]);
+  const [roEvents, setRoEvents] = useState<any[]>([]);
   
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState('');
@@ -228,6 +230,7 @@ export default function Dashboard() {
     const todayStr = getDhakaDateStr(); 
     const currentCutoff = cutoffDateRef.current;
 
+    fetchROEvents().then(setRoEvents);
     const [constRes, configRes, hostsListRes] = await Promise.all([
         supabase.from('hsk_constants').select('*'),
         supabase.from('hsk_constants').select('label').eq('type', 'team_viewer_config').maybeSingle(),
@@ -298,7 +301,7 @@ export default function Dashboard() {
             const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
                 supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'), 
                 supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
-                supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
+                supabase.from('hsk_attendance').select('host_id, date, status_code, shift_note').gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
 
@@ -311,16 +314,16 @@ export default function Dashboard() {
             }
             
             setRpcStats(rpcRes.data || []);
-            setFutureLeaves(futureRes.data || []);
+            setFutureLeaves((futureRes.data || []).filter((r: any) => !isWorkedLeave(r)));
             setAnniversaryLeaves(anniRes.data || []);
         } else {
             const [rpcRes, futureRes, anniRes] = await Promise.all([
                 supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
-                supabase.from('hsk_attendance').select('host_id, date, status_code').eq('host_id', loggedHostId).gte('date', todayStr).in('status_code', LEAVE_CODES),
+                supabase.from('hsk_attendance').select('host_id, date, status_code, shift_note').eq('host_id', loggedHostId).gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').eq('host_id', loggedHostId).in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
             setRpcStats(rpcRes.data || []);
-            setFutureLeaves(futureRes.data || []);
+            setFutureLeaves((futureRes.data || []).filter((r: any) => !isWorkedLeave(r)));
             setAnniversaryLeaves(anniRes.data || []);
         }
 
@@ -333,7 +336,7 @@ export default function Dashboard() {
              const [hostsRes, rpcRes, futureRes, anniRes] = await Promise.all([
                 supabase.from('hsk_hosts').select('*').neq('status', 'Resigned').order('full_name'),
                 supabase.rpc('get_all_attendance_stats', { p_target_date: currentCutoff }), 
-                supabase.from('hsk_attendance').select('host_id, date, status_code').gte('date', todayStr).in('status_code', LEAVE_CODES),
+                supabase.from('hsk_attendance').select('host_id, date, status_code, shift_note').gte('date', todayStr).in('status_code', LEAVE_CODES),
                 supabase.from('hsk_attendance').select('host_id, date, status_code').in('status_code', ['SL', 'EL', 'RR']).gte('date', '2025-01-01')
             ]);
             if (hostsRes.data) {
@@ -341,7 +344,7 @@ export default function Dashboard() {
                 setSimulationHosts(hostsRes.data);
             }
             setRpcStats(rpcRes.data || []);
-            setFutureLeaves(futureRes.data || []);
+            setFutureLeaves((futureRes.data || []).filter((r: any) => !isWorkedLeave(r)));
             setAnniversaryLeaves(anniRes.data || []);
         }
     }
@@ -447,7 +450,7 @@ export default function Dashboard() {
 
       // Leave balances only apply to permanent hosts (not temporary staff or shared logins).
       const computed = allHosts.filter((h: any) => getProfileType(teamConfig, h.host_id) === 'PERMANENT').map((h: any) => {
-          const bal = computeLeaveBalancesRPC(h, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
+          const bal = computeLeaveBalancesRPC(h, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves, roEvents);
           const myFutureLeaves = futureLeaves.filter(l => String(l.host_id).trim() === String(h.host_id).trim());
           const upcoming = getUpcomingLeave(myFutureLeaves, getDhakaDateStr());
           const dept = teamConfig.hostDepartments?.[h.host_id] || 'Unassigned';
@@ -459,7 +462,7 @@ export default function Dashboard() {
       setTeamBalances(computed);
       
       setIsLoadingTeam(false);
-  }, [allHosts, rpcStats, futureLeaves, anniversaryLeaves, cutoffDate, publicHolidays, teamConfig]);
+  }, [allHosts, rpcStats, futureLeaves, anniversaryLeaves, cutoffDate, publicHolidays, teamConfig, roEvents]);
 
   useEffect(() => {
       if (isTeamModalOpen) loadTeamLeaves();
@@ -472,8 +475,8 @@ export default function Dashboard() {
   }, [currentUser, futureLeaves]);
 
   const userBalances = useMemo(() => {
-      return computeLeaveBalancesRPC(currentUser, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves);
-  }, [currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves]);
+      return computeLeaveBalancesRPC(currentUser, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves, roEvents);
+  }, [currentUser, rpcStats, cutoffDate, publicHolidays, anniversaryLeaves, roEvents]);
 
   const renderPayrollGrid = (attendanceArray: any[], startDateObj: Date, endDateObj: Date) => {
       if (!attendanceArray) return null;
@@ -578,7 +581,7 @@ export default function Dashboard() {
       { label: 'My Tasks', href: '/my-tasks', icon: ClipboardList, tone: 'bg-[#6D2158]/10 text-[#6D2158]' },
       { label: 'Schedule', href: '/schedule', icon: Calendar, tone: 'bg-sky-50 text-sky-700' },
       { label: 'Guest List', href: '/guests', icon: Users, tone: 'bg-violet-50 text-violet-700' },
-      { label: 'Leave', href: '/leave-requests', icon: Plane, tone: 'bg-emerald-50 text-emerald-700' },
+      { label: 'Org Chart', href: '/org-chart', icon: Briefcase, tone: 'bg-emerald-50 text-emerald-700' },
       { label: 'Directory', href: '/team/contacts', icon: Contact, tone: 'bg-amber-50 text-amber-700' },
       { label: 'Profile', href: '/profile', icon: User, tone: 'bg-rose-50 text-rose-700' },
   ];
@@ -595,6 +598,7 @@ export default function Dashboard() {
       { label: 'Annual', value: userBalances.balAL, dot: 'bg-cyan-500' },
       { label: 'Public hol.', value: userBalances.balPH, dot: 'bg-blue-500' },
       ...(userBalances.balRR !== '-' ? [{ label: 'R & R', value: userBalances.balRR, dot: 'bg-fuchsia-500' }] : []),
+      { label: 'RO', value: userBalances.balRO, dot: 'bg-yellow-500' },
       { label: 'Sick', value: userBalances.balSL, dot: 'bg-rose-500' },
       { label: 'Emergency', value: userBalances.balEL, dot: 'bg-orange-500' },
   ] : [];
@@ -684,11 +688,11 @@ export default function Dashboard() {
                 <span className="text-[11px] font-bold uppercase tracking-wider text-white/75">Total owed</span>
                 <span className="text-3xl md:text-4xl font-black tabular-nums leading-none">{userBalances.balTotal}<span className="text-sm font-bold text-white/70 ml-1">days</span></span>
               </div>
-              <div className={`grid grid-cols-3 gap-2 flex-1 ${BAL_ITEMS.length > 5 ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
+              <div className={`grid grid-cols-3 gap-2 flex-1 ${BAL_ITEMS.length > 6 ? 'md:grid-cols-7' : 'md:grid-cols-6'}`}>
                 {BAL_ITEMS.map(b => (
                   <div key={b.label} className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-2.5 flex flex-col justify-center">
                     <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide whitespace-nowrap"><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${b.dot}`} /> {b.label}</div>
-                    <div className="text-lg md:text-xl font-black text-slate-800 tabular-nums mt-0.5">{b.value}</div>
+                    <div className={`text-lg md:text-xl font-black tabular-nums mt-0.5 ${String(b.value).startsWith('-') ? 'text-rose-600' : 'text-slate-800'}`} title={b.label === 'RO' && String(b.value).startsWith('-') ? 'RO taken without a "working day" comment on the day worked' : undefined}>{b.value}</div>
                   </div>
                 ))}
               </div>
@@ -943,7 +947,7 @@ export default function Dashboard() {
               ) : selectedTeamHost ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                    {[['Total', selectedTeamHost.balances.balTotal, 'bg-[#6D2158] text-white'], ['Off', selectedTeamHost.balances.balOff, ''], ['Annual', selectedTeamHost.balances.balAL, ''], ['Public hol.', selectedTeamHost.balances.balPH, ''], ['Sick', selectedTeamHost.balances.balSL, ''], ['Emergency', selectedTeamHost.balances.balEL, '']].map(([l, v, c]) => (
+                    {[['Total', selectedTeamHost.balances.balTotal, 'bg-[#6D2158] text-white'], ['Off', selectedTeamHost.balances.balOff, ''], ['Annual', selectedTeamHost.balances.balAL, ''], ['Public hol.', selectedTeamHost.balances.balPH, ''], ['RO', selectedTeamHost.balances.balRO, ''], ['Sick', selectedTeamHost.balances.balSL, '']].map(([l, v, c]) => (
                       <div key={l} className={`rounded-2xl px-3 py-2.5 border ${c || 'bg-white border-slate-200 text-slate-800'}`}>
                         <div className={`text-[10px] font-bold uppercase ${c ? 'text-white/70' : 'text-slate-400'}`}>{l}</div>
                         <div className="text-xl font-black tabular-nums">{v}</div>

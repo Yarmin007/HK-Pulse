@@ -1,7 +1,9 @@
 import { differenceInDays, parseISO, isAfter, isBefore, addDays, startOfDay } from 'date-fns';
+import { computeRO } from '@/lib/attendanceData';
 
 export const WORKING_CODES = ['P']; 
-export const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT'];
+// RO (replacement off) is a leave too: the day a host takes back a day they worked.
+export const LEAVE_CODES = ['O', 'OFF', 'AL', 'VAC', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT', 'RO'];
 
 export const getPayrollPeriod = (date = new Date()) => {
   const d = new Date(date);
@@ -68,7 +70,8 @@ export const computeLeaveBalancesRPC = (
     historicalStats: any[], // Aggregated RPC data (used by Dashboard & History)
     targetDateStr: string, 
     publicHolidays: any[], 
-    anniversaryLeaves: any[] // Raw SL/EL/RR
+    anniversaryLeaves: any[], // Raw SL/EL/RR
+    roEvents?: any[] // RO + "working day" rows (see fetchROEvents). Without it RO is not counted.
 ) => {
     if (!host || !historicalStats) return null;
     const targetDate = parseISO(targetDateStr);
@@ -228,6 +231,12 @@ export const computeLeaveBalancesRPC = (
     const takenEL = myAnniversaryLeaves.filter((a: any) => String(a.status_code).toUpperCase().trim() === 'EL').length;
     const takenRR = myAnniversaryLeaves.filter((a: any) => String(a.status_code).toUpperCase().trim() === 'RR').length;
 
+    // RO: earned by working a leave day ("working day" comment), used by RO days.
+    // Only when the RO rows were supplied (they carry the comments); otherwise RO is left out.
+    const ro = roEvents
+        ? computeRO(roEvents, host.host_id, targetDateStr)
+        : { earned: 0, taken: 0, balance: 0, earnedDates: [] as string[], takenDates: [] as string[] };
+
     const balOffVal = currentCfOff + earnedOff - takenOff;
     const balALVal = noALRR ? 0 : (currentCfAL + earnedAL - takenAL);
     const balPHVal = currentCfPH + earnedPH - takenPH;
@@ -237,13 +246,19 @@ export const computeLeaveBalancesRPC = (
     const earnedRR = (targetDate >= rrEntitlementDate) ? 7 : 0;
     const balRRVal = canHaveRR ? (earnedRR - takenRR) : 0;
     
-    const totalBal = balOffVal + balALVal + balPHVal + balRRVal;
+    // Only RO actually owed adds to the total; a negative RO is a missing comment, shown as a warning.
+    const totalBal = balOffVal + balALVal + balPHVal + balRRVal + Math.max(0, ro.balance);
 
     return {
         balOff: balOffVal.toFixed(0), 
         balAL: noALRR ? '0.00' : balALVal.toFixed(2), 
         balPH: balPHVal.toFixed(1),
         balRR: canHaveRR ? balRRVal.toString() : '-',
+        balRO: ro.balance,
+        roEarned: ro.earned,
+        roTaken: ro.taken,
+        roEarnedDates: ro.earnedDates,
+        roTakenDates: ro.takenDates,
         balTotal: totalBal.toFixed(1),
         balSL: 30 - takenSL,
         balEL: 10 - takenEL,

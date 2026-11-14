@@ -5,6 +5,7 @@ import {
   ArrowLeft, CalendarDays, AlertTriangle, ShieldCheck, 
   Loader2, Download, Search, ChevronLeft, ChevronRight, UserCheck
 } from 'lucide-react';
+import { fetchROEvents } from '@/lib/attendanceData';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO, addDays, differenceInDays } from 'date-fns';
 import toast from 'react-hot-toast';
@@ -43,6 +44,7 @@ export default function LeaveClearancePage() {
   const [attendance, setAttendance] = useState<any[]>([]);
   const [publicHolidays, setPublicHolidays] = useState<{date: string, name: string}[]>([]);
   const [historicalStats, setHistoricalStats] = useState<any[]>([]);
+  const [roEvents, setRoEvents] = useState<any[]>([]);
   
   const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, nicknames: {}, excludeAttendance: {} });
   const [selectedDepartment, setSelectedDepartment] = useState<string>('All');
@@ -113,7 +115,8 @@ export default function LeaveClearancePage() {
           setPublicHolidays(phs);
       }
       
-      const rawAtt = await loadAttendanceData();
+      const [rawAtt, roRows] = await Promise.all([loadAttendanceData(), fetchROEvents()]);
+      setRoEvents(roRows);
 
       let sortedHosts = [];
       if (hostRes.data) {
@@ -133,7 +136,7 @@ export default function LeaveClearancePage() {
 
       const hostsWithBals = sortedHosts.map(h => {
            // EOY Projection for Annual Leave
-           const eoyBals = computeLeaveBalancesRPC(h, rawAtt, rpcRes.data || [], eoyDateStr, phs, []);
+           const eoyBals = computeLeaveBalancesRPC(h, rawAtt, rpcRes.data || [], eoyDateStr, phs, [], roRows);
            
            return { 
                ...h, 
@@ -247,8 +250,8 @@ export default function LeaveClearancePage() {
           });
 
           // Run math logic exactly for the cycle boundaries to ensure identical numbers to attendance sheet
-          const prevBals = computeLeaveBalancesRPC(host, attendance, historicalStats, prevEndStr, publicHolidays, []);
-          const currBals = computeLeaveBalancesRPC(host, attendance, historicalStats, endStr, publicHolidays, []);
+          const prevBals = computeLeaveBalancesRPC(host, attendance, historicalStats, prevEndStr, publicHolidays, [], roEvents);
+          const currBals = computeLeaveBalancesRPC(host, attendance, historicalStats, endStr, publicHolidays, [], roEvents);
 
           const prevPending = parseInt(prevBals?.balOff || '0', 10);
           const totalPending = parseInt(currBals?.balOff || '0', 10);
@@ -270,7 +273,7 @@ export default function LeaveClearancePage() {
 
       // Filter: ONLY show staff who came into this cycle with a Brought Forward balance > 0
       return results.filter(h => h.prevPending > 0).sort((a, b) => b.prevPending - a.prevPending);
-  }, [filteredHosts, attendance, historicalStats, publicHolidays, offCycleParams]);
+  }, [filteredHosts, attendance, historicalStats, publicHolidays, offCycleParams, roEvents]);
 
   // 3. Public Holiday Data (FIFO 60-Day Expiry)
   const phData = useMemo(() => {

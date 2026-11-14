@@ -2,12 +2,13 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { 
-  Search, Wand2, Loader2, UserCheck, 
+  Search, Loader2, UserCheck, 
   ChevronLeft, ChevronRight, Save, X, Calendar as CalIcon, MessageSquareText, Clock, ArrowRight, BarChart2, HeartPulse, AlertCircle, CalendarDays, Pill, AlertTriangle, ShieldCheck, FileSpreadsheet
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
 import toast from 'react-hot-toast';
+import { fetchAttendanceRange, fetchROEvents, isWorkedLeave, isRO, hasWorkingNote, RO_EARNING_CODES, pendingWorkedDays, roForDay, roNoteFor, workedNoteWithRO, workedNoteWithoutRO, fmtNoteDate } from '@/lib/attendanceData';
 import { computeLeaveBalancesRPC } from '@/lib/payrollMath'; 
 
 // --- CONFIG ---
@@ -30,6 +31,12 @@ const STATUS_COLORS: Record<string, string> = {
   'RO': 'bg-yellow-300 text-yellow-900 font-black shadow-sm ring-1 ring-yellow-400', // Replacement Off
 };
 
+// Days before a host's joining date are blacked out and can't be filled in.
+const isBeforeJoin = (host: any, dateStr: string) => {
+    const j = host?.joining_date ? String(host.joining_date).slice(0, 10) : '';
+    return !!j && dateStr < j;
+};
+
 // --- OPTIMIZED MEMOIZED CELL COMPONENT ---
 type AttendanceCellProps = {
     hostId: string;
@@ -41,13 +48,16 @@ type AttendanceCellProps = {
     isFriday: boolean;
     isPH: boolean;
     isToday: boolean;
+    beforeJoin: boolean;
     rIdx: number;
     cIdx: number;
     onOpenEdit: (hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, rIdx: number, cIdx: number) => void;
     onQuickSave: (hostId: string, dateStr: string, newStatus: string, rIdx: number, cIdx: number) => void;
 };
 
-const AttendanceCell = React.memo(({ hostId, hostName, val, note, shiftType, dateStr, isFriday, isPH, isToday, rIdx, cIdx, onOpenEdit, onQuickSave }: AttendanceCellProps) => {
+const AttendanceCell = React.memo(({ hostId, hostName, val, note, shiftType, dateStr, isFriday, isPH, isToday, beforeJoin, rIdx, cIdx, onOpenEdit, onQuickSave }: AttendanceCellProps) => {
+    // Leave on paper but the comment says "working day": the host worked → earns an RO.
+    const worked = isWorkedLeave({ status_code: val, shift_note: note });
     const colorClass = val ? STATUS_COLORS[val] : 'text-slate-300';
     const bgBase = isToday ? 'bg-amber-50/60 border-amber-200' : isPH ? 'bg-blue-50/50' : isFriday ? 'bg-rose-50/30' : 'bg-white';
     
@@ -73,6 +83,8 @@ const AttendanceCell = React.memo(({ hostId, hostName, val, note, shiftType, dat
             if (nextCell) nextCell.focus();
             return;
         }
+
+        if (beforeJoin) return; // not joined yet: nothing to enter
 
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -107,6 +119,14 @@ const AttendanceCell = React.memo(({ hostId, hostName, val, note, shiftType, dat
         }
     };
 
+    if (beforeJoin) {
+        return (
+            <td id={`cell-${rIdx}-${cIdx}`} data-r={rIdx} data-c={cIdx} tabIndex={0} onKeyDown={handleKeyDown}
+                title="Not joined yet"
+                className="border-b border-r border-slate-800 p-0 h-10 w-10 min-w-[40px] max-w-[40px] bg-slate-900 box-border select-none cursor-not-allowed [&.cell-selected]:ring-2 [&.cell-selected]:ring-inset [&.cell-selected]:ring-blue-400" />
+        );
+    }
+
     return (
         <td 
             id={`cell-${rIdx}-${cIdx}`}
@@ -123,6 +143,7 @@ const AttendanceCell = React.memo(({ hostId, hostName, val, note, shiftType, dat
                 <span className="text-[11px] font-bold leading-none">{val || '-'}</span>
                 {shiftType && <span className="text-[7px] leading-none font-bold opacity-60 mt-1 truncate w-full text-center px-0.5">{shiftType}</span>}
             </div>
+            {worked && <div className="absolute bottom-1 left-1 w-1.5 h-1.5 bg-emerald-500 rounded-full ring-1 ring-white pointer-events-none" title="Working day: earns 1 RO"></div>}
             {hasNote && <div className="absolute top-1 right-1 w-1.5 h-1.5 bg-rose-500 rounded-full shadow-sm pointer-events-none" title={`Note: ${note}`}></div>}
         </td>
     );
@@ -145,22 +166,19 @@ export default function AttendancePage() {
   const [hosts, setHosts] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<any[]>([]);
   const [historicalStats, setHistoricalStats] = useState<any[]>([]); 
+  const [roEvents, setRoEvents] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [publicHolidays, setPublicHolidays] = useState<{date: string, name: string}[]>([]);
   
   const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {}, excludeAttendance: {} });
 
-  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string } | null>(null);
+  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, origStatus: string, origNote: string, roFor: string | null } | null>(null);
+  // Totals of the selected cells (shown when more than one cell is selected)
+  const [selStats, setSelStats] = useState<{ hosts: number, days: number, cells: number, counts: [string, number][], worked: number, blank: number, notJoined: number } | null>(null);
 
-  const [isMagicOpen, setIsMagicOpen] = useState(false);
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
   const [isROModalOpen, setIsROModalOpen] = useState(false); // NEW MODAL STATE
 
-  // Magic Paste State
-  const [magicText, setMagicText] = useState('');
-  const [isParsing, setIsParsing] = useState(false);
-  const [magicResults, setMagicResults] = useState<any>(null);
-  const [linkMappings, setLinkMappings] = useState<Record<string, string>>({});
 
   const [isDragging, setIsDragging] = useState(false);
   const selectionRef = useRef({ r1: -1, c1: -1, r2: -1, c2: -1 });
@@ -175,7 +193,7 @@ export default function AttendancePage() {
           requestAnimationFrame(() => {
               const todayCol = document.getElementById('today-col');
               if (todayCol && scrollRef.current) {
-                  scrollRef.current.scrollLeft = Math.max(0, todayCol.offsetLeft - 490 - 32); 
+                  scrollRef.current.scrollLeft = Math.max(0, todayCol.offsetLeft - 530 - 32); 
               }
               requestAnimationFrame(() => setIsScrolled(true));
           });
@@ -251,58 +269,17 @@ export default function AttendancePage() {
       }
   }, []);
 
-  const loadCurrentYearAttendance = async () => {
-      let allData: any[] = [];
-      let from = 0;
-      let step = 1000;
-      let hasMore = true;
-
-      while (hasMore) {
-          const { data, error } = await supabase
-              .from('hsk_attendance')
-              .select('id, host_id, date, status_code, shift_type, shift_note')
-              .gte('date', `${selectedYear}-01-01`)
-              .lte('date', `${selectedYear}-12-31`)
-              .range(from, from + step - 1);
-
-          if (error) {
-              console.error("Error fetching attendance:", error);
-              break;
-          }
-
-          if (data && data.length > 0) {
-              allData.push(...data);
-              from += step;
-              if (data.length < step) hasMore = false;
-          } else {
-              hasMore = false;
-          }
-      }
-
-      if (allData.length > 0) {
-          return allData.map(a => {
-              let safeDate = '';
-              if (a.date) {
-                  if (a.date instanceof Date) {
-                      safeDate = a.date.toISOString().split('T')[0];
-                  } else {
-                      safeDate = String(a.date).split('T')[0];
-                  }
-              }
-              return { ...a, date: safeDate };
-          });
-      }
-      return [];
-  };
-
   const fetchData = async () => {
     setIsLoading(true);
     setIsScrolled(false);
     
-    const [constRes, hostRes, rpcRes] = await Promise.all([
+    // Everything loads at the same time (the year's attendance comes in parallel pages).
+    const [constRes, hostRes, rpcRes, rawAtt, roRows] = await Promise.all([
         supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank', 'team_viewer_config']),
         supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
-        supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate }) 
+        supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate }),
+        fetchAttendanceRange(`${selectedYear}-01-01`, `${selectedYear}-12-31`),
+        fetchROEvents(),
     ]);
     
     let roleRanks: Record<string, number> = {};
@@ -339,8 +316,7 @@ export default function AttendancePage() {
     }
 
     setHistoricalStats(rpcRes.data || []);
-
-    const rawAtt = await loadCurrentYearAttendance();
+    setRoEvents(roRows);
     setAttendance(rawAtt);
     
     setIsLoading(false);
@@ -352,15 +328,34 @@ export default function AttendancePage() {
       return map;
   }, [attendance]);
 
+  const roRows = useMemo(() => {
+      const y = `${selectedYear}-`;
+      return [
+          ...roEvents.filter(r => !String(r.date).startsWith(y)),
+          ...attendance.filter(a => isRO(a) || hasWorkingNote(a.shift_note)),
+      ];
+  }, [roEvents, attendance, selectedYear]);
+
   const hostBalances = useMemo(() => {
     if (hosts.length === 0) return hosts;
 
+    // Group the year's rows by host once, instead of scanning all rows for every host.
+    const byHost = new Map<string, any[]>();
+    attendance.forEach(a => {
+      const k = String(a.host_id).trim();
+      const list = byHost.get(k);
+      if (list) list.push(a); else byHost.set(k, [a]);
+    });
+    const yearData = attendance.length > 0;
+
     return hosts.map(host => {
-      const mathResult = computeLeaveBalancesRPC(host, attendance, historicalStats, cutoffDate, publicHolidays, []);
+      const rows = byHost.get(String(host.host_id).trim()) || [];
+      // An empty list would switch the maths to yearly totals; pass a harmless marker row instead.
+      const mathResult = computeLeaveBalancesRPC(host, rows.length || !yearData ? rows : [{ host_id: host.host_id, date: '', status_code: '' }], historicalStats, cutoffDate, publicHolidays, [], roRows);
       if (!mathResult) return host;
       return { ...host, ...mathResult };
     });
-  }, [hosts, attendance, historicalStats, cutoffDate, publicHolidays]);
+  }, [hosts, attendance, historicalStats, cutoffDate, publicHolidays, roRows]);
 
   const filteredHosts = useMemo(() => {
     return hostBalances.filter(h => {
@@ -377,50 +372,18 @@ export default function AttendancePage() {
   }, [hostBalances, searchQuery, teamConfig]);
 
   useEffect(() => { filteredHostsRef.current = filteredHosts; }, [filteredHosts]);
+  const attendanceMapRef = useRef<Map<string, any>>(new Map());
+  useEffect(() => { attendanceMapRef.current = attendanceMap; }, [attendanceMap]);
 
   // =========================================================================
   // ⚡ CUSTOM RO (REPLACEMENT OFF) CALCULATOR ENGINE
   // =========================================================================
   const roLedger = useMemo(() => {
-      const ledger: Record<string, any> = {};
-      
-      hostBalances.forEach(h => {
-          ledger[h.host_id] = { 
-              host: h, 
-              earned: 0, 
-              taken: 0, 
-              balance: 0, 
-              earnedDates: [] as string[], 
-              takenDates: [] as string[] 
-          };
-      });
-
-      attendance.forEach(a => {
-          if (!a.date || !ledger[a.host_id]) return;
-          const noteUpper = (a.shift_note || '').toUpperCase();
-          
-          // Earning an RO: They physically worked, but the comment notes it as a Pending Leave
-          if (noteUpper.includes('WORKING DAY')) {
-              ledger[a.host_id].earned += 1;
-              ledger[a.host_id].earnedDates.push(a.date);
-          }
-          
-          // Taking an RO: They are physically off today (Status RO)
-          if (a.status_code === 'RO') {
-              ledger[a.host_id].taken += 1;
-              ledger[a.host_id].takenDates.push(a.date);
-          }
-      });
-
-      Object.values(ledger).forEach(l => {
-          l.balance = l.earned - l.taken;
-      });
-
-      // Filter to only show people who have some sort of RO history or balance
-      return Object.values(ledger)
-          .filter(l => l.balance > 0 || l.earned > 0)
-          .sort((a, b) => b.balance - a.balance);
-  }, [attendance, hostBalances]);
+      return hostBalances
+          .filter((h: any) => !teamConfig.excludeAttendance?.[h.host_id] && ((h.roEarned || 0) > 0 || (h.roTaken || 0) > 0))
+          .map((h: any) => ({ host: h, earned: h.roEarned || 0, taken: h.roTaken || 0, balance: h.balRO || 0, earnedDates: h.roEarnedDates || [], takenDates: h.roTakenDates || [] }))
+          .sort((a: any, b: any) => b.balance - a.balance || b.earned - a.earned);
+  }, [hostBalances, teamConfig]);
 
 
   // =========================================================================
@@ -454,6 +417,7 @@ export default function AttendancePage() {
           const d = parseISO(a.date);
           const m = d.getMonth();
 
+          if (isWorkedLeave(a)) return; // worked that day ("working day" comment)
           if (['O', 'OFF', 'OT', 'RO'].includes(a.status_code)) {
               monthlyStats[m].off++;
               totalLeavesTaken++;
@@ -505,6 +469,36 @@ export default function AttendancePage() {
       }
       
       document.getElementById(`cell-${r2}-${c2}`)?.focus({ preventScroll: true });
+
+      // Totals for the selected block
+      if (minR === maxR && minC === maxC) { setSelStats(null); return; }
+      const fHosts = filteredHostsRef.current;
+      const dYear = daysInYearRef.current;
+      const map = attendanceMapRef.current;
+      const counts: Record<string, number> = {};
+      let worked = 0, blank = 0, notJoined = 0, cells = 0;
+      for (let r = minR; r <= maxR; r++) {
+          const host = fHosts[r];
+          if (!host) continue;
+          const joined = host.joining_date ? String(host.joining_date).slice(0, 10) : '';
+          for (let c = minC; c <= maxC; c++) {
+              const d = dYear[c];
+              if (!d) continue;
+              cells++;
+              if (joined && d < joined) { notJoined++; continue; }
+              const rec = map.get(`${host.host_id}_${d}`);
+              const code = String(rec?.status_code || '').trim().toUpperCase();
+              if (!code) { blank++; continue; }
+              if (isWorkedLeave(rec)) { worked++; continue; }
+              counts[code] = (counts[code] || 0) + 1;
+          }
+      }
+      const order = (k: string) => { const i = STATUS_CODES.indexOf(k); return i < 0 ? 99 : i; };
+      setSelStats({
+          hosts: maxR - minR + 1, days: maxC - minC + 1, cells,
+          counts: Object.entries(counts).sort((a, b) => order(a[0]) - order(b[0])),
+          worked, blank, notJoined,
+      });
   }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -554,6 +548,7 @@ export default function AttendancePage() {
                   const hostId = fHosts[r]?.host_id;
                   if (!hostId) continue;
                   const dateStr = dYear[c];
+                  if (isBeforeJoin(fHosts[r], dateStr)) continue;
                   const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
                   
                   if (status === '') {
@@ -583,6 +578,7 @@ export default function AttendancePage() {
                   const hostId = fHosts[r]?.host_id;
                   if (!hostId) continue;
                   const dateStr = dYear[c];
+                  if (isBeforeJoin(fHosts[r], dateStr)) continue;
                   await saveToDatabase(hostId, dateStr, status);
               }
           }
@@ -632,7 +628,7 @@ export default function AttendancePage() {
   const handleOpenEdit = useCallback((hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, rIdx: number, cIdx: number) => {
       selectionRef.current = { r1: rIdx, c1: cIdx, r2: rIdx, c2: cIdx };
       updateSelectionVisuals();
-      setEditCell({ hostId, hostName, dateStr, status, note, shiftType });
+      setEditCell({ hostId, hostName, dateStr, status, note, shiftType, origStatus: status, origNote: note, roFor: status === 'RO' ? roForDay(note) : null });
   }, [updateSelectionVisuals]);
 
   const handleQuickSave = useCallback((hostId: string, dateStr: string, newStatus: string, rIdx: number, cIdx: number) => {
@@ -685,8 +681,10 @@ export default function AttendancePage() {
           e.preventDefault();
           const host = filteredHosts[r1];
           const dateStr = daysInYear[c1];
+          if (isBeforeJoin(host, dateStr)) return;
           const record = attendanceMap.get(`${host.host_id}_${dateStr}`);
-          setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: record?.status_code || '', note: record?.shift_note || '', shiftType: record?.shift_type || '' });
+          const st = record?.status_code || ''; const nt = record?.shift_note || '';
+          setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: st, note: nt, shiftType: record?.shift_type || '', origStatus: st, origNote: nt, roFor: st === 'RO' ? roForDay(nt) : null });
           return;
       }
 
@@ -740,6 +738,7 @@ export default function AttendancePage() {
               for(let j=0; j<rows[i].length; j++) {
                   if (c1 + j >= daysInYear.length) continue;
                   const dateStr = daysInYear[c1 + j];
+                  if (isBeforeJoin(filteredHosts[r1 + i], dateStr)) continue;
                   let val = rows[i][j].trim().toUpperCase();
                   if (val === 'V') val = 'AL'; 
                   
@@ -800,28 +799,56 @@ export default function AttendancePage() {
       }
   };
 
+  // Update one row in local state (this year) or in the RO rows (other years).
+  const patchLocal = (hostId: string, dateStr: string, status: string, note: string, shiftType?: string) => {
+      const apply = (list: any[]) => {
+          const out = [...list];
+          const idx = out.findIndex(a => a.host_id === hostId && a.date === dateStr);
+          const empty = status === '' && !note?.trim() && !(shiftType ?? (idx > -1 ? out[idx].shift_type : ''))?.trim();
+          if (empty) { if (idx > -1) out.splice(idx, 1); }
+          else if (idx > -1) out[idx] = { ...out[idx], status_code: status, shift_note: note, ...(shiftType !== undefined ? { shift_type: shiftType } : {}) };
+          else out.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType || '' });
+          return out;
+      };
+      if (dateStr.startsWith(`${selectedYear}-`)) setAttendance(apply);
+      else setRoEvents(apply);
+  };
+
   const handleSaveCell = async () => {
     if (!editCell) return;
-    const { hostId, dateStr, status, note, shiftType } = editCell;
-    
-    setAttendance(prev => {
-        const newAtt = [...prev];
-        const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
-        if (status === '' && (!note || note.trim() === '') && (!shiftType || shiftType.trim() === '')) {
-            if (existingIdx > -1) newAtt.splice(existingIdx, 1);
-        } else {
-            if (existingIdx > -1) {
-                newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: status, shift_note: note, shift_type: shiftType };
-            } else {
-                newAtt.push({ host_id: hostId, date: dateStr, status_code: status, shift_note: note, shift_type: shiftType });
-            }
-        }
-        return newAtt;
-    });
+    const { hostId, dateStr, status, shiftType, origStatus, origNote, roFor } = editCell;
+    let { note } = editCell;
 
-    toast.promise(saveToDatabase(hostId, dateStr, status, note, shiftType), {
+    if (status === 'RO' && !roFor && pendingWorkedDays(roRows, hostId, origStatus === 'RO' ? dateStr : undefined).length > 0) {
+        toast.error('Choose which working day this RO is for');
+        return;
+    }
+    if (status === 'RO' && roFor) note = roNoteFor(roFor);
+
+    // Worked days whose comment must change
+    const prevLink = origStatus === 'RO' ? roForDay(origNote) : null;
+    const newLink = status === 'RO' ? roFor : null;
+    const findRow = (d: string) => roRows.find(r => String(r.host_id).trim() === String(hostId).trim() && String(r.date).slice(0, 10) === d);
+    const linkUpdates: { date: string, status: string, note: string }[] = [];
+    if (prevLink && prevLink !== newLink) {
+        const w = findRow(prevLink);
+        if (w) linkUpdates.push({ date: prevLink, status: w.status_code, note: workedNoteWithoutRO(w.shift_note) });
+    }
+    if (newLink && newLink !== prevLink) {
+        const w = findRow(newLink);
+        if (w) linkUpdates.push({ date: newLink, status: w.status_code, note: workedNoteWithRO(w.shift_note, dateStr) });
+    }
+
+    patchLocal(hostId, dateStr, status, note, shiftType);
+    linkUpdates.forEach(u => patchLocal(hostId, u.date, u.status, u.note));
+
+    const task = async () => {
+        await saveToDatabase(hostId, dateStr, status, note, shiftType);
+        for (const u of linkUpdates) await saveToDatabase(hostId, u.date, u.status, u.note);
+    };
+    toast.promise(task(), {
         loading: 'Saving entry...',
-        success: 'Entry saved',
+        success: newLink ? `RO linked to ${fmtNoteDate(newLink)}` : 'Entry saved',
         error: 'Failed to save entry'
     }).then(() => {
         setEditCell(null); 
@@ -839,74 +866,12 @@ export default function AttendancePage() {
     else toast.success('CF Balance Updated');
   };
 
-  const handleMagicParse = async () => {
-    if (!magicText.trim()) return;
-    setIsParsing(true);
-    setLinkMappings({}); 
-    try {
-        const res = await fetch('/api/magic-roster', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: magicText, date: `${selectedYear}-01-01` })
-        });
-        
-        if (!res.ok) throw new Error("API Error");
-        const data = await res.json();
-        setMagicResults(data);
-        toast.success("Parsed successfully!");
-    } catch (err) {
-        toast.error("Failed to parse message.");
-    }
-    setIsParsing(false);
-  };
-
-  const handleMagicSave = async () => {
-    if (!magicResults || !magicResults.records) return;
-    setIsParsing(true);
-
-    for (const [unrecName, hostId] of Object.entries(linkMappings)) {
-        if (!hostId) continue;
-        const host = hosts.find(h => h.host_id === hostId);
-        if (host) {
-            const existingNicks = host.nicknames ? host.nicknames.split(',').map((s: string) => s.trim()) : [];
-            if (!existingNicks.includes(unrecName)) {
-                existingNicks.push(unrecName);
-                const newNicksStr = existingNicks.join(', ');
-                await supabase.from('hsk_hosts').update({ nicknames: newNicksStr }).eq('host_id', hostId);
-            }
-            magicResults.records.push({
-                host_id: hostId,
-                full_name: host.full_name,
-                status_code: 'P', 
-                shift_type: ''
-            });
-        }
-    }
-    
-    const dbTask = async () => {
-        for (const r of magicResults.records) {
-            await saveToDatabase(r.host_id, magicResults.date, r.status_code, undefined, r.shift_type);
-        }
-    };
-
-    toast.promise(dbTask(), {
-        loading: 'Applying roster...',
-        success: 'Roster applied successfully',
-        error: 'Failed to apply roster'
-    }).then(() => {
-        setIsParsing(false);
-        setIsMagicOpen(false);
-        setMagicText('');
-        setMagicResults(null);
-        setLinkMappings({});
-        fetchData(); 
-    });
-  };
 
   const memoizedTableBody = useMemo(() => {
       return filteredHosts.map((host, hostIdx) => {
           const configNick = teamConfig.nicknames?.[host.host_id];
           const displayName = configNick ? `${host.full_name} (${configNick})` : host.full_name;
+          const joinedOn = host.joining_date ? String(host.joining_date).slice(0, 10) : '';
 
           return (
           <tr key={host.id} className="hover:bg-slate-50/50 transition-colors group">
@@ -932,7 +897,8 @@ export default function AttendancePage() {
               <td className="max-md:static md:sticky md:left-[320px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
               <td className="max-md:static md:sticky md:left-[360px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
               <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
-              <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
+              <td title={(host.balRO ?? 0) < 0 ? `${-host.balRO} RO day(s) given without a "working day" comment on the day worked` : `RO earned ${host.roEarned || 0} · taken ${host.roTaken || 0}`} className={`max-md:static md:sticky md:left-[440px] z-50 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${(host.balRO ?? 0) < 0 ? 'bg-rose-50 text-rose-600 group-hover:bg-rose-100' : 'bg-yellow-50 text-yellow-800 group-hover:bg-yellow-100'}`}>{host.balRO ?? 0}</td>
+              <td className="max-md:static md:sticky md:left-[480px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
 
               {daysInYear.map((dateStr, dateIdx) => {
                   const record = attendanceMap.get(`${host.host_id}_${dateStr}`);
@@ -956,6 +922,7 @@ export default function AttendancePage() {
                           isFriday={isFriday}
                           isPH={isPH}
                           isToday={isToday}
+                          beforeJoin={!!joinedOn && dateStr < joinedOn}
                           rIdx={hostIdx}
                           cIdx={dateIdx}
                           onOpenEdit={handleOpenEdit}
@@ -1045,7 +1012,7 @@ export default function AttendancePage() {
 
             {/* NEW TOP RO BUTTON */}
             <button onClick={() => setIsROModalOpen(true)} className="bg-yellow-400 text-yellow-900 px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-yellow-500 transition-all mt-5">
-                <AlertTriangle size={14}/> Pending Leaves
+                <AlertTriangle size={14}/> RO balance
             </button>
 
             {/* NEW MONTHLY SHEET BUTTON */}
@@ -1057,9 +1024,6 @@ export default function AttendancePage() {
                 <BarChart2 size={14}/> Analytics
             </button>
 
-            <button onClick={() => setIsMagicOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-md hover:bg-emerald-700 transition-all mt-5">
-                <Wand2 size={14}/> Magic Paste
-            </button>
         </div>
       </div>
 
@@ -1088,7 +1052,7 @@ export default function AttendancePage() {
                                       <span className="block font-black uppercase text-slate-500 tracking-widest">Host Name</span>
                                       <span className="block text-[8px] font-bold text-slate-400 mt-1">ID, Role & Joined Date</span>
                                   </th>
-                                  <th colSpan={5} className="max-md:static md:sticky md:left-[280px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[210px] min-w-[210px] max-w-[210px] box-border">
+                                  <th colSpan={6} className="max-md:static md:sticky md:left-[280px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[210px] min-w-[210px] max-w-[210px] box-border">
                                       Live Owed Balances
                                   </th>
                                   
@@ -1129,7 +1093,8 @@ export default function AttendancePage() {
                                   <th className="max-md:static md:sticky md:left-[320px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
                                   <th className="max-md:static md:sticky md:left-[360px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
                                   <th className="max-md:static md:sticky md:left-[400px] z-[80] bg-fuchsia-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Rest & Recreation (DA/DB Only)">RR</th>
-                                  <th className="max-md:static md:sticky md:left-[440px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
+                                  <th className="max-md:static md:sticky md:left-[440px] z-[80] bg-yellow-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-yellow-800 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Replacement Off owed (worked a leave day)">RO</th>
+                                  <th className="max-md:static md:sticky md:left-[480px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
                                   
                                   <th className="bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
                                   <th className="bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1 text-center font-bold text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Emergency Leave (10 Max)">EL</th>
@@ -1148,6 +1113,24 @@ export default function AttendancePage() {
               )}
           </div>
       </div>
+
+      {/* SELECTION TOTALS */}
+      {selStats && !editCell && (
+          <div className="fixed z-[150] bottom-[calc(4.5rem+env(safe-area-inset-bottom))] md:bottom-5 left-1/2 -translate-x-1/2 md:ml-32 max-w-[calc(100vw-2rem)] bg-slate-900 text-white rounded-2xl shadow-2xl px-4 py-2.5 flex items-center gap-3 overflow-x-auto animate-in fade-in slide-in-from-bottom-2">
+              <div className="shrink-0 text-xs font-black whitespace-nowrap">
+                  {selStats.hosts > 1 ? `${selStats.hosts} hosts × ${selStats.days} days = ${selStats.cells}` : `${selStats.days} days`}
+              </div>
+              <div className="w-px h-5 bg-white/20 shrink-0" />
+              <div className="flex items-center gap-1.5">
+                  {selStats.counts.map(([code, n]) => (
+                      <span key={code} className={`shrink-0 px-2 py-0.5 rounded-md text-[11px] font-black whitespace-nowrap ${STATUS_COLORS[code] || 'bg-white/10'}`}>{code} {n}</span>
+                  ))}
+                  {selStats.worked > 0 && <span className="shrink-0 px-2 py-0.5 rounded-md text-[11px] font-black bg-emerald-500 text-white whitespace-nowrap" title="Leave code with a working day comment">Worked {selStats.worked}</span>}
+                  {selStats.blank > 0 && <span className="shrink-0 px-2 py-0.5 rounded-md text-[11px] font-bold bg-white/10 text-white/70 whitespace-nowrap">Blank {selStats.blank}</span>}
+                  {selStats.notJoined > 0 && <span className="shrink-0 px-2 py-0.5 rounded-md text-[11px] font-bold bg-black text-white/60 ring-1 ring-white/20 whitespace-nowrap">Not joined {selStats.notJoined}</span>}
+              </div>
+          </div>
+      )}
 
       {/* CELL EDITOR MODAL */}
       {editCell && (
@@ -1172,7 +1155,7 @@ export default function AttendancePage() {
                               return (
                                   <button 
                                       key={code}
-                                      onClick={() => setEditCell({...editCell, status: code})}
+                                      onClick={() => setEditCell({...editCell, status: code, roFor: null, note: roForDay(editCell.note) ? '' : editCell.note})}
                                       className={`p-3 rounded-xl text-xs font-black border-2 transition-all active:scale-95 ${isSelected ? 'border-[#6D2158] bg-[#6D2158]/10 text-[#6D2158] shadow-sm' : 'border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200'}`}
                                   >
                                       {code}
@@ -1195,18 +1178,54 @@ export default function AttendancePage() {
                           </label>
                           <div className="grid grid-cols-2 gap-2">
                               <button 
-                                  onClick={() => setEditCell({...editCell, note: 'WORKING DAY - PENDING LEAVE'})}
+                                  // Earning RO needs a leave code on the day (usually O) + the "working day" comment
+                                  onClick={() => setEditCell({...editCell, status: RO_EARNING_CODES.includes(editCell.status) ? editCell.status : 'O', note: hasWorkingNote(editCell.note) ? editCell.note : (editCell.note.trim() ? `WORKING DAY · ${editCell.note.trim()}` : 'WORKING DAY'), roFor: null})}
+                                  title="Planned leave, but they worked: earns 1 RO" 
                                   className="py-3 bg-amber-50 text-amber-700 border border-amber-300 rounded-xl text-[10px] font-black uppercase hover:bg-amber-100 transition-colors shadow-sm"
                               >
-                                  Bank Working Day
+                                  Worked on leave (+1 RO)
                               </button>
                               <button 
-                                  onClick={() => setEditCell({...editCell, status: 'RO'})}
+                                  onClick={() => {
+                                      const pend = pendingWorkedDays(roRows, editCell.hostId, editCell.origStatus === 'RO' ? editCell.dateStr : undefined);
+                                      const keep = editCell.roFor && (pend.some(p => p.date === editCell.roFor) || editCell.roFor === roForDay(editCell.origNote)) ? editCell.roFor : null;
+                                      const pick = keep || (pend.length === 1 ? pend[0].date : null);
+                                      setEditCell({...editCell, status: 'RO', roFor: pick, note: pick ? roNoteFor(pick) : editCell.note});
+                                  }}
                                   className="py-3 bg-yellow-300 text-yellow-900 border border-yellow-400 rounded-xl text-[10px] font-black uppercase hover:bg-yellow-400 transition-colors shadow-sm"
                               >
-                                  Grant RO (Off)
+                                  Take RO (−1 RO)
                               </button>
                           </div>
+
+                          {editCell.status === 'RO' && (() => {
+                              // Pending working days, plus the one this RO is already linked to
+                              const pend = pendingWorkedDays(roRows, editCell.hostId, editCell.origStatus === 'RO' ? editCell.dateStr : undefined);
+                              const linked = roForDay(editCell.origNote);
+                              const opts = linked && !pend.some(p => p.date === linked) ? [{ date: linked, status: '', note: '' }, ...pend] : pend;
+                              return (
+                                  <div className="mt-3 rounded-2xl border border-yellow-300 bg-yellow-50 p-3">
+                                      <p className="text-[10px] font-black uppercase tracking-widest text-yellow-800 mb-2">Which working day is this RO for?</p>
+                                      {opts.length === 0 ? (
+                                          <p className="text-[11px] font-semibold text-rose-600">No pending working days. Add &ldquo;working day&rdquo; on the day they worked first, or the RO balance goes negative.</p>
+                                      ) : (
+                                          <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                                              {opts.map(o => {
+                                                  const on = editCell.roFor === o.date;
+                                                  return (
+                                                      <button key={o.date} type="button" title={o.note || undefined}
+                                                          onClick={() => setEditCell({ ...editCell, roFor: o.date, note: roNoteFor(o.date) })}
+                                                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black border transition-colors ${on ? 'bg-yellow-400 border-yellow-500 text-yellow-950' : 'bg-white border-yellow-200 text-yellow-900 hover:bg-yellow-100'}`}>
+                                                          {format(parseISO(o.date), 'dd MMM yyyy')}{o.status ? <span className="ml-1 opacity-60 font-bold">{o.status}</span> : null}
+                                                      </button>
+                                                  );
+                                              })}
+                                          </div>
+                                      )}
+                                      {editCell.roFor && <p className="mt-2 text-[10px] font-semibold text-yellow-800">That day&rsquo;s comment becomes &ldquo;{workedNoteWithRO(roRows.find(r => r.host_id === editCell.hostId && r.date === editCell.roFor)?.shift_note, editCell.dateStr)}&rdquo;</p>}
+                                  </div>
+                              );
+                          })()}
                       </div>
                   </div>
 
@@ -1247,8 +1266,8 @@ export default function AttendancePage() {
               <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden animate-in zoom-in-95">
                   <div className="p-6 bg-yellow-400 text-yellow-900 flex justify-between items-center shrink-0">
                       <div>
-                          <h3 className="text-xl font-black flex items-center gap-2 tracking-tight"><AlertTriangle size={24}/> Pending Leaves Ledger</h3>
-                          <p className="text-[10px] text-yellow-800 font-bold uppercase tracking-widest mt-1">Staff owed replacement days</p>
+                          <h3 className="text-xl font-black flex items-center gap-2 tracking-tight"><AlertTriangle size={24}/> RO balance</h3>
+                          <p className="text-[10px] text-yellow-800 font-bold uppercase tracking-widest mt-1">Days worked on leave (comment “working day”) vs RO taken</p>
                       </div>
                       <button onClick={() => setIsROModalOpen(false)} className="bg-black/10 p-2 rounded-full hover:bg-black/20 transition-colors text-yellow-900"><X size={18}/></button>
                   </div>
@@ -1258,26 +1277,36 @@ export default function AttendancePage() {
                           <div className="text-center py-10 text-slate-400 font-bold italic">No pending leaves to track.</div>
                       ) : (
                           roLedger.map(l => (
-                              <div key={l.host.id} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
-                                  <div className="flex justify-between items-start mb-3">
+                              <div key={l.host.id} className={`p-4 border rounded-2xl ${l.balance < 0 ? 'bg-rose-50/60 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+                                  <div className="flex justify-between items-start mb-2">
                                       <div>
                                           <p className="font-black text-slate-800 text-sm">{l.host.full_name}</p>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.role}</p>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.host_id} · earned {l.earned} · taken {l.taken}</p>
                                       </div>
                                       <div className="text-right">
-                                          <span className={`text-xl font-black ${l.balance > 0 ? 'text-amber-600' : 'text-slate-400'}`}>{l.balance}</span>
-                                          <span className="block text-[8px] font-bold text-slate-400 uppercase">Days Owed</span>
+                                          <span className={`text-xl font-black ${l.balance > 0 ? 'text-amber-600' : l.balance < 0 ? 'text-rose-600' : 'text-slate-400'}`}>{l.balance}</span>
+                                          <span className="block text-[8px] font-bold text-slate-400 uppercase">{l.balance < 0 ? 'Check comments' : 'RO owed'}</span>
                                       </div>
                                   </div>
-                                  
+                                  {l.balance < 0 && (
+                                      <p className="text-[11px] font-semibold text-rose-700 mb-2">{-l.balance} RO day{l.balance === -1 ? '' : 's'} given, but the day{l.balance === -1 ? '' : 's'} worked {l.balance === -1 ? 'has' : 'have'} no &ldquo;working day&rdquo; comment. Add it on the day they worked.</p>
+                                  )}
                                   {l.earnedDates.length > 0 && (
                                       <div className="mt-2 pt-2 border-t border-slate-200">
-                                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Dates Banked:</p>
+                                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Worked (earned RO)</p>
                                           <div className="flex flex-wrap gap-1.5">
                                               {l.earnedDates.map((dateStr: string, idx: number) => (
-                                                  <span key={idx} className="bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded text-[10px] font-bold">
-                                                      {format(parseISO(dateStr), 'dd MMM')}
-                                                  </span>
+                                                  <span key={idx} className="bg-lime-50 border border-lime-200 text-lime-800 px-2 py-1 rounded text-[10px] font-bold">{format(parseISO(dateStr), 'dd MMM yy')}</span>
+                                              ))}
+                                          </div>
+                                      </div>
+                                  )}
+                                  {l.takenDates.length > 0 && (
+                                      <div className="mt-2 pt-2 border-t border-slate-200">
+                                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">RO taken</p>
+                                          <div className="flex flex-wrap gap-1.5">
+                                              {l.takenDates.map((dateStr: string, idx: number) => (
+                                                  <span key={idx} className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-2 py-1 rounded text-[10px] font-bold">{format(parseISO(dateStr), 'dd MMM yy')}</span>
                                               ))}
                                           </div>
                                       </div>
@@ -1435,128 +1464,6 @@ export default function AttendancePage() {
       )}
 
       {/* MAGIC PASTE MODAL */}
-      {isMagicOpen && (
-          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-              <div className="bg-white w-full max-w-4xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
-                  <div className="p-5 bg-emerald-600 text-white flex justify-between items-center shrink-0">
-                      <div>
-                          <h3 className="text-lg font-black flex items-center gap-2"><Wand2 size={20}/> Magic Roster Parse</h3>
-                          <p className="text-xs text-emerald-100 font-medium mt-1">Paste WhatsApp message. AI will link names and shifts automatically.</p>
-                      </div>
-                      <button onClick={() => { setIsMagicOpen(false); setMagicResults(null); setMagicText(''); }} className="bg-black/10 p-2 rounded-full hover:bg-black/20"><X size={18}/></button>
-                  </div>
-
-                  <div className="flex-1 flex flex-col md:flex-row min-h-0">
-                      {/* INPUT AREA */}
-                      <div className="w-full md:w-[40%] p-5 border-b md:border-b-0 md:border-r border-slate-200 flex flex-col gap-3 shrink-0">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Paste Message Here</label>
-                          <textarea 
-                              className="flex-1 p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono outline-none focus:border-emerald-500 resize-none shadow-inner"
-                              placeholder="e.g.&#10;Tomorrow's Duty:&#10;Off: Nimal, Ziyad&#10;Morning: Shamil, Eeku"
-                              value={magicText}
-                              onChange={e => setMagicText(e.target.value)}
-                          />
-                          <button 
-                              onClick={handleMagicParse} 
-                              disabled={isParsing || !magicText}
-                              className="w-full py-4 bg-slate-800 text-white rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-lg disabled:opacity-50"
-                          >
-                              {isParsing ? <Loader2 size={16} className="animate-spin"/> : <Wand2 size={16}/>}
-                              Parse with AI
-                          </button>
-                      </div>
-
-                      {/* RESULTS AREA */}
-                      <div className="w-full md:w-[60%] p-0 flex flex-col bg-slate-50 overflow-hidden">
-                          {!magicResults ? (
-                              <div className="flex-1 flex flex-col items-center justify-center text-slate-300 p-8 text-center">
-                                  <CalIcon size={48} strokeWidth={1} className="mb-4 opacity-50"/>
-                                  <p className="font-bold text-sm">Awaiting Input</p>
-                                  <p className="text-xs mt-2">Results will appear here for review before saving.</p>
-                              </div>
-                          ) : (
-                              <div className="flex flex-col h-full">
-                                  <div className="p-4 bg-white border-b border-slate-200 shrink-0 flex justify-between">
-                                      <div>
-                                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Detected Date: <span className="text-[#6D2158] ml-1">{magicResults.date}</span></p>
-                                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Department: <span className="text-emerald-600 ml-1">{magicResults.department}</span></p>
-                                      </div>
-                                      <div className="text-right">
-                                          <span className="text-2xl font-black text-slate-800">{magicResults.records.length}</span>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase">Matches</p>
-                                      </div>
-                                  </div>
-                                  
-                                  <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                                      
-                                      {/* UNRECOGNIZED NAMES MAPPING UI */}
-                                      {magicResults.unrecognized && magicResults.unrecognized.length > 0 && (
-                                          <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
-                                              <h4 className="text-xs font-black text-rose-700 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                                  Unrecognized Staff ({magicResults.unrecognized.length})
-                                              </h4>
-                                              <div className="space-y-3">
-                                                  {magicResults.unrecognized.map((name: string, idx: number) => (
-                                                      <div key={idx} className="flex items-center gap-3">
-                                                          <div className="w-1/3 font-bold text-sm text-slate-700 truncate" title={name}>"{name}"</div>
-                                                          <ArrowRight size={14} className="text-slate-400 shrink-0"/>
-                                                          <select 
-                                                              className="flex-1 p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold outline-none focus:border-rose-400"
-                                                              value={linkMappings[name] || ''}
-                                                              onChange={(e) => setLinkMappings({...linkMappings, [name]: e.target.value})}
-                                                          >
-                                                              <option value="">-- Ignore --</option>
-                                                              {hosts.map(h => (
-                                                                  <option key={h.host_id} value={h.host_id}>{h.full_name} ({h.host_id})</option>
-                                                              ))}
-                                                          </select>
-                                                      </div>
-                                                  ))}
-                                              </div>
-                                              <p className="text-[10px] font-bold text-rose-500 mt-3 italic">Linking a name will permanently save it as their nickname.</p>
-                                          </div>
-                                      )}
-
-                                      {/* RECOGNIZED RECORDS */}
-                                      {magicResults.records.length > 0 && (
-                                          <div className="space-y-2">
-                                              <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Matched Records</h4>
-                                              {magicResults.records.map((r: any, idx: number) => (
-                                                  <div key={idx} className="bg-white p-3 rounded-xl border border-slate-200 flex justify-between items-center shadow-sm">
-                                                      <div>
-                                                          <p className="font-bold text-slate-800 text-sm">{r.full_name}</p>
-                                                          <p className="text-[10px] text-slate-400 font-mono">{r.host_id}</p>
-                                                      </div>
-                                                      <div className="text-right">
-                                                          <span className={`px-2 py-1 rounded text-xs font-black ${STATUS_COLORS[r.status_code] || 'bg-slate-100 text-slate-600'}`}>{r.status_code}</span>
-                                                          {r.shift_type && <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">{r.shift_type}</p>}
-                                                      </div>
-                                                  </div>
-                                              ))}
-                                          </div>
-                                      )}
-                                      
-                                      {magicResults.records.length === 0 && (!magicResults.unrecognized || magicResults.unrecognized.length === 0) && (
-                                          <p className="text-center text-slate-400 italic text-sm mt-10">No valid staff matched.</p>
-                                      )}
-                                  </div>
-                                  <div className="p-4 bg-white border-t border-slate-200 shrink-0">
-                                      <button 
-                                          onClick={handleMagicSave} 
-                                          disabled={isParsing || (magicResults.records.length === 0 && Object.values(linkMappings).filter(Boolean).length === 0)}
-                                          className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-lg hover:bg-emerald-700 disabled:opacity-50"
-                                      >
-                                          {isParsing ? <Loader2 size={16} className="animate-spin"/> : <Save size={16}/>}
-                                          Apply & Save Roster
-                                      </button>
-                                  </div>
-                              </div>
-                          )}
-                      </div>
-                  </div>
-              </div>
-          </div>
-      )}
 
     </div>
   );

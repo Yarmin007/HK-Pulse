@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
 import { supabase } from "@/lib/supabase";
 import { Printer, Calendar, RefreshCw, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { getDhakaDateStr } from "@/lib/dateUtils";
@@ -211,6 +212,10 @@ export default function AllocationSheetPage() {
         if (hostObj?.status && hostObj.status.toLowerCase() !== "active") {
           return;
         }
+        // People marked Off / on leave are not on duty, so they are not printed
+        if (isOffShift(a.shift)) {
+          return;
+        }
 
         const rawName = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
         const name = rawName.toUpperCase();
@@ -311,11 +316,11 @@ export default function AllocationSheetPage() {
         } else if (a.area === "housemate") {
           housemateList.push({ name: rawName, no: mvpnOnly || contact });
         } else if (a.area === "riders") {
-          const sh = (a.shift || "").toLowerCase();
-          if (sh.includes("step")) stepList.push({ name: rawName, duty: "Step", mvpn: mvpnOnly });
-          else if (sh.includes("luggage")) luggageList.push({ name: rawName, duty: "Luggage", mvpn: mvpnOnly });
+          const duty = riderDutyOf(a, hostObj);
+          if (duty === "Step") stepList.push({ name: rawName, duty: "Step", mvpn: mvpnOnly });
+          else if (duty === "Luggage") luggageList.push({ name: rawName, duty: "Luggage", mvpn: mvpnOnly });
           else runnerList.push({ name: rawName, duty: "Runner", mvpn: mvpnOnly });
-        } else if (a.area === "garden") {
+        } else if (a.area === "garden" || a.area === "gardening") {
           if (a.shift?.toLowerCase().includes("incharge") || hostObj?.role?.toLowerCase().includes("supervisor")) {
             gardenIncharge = { name: rawName, contact };
           } else {

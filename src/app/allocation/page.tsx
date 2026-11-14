@@ -15,6 +15,13 @@ import GardeningBoard from '@/app/allocation/components/GardeningBoard';
 import RidersStepBoard from '@/app/allocation/components/RidersStepBoard';
 import AdminOfficeBoard from '@/app/allocation/components/AdminOfficeBoard';
 
+// Local-date arithmetic on YYYY-MM-DD (no UTC conversion, so no off-by-one days).
+const shiftDate = (ymd: string, days: number) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+};
+
 const getToday = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -30,7 +37,16 @@ export default function AllocationPage() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [isDirty, setIsDirty] = useState(false);
 
-  useEffect(() => { fetchData(); }, [selectedDate, activeArea]);
+  // Only reload when the DATE changes. Switching tabs must keep unsaved edits from other tabs.
+  useEffect(() => { fetchData(); }, [selectedDate]);
+
+  // Warn before closing the page with unsaved changes.
+  useEffect(() => {
+      if (!isDirty) return;
+      const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+      window.addEventListener('beforeunload', warn);
+      return () => window.removeEventListener('beforeunload', warn);
+  }, [isDirty]);
 
   const fetchData = async () => {
       setIsProcessing(true);
@@ -65,31 +81,44 @@ export default function AllocationPage() {
       setIsProcessing(false);
   };
 
+  // Insert the new rows first, and only then delete the old ones,
+  // so a failed save never leaves the day empty.
   const handleSave = async () => {
       setIsProcessing(true);
-      await supabase.from('hsk_allocations').delete().eq('report_date', selectedDate);
-      if (allocations.length > 0) {
+      try {
+          const { data: oldRows, error: readErr } = await supabase.from('hsk_allocations').select('id').eq('report_date', selectedDate);
+          if (readErr) throw readErr;
           const payload = allocations.map((a: any) => {
-              const { id, ...rest } = a; 
-              const cleaned = rest.task_details ? rest.task_details.split(',').filter((s: string) => s.trim() !== '').join(',') : '';
-              return { ...rest, task_details: cleaned };
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              const { id, created_at, ...rest } = a;
+              const cleaned = rest.task_details ? String(rest.task_details).split(',').filter((s: string) => s.trim() !== '').join(',') : '';
+              return { ...rest, report_date: selectedDate, task_details: cleaned };
           });
-          const { error } = await supabase.from('hsk_allocations').insert(payload);
-          if (error) toast.error("Error saving allocations: " + error.message);
-          else toast.success("Allocations successfully saved!");
-      } else {
-          toast.success("Allocations cleared.");
+          let inserted: any[] = [];
+          if (payload.length > 0) {
+              const { data, error } = await supabase.from('hsk_allocations').insert(payload).select();
+              if (error) throw error;
+              inserted = data || [];
+          }
+          const oldIds = (oldRows || []).map((r: any) => r.id);
+          if (oldIds.length > 0) {
+              const { error } = await supabase.from('hsk_allocations').delete().in('id', oldIds);
+              if (error) throw error;
+          }
+          setAllocations(inserted);
+          setIsDirty(false);
+          toast.success(payload.length ? 'Allocations saved' : 'Allocations cleared');
+      } catch (err: any) {
+          toast.error('Not saved: ' + (err?.message || 'unknown error') + ' — your changes are still on screen.');
+      } finally {
+          setIsProcessing(false);
       }
-      setIsDirty(false);
-      setIsProcessing(false);
   };
 
   const handleCopyYesterday = async () => {
       if (!confirm("This will pull yesterday's allocations into today. Proceed?")) return;
       setIsProcessing(true);
-      const d = new Date(selectedDate);
-      d.setDate(d.getDate() - 1);
-      const yesterday = d.toISOString().split('T')[0];
+      const yesterday = shiftDate(selectedDate, -1);
       const { data: yesterdayAllocs } = await supabase.from('hsk_allocations').select('*').eq('report_date', yesterday);
       
       if (yesterdayAllocs && yesterdayAllocs.length > 0) {
@@ -106,12 +135,12 @@ export default function AllocationPage() {
       setIsProcessing(false);
   };
 
-  const changeDate = (days: number) => {
+  const goToDate = (next: string) => {
+      if (!next || next === selectedDate) return;
       if (isDirty && !confirm("You have unsaved changes. Discard them?")) return;
-      const d = new Date(selectedDate);
-      d.setDate(d.getDate() + days);
-      setSelectedDate(d.toISOString().split('T')[0]);
+      setSelectedDate(next);
   };
+  const changeDate = (days: number) => goToDate(shiftDate(selectedDate, days));
 
   // Safe tab identification matching exact or normalized names
   const areaKey = (activeArea || '').toLowerCase().replace(/[-_ &]/g, '');
@@ -124,19 +153,19 @@ export default function AllocationPage() {
               <div>
                   <h1 className="text-lg font-black text-slate-800">Master Allocation</h1>
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                     {new Date(selectedDate).toLocaleDateString('en-GB', { dateStyle: 'full' })}
+                     {new Date(`${selectedDate}T00:00:00`).toLocaleDateString('en-GB', { dateStyle: 'full' })}
                   </p>
               </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
               <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
                   <button onClick={() => changeDate(-1)} className="p-1.5 hover:bg-white rounded-md text-slate-500"><ChevronLeft size={16}/></button>
-                  <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="bg-transparent text-xs font-bold text-slate-700 outline-none px-1 cursor-pointer"/>
+                  <input type="date" value={selectedDate} onChange={(e) => goToDate(e.target.value)} className="bg-transparent text-xs font-bold text-slate-700 outline-none px-1 cursor-pointer"/>
                   <button onClick={() => changeDate(1)} className="p-1.5 hover:bg-white rounded-md text-slate-500"><ChevronRight size={16}/></button>
               </div>
               <button onClick={handleCopyYesterday} className="bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">Copy Yesterday</button>
               <button onClick={handleSave} disabled={isProcessing || !isDirty} className={`px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm ${isDirty ? 'bg-[#6D2158] text-white hover:bg-[#5a1b49]' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
-                  {isProcessing ? <Loader2 size={14} className="animate-spin inline mr-1"/> : null} Save
+                  {isProcessing ? <Loader2 size={14} className="animate-spin inline mr-1"/> : null} {isDirty ? 'Save changes' : 'Saved'}
               </button>
           </div>
       </div>

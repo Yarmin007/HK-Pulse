@@ -7,10 +7,12 @@ import {
   Printer, Settings, LogOut, Warehouse, 
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
-  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Wind, Key, Waves, Plane, CalendarDays, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
-  Eye, ArrowLeft, UserCog, Search
+  Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Key, Plane, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
+  Eye, ArrowLeft, UserCog, Search, Bike
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { getDhakaDateStr } from "@/lib/dateUtils";
+import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
 
 type Tone = 'brand' | 'emerald' | 'purple' | 'sky' | 'rose' | 'blue' | 'amber';
 const TONES: Record<Tone, { text: string; soft: string; chip: string; hover: string }> = {
@@ -37,6 +39,7 @@ const ALLOCATION_ITEMS = [
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
   { name: "Special Villas", icon: Key, path: "/allocation/special" },
   { name: "Allocation Sheet", icon: Map, path: "/allocation/sheet" },
+  { name: "Runner View", icon: Bike, path: "/runner" },
 ];
 
 const INVENTORY_ITEMS = [
@@ -64,8 +67,6 @@ const TEAM_ITEMS = [
   { name: "Casual Attendance", icon: Users, path: "/attendance/casual" },
   { name: "Leave Clearance", icon: ShieldCheck, path: "/attendance/clearance" },
   { name: "Overtime", icon: Clock, path: "/overtime" },
-  { name: "Leave Planner", icon: Plane, path: "/leave-planner" },
-  { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests" },
 ];
 
 const MINIBAR_ITEMS = [
@@ -79,8 +80,6 @@ const MINIBAR_ITEMS = [
 
 // --- OPERATIONS MENUS ---
 const OPERATIONS_ITEMS = [
-  { name: "Over-Water Ops", icon: Waves, path: "/ladders", key: "ladders" },
-  { name: "AC Tracker", icon: Wind, path: "/ac-tracker", key: "ac-tracker" },
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders", key: "orders" },
   { name: "Cost Saving", icon: TrendingUp, path: "/cost-saving", key: "cost-saving" },
   { name: "Print Hub", icon: Printer, path: "/print", key: "print" },
@@ -105,8 +104,6 @@ const STAFF_MENU_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests", key: "allocation" }, 
   { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle", key: "inventory" },
   { name: "My Schedule", icon: Calendar, path: "/schedule", key: "schedule" },
-  { name: "Leave Requests", icon: CalendarDays, path: "/leave-requests", key: "leave-requests" },
-  { name: "AC Tracker", icon: Wind, path: "/ac-tracker", key: "ac-tracker" },
 ];
 
 export default function Sidebar() {
@@ -130,10 +127,12 @@ export default function Sidebar() {
   const [isSimulateOpen, setIsSimulateOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [mobileSearch, setMobileSearch] = useState('');
+  const [deskSearch, setDeskSearch] = useState('');
 
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [allHosts, setAllHosts] = useState<any[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isRunnerToday, setIsRunnerToday] = useState(false);
 
   useEffect(() => {
       const sessionData = localStorage.getItem('hk_pulse_session');
@@ -141,6 +140,17 @@ export default function Sidebar() {
           try {
               const parsed = JSON.parse(sessionData);
               setCurrentUser(parsed);
+
+              // On Runner duty today? Then they get the Runner page.
+              if (parsed.id) {
+                supabase
+                  .from("hsk_allocations")
+                  .select("area, shift, task_details")
+                  .eq("report_date", getDhakaDateStr())
+                  .eq("host_id", parsed.id)
+                  .eq("area", "riders")
+                  .then(({ data }) => setIsRunnerToday((data || []).some((a: any) => !isOffShift(a.shift) && riderDutyOf(a, { role: parsed.role }) === "Runner")));
+              }
 
               if (parsed.is_super_admin || parsed.impersonating_from) {
                 supabase
@@ -228,7 +238,6 @@ export default function Sidebar() {
   const roleLower = String(currentUser?.role || '').toLowerCase();
   const deptLower = String(currentUser?.department || '').toLowerCase();
   const isPoolAttendant = roleLower.includes('pool');
-  const isStepCleaner = roleLower.includes('step cleaner');
   const isSuperAdmin = currentUser?.is_super_admin || !!currentUser?.impersonating_from;
   const isAdmin = currentUser?.system_role === 'admin' || (currentUser?.is_super_admin && !currentUser?.impersonating_from);
 
@@ -238,21 +247,15 @@ export default function Sidebar() {
   const canAccessInventory = isAdmin || canAccess("inventory");
 
   const activeStaffTabs = useMemo(() => {
-      if (!isPoolAttendant) return STAFF_CORE_BASE;
-      return [
+      const base = !isPoolAttendant ? STAFF_CORE_BASE : [
           STAFF_CORE_BASE[0], 
           { name: "Water Prod.", icon: Droplets, path: "/water" },
           STAFF_CORE_BASE[1]  
       ];
-  }, [isPoolAttendant]);
+      return isRunnerToday ? [base[0], { name: "Runner", icon: Bike, path: "/runner" }, ...base.slice(1)] : base;
+  }, [isPoolAttendant, isRunnerToday]);
 
-  const dynamicStaffMenuItems = useMemo(() => {
-      const items = [...STAFF_MENU_ITEMS];
-      if (isStepCleaner) {
-          items.unshift({ name: "Over-Water Ops", icon: Waves, path: "/ladders", key: "ladders" });
-      }
-      return items;
-  }, [isStepCleaner]);
+  const dynamicStaffMenuItems = STAFF_MENU_ITEMS;
 
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
@@ -261,14 +264,14 @@ export default function Sidebar() {
       { name: "Tasks", icon: CheckSquare, path: "/tasks" },
   ];
 
-  const STAFF_BOTTOM_TABS = isPoolAttendant ? [
+  const STAFF_BOTTOM_TABS = isRunnerToday ? [
+      { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+      { name: "Runner", icon: Bike, path: "/runner" },
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
+  ] : isPoolAttendant ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Water Prod.", icon: Droplets, path: "/water" },
       { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" } 
-  ] : isStepCleaner ? [
-      { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "Over-Water", icon: Waves, path: "/ladders" },
-      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
   ] : [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }, 
@@ -308,8 +311,8 @@ export default function Sidebar() {
     </svg>
   );
 
-  const simulateBlock = isSuperAdmin && (
-    <div className="pt-1 border-t border-slate-100 mt-1">
+  const simulateBlock = isSuperAdmin && !currentUser?.impersonating_from && (
+    <div className="pt-1 mt-1 border-t border-slate-100">
       {currentUser?.impersonating_from ? (
         <button onClick={handleExitSimulation} className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-amber-500 text-slate-950 font-black text-[11px] active:scale-95 transition-all">
           <div className="flex items-center gap-2 truncate"><Eye size={13} className="animate-pulse shrink-0" /><span className="truncate">Exit ({currentUser.full_name})</span></div>
@@ -317,7 +320,7 @@ export default function Sidebar() {
         </button>
       ) : (
         <>
-          <button onClick={() => setIsSimulateOpen(!isSimulateOpen)} className={`w-full flex items-center justify-between px-4 py-2 rounded-xl text-[11px] font-bold transition-all ${isSimulateOpen ? "bg-blue-100 text-blue-900" : "text-blue-700 hover:bg-blue-50"}`}>
+          <button onClick={() => setIsSimulateOpen(!isSimulateOpen)} className={`w-full flex items-center justify-between h-8 px-2.5 rounded-md text-[13px] transition-colors ${isSimulateOpen ? "bg-slate-100 text-slate-900" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`}>
             <div className="flex items-center gap-2.5"><UserCog size={14} /><span>Simulate Host View</span></div>
             {isSimulateOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
@@ -338,36 +341,70 @@ export default function Sidebar() {
   );
 
   let lastGroup = '';
+  const dq = deskSearch.trim().toLowerCase();
+  const deskMatches = dq
+    ? sections.flatMap(sec => sec.items.map(it => ({ ...it, section: sec.title })))
+        .filter((it, i, arr) => arr.findIndex(x => x.path === it.path) === i)
+        .filter(it => it.name.toLowerCase().includes(dq) || it.section.toLowerCase().includes(dq))
+    : [];
+  const initials = String(currentUser?.full_name || 'HK').split(' ').map((w: string) => w[0]).slice(0, 2).join('').toUpperCase();
+
+  // Row styles
+  const rowBase = "relative flex items-center gap-3 h-9 px-3 rounded-lg text-[13px] transition-colors";
+  const rowIdle = "text-slate-600 hover:bg-slate-100 hover:text-slate-900";
+  const rowActive = "bg-[#6D2158]/[0.08] text-[#6D2158] font-semibold before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r-full before:bg-[#6D2158]";
+
   return (
     <>
       {/* DESKTOP SIDEBAR */}
-      <aside className="print:hidden hidden md:flex fixed top-0 left-0 h-screen w-64 bg-white/70 backdrop-blur-3xl border-r border-slate-200/50 flex-col z-50">
-        <div className="h-20 flex items-center justify-center px-6 border-b border-slate-200/50 text-[#6D2158] shrink-0">
-          <Logo className="h-9 w-auto drop-shadow-sm" />
+      <aside className="print:hidden hidden md:flex fixed inset-y-0 left-0 w-64 flex-col z-50 bg-white border-r border-slate-200/80 font-sans">
+        <div className="h-16 shrink-0 flex items-center px-5 text-[#6D2158]">
+          <Link href="/" aria-label="Dashboard"><Logo className="h-7 w-auto" /></Link>
         </div>
 
-        <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto no-scrollbar">
-          {sections.map((sec, idx) => {
+        <div className="px-3 pb-2 shrink-0">
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={deskSearch} onChange={e => setDeskSearch(e.target.value)} placeholder="Find a page"
+              onKeyDown={e => { if (e.key === 'Escape') setDeskSearch(''); }}
+              className="w-full h-9 pl-9 pr-3 rounded-lg bg-slate-100/80 border border-transparent text-[13px] text-slate-700 placeholder-slate-400 outline-none focus:bg-white focus:border-[#6D2158]/40 focus:ring-2 focus:ring-[#6D2158]/10" />
+          </div>
+        </div>
+
+        <nav className="flex-1 overflow-y-auto no-scrollbar px-3 pb-4">
+          {dq ? (
+            <div className="pt-2 space-y-0.5">
+              {deskMatches.length === 0 && <p className="px-3 py-6 text-center text-[13px] text-slate-400">No page matches.</p>}
+              {deskMatches.map(it => (
+                <Link key={it.path} href={it.path} onClick={() => setDeskSearch('')} className={`${rowBase} ${isActivePath(it.path) ? rowActive : rowIdle}`}>
+                  <it.icon size={16} className="shrink-0 opacity-80" />
+                  <span className="truncate flex-1">{it.name}</span>
+                  <span className="text-[10px] text-slate-400 truncate max-w-[70px]">{it.section}</span>
+                </Link>
+              ))}
+            </div>
+          ) : sections.map((sec) => {
             const heading = sec.group !== lastGroup ? sec.group : '';
             lastGroup = sec.group;
-            const t = TONES[sec.tone];
             const sectionActive = sec.items.some(it => isActivePath(it.path));
             return (
               <div key={sec.key}>
-                {heading && <div className={`text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 ${idx === 0 ? "" : "mt-5"} mb-2 px-2`}>{heading}</div>}
+                {heading && <div className="px-3 pt-5 pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-slate-400">{heading}</div>}
                 {sec.collapsible ? (
-                  <div className="pt-0.5">
-                    <button onClick={sec.toggle} className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl transition-all group ${sectionActive && !sec.open ? t.chip : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"}`}>
-                      <span className="flex items-center gap-3"><sec.icon size={18} className={sectionActive ? t.text : ''} /><span className="text-xs font-bold tracking-wide">{sec.title}</span></span>
-                      {sec.open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <div>
+                    <button onClick={sec.toggle} className={`${rowBase} w-full ${sectionActive && !sec.open ? 'text-[#6D2158] font-semibold hover:bg-slate-100' : rowIdle}`}>
+                      <sec.icon size={16} className="shrink-0 opacity-80" />
+                      <span className="flex-1 text-left truncate">{sec.title}</span>
+                      {sectionActive && !sec.open && <span className="w-1.5 h-1.5 rounded-full bg-[#6D2158]" />}
+                      <ChevronRight size={14} className={`shrink-0 text-slate-400 transition-transform ${sec.open ? 'rotate-90' : ''}`} />
                     </button>
                     {sec.open && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-slate-200 space-y-0.5 animate-in-up">
+                      <div className="ml-[22px] pl-2.5 border-l border-slate-200 my-0.5 space-y-0.5">
                         {sec.items.map((item) => {
-                          const on = pathname === item.path;
+                          const on = isActivePath(item.path) && (item.path === pathname || !sec.items.some(o => o.path !== item.path && o.path.length > item.path.length && isActivePath(o.path)));
                           return (
-                            <Link key={item.path} href={item.path} className={`flex items-center gap-3 px-4 py-2 rounded-xl transition-all ${on ? `${t.soft} font-black` : `text-slate-500 hover:bg-slate-50 ${t.hover}`}`}>
-                              <item.icon size={14} strokeWidth={on ? 2.5 : 2} /><span className="text-[11px] tracking-wide">{item.name}</span>
+                            <Link key={item.path} href={item.path} className={`flex items-center h-8 px-2.5 rounded-md text-[13px] transition-colors ${on ? 'bg-[#6D2158]/[0.08] text-[#6D2158] font-semibold' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'}`}>
+                              <span className="truncate">{item.name}</span>
                             </Link>
                           );
                         })}
@@ -376,24 +413,39 @@ export default function Sidebar() {
                     )}
                   </div>
                 ) : (
-                  sec.items.map((item) => {
-                    const on = isActivePath(item.path);
-                    return (
-                      <Link key={item.path} href={item.path} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all group ${on ? "bg-[#6D2158] text-white shadow-lg shadow-[#6D2158]/20" : "text-slate-500 hover:bg-slate-100 hover:text-[#6D2158]"}`}>
-                        <item.icon size={18} strokeWidth={on ? 2.5 : 2} /><span className="text-xs font-bold tracking-wide">{item.name}</span>
-                      </Link>
-                    );
-                  })
+                  <div className="space-y-0.5">
+                    {sec.items.map((item) => {
+                      const on = isActivePath(item.path);
+                      return (
+                        <Link key={item.path} href={item.path} className={`${rowBase} ${on ? rowActive : rowIdle}`}>
+                          <item.icon size={16} className="shrink-0 opacity-80" />
+                          <span className="truncate">{item.name}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             );
           })}
         </nav>
 
-        <div className="p-4 border-t border-slate-200/50 bg-white/50 shrink-0">
-          <button onClick={handleLogout} className="flex items-center gap-3 px-4 py-3 w-full rounded-xl text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-all active:scale-95">
-            <LogOut size={18} /><span className="text-xs font-bold tracking-wide">Sign Out</span>
+        {currentUser?.impersonating_from && (
+          <button onClick={handleExitSimulation} className="mx-3 mb-2 flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-amber-400 text-amber-950 text-[12px] font-semibold">
+            <span className="flex items-center gap-2 truncate"><Eye size={14} /> Viewing as {currentUser.full_name?.split(' ')[0]}</span>
+            <ArrowLeft size={13} />
           </button>
+        )}
+
+        <div className="shrink-0 border-t border-slate-200/80 p-3">
+          <div className="flex items-center gap-3 px-1.5">
+            <div className="w-9 h-9 rounded-full bg-[#6D2158] text-white flex items-center justify-center text-[12px] font-bold shrink-0">{initials}</div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-semibold text-slate-800 truncate leading-tight">{currentUser?.full_name || 'HK Pulse'}</p>
+              <p className="text-[11px] text-slate-400 truncate">{currentUser?.role || (isAdmin ? 'Admin' : 'Staff')}</p>
+            </div>
+            <button onClick={handleLogout} title="Sign out" className="p-2 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors"><LogOut size={16} /></button>
+          </div>
         </div>
       </aside>
 

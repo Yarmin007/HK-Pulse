@@ -1890,12 +1890,12 @@ export default function HousekeepingSummaryPage() {
                <div className="h-10 w-1.5 bg-[#6D2158] rounded-full shrink-0"></div>
                <div>
                  <div className="flex items-center gap-2">
-                    <h1 className="text-xl font-black text-slate-800 tracking-tight">OPERA • Housekeeping Guest Management</h1>
-                    <span className="text-[10px] font-black uppercase bg-[#6D2158]/10 text-[#6D2158] px-2 py-0.5 rounded-md">PMS Live</span>
+                    <h1 className="text-xl font-black text-slate-800 tracking-tight"><span className="md:hidden">Guest List</span><span className="hidden md:inline">OPERA • Housekeeping Guest Management</span></h1>
+                    <span className="hidden sm:inline text-[10px] font-black uppercase bg-[#6D2158]/10 text-[#6D2158] px-2 py-0.5 rounded-md">PMS Live</span>
                  </div>
                  <div className="flex flex-wrap items-center gap-2 mt-0.5">
                      <p className="text-xs text-slate-500 font-bold uppercase tracking-wide">
-                        {new Date(selectedDate).toLocaleDateString('en-GB', { dateStyle: 'full' })}
+                        {new Date(`${selectedDate}T00:00:00`).toLocaleDateString('en-GB', { dateStyle: 'full' })}
                      </p>
                      {lastSyncTime && (
                         <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
@@ -1925,26 +1925,26 @@ export default function HousekeepingSummaryPage() {
                         <Plus size={15}/> <span>Register Guest</span>
                    </button>
 
-                   <button onClick={handleRollOver} disabled={isRollingOver} className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50">
+                   <button onClick={handleRollOver} disabled={isRollingOver} className="hidden md:flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50">
                         {isRollingOver ? <Loader2 size={16} className="animate-spin"/> : <RotateCw size={16}/>} <span>Roll Over</span>
                    </button>
 
                    <input key={`occ-${fileInputKey}`} type="file" id="fileOcc" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'OCC')} />
-                   <button onClick={() => document.getElementById('fileOcc')?.click()} className="flex items-center gap-2 bg-white border border-slate-200 hover:border-emerald-600 text-slate-600 hover:text-emerald-700 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
+                   <button onClick={() => document.getElementById('fileOcc')?.click()} className="hidden md:flex items-center gap-2 bg-white border border-slate-200 hover:border-emerald-600 text-slate-600 hover:text-emerald-700 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
                       {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span>OCC XML</span>
                    </button>
 
                    <input key={`arr-${fileInputKey}`} type="file" id="fileXML" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'ARRDEP_XML')} />
-                   <button onClick={() => document.getElementById('fileXML')?.click()} className="flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
+                   <button onClick={() => document.getElementById('fileXML')?.click()} className="hidden md:flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
                       {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span>Arrivals XML</span>
                    </button>
 
                    <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".csv" onChange={(e) => handleFileProcess(e, 'MEMO_CSV')} />
-                   <button onClick={() => document.getElementById('fileMemo')?.click()} className="flex items-center gap-2 bg-teal-50 border border-teal-200 text-teal-800 hover:bg-teal-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
+                   <button onClick={() => document.getElementById('fileMemo')?.click()} className="hidden md:flex items-center gap-2 bg-teal-50 border border-teal-200 text-teal-800 hover:bg-teal-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
                       {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span>Memo CSV</span>
                    </button>
 
-                   <button onClick={() => setIsPasteModalOpen(true)} className="flex items-center gap-2 bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
+                   <button onClick={() => setIsPasteModalOpen(true)} className="hidden md:flex items-center gap-2 bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
                       <FileSpreadsheet size={16}/> <span>Paste Memo</span>
                    </button>
 

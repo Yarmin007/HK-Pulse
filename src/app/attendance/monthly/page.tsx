@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ChevronLeft, ChevronRight, Loader2, Printer, ArrowLeft, Download, CalendarDays, Filter, X } from 'lucide-react';
 import { isOnAttendance } from '@/lib/hostProfile';
+import { fetchAttendanceRange, fetchROEvents, isWorkedLeave } from '@/lib/attendanceData';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO } from 'date-fns';
 import Link from 'next/link';
@@ -61,48 +62,18 @@ export default function MonthlyAttendanceSheet() {
       fetchData();
   }, [year, month]);
 
-  // ⚡ FIX: Bypasses 1000 row limit by looping through the entire database exactly like the master attendance page does
-  const loadAttendanceData = async (startD: string, endD: string) => {
-      let allData: any[] = [];
-      let from = 0;
-      let step = 1000;
-      let hasMore = true;
-
-      while (hasMore) {
-          const { data, error } = await supabase
-              .from('hsk_attendance')
-              .select('id, host_id, date, status_code')
-              .gte('date', startD)
-              .lte('date', endD)
-              .range(from, from + step - 1);
-
-          if (error) {
-              console.error("Error fetching attendance:", error);
-              break;
-          }
-
-          if (data && data.length > 0) {
-              allData.push(...data);
-              from += step;
-              if (data.length < step) hasMore = false;
-          } else {
-              hasMore = false;
-          }
-      }
-
-      return allData.map(a => ({
-          ...a,
-          date: a.date ? String(a.date).split('T')[0] : ''
-      }));
-  };
-
   const fetchData = async (showLoading = true) => {
       if (showLoading) setIsLoading(true);
 
-      const [constRes, hostRes, rpcRes] = await Promise.all([
+      // Only this sheet's 21st–20th rows are needed for the grid; balances come from the
+      // database's year-to-date totals plus the RO rows. Everything loads at once.
+      const periodStart = format(new Date(year, month - 1, 21), 'yyyy-MM-dd');
+      const [constRes, hostRes, rpcRes, formattedAtt, roRows] = await Promise.all([
           supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank', 'team_viewer_config']),
           supabase.from('hsk_hosts').select('*'),
-          supabase.rpc('get_all_attendance_stats', { p_target_date: targetDateStr })
+          supabase.rpc('get_all_attendance_stats', { p_target_date: targetDateStr }),
+          fetchAttendanceRange(periodStart, targetDateStr, 'id, host_id, date, status_code, shift_note'),
+          fetchROEvents(),
       ]);
       
       let ranks: Record<string, number> = {};
@@ -126,13 +97,10 @@ export default function MonthlyAttendanceSheet() {
           setPublicHolidays(phs);
       }
       
-      const prevYear = year - 1;
-      const formattedAtt = await loadAttendanceData(`${prevYear}-12-21`, `${year}-12-31`);
 
       let sortedHosts = [];
       if (hostRes.data) {
           // Permanent hosts only; resigned hosts stay for periods that started before their last working day.
-          const periodStart = format(new Date(year, month - 1, 21), 'yyyy-MM-dd');
           sortedHosts = hostRes.data.filter((h: any) => isOnAttendance(config, h, periodStart)).sort((a, b) => {
               const rankA = ranks[(a.role || '').toLowerCase().trim()] ?? 999;
               const rankB = ranks[(b.role || '').toLowerCase().trim()] ?? 999;
@@ -145,7 +113,7 @@ export default function MonthlyAttendanceSheet() {
       }
 
       const hostsWithBals = sortedHosts.map(h => {
-           const b = computeLeaveBalancesRPC(h, formattedAtt, rpcRes.data || [], targetDateStr, phs, []);
+           const b = computeLeaveBalancesRPC(h, [], rpcRes.data || [], targetDateStr, phs, [], roRows);
            return { ...h, ...(b || {}) };
       });
 
@@ -204,6 +172,13 @@ export default function MonthlyAttendanceSheet() {
       fetchData(false);
   };
 
+  // host + date → row (the old version searched the whole list for every cell)
+  const attMap = useMemo(() => {
+      const m = new Map<string, any>();
+      attendance.forEach(a => m.set(`${a.host_id}_${a.date}`, a));
+      return m;
+  }, [attendance]);
+
   const groupedHosts = useMemo(() => {
       const groups: Record<string, any[]> = {};
       hosts.forEach(h => {
@@ -225,23 +200,25 @@ export default function MonthlyAttendanceSheet() {
   const handleExportCSV = () => {
       let csv = 'Department,Host ID,Name,Role,';
       monthDates.forEach(d => csv += `${format(parseISO(d), 'dd MMM')},`);
-      csv += 'Bal OFF,Bal PH,Plan OFF,Plan PH,Plan AL\n';
+      csv += 'Bal OFF,Bal PH,Bal RO,Plan OFF,Plan PH,Plan AL,Plan RO\n';
 
       displayedDepartments.forEach(dep => {
           groupedHosts[dep].forEach(host => {
               csv += `"${dep}",${host.host_id},"${host.full_name}",${host.role},`;
-              let o=0, al=0, ph=0;
+              let o=0, al=0, ph=0, ro=0;
 
               monthDates.forEach(dateStr => {
-                  const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
+                  const record = attMap.get(`${host.host_id}_${dateStr}`);
+                  const worked = !!record && isWorkedLeave(record);
                   const val = record?.status_code || '';
-                  csv += `${val === 'P' ? '' : val},`;
-
+                  csv += `${val === 'P' ? '' : worked ? `${val}(W)` : val},`;
+                  if (worked) return;
+                  if (val === 'RO') ro++;
                   if (['O', 'OFF'].includes(val)) o++;
                   if (['AL', 'VAC'].includes(val)) al++;
                   if (val === 'PH') ph++;
               });
-              csv += `${host.balOff || 0},${host.balPH || 0},${o},${ph},${al}\n`;
+              csv += `${host.balOff || 0},${host.balPH || 0},${host.balRO || 0},${o},${ph},${al},${ro}\n`;
           });
       });
 
@@ -363,10 +340,12 @@ export default function MonthlyAttendanceSheet() {
                               {/* Summary Columns */}
                               <th className="border-y border-r border-l-2 border-slate-300 p-1 text-center font-black text-emerald-800 bg-emerald-200 leading-tight w-[4%] min-w-[32px]" title="Total Off Balance">BAL<br/>OFF</th>
                               <th className="border border-slate-300 p-1 text-center font-black text-blue-800 bg-blue-200 leading-tight w-[4%] min-w-[32px]" title="Total PH Balance">BAL<br/>PH</th>
+                              <th className="border border-slate-300 p-1 text-center font-black text-yellow-900 bg-yellow-200 leading-tight w-[4%] min-w-[32px]" title="Replacement Off owed (worked a leave day)">BAL<br/>RO</th>
                               
                               <th className="border border-slate-300 p-1 text-center font-black text-emerald-700 bg-emerald-100 leading-tight w-[4%] min-w-[32px]" title="Planned/Taken Off Days">PLN<br/>OFF</th>
                               <th className="border border-slate-300 p-1 text-center font-black text-blue-700 bg-blue-100 leading-tight w-[4%] min-w-[32px]" title="Planned/Taken Public Holiday">PLN<br/>PH</th>
                               <th className="border border-slate-300 p-1 text-center font-black text-cyan-700 bg-cyan-100 leading-tight w-[4%] min-w-[32px]" title="Planned/Taken Annual Leave">PLN<br/>AL</th>
+                              <th className="border border-slate-300 p-1 text-center font-black text-yellow-800 bg-yellow-100 leading-tight w-[4%] min-w-[32px]" title="Planned/Taken Replacement Off">PLN<br/>RO</th>
                           </tr>
                       </thead>
                       <tbody className="font-medium text-slate-700">
@@ -374,7 +353,7 @@ export default function MonthlyAttendanceSheet() {
                               <React.Fragment key={dep}>
                                   {/* Department Subheader */}
                                   <tr className="bg-slate-200 print:bg-slate-300">
-                                      <td colSpan={monthDates.length + 6} className="p-2 border border-slate-300">
+                                      <td colSpan={monthDates.length + 8} className="p-2 border border-slate-300">
                                           <div className="font-black text-slate-800 uppercase tracking-widest text-xs flex items-center gap-2">
                                               <CalendarDays size={14} className="text-[#6D2158]"/> {dep}
                                           </div>
@@ -383,7 +362,7 @@ export default function MonthlyAttendanceSheet() {
 
                                   {/* Staff Rows */}
                                   {groupedHosts[dep].map(host => {
-                                      let o=0, al=0, ph=0;
+                                      let o=0, al=0, ph=0, ro=0;
 
                                       return (
                                           <tr key={host.host_id} className="hover:bg-slate-50 print:break-inside-avoid">
@@ -394,12 +373,21 @@ export default function MonthlyAttendanceSheet() {
 
                                               {/* Interactive Cells */}
                                               {monthDates.map(dateStr => {
-                                                  const record = attendance.find(a => a.host_id === host.host_id && a.date === dateStr);
+                                                  const record = attMap.get(`${host.host_id}_${dateStr}`);
                                                   const val = record?.status_code || '';
-                                                  
-                                                  if (['O', 'OFF'].includes(val)) o++;
-                                                  if (['AL', 'VAC'].includes(val)) al++;
-                                                  if (val === 'PH') ph++;
+                                                  // Leave on paper but "working day" in the comment → counted as worked
+                                                  const worked = !!record && isWorkedLeave(record);
+                                                  const joinedOn = host.joining_date ? String(host.joining_date).slice(0, 10) : '';
+                                                  if (joinedOn && dateStr < joinedOn) {
+                                                      return <td key={dateStr} title="Not joined yet" className="border border-slate-800 p-0 bg-slate-900 print:bg-black box-border" />;
+                                                  }
+
+                                                  if (!worked) {
+                                                      if (['O', 'OFF'].includes(val)) o++;
+                                                      if (['AL', 'VAC'].includes(val)) al++;
+                                                      if (val === 'PH') ph++;
+                                                      if (val === 'RO') ro++;
+                                                  }
 
                                                   const displayVal = val === 'P' ? '' : val;
                                                   const colorClass = STATUS_COLORS[val] || '';
@@ -418,10 +406,11 @@ export default function MonthlyAttendanceSheet() {
                                                       <td 
                                                           key={dateStr} 
                                                           onClick={() => setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: val })}
-                                                          className={`border border-slate-200 p-0 text-center font-bold print:border-slate-400 cursor-pointer hover:ring-2 hover:ring-inset hover:ring-[#6D2158] transition-all box-border ${colorClass} ${cellBg}`}
+                                                          className={`relative border border-slate-200 p-0 text-center font-bold print:border-slate-400 cursor-pointer hover:ring-2 hover:ring-inset hover:ring-[#6D2158] transition-all box-border ${colorClass} ${cellBg}`}
                                                       >
-                                                          <div className="w-full h-full min-h-[24px] flex items-center justify-center">
+                                                          <div className="w-full h-full min-h-[24px] flex flex-col items-center justify-center leading-none" title={worked ? 'Worked (comment says working day) — earns 1 RO' : record?.shift_note || undefined}>
                                                               {displayVal}
+                                                              {worked && <span className="absolute bottom-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500 print:bg-black" />}
                                                           </div>
                                                       </td>
                                                   );
@@ -430,11 +419,13 @@ export default function MonthlyAttendanceSheet() {
                                               {/* Master Balances */}
                                               <td className="border-y border-r border-l-2 border-slate-300 p-1 text-center font-black bg-emerald-100/50 text-emerald-800">{host.balOff || '0'}</td>
                                               <td className="border border-slate-200 p-1 text-center font-black bg-blue-100/50 text-blue-800">{host.balPH || '0'}</td>
+                                              <td className={`border border-slate-200 p-1 text-center font-black ${(host.balRO || 0) < 0 ? 'bg-rose-50 text-rose-600' : 'bg-yellow-100/60 text-yellow-900'}`} title={(host.balRO || 0) < 0 ? 'RO given without a "working day" comment on the day worked' : undefined}>{host.balRO || '0'}</td>
                                               
                                               {/* Planned/Taken within this exact grid period */}
                                               <td className="border border-slate-200 p-1 text-center font-black text-emerald-600 bg-slate-50 print:border-slate-400">{o || '-'}</td>
                                               <td className="border border-slate-200 p-1 text-center font-black text-blue-600 bg-slate-50 print:border-slate-400">{ph || '-'}</td>
                                               <td className="border border-slate-200 p-1 text-center font-black text-cyan-600 bg-slate-50 print:border-slate-400">{al || '-'}</td>
+                                              <td className="border border-slate-200 p-1 text-center font-black text-yellow-700 bg-slate-50 print:border-slate-400">{ro || '-'}</td>
                                           </tr>
                                       );
                                   })}

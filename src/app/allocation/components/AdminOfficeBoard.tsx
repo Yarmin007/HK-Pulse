@@ -386,7 +386,7 @@ export default function AdminOfficeBoard({
                   </div>
 
                   <button
-                    onClick={() => handleRemoveAllocation(a.host_id, shift)}
+                    onClick={() => handleRemoveAllocation(a.host_id, a.shift)}
                     className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
                     title="Remove from shift"
                   >
