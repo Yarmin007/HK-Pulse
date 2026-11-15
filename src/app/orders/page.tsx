@@ -102,7 +102,7 @@ const parsePrCsv = (text: string): PastedPrItem[] => {
   const iName = col(['description', 'item name', 'item desc', 'item']);
   const iQty = col(['ordered qty', 'order qty', 'quantity', 'qty']);
   if (iName >= 0 && iQty >= 0 && iName !== iQty) {
-    const iUnit = col(['unit', 'uom']), iDate = col(['pr date', 'date']), iNo = col(['pr no', 'pr_no', 'request no', 'request_no', 'pr #']);
+    const iUnit = col(['unit', 'uom']), iDate = col(['pr date', 'date']), iNo = (() => { const i = col(['pr no', 'pr_no', 'pr number', 'pr num', 'pr #', 'pr#', 'request no', 'request_no', 'request number', 'req no', 'req. no']); return i >= 0 ? i : head.findIndex((h) => h.trim() === 'pr'); })();
     const iArt = col(['article', 'art no', 'art.']), iRem = col(['remark', 'note']);
     const iRecDate = col(['date'], true), iRecQty = col(['qty', 'quantity'], true);
     return rows.slice(1).map((r) => ({
@@ -158,10 +158,11 @@ export default function OrderTrackingPage() {
 
   // Pasted lines from the purchasing system (one PR line each)
   const [pasteText, setPasteText] = useState('');
-  // Lines read from an uploaded CSV (older PRs); shown in the same preview as pasted lines
+  // Bulk import from a CSV: every line keeps the PR No written in the file
   const [csvImport, setCsvImport] = useState<{ name: string; items: PastedPrItem[] } | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
   const csvInputRef = useRef<HTMLInputElement>(null);
-  const pastedItems = csvImport ? csvImport.items : parsePastedPrLines(pasteText);
+  const pastedItems = parsePastedPrLines(pasteText);
 
   // List shows one month at a time ('' = all months)
   const [month, setMonth] = useState<string>(thisMonth());
@@ -172,9 +173,7 @@ export default function OrderTrackingPage() {
     if (!file) return;
     const items = parsePrCsv(await file.text());
     if (items.length === 0) return toast.error('No PR lines found in this CSV');
-    setPasteText('');
     setCsvImport({ name: file.name, items });
-    setIsAddPrOpen(true);
   };
 
   useEffect(() => {
@@ -204,7 +203,50 @@ export default function OrderTrackingPage() {
       remarks: ''
     });
     setPasteText('');
+  };
+
+  const toPrRow = (it: PastedPrItem, fallbackDate: string, fallbackPrNo = '', fallbackRemark: string | null = null) => ({
+    order_type: 'Purchase Request',
+    request_no: (it.request_no || fallbackPrNo).trim(),
+    request_date: it.request_date || fallbackDate,
+    article_number: it.article_number || '',
+    item_name: it.item_name,
+    ordered_qty: it.ordered_qty || 1,
+    unit: it.unit || 'Each',
+    received_qty: it.received_qty || 0,
+    received_date: it.received_date || null,
+    remarks: it.remarks || fallbackRemark,
+    status: prStatusFor(it.ordered_qty || 1, it.received_qty || 0),
+  });
+
+  // Insert lines; older databases have no `remarks` column, so retry without it rather than failing
+  const insertPrRows = async (rows: Record<string, any>[]) => {
+    let { error } = await supabase.from('hsk_procurement_orders').insert(rows);
+    if (error && /remarks/i.test(error.message || '')) {
+      ({ error } = await supabase.from('hsk_procurement_orders').insert(rows.map(({ remarks: _r, ...rest }) => rest)));
+      if (!error && rows.some((r) => r.remarks)) toast('Saved without remarks: add a "remarks" column to hsk_procurement_orders to keep them', { icon: 'ℹ️' });
+    }
+    return error;
+  };
+
+  const showMonthsOf = (rows: Record<string, any>[]) => {
+    const months = [...new Set(rows.map((r) => String(r.request_date || '').slice(0, 7)))];
+    setMonth(months.length === 1 ? months[0] : '');
+  };
+
+  const handleImportCsv = async () => {
+    if (!csvImport) return;
+    const today = new Date().toISOString().split('T')[0];
+    const rows = csvImport.items.map((it) => toPrRow(it, today));
+    setIsImporting(true);
+    const error = await insertPrRows(rows);
+    setIsImporting(false);
+    if (error) return toast.error('Import failed: ' + error.message);
+    const prCount = new Set(rows.map((r) => r.request_no || `-${r.request_date}`)).size;
+    toast.success(`Imported ${rows.length} line${rows.length === 1 ? '' : 's'} in ${prCount} PR${prCount === 1 ? '' : 's'}`);
+    showMonthsOf(rows);
     setCsvImport(null);
+    fetchPurchaseOrders();
   };
 
   const handleSavePrOrder = async () => {
@@ -218,19 +260,7 @@ export default function OrderTrackingPage() {
 
     let rows: Record<string, any>[];
     if (pastedItems.length > 0) {
-      rows = pastedItems.map((it) => ({
-        ...base,
-        request_no: it.request_no || base.request_no,
-        remarks: it.remarks || base.remarks,
-        request_date: it.request_date || prFormData.request_date,
-        article_number: it.article_number || '',
-        item_name: it.item_name,
-        ordered_qty: it.ordered_qty || 1,
-        unit: it.unit || 'Each',
-        received_qty: it.received_qty || 0,
-        received_date: it.received_date || null,
-        status: prStatusFor(it.ordered_qty || 1, it.received_qty || 0),
-      }));
+      rows = pastedItems.map((it) => toPrRow(it, prFormData.request_date, base.request_no, base.remarks));
     } else {
       if (!prFormData.item_name.trim()) {
         return toast.error("Please enter the Item Description, or paste lines from the system");
@@ -245,18 +275,11 @@ export default function OrderTrackingPage() {
       }];
     }
 
-    let { error } = await supabase.from('hsk_procurement_orders').insert(rows);
-    // Older databases have no `remarks` column: save the lines without it rather than failing
-    if (error && /remarks/i.test(error.message || '')) {
-      ({ error } = await supabase.from('hsk_procurement_orders').insert(rows.map(({ remarks: _r, ...rest }) => rest)));
-      if (!error && rows.some((r) => r.remarks)) toast('Saved without remarks: add a "remarks" column to hsk_procurement_orders to keep them', { icon: 'ℹ️' });
-    }
+    const error = await insertPrRows(rows);
     if (error) return toast.error("Error saving PR: " + error.message);
 
     toast.success(rows.length === 1 ? "Purchase Request created!" : `${rows.length} PR lines created!`);
-    // Show where the new lines went: their month, or all months when they span several
-    const months = [...new Set(rows.map((r) => String(r.request_date || '').slice(0, 7)))];
-    setMonth(months.length === 1 ? months[0] : '');
+    showMonthsOf(rows);
     setIsAddPrOpen(false);
     resetPrForm();
     fetchPurchaseOrders();
@@ -455,7 +478,7 @@ export default function OrderTrackingPage() {
               const dates = [...g.dates].sort();
               return (
                 <div key={g.key} className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden flex">
-                  <div className={`w-28 shrink-0 p-3 border-r ${g.prNo ? 'bg-[#6D2158]/[0.04] border-[#6D2158]/10' : 'bg-amber-50/70 border-amber-100'}`}>
+                  <div className={`w-28 shrink-0 p-3 border-r flex flex-col justify-center ${g.prNo ? 'bg-[#6D2158]/[0.04] border-[#6D2158]/10' : 'bg-amber-50/70 border-amber-100'}`}>
                     {prNoInput(g.lines, g.prNo, 'text-xs w-full')}
                     <div className="text-[10px] font-mono font-semibold text-slate-400 mt-0.5">{dates[0]}{dates.length > 1 ? ' …' : ''}</div>
                   </div>
@@ -509,11 +532,11 @@ export default function OrderTrackingPage() {
                         <tr key={order.id} className={`hover:bg-slate-50 transition-colors ${i > 0 ? 'border-t border-slate-100' : ''}`}>
                           {i === 0 && (
                             <>
-                              <td rowSpan={n} className={`py-2.5 px-4 align-top font-mono text-[11px] font-semibold text-slate-500 border-r border-slate-100 ${tone}`}>
+                              <td rowSpan={n} className={`py-2.5 px-4 align-middle font-mono text-[11px] font-semibold text-slate-500 border-r border-slate-100 ${tone}`}>
                                 {dates[0]}
                                 {dates.length > 1 && <div className="text-[10px] text-slate-400">– {dates[dates.length - 1]}</div>}
                               </td>
-                              <td rowSpan={n} className={`py-2.5 px-4 align-top border-r border-slate-100 ${tone}`}>
+                              <td rowSpan={n} className={`py-2.5 px-4 align-middle border-r border-slate-100 ${tone}`}>
                                 {prNoInput(g.lines, g.prNo, 'text-xs w-full')}
                                 {n > 1 && <div className="text-[10px] font-bold text-slate-400 mt-0.5">{n} items</div>}
                               </td>
@@ -564,9 +587,6 @@ export default function OrderTrackingPage() {
                 <label className="text-[10px] font-bold uppercase text-slate-500 mb-1.5 flex items-center gap-1.5">
                   <ClipboardPaste size={13} className="text-[#6D2158]" /> Paste lines from the system
                 </label>
-                {csvImport ? (
-                  <p className="text-[11px] font-bold text-slate-600">From file: <span className="font-mono">{csvImport.name}</span></p>
-                ) : (
                 <textarea
                   rows={3}
                   placeholder="Copy the PR line(s) from the system and paste here. Item, qty and unit are read automatically."
@@ -574,15 +594,14 @@ export default function OrderTrackingPage() {
                   value={pasteText}
                   onChange={e => setPasteText(e.target.value)}
                 />
-                )}
-                {(pasteText.trim() || csvImport) && (
+                {pasteText.trim() && (
                   pastedItems.length === 0 ? (
                     <p className="text-[11px] font-bold text-rose-600 mt-1.5">Could not read an item from this text. Fill the fields below instead.</p>
                   ) : (
                     <div className="mt-2 space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-black uppercase text-emerald-700">{pastedItems.length} item{pastedItems.length === 1 ? '' : 's'} found</span>
-                        <button type="button" onClick={() => { setPasteText(''); setCsvImport(null); }} className="text-[10px] font-bold text-slate-400 hover:text-rose-600">Clear</button>
+                        <button type="button" onClick={() => setPasteText('')} className="text-[10px] font-bold text-slate-400 hover:text-rose-600">Clear</button>
                       </div>
                       <div className="space-y-1.5 max-h-64 overflow-y-auto">
                       {pastedItems.map((it, i) => (
@@ -706,6 +725,81 @@ export default function OrderTrackingPage() {
         </div>
       )}
 
+
+      {/* ========================================================================= */}
+      {/* BULK IMPORT FROM CSV: lines grouped by the PR No in the file              */}
+      {/* ========================================================================= */}
+      {csvImport && (() => {
+        const groups: { prNo: string; items: PastedPrItem[] }[] = [];
+        csvImport.items.forEach((it) => {
+          const prNo = (it.request_no || '').trim();
+          const key = prNo ? prNo.toUpperCase() : `-${it.request_date}`;
+          let g = groups.find((x) => (x.prNo ? x.prNo.toUpperCase() : `-${x.items[0].request_date}`) === key);
+          if (!g) { g = { prNo, items: [] }; groups.push(g); }
+          g.items.push(it);
+        });
+        const noPr = csvImport.items.filter((it) => !it.request_no).length;
+        return (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-end md:items-center justify-center p-0 md:p-4">
+            <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-2xl p-5 sm:p-6 animate-in slide-in-from-bottom-6 md:zoom-in-95 border border-slate-200 max-h-[92vh] flex flex-col">
+              <div className="flex justify-between items-start border-b border-slate-100 pb-3.5 mb-4">
+                <div>
+                  <h3 className="text-lg font-black text-slate-800">Import PRs from CSV</h3>
+                  <p className="text-[11px] font-bold text-slate-400 mt-0.5">
+                    <span className="font-mono">{csvImport.name}</span> · {csvImport.items.length} line{csvImport.items.length === 1 ? '' : 's'} in {groups.length} PR{groups.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+                <button onClick={() => setCsvImport(null)} className="bg-slate-100 p-1.5 rounded-full text-slate-500 hover:text-slate-800">
+                  <X size={18} />
+                </button>
+              </div>
+
+              {noPr > 0 && (
+                <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 mb-3">
+                  {noPr} line{noPr === 1 ? ' has' : 's have'} no PR No; you can add it later in the list.
+                </p>
+              )}
+
+              <div className="overflow-y-auto pr-1 space-y-2.5 text-xs">
+                {groups.map((g, gi) => (
+                  <div key={gi} className="flex border border-slate-200 rounded-2xl overflow-hidden">
+                    <div className={`w-32 shrink-0 p-3 border-r flex flex-col justify-center ${g.prNo ? 'bg-[#6D2158]/[0.04] border-[#6D2158]/10' : 'bg-amber-50/70 border-amber-100'}`}>
+                      <span className={`font-mono font-black ${g.prNo ? 'text-[#6D2158]' : 'text-amber-700'}`}>{g.prNo || 'No PR No'}</span>
+                      <span className="text-[10px] font-mono text-slate-400">{g.items[0].request_date || 'today'}</span>
+                      <span className="text-[10px] font-bold text-slate-400">{g.items.length} item{g.items.length === 1 ? '' : 's'}</span>
+                    </div>
+                    <div className="flex-1 min-w-0 divide-y divide-slate-100">
+                      {g.items.map((it, i) => (
+                        <div key={i} className="px-3 py-2 flex items-center justify-between gap-3">
+                          <span className="font-bold text-slate-800 min-w-0">{it.item_name}</span>
+                          <span className="shrink-0 text-right">
+                            <span className="font-black text-slate-900">{it.ordered_qty}</span> <span className="font-bold text-slate-500">{it.unit}</span>
+                            {!!it.received_qty && <span className="block text-[10px] font-bold text-emerald-600">Recv {it.received_qty}{it.received_date ? ` · ${it.received_date}` : ''}</span>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-100 mt-4">
+                <button type="button" onClick={() => setCsvImport(null)} className="px-4 py-2.5 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-xl">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleImportCsv}
+                  disabled={isImporting}
+                  className="px-6 py-2.5 bg-[#6D2158] hover:bg-[#5a1b49] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-md disabled:opacity-50"
+                >
+                  {isImporting ? 'Importing...' : `Import ${csvImport.items.length} line${csvImport.items.length === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
