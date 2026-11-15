@@ -238,7 +238,8 @@ export default function CoordinatorLog() {
   const [manualTime, setManualTime] = useState('');
   const [requesterSearch, setRequesterSearch] = useState('');
   
-  const [mbCart, setMbCart] = useState<{name: string, qty: number, isRefill?: boolean}[]>([]);
+  // isBank (coordinator only): banked straight away — not sent, not on the request, nobody else sees it.
+  const [mbCart, setMbCart] = useState<{name: string, qty: number, isRefill?: boolean, isBank?: boolean}[]>([]);
   const [mbCategory, setMbCategory] = useState('Frequent');
   const [otherMode, setOtherMode] = useState<'Catalog' | 'Note'>('Catalog');
   const [otherCategory, setOtherCategory] = useState('General');
@@ -487,7 +488,7 @@ export default function CoordinatorLog() {
 
     // What the coordinator banked on these requests (table may not exist yet → nothing banked).
     if (canSeePrivate) {
-        const ids = allRecords.filter(r => r.request_type === 'Minibar' && r.is_posted).map(r => r.id);
+        const ids = allRecords.filter(r => r.request_type === 'Minibar').map(r => r.id);
         if (ids.length) {
             const { data: bRows } = await supabase.from('hsk_minibar_banked').select('*').in('request_id', ids);
             const map: Record<string, BankedRow[]> = {};
@@ -538,8 +539,9 @@ export default function CoordinatorLog() {
         let n = match ? match[2] : cleanLine;
         if (isRef) n = n.replace(' (Refill)', '');
         return { name: n.trim(), qty: match ? parseInt(match[1]) : 1, isRefill: isRef };
-      });
-      setMbCart(items);
+      }).filter(i => i.name);
+      const banked = coord ? (bankedByReq[record.id] || []).filter(b => b.note === 'direct').map(b => ({ name: b.item_name, qty: b.qty, isBank: true })) : [];
+      setMbCart([...items, ...banked]);
       setIsMinibarOpen(true);
     } else {
       const cleanNote = (record.item_details || '').split('\n').map(l => l.replace(/\s*\(SENT\)$/, '')).join('\n');
@@ -571,7 +573,10 @@ export default function CoordinatorLog() {
   };
 
   const toggleRefill = (name: string) => {
-    setMbCart(mbCart.map(i => i.name === name ? { ...i, isRefill: !i.isRefill } : i));
+    setMbCart(mbCart.map(i => i.name === name ? { ...i, isRefill: !i.isRefill, isBank: false } : i));
+  };
+  const toggleBank = (name: string) => {
+    setMbCart(mbCart.map(i => i.name === name ? { ...i, isBank: !i.isBank, isRefill: false } : i));
   };
 
   const handleMagicFormat = async () => {
@@ -622,9 +627,12 @@ export default function CoordinatorLog() {
     let details = '';
     let reqType = 'General';
 
+    const bankItems = type === 'Minibar' && coord ? mbCart.filter(i => i.isBank) : [];
     if (type === 'Minibar') {
         if (mbCart.length === 0) { toast.error("Add at least one Minibar item"); return; }
-        details = mbCart.map(i => `${i.qty}x ${i.name}${i.isRefill ? ' (Refill)' : ''}`).join('\n');
+        const sendItems = mbCart.filter(i => !(coord && i.isBank));
+        if (sendItems.length === 0 && isEditing) { toast.error("Keep at least one item to send, or delete the request"); return; }
+        details = sendItems.map(i => `${i.qty}x ${i.name}${i.isRefill ? ' (Refill)' : ''}`).join('\n');
         reqType = 'Minibar';
     } else {
         details = otherMode === 'Catalog' ? otherCart.map(i => `${i.qty}x ${i.name}`).join('\n') : customNote;
@@ -657,15 +665,40 @@ export default function CoordinatorLog() {
        ...(coord ? { is_private: isPrivate } : {}),
     };
 
+ // Banked lines go to the coordinator's ledger only. "direct" = banked from the form, not from posting.
+    const saveBank = async (requestId: string | null) => {
+      if (requestId) await supabase.from('hsk_minibar_banked').delete().eq('request_id', requestId).eq('note', 'direct');
+      if (!bankItems.length) return true;
+      const now = new Date().toISOString();
+      const { error: bErr } = await supabase.from('hsk_minibar_banked').insert(bankItems.map(i => ({
+        request_id: requestId, villa_number: cleanV, guest_name: payload.guest_name || null, item_name: i.name, qty: i.qty,
+        banked_at: now, banked_by: loggedByName, note: 'direct', month_period: dateStr.slice(0, 7),
+      })));
+      if (bErr) { toast.error('Banked items not saved — run the banking SQL first'); return false; }
+      return true;
+    };
+
+    // Only banked items: nothing to send, so no request — straight to the Banked ledger.
+    if (type === 'Minibar' && !details.trim()) {
+      if (await saveBank(null)) {
+        setIsMinibarOpen(false);
+        toast.success(`Banked ${bankItems.map(i => `${i.qty}x ${i.name}`).join(', ')} · V${cleanV}`);
+      }
+      return;
+    }
+
     const write = (body: Record<string, unknown>) => isEditing
-      ? supabase.from('hsk_daily_requests').update(body).eq('id', editingId)
-      : supabase.from('hsk_daily_requests').insert(body);
-    let { error } = await write(payload);
+      ? supabase.from('hsk_daily_requests').update(body).eq('id', editingId).select('id').single()
+      : supabase.from('hsk_daily_requests').insert(body).select('id').single();
+    let { data: saved, error } = await write(payload);
     if (error && isMissingColumn(error) && 'is_private' in payload) {
       if (isPrivate) { toast.error(MISSING_COLUMN_HINT); return; }
       const { is_private: _skip, ...rest } = payload;
       void _skip;
-      ({ error } = await write(rest));
+      ({ data: saved, error } = await write(rest));
+    }
+    if (!error && type === 'Minibar' && coord && (bankItems.length || isEditing)) {
+      await saveBank((saved as { id: string } | null)?.id || editingId);
     }
       
     if (!error) { 
@@ -686,7 +719,7 @@ export default function CoordinatorLog() {
       const sinner = coord && (packageOf(r.package_tag) === 'Sinner' || (!r.package_tag && packageOf(g?.meal_plan) === 'Sinner'));
       setPostIsSinner(sinner);
       if (sinner) {
-          const banked = bankedByReq[r.id] || [];
+          const banked = (bankedByReq[r.id] || []).filter(b => b.note !== 'direct');
           setPostItems((r.item_details || '').split('\n').map(l => parseItemLine(l)).filter(i => i.name && !i.refill)
               .map(i => ({ name: i.name, qty: i.qty, bank: banked.some(b => b.item_name === i.name) })));
       } else setPostItems([]);
@@ -710,7 +743,7 @@ export default function CoordinatorLog() {
       // Banked items go to the coordinator's ledger instead of a bill.
       if (postIsSinner) {
           const r = records.find(x => x.id === postModal.id);
-          const del = await supabase.from('hsk_minibar_banked').delete().eq('request_id', postModal.id);
+          const del = await supabase.from('hsk_minibar_banked').delete().eq('request_id', postModal.id).or('note.is.null,note.neq.direct');
           if (del.error && toBank.length) { toast.error('Banking table missing — run the SQL from the update notes.'); return; }
           if (toBank.length && r) {
               const now = new Date().toISOString();
@@ -720,8 +753,8 @@ export default function CoordinatorLog() {
               }));
               const { data, error } = await supabase.from('hsk_minibar_banked').insert(rows).select();
               if (error) { toast.error('Could not save the banked items.'); return; }
-              setBankedByReq(prev => ({ ...prev, [r.id]: (data || []) as BankedRow[] }));
-          } else setBankedByReq(prev => { const n = { ...prev }; delete n[postModal.id]; return n; });
+              setBankedByReq(prev => ({ ...prev, [r.id]: [...(prev[r.id] || []).filter(b => b.note === 'direct'), ...((data || []) as BankedRow[])] }));
+          } else setBankedByReq(prev => ({ ...prev, [postModal.id]: (prev[postModal.id] || []).filter(b => b.note === 'direct') }));
       }
 
       await supabase.from('hsk_daily_requests').update({ is_posted: true, chk_number: chk }).eq('id', postModal.id);
@@ -731,10 +764,10 @@ export default function CoordinatorLog() {
   };
 
   const unpost = async () => {
-      await supabase.from('hsk_minibar_banked').delete().eq('request_id', postModal.id);
+      await supabase.from('hsk_minibar_banked').delete().eq('request_id', postModal.id).or('note.is.null,note.neq.direct');
       await supabase.from('hsk_daily_requests').update({ is_posted: false, chk_number: null }).eq('id', postModal.id);
       setRecords(records.map(r => r.id === postModal.id ? { ...r, is_posted: false, chk_number: undefined } : r));
-      setBankedByReq(prev => { const n = { ...prev }; delete n[postModal.id]; return n; });
+      setBankedByReq(prev => ({ ...prev, [postModal.id]: (prev[postModal.id] || []).filter(b => b.note === 'direct') }));
       setPostModal({ isOpen: false, id: '', chk: '' });
       toast.success('Marked as not posted');
   };
@@ -1834,15 +1867,26 @@ export default function CoordinatorLog() {
                         <div className="hidden md:block py-16 text-center text-slate-300 text-xs font-bold">Tap a product to add it</div>
                       ) : (
                         mbCart.map(i => (
-                          <div key={i.name} className="p-2 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
+                          <div key={i.name} className={`p-2 rounded-xl border flex items-center justify-between gap-2 ${i.isBank ? 'bg-violet-50 border-violet-200' : 'bg-slate-50 border-slate-200'}`}>
                             <div className="min-w-0 flex-1">
                               <span className="text-xs 2xl:text-sm font-bold text-slate-800 block truncate leading-tight">{i.name}</span>
-                              <button
-                                onClick={() => toggleRefill(i.name)}
-                                className={`mt-1 px-1.5 py-0.5 rounded text-[9px] font-black uppercase transition-all cursor-pointer ${i.isRefill ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
-                              >
-                                {i.isRefill ? '✓ Refill' : '+ Refill'}
-                              </button>
+                              <div className="mt-1 flex gap-1">
+                                <button
+                                  onClick={() => toggleRefill(i.name)}
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase transition-all cursor-pointer ${i.isRefill ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
+                                >
+                                  {i.isRefill ? '✓ Refill' : '+ Refill'}
+                                </button>
+                                {coord && (
+                                  <button
+                                    onClick={() => toggleBank(i.name)}
+                                    title="Bank it: not sent, not on the request — only in your Banked ledger"
+                                    className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase transition-all cursor-pointer flex items-center gap-0.5 ${i.isBank ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-500 hover:bg-violet-100 hover:text-violet-700'}`}
+                                  >
+                                    <PiggyBank size={10}/> {i.isBank ? 'Bank' : '+ Bank'}
+                                  </button>
+                                )}
+                              </div>
                             </div>
                             <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-slate-200 shrink-0">
                               <button onClick={() => updateCartQty(i.name, -1, 'MB')} className="w-8 h-8 md:w-6 md:h-6 rounded bg-slate-100 hover:bg-rose-100 hover:text-rose-600 flex items-center justify-center text-slate-600 cursor-pointer" aria-label="Less"><Minus size={12}/></button>
@@ -1861,7 +1905,12 @@ export default function CoordinatorLog() {
                         onClick={() => submitRequest('Minibar')}
                         className="w-full py-3.5 2xl:py-4 bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white rounded-xl text-sm 2xl:text-base font-black uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all cursor-pointer"
                       >
-                        {isEditing ? 'Confirm Update' : `Save Minibar (${cartCount})`}
+                        {(() => {
+                          const banked = coord ? mbCart.filter(i => i.isBank).reduce((s2, i) => s2 + i.qty, 0) : 0;
+                          const send = cartCount - banked;
+                          if (banked && !send) return `Bank only (${banked})`;
+                          return `${isEditing ? 'Confirm Update' : `Save Minibar (${send})`}${banked ? ` + bank ${banked}` : ''}`;
+                        })()}
                       </button>
                     </div>
                   </div>
