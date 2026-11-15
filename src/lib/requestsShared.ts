@@ -107,13 +107,22 @@ export const parseItemLine = (line: string) => {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Delivery: New → Taken → (At pantry →) Delivered
+// Delivery: at office → handed to Runner / handed to VA / left at pantry → in villa
 // ---------------------------------------------------------------------------------------------
+//  • new       — recorded, still at the office (not handed over)
+//  • taken     — handed to a runner (taken_by = runner, or "Runner" when not named)
+//  • va        — handed to the villa attendant (taken_by = VA)
+//  • pantry    — runner left it at the pantry; the VA still has to put it in the villa
+//  • delivered — in the villa
+// Minibar "Sent" (is_sent) means it left the office; the villa step is delivery_status.
+// Item lines ending in "(SENT)" are the items already handed over.
 
-export type Delivery = 'new' | 'taken' | 'pantry' | 'delivered';
+export type Delivery = 'new' | 'taken' | 'va' | 'pantry' | 'delivered';
+export const GENERIC_RUNNER = 'Runner';
 
 export type DeliveryFields = {
   request_type: string;
+  item_details?: string;
   is_sent?: boolean | null;
   is_done?: boolean | null;
   delivery_status?: string | null;
@@ -123,29 +132,41 @@ export type DeliveryFields = {
   pantry_at?: string | null;
   delivered_by?: string | null;
   delivered_at?: string | null;
+  reassigned_on?: string | null;
 };
 
-// Minibar: delivered = sent · other requests: delivered = done (so the coordinator's filters keep working).
-export const isDeliveredReq = (r: DeliveryFields) => (r.request_type === 'Minibar' ? !!r.is_sent : !!r.is_done);
+const STEPS: Delivery[] = ['taken', 'va', 'pantry', 'delivered'];
 
 export const deliveryOf = (r: DeliveryFields): Delivery => {
-  if (isDeliveredReq(r)) return 'delivered';
-  if (r.delivery_status === 'pantry') return 'pantry';
-  if (r.delivery_status === 'taken') return 'taken';
-  return 'new';
+  if (r.delivery_status && (STEPS as string[]).includes(r.delivery_status)) return r.delivery_status as Delivery;
+  // Before the delivery steps existed: Sent (minibar) / Done (requests) meant finished.
+  return (r.request_type === 'Minibar' ? r.is_sent : r.is_done) ? 'delivered' : 'new';
+};
+export const isDeliveredReq = (r: DeliveryFields) => deliveryOf(r) === 'delivered';
+
+// Mark every item line as handed over (or not).
+export const markAllItems = (details: string, sent: boolean) =>
+  (details || '').split('\n').map(l => l.replace(/\s*\(SENT\)$/, '')).map(l => (sent && l.trim() ? `${l} (SENT)` : l)).join('\n');
+export const itemsPending = (details: string) => splitItems(details).filter(i => !i.sent).length;
+
+// The database patch for moving a request to a step. `holder` = who now has it (runner / VA name).
+export const deliveryPatch = (r: DeliveryFields, to: Delivery, who: string, holder?: string) => {
+  const now = new Date().toISOString();
+  const isMb = r.request_type === 'Minibar';
+  const clear = { taken_by: null, taken_at: null, pantry_by: null, pantry_at: null, delivered_by: null, delivered_at: null };
+  // Minibar: anything past "new" has left the office → Sent, all items handed over.
+  const mb = (left: boolean) => (isMb ? { is_sent: left, item_details: markAllItems(r.item_details || '', left) } : {});
+  const done = (d: boolean) => (isMb ? {} : { is_done: d });
+  if (to === 'new') return { ...clear, delivery_status: null, ...mb(false), ...done(false) };
+  if (to === 'taken' || to === 'va') return { ...clear, delivery_status: to, taken_by: holder || who, taken_at: now, ...mb(true), ...done(false) };
+  const taken = { taken_by: r.taken_by || holder || who, taken_at: r.taken_at || now };
+  if (to === 'pantry') return { ...clear, ...taken, delivery_status: 'pantry', pantry_by: r.pantry_by || who, pantry_at: r.pantry_at || now, ...mb(true), ...done(false) };
+  return { ...taken, pantry_by: r.pantry_by || null, pantry_at: r.pantry_at || null, delivery_status: 'delivered', delivered_by: who, delivered_at: now, ...mb(true), ...done(true) };
 };
 
-// The database patch for moving a request to a delivery step.
-export const deliveryPatch = (r: DeliveryFields, to: Delivery, who: string) => {
-  const now = new Date().toISOString();
-  const doneField = r.request_type === 'Minibar' ? 'is_sent' : 'is_done';
-  const clear = { taken_by: null, taken_at: null, pantry_by: null, pantry_at: null, delivered_by: null, delivered_at: null };
-  if (to === 'new') return { ...clear, delivery_status: null, [doneField]: false };
-  const taken = { taken_by: r.taken_by || who, taken_at: r.taken_at || now };
-  if (to === 'taken') return { ...clear, delivery_status: 'taken', taken_by: who, taken_at: now, [doneField]: false };
-  if (to === 'pantry') return { ...clear, ...taken, delivery_status: 'pantry', pantry_by: r.pantry_by || who, pantry_at: r.pantry_at || now, [doneField]: false };
-  return { ...taken, pantry_by: r.pantry_by || null, pantry_at: r.pantry_at || null, delivery_status: 'delivered', delivered_by: who, delivered_at: now, [doneField]: true };
-};
+// Runner / VA lists: today's requests, plus older open ones the coordinator re-assigned to today.
+export const isForToday = (r: DeliveryFields & { request_time: string }, todayYmd: string) =>
+  r.request_time >= `${todayYmd}T00:00:00+06:00` || r.reassigned_on === todayYmd;
 
 // Message shown when a write fails because the new columns are not in Supabase yet.
 export const MISSING_COLUMN_HINT = 'Database needs the new request columns — run the SQL from the update notes.';

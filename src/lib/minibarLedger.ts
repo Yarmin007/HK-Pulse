@@ -119,7 +119,9 @@ export const deriveFromRequests = (requests: RequestLite[], articleOf: (name: st
   for (const r of requests) {
     if (r.request_type !== 'Minibar') continue;
     const target = requestLoc(r.villa_number, doubleVillas);
-    const delivered = !!r.is_sent;
+    // With delivery steps, only "delivered" is in the villa; older rows: Sent meant delivered.
+    const status = r.delivery_status || '';
+    const delivered = status ? status === 'delivered' : !!r.is_sent;
     const viaPantry = !!r.pantry_at;
     const lines = (r.item_details || '').split('\n').map(parseLine).filter(l => l.name);
     lines.forEach((l, i) => {
@@ -129,7 +131,7 @@ export const deriveFromRequests = (requests: RequestLite[], articleOf: (name: st
       const id = (k: string) => `${r.id}:${i}:${k}`;
       if (target) moves.push({ ...base, id: id('c'), at: r.request_time, kind: 'consumed', from: target, to: CONSUMED, by: r.attendant_name || r.logged_by || null });
       moves.push({ ...base, id: id('i'), at: r.request_time, kind: 'issue', from: STORE, to: TRANSIT, by: r.taken_by || r.logged_by || null });
-      const lineDone = delivered || l.sent;
+      const lineDone = delivered || (!status && l.sent);
       if (viaPantry) {
         moves.push({ ...base, id: id('p'), at: r.pantry_at!, kind: 'to_pantry', from: TRANSIT, to: PANTRY, by: r.pantry_by || null });
       }
@@ -140,7 +142,8 @@ export const deriveFromRequests = (requests: RequestLite[], articleOf: (name: st
         open.push({
           requestId: r.id, article, name: l.name, qty: l.qty, target, targetLabel: target ? locLabel(target) : r.villa_number,
           at: viaPantry ? PANTRY : TRANSIT, since: viaPantry ? r.pantry_at! : (r.taken_at || r.request_time),
-          holder: viaPantry ? (r.pantry_by || r.taken_by || '') : (r.taken_by || ''), requestedAt: r.request_time,
+          holder: viaPantry ? (r.pantry_by || r.taken_by || '') : status === 'va' ? `VA ${r.taken_by || ''}`.trim() : status === 'taken' && l.sent ? (r.taken_by || 'Runner') : '',
+          requestedAt: r.request_time,
         });
       }
     });

@@ -9,7 +9,8 @@ import { supabase } from '@/lib/supabase';
 import { getDhakaDateStr, getDhakaTime, formatDisplayTime } from '@/lib/dateUtils';
 import {
   classifyTarget, parseVillas, isOnlyRefills, splitItems, normalizeVillaNumber, packageOf,
-  deliveryOf, deliveryPatch, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM, type Delivery, type Session,
+  deliveryOf, deliveryPatch, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM, isForToday, itemsPending, GENERIC_RUNNER,
+  type Delivery, type Session,
 } from '@/lib/requestsShared';
 import PackageRibbon from '@/components/PackageRibbon';
 import QtyEditor from '@/app/minibar/live-tracking/QtyEditor';
@@ -43,6 +44,7 @@ type Req = {
   pantry_at?: string | null;
   delivered_by?: string | null;
   delivered_at?: string | null;
+  reassigned_on?: string | null;
 };
 
 type Host = { id: string; host_id: string; full_name: string; nicknames?: string | null; mvpn?: string | null };
@@ -129,17 +131,18 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
   const load = useCallback(async () => {
     const start = `${today}T00:00:00+06:00`;
     const end = `${today}T23:59:59+06:00`;
-    const twoDaysAgo = getDhakaDateStr(new Date(getDhakaTime().getTime() - 2 * 86400000));
+    const weekAgo = getDhakaDateStr(new Date(getDhakaTime().getTime() - 7 * 86400000));
     const [todayRes, olderRes, allocRes, hostRes, dvRes, guestRes] = await Promise.all([
       supabase.from('hsk_daily_requests').select('*').gte('request_time', start).lte('request_time', end).order('request_time', { ascending: false }),
-      supabase.from('hsk_daily_requests').select('*').gte('request_time', `${twoDaysAgo}T00:00:00+06:00`).lt('request_time', start).order('request_time', { ascending: false }),
+      supabase.from('hsk_daily_requests').select('*').gte('request_time', `${weekAgo}T00:00:00+06:00`).lt('request_time', start).order('request_time', { ascending: false }),
       supabase.from('hsk_allocations').select('host_id, area, shift, task_details').eq('report_date', today),
       supabase.from('hsk_hosts').select('id, host_id, full_name, nicknames, mvpn').eq('status', 'Active'),
       supabase.from('hsk_constants').select('label').eq('type', 'double_mb_villas'),
       supabase.from('hsk_daily_summary').select('villa_number, guest_name, meal_plan, status, remarks, stay_dates').eq('report_date', today),
     ]);
-    // Undelivered requests from the last two days stay on the list. Private requests never show here.
-    const older = ((olderRes.data || []) as Req[]).filter(r => deliveryOf(r) !== 'delivered');
+    // Only today's requests — an older open one shows when the coordinator re-assigns it to today.
+    // Private requests never show here.
+    const older = ((olderRes.data || []) as Req[]).filter(r => isForToday(r, today) && deliveryOf(r) !== 'delivered');
     setRequests([...(todayRes.data || []) as Req[], ...older].filter(r => !r.is_private && r.request_type !== 'Time Edit Request' && isMine(r.villa_number)));
     setAllocs(allocRes.data || []);
     setHosts((hostRes.data || []) as Host[]);
@@ -179,23 +182,34 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
   }, [allocs, hostById, doubleVillas]);
 
   // Runner: their part ends at the pantry. VA: a pantry drop is still theirs to finish.
+  // Runner: handed to them (or to "Runner") is theirs; it's done for them once it is at the pantry, with the VA or in the villa.
+  const isMineRunner = (r: Req) => deliveryOf(r) === 'taken' && (!r.taken_by || r.taken_by === me || r.taken_by === GENERIC_RUNNER);
   const isTodo = (r: Req) => {
     const d = deliveryOf(r);
     if (d === 'delivered') return false;
-    if (d === 'pantry') return !isRunner;
+    if (isRunner) return d === 'new' || d === 'taken';
     return true;
   };
-  const rank = (r: Req) => (isRunner ? (deliveryOf(r) === 'taken' && r.taken_by === me ? 0 : 1) : (deliveryOf(r) === 'pantry' ? 0 : 1));
+  // Runner groups: 0 handed to you · 1 still at the office · 2 with another runner. VA: with you / at pantry first.
+  const groupOf = (r: Req) => {
+    const d = deliveryOf(r);
+    if (isRunner) return isMineRunner(r) ? 0 : d === 'new' ? 1 : 2;
+    return d === 'va' || d === 'pantry' ? 0 : 1;
+  };
+  const rank = groupOf;
   // Runner's jetty filter; comp codes / "Beach bar" style targets show under All only.
   const inJetty = (r: Req) => !isRunner || jetty === 'All' || jettyOf(r.villa_number) === jetty;
   const jettyCount = (j: Jetty) => requests.filter(r => isTodo(r) && (j === 'All' || jettyOf(r.villa_number) === j)).length;
   const todo = requests.filter(r => isTodo(r) && inJetty(r)).sort((a, b) => rank(a) - rank(b) || a.request_time.localeCompare(b.request_time));
   const done = requests.filter(r => !isTodo(r) && inJetty(r)).sort((a, b) => (b.delivered_at || b.pantry_at || b.request_time).localeCompare(a.delivered_at || a.pantry_at || a.request_time));
   const list = tab === 'todo' ? todo : done;
-  const pantryCount = requests.filter(r => deliveryOf(r) === 'pantry').length;
+  const pantryCount = requests.filter(r => deliveryOf(r) === 'pantry' || deliveryOf(r) === 'va').length;
+  const GROUP_TITLE = isRunner
+    ? ['Handed to you — take it out', 'At the office — not handed over yet', 'With another runner']
+    : ['With you or at the pantry — put it in the villa', 'Coming — not with you yet'];
 
-  const move = async (r: Req, to: Delivery) => {
-    const patch = deliveryPatch(r, to, me);
+  const move = async (r: Req, to: Delivery, holder?: string) => {
+    const patch = deliveryPatch(r, to, me, holder);
     setBusy(r.id);
     setRequests(prev => prev.map(x => (x.id === r.id ? { ...x, ...patch } as Req : x)));
     const { error } = await supabase.from('hsk_daily_requests').update(patch).eq('id', r.id);
@@ -206,7 +220,7 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
       toast.success('Left at pantry — VA will confirm');
       notifyVillaVA(r.villa_number, `📦 At pantry · ${classifyTarget(r.villa_number).label}`, r.item_details, doubleVillas);
     }
-    else if (to === 'taken') toast.success('Taken');
+    else if (to === 'taken') toast.success('With you');
   };
 
   // ---------------- New request (VA) ----------------
@@ -316,7 +330,7 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
           )}
           {!isRunner && pantryCount > 0 && (
             <div className="mt-3 px-3 py-2 rounded-xl bg-amber-400 text-amber-950 text-xs font-black flex items-center gap-2">
-              <Package size={14} /> {pantryCount} waiting at the pantry — take to the villa and confirm
+              <Package size={14} /> {pantryCount} with you or at the pantry — put in the villa and confirm
             </div>
           )}
         </header>
@@ -353,7 +367,9 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
           </div>
         )}
 
-        {list.map(r => {
+        {list.map((r, idx) => {
+          const grp = tab === 'todo' ? groupOf(r) : -1;
+          const showHead = tab === 'todo' && (idx === 0 || groupOf(list[idx - 1]) !== grp);
           const target = classifyTarget(r.villa_number);
           const g = target.kind === 'villa' ? guests[target.base] : undefined;
           const va = target.kind === 'villa' ? (villaVA[target.value] || villaVA[target.base] || '') : '';
@@ -366,8 +382,12 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
           const pkg = packageOf(g?.meal_plan);
           const guestName = r.guest_name || extractMainGuest(g?.guest_name || '');
           const pantryWait = d === 'pantry' ? minutesAgo(r.pantry_at || r.request_time) : 0;
+          const pending = d === 'new' ? items.length : itemsPending(r.item_details);
+          const partial = d !== 'new' && pending > 0;
           return (
-            <article key={r.id} className={`relative bg-white rounded-3xl border shadow-sm overflow-hidden ${d === 'pantry' && !isRunner ? 'border-amber-300 ring-2 ring-amber-100' : late ? 'border-rose-200' : 'border-slate-200'}`}>
+            <React.Fragment key={r.id}>
+            {showHead && <h2 className={`px-1 pt-2 text-[11px] font-black uppercase tracking-wider ${grp === 0 ? (isRunner ? 'text-orange-600' : 'text-amber-700') : 'text-slate-400'}`}>{GROUP_TITLE[grp]}</h2>}
+            <article className={`relative bg-white rounded-3xl border shadow-sm overflow-hidden ${d === 'pantry' && !isRunner ? 'border-amber-300 ring-2 ring-amber-100' : late ? 'border-rose-200' : 'border-slate-200'}`}>
               <PackageRibbon pkg={pkg} />
               <div className="flex items-start gap-3 p-4 pb-3">
                 <div className={`w-16 h-16 rounded-2xl flex flex-col items-center justify-center shrink-0 ${target.kind === 'villa' ? 'bg-[#6D2158] text-white' : 'bg-slate-800 text-white'}`}>
@@ -389,51 +409,73 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
                 </div>
               </div>
 
+              {/* Each item: handed over (left the office) or still at the office */}
               <ul className="px-4 pb-2 space-y-1">
-                {items.map((it, i) => (
-                  <li key={i} className={`text-[15px] font-semibold flex items-start gap-2 ${it.sent ? 'text-slate-400 line-through' : 'text-slate-800'}`}>
-                    <span className="text-slate-300 mt-0.5">•</span><span>{it.name}</span>
-                  </li>
-                ))}
+                {items.map((it, i) => {
+                  const handed = d !== 'new' && it.sent;
+                  const atOffice = d === 'new' || (d !== 'delivered' && !it.sent);
+                  return (
+                    <li key={i} className="text-[15px] font-semibold flex items-center gap-2 text-slate-800">
+                      <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${handed ? 'bg-emerald-500 text-white' : 'border-2 border-slate-200'}`}>{handed && <Check size={12} strokeWidth={3} />}</span>
+                      <span className="flex-1 min-w-0">{it.name}</span>
+                      {d !== 'delivered' && (atOffice
+                        ? <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 shrink-0">at office</span>
+                        : <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 shrink-0">handed</span>)}
+                    </li>
+                  );
+                })}
               </ul>
 
               {/* Where it is now */}
               {d !== 'new' && (
-                <div className={`mx-3 mb-2 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 ${d === 'delivered' ? 'bg-emerald-50 text-emerald-700' : d === 'pantry' ? 'bg-amber-50 text-amber-800' : 'bg-blue-50 text-blue-700'}`}>
-                  {d === 'taken' && <><Bike size={13} /> {r.taken_by === me ? 'You took it' : `Taken by ${r.taken_by}`} · {shortHHMM(r.taken_at)}</>}
+                <div className={`mx-3 mb-2 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 ${d === 'delivered' ? 'bg-emerald-50 text-emerald-700' : d === 'pantry' || d === 'va' ? 'bg-amber-50 text-amber-800' : 'bg-blue-50 text-blue-700'}`}>
+                  {d === 'taken' && <><Bike size={13} /> {r.taken_by === me ? 'With you' : !r.taken_by || r.taken_by === GENERIC_RUNNER ? (isRunner ? 'Handed to runner — that is you' : 'With the runner') : `With ${r.taken_by}`} · {shortHHMM(r.taken_at)}{partial ? ` · ${pending} still at office` : ''}</>}
+                  {d === 'va' && <><User size={13} /> {r.taken_by === me ? 'Handed to you' : `Handed to ${r.taken_by || 'the VA'}`} · {shortHHMM(r.taken_at)}</>}
                   {d === 'pantry' && <><Package size={13} /> At pantry since {shortHHMM(r.pantry_at)}{r.pantry_by ? ` (${r.pantry_by})` : ''}{pantryWait >= 30 ? ` · ${agoLabel(pantryWait)}` : ''}{isRunner ? ' — waiting for VA' : ''}</>}
                   {d === 'delivered' && <><Check size={13} /> In villa · {r.delivered_by === me ? 'you' : r.delivered_by} {shortHHMM(r.delivered_at)}{r.pantry_at ? ' · via pantry' : ''}</>}
                 </div>
               )}
 
               <div className="px-3 pb-3 pt-1 space-y-2">
-                {d === 'delivered' || (isRunner && d === 'pantry') ? (
-                  <button onClick={() => move(r, d === 'pantry' ? 'taken' : r.pantry_at && !isRunner ? 'pantry' : isRunner ? 'taken' : 'new')} disabled={busy === r.id}
+                {isRunner && (d === 'va' || (d === 'pantry' && r.pantry_by !== me) || (d === 'delivered' && r.delivered_by !== me)) ? null
+                : d === 'delivered' || (isRunner && d === 'pantry') ? (
+                  // Undo one step
+                  <button onClick={() => (d === 'delivered' && r.pantry_at && !isRunner ? move(r, 'pantry')
+                      : isRunner || (r.taken_by && r.taken_by !== me) ? move(r, 'taken', r.taken_by || undefined)
+                      : move(r, 'new'))} disabled={busy === r.id}
                     className="w-full py-2.5 rounded-2xl text-xs font-bold text-slate-500 bg-slate-100 flex items-center justify-center gap-1.5"><Undo2 size={13} /> Undo</button>
                 ) : isRunner && d === 'new' ? (
                   <button onClick={() => move(r, 'taken')} disabled={busy === r.id}
-                    className="w-full py-3 rounded-2xl text-sm font-black text-white bg-orange-600 active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60">
-                    {busy === r.id ? <Loader2 size={16} className="animate-spin" /> : <Bike size={18} />} Take it
+                    className="w-full py-3 rounded-2xl text-sm font-bold text-slate-600 bg-slate-100 active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60">
+                    {busy === r.id ? <Loader2 size={16} className="animate-spin" /> : <Bike size={17} />} I collected it from the office
                   </button>
+                ) : isRunner && !isMineRunner(r) ? (
+                  <p className="text-center text-[11px] font-bold text-slate-400 py-1">With {r.taken_by}</p>
                 ) : isRunner ? (
                   <>
+                    {partial && (
+                      <button onClick={() => move(r, 'taken', r.taken_by || undefined)} disabled={busy === r.id}
+                        className="w-full py-2 rounded-2xl text-xs font-bold text-slate-600 bg-slate-100">I have the rest too ({pending} at office)</button>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
-                      <button onClick={() => move(r, 'delivered')} disabled={busy === r.id}
-                        className="py-3 rounded-2xl text-sm font-black text-white bg-emerald-600 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-60"><Home size={17} /> To Villa</button>
-                      <button onClick={() => move(r, 'pantry')} disabled={busy === r.id}
-                        className="py-3 rounded-2xl text-sm font-black text-amber-950 bg-amber-400 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-60"><Package size={17} /> To Pantry</button>
+                      <button onClick={() => move(r, 'delivered')} disabled={busy === r.id || partial}
+                        className="py-3 rounded-2xl text-sm font-black text-white bg-emerald-600 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><Home size={17} /> To Villa</button>
+                      <button onClick={() => move(r, 'pantry')} disabled={busy === r.id || partial}
+                        className="py-3 rounded-2xl text-sm font-black text-amber-950 bg-amber-400 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><Package size={17} /> To Pantry</button>
                     </div>
-                    <button onClick={() => move(r, 'new')} disabled={busy === r.id} className="w-full py-1.5 text-[11px] font-bold text-slate-400">Release — I am not taking it</button>
+                    {partial && <p className="text-center text-[11px] font-semibold text-slate-400">Wait until everything is handed over, or tap “I have the rest too”.</p>}
+                    <button onClick={() => move(r, 'new')} disabled={busy === r.id} className="w-full py-1.5 text-[11px] font-bold text-slate-400">Return to office</button>
                   </>
                 ) : (
                   <button onClick={() => move(r, 'delivered')} disabled={busy === r.id}
-                    className={`w-full py-3 rounded-2xl text-sm font-black text-white active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60 ${d === 'pantry' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
+                    className={`w-full py-3 rounded-2xl text-sm font-black text-white active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60 ${d === 'pantry' || d === 'va' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
                     {busy === r.id ? <Loader2 size={16} className="animate-spin" /> : <CheckCheck size={18} />}
                     {d === 'pantry' ? 'Collected from pantry — in villa' : 'Placed in villa'}
                   </button>
                 )}
               </div>
             </article>
+            </React.Fragment>
           );
         })}
       </div>

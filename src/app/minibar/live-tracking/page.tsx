@@ -304,7 +304,7 @@ export default function MinibarLiveTracking() {
       <div key={`${o.requestId}:${o.article}`} className={`flex items-center gap-3 px-3 py-2.5 text-xs ${late ? 'bg-rose-50/60' : ''}`}>
         <span className="font-mono font-black text-slate-800 w-14 shrink-0">{o.targetLabel}</span>
         <span className="font-bold text-slate-700 flex-1 min-w-0 truncate">{o.qty}x {o.name}</span>
-        <span className="text-slate-500 font-semibold truncate max-w-[30%]">{o.holder || (o.at === TRANSIT ? 'not taken yet' : '')}</span>
+        <span className="text-slate-500 font-semibold truncate max-w-[30%]">{o.holder || (o.at === TRANSIT ? 'at office — not handed over' : '')}</span>
         <span className={`font-mono font-black shrink-0 ${late ? 'text-rose-600' : 'text-slate-400'}`}>{ageLabel(m)}</span>
       </div>
     );

@@ -10,11 +10,14 @@ import {
 import {
   TOTAL_VILLAS, normalizeVillaNumber, classifyTarget, parseVillas, isOnlyRefills,
   isCoordinator, packageOf, isHardLiquor, parseItemLine, deliveryOf, deliveryPatch, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM,
+  GENERIC_RUNNER, itemsPending,
   type Delivery,
 } from '@/lib/requestsShared';
 import { parseStayRange } from '@/lib/guestImport';
 import PackageRibbon, { PackageTag } from '@/components/PackageRibbon';
 import { notifyRunners } from '@/lib/requestNotify';
+import { riderDutyOf, isOffShift } from '@/app/allocation/lib/riders';
+import { Home, CornerUpLeft } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useConfirm } from '@/components/ConfirmProvider';
 import PageHeader from '@/components/PageHeader';
@@ -47,6 +50,7 @@ type RequestRecord = {
   pantry_at?: string | null;
   delivered_by?: string | null;
   delivered_at?: string | null;
+  reassigned_on?: string | null;
 };
 
 // Earlier minibar requests, used for the Sinner "already had this stay" spirits check.
@@ -153,6 +157,28 @@ const extractMainGuest = (fullString: string) => {
   return main || parts[0];
 };
 
+// Hand-over button. Tap = hand to the runner (or open the choices once handed). Hold / right-click = choices.
+function HandOverButton({ d, holder, onTap, onMenu }: { d: Delivery; holder: string; onTap: () => void; onMenu: () => void }) {
+  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const held = React.useRef(false);
+  const cancel = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; };
+  const start = () => { held.current = false; cancel(); timer.current = setTimeout(() => { held.current = true; onMenu(); }, 450); };
+  const end = () => { cancel(); if (!held.current) onTap(); held.current = false; };
+  const look = d === 'new' ? { cls: 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600', icon: <Send size={14}/>, t: 'Tap: hand to runner · Hold: VA or villa' }
+      : d === 'taken' ? { cls: 'bg-blue-600 text-white shadow-xs', icon: <Bike size={14}/>, t: `With ${holder || 'runner'}` }
+      : d === 'va' ? { cls: 'bg-amber-500 text-white shadow-xs', icon: <User size={14}/>, t: `With VA ${holder}` }
+      : d === 'pantry' ? { cls: 'bg-amber-500 text-white shadow-xs', icon: <Package size={14}/>, t: 'At pantry' }
+      : { cls: 'bg-emerald-600 text-white shadow-xs', icon: <Home size={14}/>, t: 'In villa' };
+  return (
+    <button
+      onPointerDown={start} onPointerUp={end} onPointerLeave={cancel} onPointerCancel={cancel}
+      onContextMenu={e => { e.preventDefault(); cancel(); held.current = true; onMenu(); }}
+      className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer select-none [-webkit-touch-callout:none] ${look.cls}`} title={look.t}>
+      {look.icon}
+    </button>
+  );
+}
+
 export default function CoordinatorLog() {
   const { confirmAction } = useConfirm();
 
@@ -176,6 +202,7 @@ export default function CoordinatorLog() {
   const [bankOpen, setBankOpen] = useState(false);
   const [bankMonth, setBankMonth] = useState(() => getDhakaDateStr().slice(0, 7));
   const [bankRows, setBankRows] = useState<BankedRow[]>([]);
+  const [handOverFor, setHandOverFor] = useState<RequestRecord | null>(null);
   
   const [currentTime, setCurrentTime] = useState(getDhakaTime());
 
@@ -273,7 +300,7 @@ export default function CoordinatorLog() {
   }, [typeFilter]);
 
   const fetchHosts = async () => {
-      const { data, error } = await supabase.from('hsk_hosts').select('id, full_name, nicknames');
+      const { data, error } = await supabase.from('hsk_hosts').select('id, host_id, full_name, nicknames, role, sub_department');
       if (!error && data) {
           setAllHosts(data);
           const map: Record<string, string> = {};
@@ -432,7 +459,7 @@ export default function CoordinatorLog() {
         supabase.from('hsk_daily_requests').select('*').gte('request_time', dayStartStr).lte('request_time', dayEndStr).order('request_time', { ascending: false }),
         supabase.from('hsk_daily_requests').select('*').lt('request_time', dayStartStr).order('request_time', { ascending: false }).limit(100),
         supabase.from('hsk_daily_summary').select('villa_number, guest_name, meal_plan, stay_dates, status, gem_name').eq('report_date', dateStr),
-        supabase.from('hsk_allocations').select('host_id, area, task_details').eq('report_date', dateStr),
+        supabase.from('hsk_allocations').select('host_id, area, shift, task_details').eq('report_date', dateStr),
         supabase.from('hsk_daily_requests').select('*').eq('request_type', 'Minibar').gte('request_time', historyFrom).lte('request_time', dayEndStr).order('request_time', { ascending: false }).limit(2000),
     ]);
     
@@ -764,6 +791,43 @@ export default function CoordinatorLog() {
     await updateRequest(id, patch, { [field]: newValue });
   };
 
+  // Runners on duty on the selected day (for the hand-over button).
+  const runnersOnDuty = useMemo(() => dailyAllocations
+      .filter(a => a.area === 'riders' && !isOffShift(a.shift))
+      .map(a => ({ a, h: allHosts.find(h => String(h.id) === String(a.host_id) || String(h.host_id) === String(a.host_id)) }))
+      .filter(({ a, h }) => h && riderDutyOf(a, h) === 'Runner')
+      .map(({ h }) => String(h.nicknames ? String(h.nicknames).split(',')[0].trim() : h.full_name)), [dailyAllocations, allHosts]);
+  const defaultRunner = () => (runnersOnDuty.length === 1 ? runnersOnDuty[0] : GENERIC_RUNNER);
+
+  // Office hand-over: to a runner (default), to the villa attendant, or straight into the villa.
+  const handOver = async (rec: RequestRecord, to: Delivery, holder?: string) => {
+      const patch: Record<string, unknown> = deliveryPatch(rec, to, myName(), holder);
+      const isMb = rec.request_type === 'Minibar';
+      const legacy = isMb ? { is_sent: to !== 'new', item_details: patch.item_details } : { is_done: to === 'delivered' };
+      setRecords(prev => prev.map(r => r.id === rec.id ? { ...r, ...patch } as RequestRecord : r));
+      setHandOverFor(null);
+      await updateRequest(rec.id, patch, legacy);
+      if (to === 'taken') toast.success(`Handed to ${holder || 'runner'}`);
+      else if (to === 'va') toast.success(`Handed to ${holder || 'VA'}`);
+      else if (to === 'delivered') toast.success('Placed in villa');
+  };
+
+  // An older open request shows on the runner / VA phones only once it is re-assigned to today.
+  const reassignToday = async (rec: RequestRecord) => {
+      const today = getDhakaDateStr();
+      const { error } = await supabase.from('hsk_daily_requests').update({ reassigned_on: today }).eq('id', rec.id);
+      if (error) return toast.error(isMissingColumn(error) ? MISSING_COLUMN_HINT : 'Not saved');
+      setRecords(prev => prev.map(r => r.id === rec.id ? { ...r, reassigned_on: today } : r));
+      const n = await notifyRunners(rec.villa_number, rec.request_type, rec.item_details);
+      toast.success(n ? `Re-assigned · ${n} runner phone${n > 1 ? 's' : ''} notified` : 'Re-assigned to today');
+  };
+
+  const handOverButton = (rec: RequestRecord) => (
+      <HandOverButton d={deliveryOf(rec)} holder={rec.taken_by || ''}
+        onTap={() => (deliveryOf(rec) === 'new' ? handOver(rec, 'taken', defaultRunner()) : setHandOverFor(rec))}
+        onMenu={() => setHandOverFor(rec)} />
+  );
+
   const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
       const target = classifyTarget(record.villa_number);
       const items = (record.item_details || '')
@@ -816,12 +880,12 @@ export default function CoordinatorLog() {
       const allSent = updatedItems.length > 0 && updatedItems.every(i => i.endsWith('(SENT)'));
       const newItemDetails = updatedItems.join('\n');
       
-      await supabase.from('hsk_daily_requests')
-          .update({ 
-              item_details: newItemDetails, 
-              is_sent: allSent 
-          })
-          .eq('id', partialTarget.id);
+      // Some items handed over → it is with the runner; none → back at the office.
+      const anySent = updatedItems.some(i => i.endsWith('(SENT)'));
+      const d = deliveryOf(partialTarget);
+      const step: Record<string, unknown> = !anySent ? { delivery_status: null, taken_by: null, taken_at: null }
+          : d === 'new' ? { delivery_status: 'taken', taken_by: defaultRunner(), taken_at: new Date().toISOString() } : {};
+      await updateRequest(partialTarget.id, { item_details: newItemDetails, is_sent: allSent, ...step }, { item_details: newItemDetails, is_sent: allSent });
           
       setIsPartialOpen(false); 
       fetchRecords();
@@ -1386,8 +1450,11 @@ export default function CoordinatorLog() {
                }`}
              >
                 {isPreviousDay && !isCompleted && (
-                    <div className="bg-rose-600 text-white text-[9px] font-black px-2 py-1 w-full text-center tracking-widest uppercase flex items-center justify-center gap-1">
-                        <AlertTriangle size={10} /> Overdue (From {pastDateStr})
+                    <div className={`${r.reassigned_on === getDhakaDateStr() ? 'bg-blue-600' : 'bg-rose-600'} text-white text-[9px] font-black px-2 py-1 w-full tracking-widest uppercase flex items-center justify-center gap-2`}>
+                        <span className="flex items-center gap-1"><AlertTriangle size={10} /> Overdue (From {pastDateStr})</span>
+                        {deliveryOf(r) !== 'delivered' && (r.reassigned_on === getDhakaDateStr()
+                          ? <span className="px-1.5 py-0.5 rounded bg-white/20">On today&apos;s list</span>
+                          : <button onClick={() => reassignToday(r)} className="px-1.5 py-0.5 rounded bg-white text-rose-700 flex items-center gap-1 cursor-pointer" title="Show it to today's runner / VA"><CornerUpLeft size={10}/> Re-assign to today</button>)}
                     </div>
                 )}
 
@@ -1470,9 +1537,10 @@ export default function CoordinatorLog() {
                     {/* Where it is: taken by a runner/VA, waiting at the pantry, or in the villa */}
                     {delivery !== 'new' && (r.taken_by || r.pantry_by || r.delivered_by) && (
                       <div className={`-mt-2 mb-3 px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 ${
-                        delivery === 'delivered' ? 'bg-emerald-50 text-emerald-700' : delivery === 'pantry' ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-blue-50 text-blue-700'
+                        delivery === 'delivered' ? 'bg-emerald-50 text-emerald-700' : delivery === 'pantry' || delivery === 'va' ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-blue-50 text-blue-700'
                       }`}>
-                        {delivery === 'taken' && <><Bike size={12} className="shrink-0"/> Taken by {r.taken_by} · {shortHHMM(r.taken_at)}</>}
+                        {delivery === 'taken' && <><Bike size={12} className="shrink-0"/> With {r.taken_by === GENERIC_RUNNER ? 'runner' : r.taken_by} · {shortHHMM(r.taken_at)}{itemsPending(r.item_details) > 0 ? ` · ${itemsPending(r.item_details)} still at office` : ''}</>}
+                        {delivery === 'va' && <><User size={12} className="shrink-0"/> With VA {r.taken_by} · {shortHHMM(r.taken_at)} — to confirm in villa</>}
                         {delivery === 'pantry' && <><Package size={12} className="shrink-0"/> At pantry since {shortHHMM(r.pantry_at)} ({r.pantry_by}) — VA to confirm</>}
                         {delivery === 'delivered' && <><CheckCircle2 size={12} className="shrink-0"/> In villa · {r.delivered_by} {shortHHMM(r.delivered_at)}{r.pantry_at ? ' · via pantry' : ''}</>}
                       </div>
@@ -1531,7 +1599,7 @@ export default function CoordinatorLog() {
                          {r.request_type === 'Minibar' ? (
                              <>
                                  <button onClick={() => openPartialModal(r)} className="p-2 rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200 active:scale-90 transition-all cursor-pointer" title="Split Send"><Split size={14}/></button>
-                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_sent ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`} title="Mark Sent"><Send size={14}/></button>
+                                 {handOverButton(r)}
                                  
                                  {!allRefill && (
                                      <button onClick={() => handleOpenPost(r)} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_posted ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`} title={r.is_posted ? "Edit Bill" : "Post CHK Bill"}>
@@ -1544,9 +1612,7 @@ export default function CoordinatorLog() {
                                  <button onClick={() => handleWhatsApp(r, 'inform')} className="p-2 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-all cursor-pointer" title="WhatsApp Inform">
                                      <MessageCircle size={14} />
                                  </button>
-                                 <button onClick={() => toggleStatus(r.id, 'is_sent')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_sent ? 'bg-blue-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`} title={r.is_sent ? 'Informed' : 'Mark Informed'}>
-                                     <Send size={14}/>
-                                 </button>
+                                 {handOverButton(r)}
                                  <button onClick={() => handleWhatsApp(r, 'done')} className="p-2 rounded-xl bg-emerald-50 text-emerald-600 hover:bg-emerald-100 active:scale-90 transition-all flex items-center gap-0.5 cursor-pointer" title="WhatsApp Done">
                                      <MessageCircle size={14}/><Check size={10} strokeWidth={4}/>
                                  </button>
@@ -2093,6 +2159,38 @@ export default function CoordinatorLog() {
             </div>
          </div>
       )}
+
+      {/* HAND-OVER CHOICES */}
+      {handOverFor && (() => {
+          const rec = records.find(x => x.id === handOverFor.id) || handOverFor;
+          const d = deliveryOf(rec);
+          const va = vaFor(rec.villa_number);
+          const opt = (key: string, label: string, sub: string, icon: React.ReactNode, active: boolean, onClick: () => void, tone: string) => (
+              <button key={key} onClick={onClick} className={`w-full p-3 rounded-2xl border-2 flex items-center gap-3 text-left cursor-pointer transition-colors ${active ? `${tone} border-current` : 'bg-white border-slate-100 hover:border-slate-200'}`}>
+                  <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${active ? 'bg-white/70' : 'bg-slate-100 text-slate-500'}`}>{icon}</span>
+                  <span className="min-w-0 flex-1"><span className="block text-sm font-black text-slate-800">{label}</span><span className="block text-[11px] font-semibold text-slate-500 truncate">{sub}</span></span>
+                  {active && <CheckCircle2 size={18} className="shrink-0"/>}
+              </button>
+          );
+          const runners = runnersOnDuty.length ? runnersOnDuty : [];
+          return (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setHandOverFor(null)}>
+              <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-5 pb-8 sm:pb-5 shadow-2xl space-y-2" onClick={e => e.stopPropagation()}>
+                  <div className="text-center mb-2">
+                      <h3 className="text-lg font-black text-slate-800">Hand over · {classifyTarget(rec.villa_number).label}</h3>
+                      <p className="text-[11px] font-semibold text-slate-400 truncate">{(rec.item_details || '').replace(/\s*\(SENT\)/g, '').split('\n').filter(Boolean).join(', ')}</p>
+                  </div>
+                  {runners.length > 1 && opt('any', 'Runner', 'Whoever is on runner duty', <Bike size={18}/>, d === 'taken' && rec.taken_by === GENERIC_RUNNER, () => handOver(rec, 'taken', GENERIC_RUNNER), 'bg-blue-50 text-blue-700')}
+                  {(runners.length ? runners : [GENERIC_RUNNER]).map(n => opt(`r-${n}`, runners.length > 1 ? n : `Runner${runners.length === 1 ? ` · ${n}` : ''}`, 'Handed to the runner', <Bike size={18}/>, d === 'taken' && (rec.taken_by === n || runners.length <= 1), () => handOver(rec, 'taken', n), 'bg-blue-50 text-blue-700'))}
+                  {classifyTarget(rec.villa_number).kind === 'villa' && opt('va', `Villa attendant${va ? ` · ${va}` : ''}`, 'They confirm once it is in the villa', <User size={18}/>, d === 'va', () => handOver(rec, 'va', va || 'VA'), 'bg-amber-50 text-amber-800')}
+                  {opt('villa', 'In the villa', 'Delivered — done', <Home size={18}/>, d === 'delivered', () => handOver(rec, 'delivered'), 'bg-emerald-50 text-emerald-700')}
+                  {d !== 'new' && (
+                    <button onClick={() => handOver(rec, 'new')} className="w-full py-2.5 text-xs font-bold text-rose-500 hover:underline cursor-pointer">Not sent — still at the office</button>
+                  )}
+              </div>
+          </div>
+          );
+      })()}
 
       {/* BANKED LEDGER — coordinator only */}
       {bankOpen && coord && (() => {
