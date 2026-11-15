@@ -102,7 +102,6 @@ const STAFF_PROFILE_ITEMS = [
 
 const STAFF_MENU_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests", key: "allocation" }, 
-  { name: "Bottle Inventory", icon: Droplet, path: "/inventory/bottle", key: "inventory" },
   { name: "My Schedule", icon: Calendar, path: "/schedule", key: "schedule" },
 ];
 
@@ -249,7 +248,7 @@ export default function Sidebar() {
   const canAccessLaundry = isAdmin || roleLower.includes('laundry') || deptLower.includes('laundry') || canAccess("laundry");
   const canAccessWater = isAdmin || isPoolAttendant || canAccess("water");
   const canAccessMinibar = isAdmin || canAccess("minibar");
-  const canAccessInventory = isAdmin || canAccess("inventory");
+  const canAccessInventory = isAdmin; // inventory sheets are admin-only
 
   const activeStaffTabs = useMemo(() => {
       const base = !isPoolAttendant ? STAFF_CORE_BASE : [
@@ -296,7 +295,9 @@ export default function Sidebar() {
   const sections: NavSection[] = [];
   const core = isAdmin ? ADMIN_CORE_TABS : activeStaffTabs;
   sections.push({ key: 'core', group: isAdmin ? 'Core' : 'Staff Portal', title: isAdmin ? 'Core' : 'My Work', icon: LayoutDashboard, tone: 'brand', items: core, collapsible: false });
-  sections.push({ key: 'allocation', group: 'Departments', title: 'Allocation Hub', icon: ListChecks, tone: 'brand', items: ALLOCATION_ITEMS, collapsible: true, open: isAllocationOpen, toggle: () => setIsAllocationOpen(o => !o) });
+  // Staff see only the final Allocation Sheet, Guest List and Forecast.
+  const allocationItems = isAdmin ? ALLOCATION_ITEMS : ALLOCATION_ITEMS.filter(i => ['/forecast', '/guests', '/allocation/sheet'].includes(i.path));
+  sections.push({ key: 'allocation', group: 'Departments', title: 'Allocation Hub', icon: ListChecks, tone: 'brand', items: allocationItems, collapsible: true, open: isAllocationOpen, toggle: () => setIsAllocationOpen(o => !o) });
   if (canAccessInventory) sections.push({ key: 'inventory', group: 'Departments', title: 'Inventory Hub', icon: Warehouse, tone: 'emerald', items: INVENTORY_ITEMS, collapsible: true, open: isInventoryOpen, toggle: () => setIsInventoryOpen(o => !o) });
   if (canAccessLaundry) sections.push({ key: 'laundry', group: 'Departments', title: 'Laundry Hub', icon: Droplets, tone: 'purple', items: LAUNDRY_ITEMS, collapsible: true, open: isLaundryOpen, toggle: () => setIsLaundryOpen(o => !o) });
   if (canAccessWater) sections.push({ key: 'water', group: 'Departments', title: 'Water Production', icon: Droplets, tone: 'sky', items: [{ name: 'Water Production', icon: Droplets, path: '/water' }], collapsible: false });
