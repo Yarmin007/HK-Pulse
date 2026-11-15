@@ -17,8 +17,10 @@ type AttRow = { host_id: string; date: string; status_code?: string | null; shif
 export const hasWorkingNote = (note?: string | null) => /working\s*day/i.test(String(note || ''));
 
 /** Leave code on paper, but the host worked (comment says "working day"). */
+// Older entries said "to be utilized on <month> payroll" instead of "working day" — same meaning.
+const hasPendingUseNote = (note?: string | null) => /to\s*be\s*utili[sz]ed/i.test(String(note || ''));
 export const isWorkedLeave = (r: { status_code?: string | null; shift_note?: string | null }) =>
-  RO_EARNING_CODES.includes(String(r.status_code || '').trim().toUpperCase()) && hasWorkingNote(r.shift_note);
+  RO_EARNING_CODES.includes(String(r.status_code || '').trim().toUpperCase()) && (hasWorkingNote(r.shift_note) || hasPendingUseNote(r.shift_note));
 
 export const isRO = (r: { status_code?: string | null }) => String(r.status_code || '').trim().toUpperCase() === 'RO';
 
@@ -49,7 +51,7 @@ export const fetchROEvents = async (hostId?: string): Promise<AttRow[]> => {
   for (let from = 0; ; from += 1000) {
     let q = supabase.from('hsk_attendance')
       .select('host_id, date, status_code, shift_note')
-      .or('status_code.eq.RO,shift_note.ilike.*working*day*')
+      .or('status_code.eq.RO,shift_note.ilike.*working*day*,shift_note.ilike.*to*be*utili*')
       .range(from, from + 999);
     if (hostId) q = q.eq('host_id', hostId);
     const { data, error } = await q;

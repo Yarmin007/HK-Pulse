@@ -598,7 +598,6 @@ export default function Dashboard() {
       { label: 'Annual', value: userBalances.balAL, dot: 'bg-cyan-500' },
       { label: 'Public hol.', value: userBalances.balPH, dot: 'bg-blue-500' },
       ...(userBalances.balRR !== '-' ? [{ label: 'R & R', value: userBalances.balRR, dot: 'bg-fuchsia-500' }] : []),
-      { label: 'RO', value: userBalances.balRO, dot: 'bg-yellow-500' },
       { label: 'Sick', value: userBalances.balSL, dot: 'bg-rose-500' },
       { label: 'Emergency', value: userBalances.balEL, dot: 'bg-orange-500' },
   ] : [];
@@ -947,7 +946,7 @@ export default function Dashboard() {
               ) : selectedTeamHost ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
-                    {[['Total', selectedTeamHost.balances.balTotal, 'bg-[#6D2158] text-white'], ['Off', selectedTeamHost.balances.balOff, ''], ['Annual', selectedTeamHost.balances.balAL, ''], ['Public hol.', selectedTeamHost.balances.balPH, ''], ['RO', selectedTeamHost.balances.balRO, ''], ['Sick', selectedTeamHost.balances.balSL, '']].map(([l, v, c]) => (
+                    {[['Total', selectedTeamHost.balances.balTotal, 'bg-[#6D2158] text-white'], ['Off', selectedTeamHost.balances.balOff, ''], ['Annual', selectedTeamHost.balances.balAL, ''], ['Public hol.', selectedTeamHost.balances.balPH, ''], ['Sick', selectedTeamHost.balances.balSL, '']].map(([l, v, c]) => (
                       <div key={l} className={`rounded-2xl px-3 py-2.5 border ${c || 'bg-white border-slate-200 text-slate-800'}`}>
                         <div className={`text-[10px] font-bold uppercase ${c ? 'text-white/70' : 'text-slate-400'}`}>{l}</div>
                         <div className="text-xl font-black tabular-nums">{v}</div>

@@ -897,8 +897,7 @@ export default function AttendancePage() {
               <td className="max-md:static md:sticky md:left-[320px] z-50 bg-cyan-50 group-hover:bg-cyan-100 border-b border-r border-slate-200 p-2 text-center font-black text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balAL}</td>
               <td className="max-md:static md:sticky md:left-[360px] z-50 bg-blue-50 group-hover:bg-blue-100 border-b border-r border-slate-200 p-2 text-center font-black text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balPH}</td>
               <td className="max-md:static md:sticky md:left-[400px] z-50 bg-fuchsia-50 group-hover:bg-fuchsia-100 border-b border-r border-slate-200 p-2 text-center font-black text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border">{host.balRR}</td>
-              <td title={(host.balRO ?? 0) < 0 ? `${-host.balRO} RO day(s) given without a "working day" comment on the day worked` : `RO earned ${host.roEarned || 0} · taken ${host.roTaken || 0}`} className={`max-md:static md:sticky md:left-[440px] z-50 border-b border-r border-slate-200 p-2 text-center font-black w-[40px] min-w-[40px] max-w-[40px] box-border ${(host.balRO ?? 0) < 0 ? 'bg-rose-50 text-rose-600 group-hover:bg-rose-100' : 'bg-yellow-50 text-yellow-800 group-hover:bg-yellow-100'}`}>{host.balRO ?? 0}</td>
-              <td className="max-md:static md:sticky md:left-[480px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
+              <td className="max-md:static md:sticky md:left-[440px] z-50 bg-purple-100 group-hover:bg-purple-200 border-b border-r-2 border-slate-300 p-2 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]">{host.balTotal}</td>
 
               {daysInYear.map((dateStr, dateIdx) => {
                   const record = attendanceMap.get(`${host.host_id}_${dateStr}`);
@@ -1052,7 +1051,7 @@ export default function AttendancePage() {
                                       <span className="block font-black uppercase text-slate-500 tracking-widest">Host Name</span>
                                       <span className="block text-[8px] font-bold text-slate-400 mt-1">ID, Role & Joined Date</span>
                                   </th>
-                                  <th colSpan={6} className="max-md:static md:sticky md:left-[280px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[210px] min-w-[210px] max-w-[210px] box-border">
+                                  <th colSpan={5} className="max-md:static md:sticky md:left-[280px] z-[80] bg-slate-50 border-b border-r-2 border-slate-300 p-2 text-center font-black uppercase text-[#6D2158] tracking-widest shadow-[2px_0_5px_rgba(0,0,0,0.1)] w-[210px] min-w-[210px] max-w-[210px] box-border">
                                       Live Owed Balances
                                   </th>
                                   
@@ -1093,8 +1092,7 @@ export default function AttendancePage() {
                                   <th className="max-md:static md:sticky md:left-[320px] z-[80] bg-cyan-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-cyan-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Annual Leave">AL</th>
                                   <th className="max-md:static md:sticky md:left-[360px] z-[80] bg-blue-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-blue-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Public Holiday">PH</th>
                                   <th className="max-md:static md:sticky md:left-[400px] z-[80] bg-fuchsia-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-fuchsia-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Rest & Recreation (DA/DB Only)">RR</th>
-                                  <th className="max-md:static md:sticky md:left-[440px] z-[80] bg-yellow-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-yellow-800 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Replacement Off owed (worked a leave day)">RO</th>
-                                  <th className="max-md:static md:sticky md:left-[480px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
+                                  <th className="max-md:static md:sticky md:left-[440px] z-[80] bg-purple-100 border-b-2 border-r-2 border-slate-300 p-1 text-center font-black text-purple-900 w-[50px] min-w-[50px] max-w-[50px] box-border shadow-[2px_0_5px_rgba(0,0,0,0.1)]" title="Total Balance">TOT</th>
                                   
                                   <th className="bg-rose-50 border-b-2 border-r border-slate-300 p-1 text-center font-bold text-rose-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Sick Leave (30 Max)">SL</th>
                                   <th className="bg-orange-50 border-b-2 border-r-2 border-slate-300 p-1 text-center font-bold text-orange-700 w-[40px] min-w-[40px] max-w-[40px] box-border" title="Emergency Leave (10 Max)">EL</th>
@@ -1267,53 +1265,55 @@ export default function AttendancePage() {
                   <div className="p-6 bg-yellow-400 text-yellow-900 flex justify-between items-center shrink-0">
                       <div>
                           <h3 className="text-xl font-black flex items-center gap-2 tracking-tight"><AlertTriangle size={24}/> RO balance</h3>
-                          <p className="text-[10px] text-yellow-800 font-bold uppercase tracking-widest mt-1">Days worked on leave (comment “working day”) vs RO taken</p>
+                          <p className="text-[10px] text-yellow-800 font-bold uppercase tracking-widest mt-1">OFF given on a working day → RO to give back</p>
                       </div>
                       <button onClick={() => setIsROModalOpen(false)} className="bg-black/10 p-2 rounded-full hover:bg-black/20 transition-colors text-yellow-900"><X size={18}/></button>
                   </div>
                   
-                  <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
-                      {roLedger.length === 0 ? (
-                          <div className="text-center py-10 text-slate-400 font-bold italic">No pending leaves to track.</div>
-                      ) : (
-                          roLedger.map(l => (
-                              <div key={l.host.id} className={`p-4 border rounded-2xl ${l.balance < 0 ? 'bg-rose-50/60 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
-                                  <div className="flex justify-between items-start mb-2">
-                                      <div>
-                                          <p className="font-black text-slate-800 text-sm">{l.host.full_name}</p>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.host_id} · earned {l.earned} · taken {l.taken}</p>
+                  <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scrollbar">
+                      {(() => {
+                          const owed = roLedger.filter(l => l.balance > 0);
+                          const check = roLedger.filter(l => l.balance < 0).sort((a, b) => a.balance - b.balance);
+                          const renderCard = (l: (typeof roLedger)[number]) => (
+                              <div key={l.host.id} className={`p-4 border rounded-2xl ${l.balance < 0 ? 'bg-rose-50/60 border-rose-200' : 'bg-white border-yellow-200'}`}>
+                                  <div className="flex justify-between items-start gap-3">
+                                      <div className="min-w-0">
+                                          <p className="font-black text-slate-800 text-sm truncate">{l.host.full_name}</p>
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.host_id} · worked {l.earned} · RO taken {l.taken}</p>
                                       </div>
-                                      <div className="text-right">
-                                          <span className={`text-xl font-black ${l.balance > 0 ? 'text-amber-600' : l.balance < 0 ? 'text-rose-600' : 'text-slate-400'}`}>{l.balance}</span>
-                                          <span className="block text-[8px] font-bold text-slate-400 uppercase">{l.balance < 0 ? 'Check comments' : 'RO owed'}</span>
+                                      <div className="text-right shrink-0">
+                                          <span className={`text-xl font-black ${l.balance > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{l.balance}</span>
+                                          <span className="block text-[8px] font-bold text-slate-400 uppercase">{l.balance < 0 ? 'more RO than worked' : `RO to give`}</span>
                                       </div>
                                   </div>
+                                  {l.balance > 0 && (() => {
+                                      // The worked days still waiting for their RO (oldest paid back first).
+                                      const open = l.earnedDates.slice(l.taken);
+                                      return open.length > 0 && (
+                                          <div className="mt-2 flex flex-wrap gap-1.5">
+                                              {open.map((d: string) => <span key={d} className="bg-lime-50 border border-lime-200 text-lime-800 px-2 py-1 rounded text-[10px] font-bold">worked {format(parseISO(d), 'dd MMM')}</span>)}
+                                          </div>
+                                      );
+                                  })()}
                                   {l.balance < 0 && (
-                                      <p className="text-[11px] font-semibold text-rose-700 mb-2">{-l.balance} RO day{l.balance === -1 ? '' : 's'} given, but the day{l.balance === -1 ? '' : 's'} worked {l.balance === -1 ? 'has' : 'have'} no &ldquo;working day&rdquo; comment. Add it on the day they worked.</p>
-                                  )}
-                                  {l.earnedDates.length > 0 && (
-                                      <div className="mt-2 pt-2 border-t border-slate-200">
-                                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Worked (earned RO)</p>
-                                          <div className="flex flex-wrap gap-1.5">
-                                              {l.earnedDates.map((dateStr: string, idx: number) => (
-                                                  <span key={idx} className="bg-lime-50 border border-lime-200 text-lime-800 px-2 py-1 rounded text-[10px] font-bold">{format(parseISO(dateStr), 'dd MMM yy')}</span>
-                                              ))}
-                                          </div>
-                                      </div>
-                                  )}
-                                  {l.takenDates.length > 0 && (
-                                      <div className="mt-2 pt-2 border-t border-slate-200">
-                                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">RO taken</p>
-                                          <div className="flex flex-wrap gap-1.5">
-                                              {l.takenDates.map((dateStr: string, idx: number) => (
-                                                  <span key={idx} className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-2 py-1 rounded text-[10px] font-bold">{format(parseISO(dateStr), 'dd MMM yy')}</span>
-                                              ))}
-                                          </div>
-                                      </div>
+                                      <p className="mt-1.5 text-[11px] font-semibold text-rose-700">{-l.balance} RO day{l.balance === -1 ? '' : 's'} given, but the day{l.balance === -1 ? '' : 's'} worked {l.balance === -1 ? 'is' : 'are'} not marked OFF with &ldquo;working day&rdquo;.</p>
                                   )}
                               </div>
-                          ))
-                      )}
+                          );
+                          return (
+                            <>
+                              {owed.length === 0
+                                  ? <div className="text-center py-8 text-slate-400 font-bold">Nobody is owed a working off right now.</div>
+                                  : owed.map(renderCard)}
+                              {check.length > 0 && (
+                                  <details className="pt-2">
+                                      <summary className="cursor-pointer text-[11px] font-black uppercase tracking-wider text-rose-600 py-2">Needs checking · {check.length} host{check.length === 1 ? '' : 's'} took more RO than recorded</summary>
+                                      <div className="space-y-3 pt-2">{check.map(renderCard)}</div>
+                                  </details>
+                              )}
+                            </>
+                          );
+                      })()}
                   </div>
               </div>
           </div>
@@ -1437,22 +1437,6 @@ export default function AttendancePage() {
                                               </div>
                                           </div>
                                       ))}
-                                  </div>
-                              </div>
-
-                              {/* NEW: Top RO Liability Staff */}
-                              <div className="bg-yellow-50 rounded-2xl border border-yellow-200 shadow-sm p-6 flex flex-col flex-1">
-                                  <h4 className="text-[10px] font-black uppercase tracking-widest text-yellow-700 mb-6 flex items-center gap-2">
-                                      <AlertTriangle size={14} className="text-yellow-600"/> Highest Pending Leaves (RO)
-                                  </h4>
-                                  <div className="space-y-4">
-                                      {roLedger.slice(0, 5).map((l, idx) => (
-                                          <div key={l.host.id} className="flex items-center justify-between">
-                                              <span className="text-sm font-bold text-yellow-900">{l.host.full_name}</span>
-                                              <span className="text-sm font-black text-yellow-700">{l.balance} Days</span>
-                                          </div>
-                                      ))}
-                                      {roLedger.length === 0 && <p className="text-xs italic text-yellow-700/50">No pending leaves (RO) tracked currently.</p>}
                                   </div>
                               </div>
                           </div>

@@ -188,7 +188,7 @@ export default function AllocationPage() {
                       try { await navigator.clipboard.writeText(url); toast.success('Front Office link copied'); }
                       catch { window.prompt('Front Office link', url); }
                   }}
-                  title="Public page for Front Office: villa attendants and their work numbers"
+                  title="Public page for Front Office: today's villa attendants with photo, MVPN and personal number, plus the In-Villa Directory (PDFs)"
                   className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">FO Link</button>
               <button onClick={handleCopyYesterday} className="bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">Copy Yesterday</button>
               <button onClick={handleSave} disabled={isProcessing || !isDirty} className={`px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm ${isDirty ? 'bg-[#6D2158] text-white hover:bg-[#5a1b49]' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
