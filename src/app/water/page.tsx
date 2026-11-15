@@ -1,7 +1,9 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Download, AlertTriangle, Calendar, FileText, Coffee, TrendingUp, TrendingDown, AlertOctagon } from 'lucide-react';
+import { ClipboardPaste, X, Check, ChevronLeft, ChevronRight, Loader2, Droplets, Download, AlertTriangle, Calendar, FileText, Coffee } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import WaterCompare from './WaterCompare';
+import { BarChart3 } from 'lucide-react';
 
 type DailyRecord = {
   dateStr: string; 
@@ -51,15 +53,12 @@ const createDefaultMilkRecord = (year: number, month: number, day: number): Milk
 const getDaysInMonth = (month: number, year: number) => new Date(year, month + 1, 0).getDate();
 const formatDateStr = (year: number, month: number, day: number) => `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-const hasRowData = (r: DailyRecord) => {
-  const { dateStr, day, ...nums } = r;
-  return Object.values(nums).some(val => (val as number) > 0);
-};
+const hasRowData = (r: DailyRecord) => COLUMN_CONFIG.some(c => Number(r[c.key]) > 0);
 
 export default function WaterProductionPage() {
   const [isMounted, setIsMounted] = useState(false);
-  const [activeTab, setActiveTab] = useState<'water' | 'milk'>('water');
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [activeTab, setActiveTab] = useState<'water' | 'milk' | 'compare'>('water');
+  const [selectedDate, setSelectedDate] = useState<Date>(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [records, setRecords] = useState<DailyRecord[]>([]);
   const [milkRecords, setMilkRecords] = useState<MilkRecord[]>([]);
   const [isPasteModalOpen, setIsPasteModalOpen] = useState(false);
@@ -71,6 +70,10 @@ export default function WaterProductionPage() {
 
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isDirty = useRef(false);
+  // Only the days that were edited are saved (saving the whole month overwrote other people's entries
+  // and created empty rows for every day).
+  const dirtyWater = useRef(new Set<string>());
+  const dirtyMilk = useRef(new Set<string>());
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -110,13 +113,13 @@ export default function WaterProductionPage() {
 
     if (waterData) {
       waterData.forEach((row: any) => {
-        const dayIndex = new Date(row.date).getDate() - 1;
+        const dayIndex = Number(String(row.date).slice(8, 10)) - 1;
         if (skeleton[dayIndex]) skeleton[dayIndex] = { ...skeleton[dayIndex], ...row }; 
       });
     }
     if (milkData) {
       milkData.forEach((row: any) => {
-        const dayIndex = new Date(row.date).getDate() - 1;
+        const dayIndex = Number(String(row.date).slice(8, 10)) - 1;
         if (milkSkeleton[dayIndex]) milkSkeleton[dayIndex] = { ...milkSkeleton[dayIndex], ...row }; 
       });
     }
@@ -128,7 +131,10 @@ export default function WaterProductionPage() {
   };
 
   const saveToDatabase = async (dataToSave: DailyRecord[], milkDataToSave: MilkRecord[]) => {
-    const payload = dataToSave.map(r => ({
+    const wDays = new Set(dirtyWater.current); const mDays = new Set(dirtyMilk.current);
+    dirtyWater.current.clear(); dirtyMilk.current.clear();
+    if (wDays.size === 0 && mDays.size === 0) { setSaveStatus("saved"); return; }
+    const payload = dataToSave.filter(r => wDays.has(r.dateStr)).map(r => ({
         date: r.dateStr,
         b1000_fnb_still: r.b1000_fnb_still, b1000_fnb_spk: r.b1000_fnb_spk, b1000_ret_still: r.b1000_ret_still, b1000_ret_spk: r.b1000_ret_spk, b1000_break: r.b1000_break,
         b500_hsk_still: r.b500_hsk_still, b500_tropic_still: r.b500_tropic_still, b500_ret_still: r.b500_ret_still, b500_break: r.b500_break,
@@ -136,15 +142,19 @@ export default function WaterProductionPage() {
         b250_tma_still: r.b250_tma_still, b250_break: r.b250_break, b200_break: r.b200_break
     }));
 
-    const milkPayload = milkDataToSave.map(r => ({
+    const milkPayload = milkDataToSave.filter(r => mDays.has(r.dateStr)).map(r => ({
         date: r.dateStr,
         total_ml: r.total_ml
     }));
 
-    const { error: wError } = await supabase.from('water_records').upsert(payload, { onConflict: 'date' });
-    const { error: mError } = await supabase.from('milk_records').upsert(milkPayload, { onConflict: 'date' });
+    const [{ error: wError }, { error: mError }] = await Promise.all([
+      payload.length ? supabase.from('water_records').upsert(payload, { onConflict: 'date' }) : Promise.resolve({ error: null as any }),
+      milkPayload.length ? supabase.from('milk_records').upsert(milkPayload, { onConflict: 'date' }) : Promise.resolve({ error: null as any }),
+    ]);
 
     if (wError || (mError && mError.code !== '42P01')) {
+      // Keep them marked so the next save tries again
+      wDays.forEach(d => dirtyWater.current.add(d)); mDays.forEach(d => dirtyMilk.current.add(d));
       setErrorMessage("Save Failed: " + (wError?.message || mError?.message));
       setSaveStatus("error");
     } else {
@@ -158,7 +168,8 @@ export default function WaterProductionPage() {
     isDirty.current = true;
     const val = value === '' ? 0 : parseInt(value);
     const newRecords = [...records];
-    newRecords[dayIndex] = { ...newRecords[dayIndex], [field]: isNaN(val) ? 0 : val };
+    newRecords[dayIndex] = { ...newRecords[dayIndex], [field]: isNaN(val) ? 0 : Math.max(0, val) };
+    dirtyWater.current.add(newRecords[dayIndex].dateStr);
     setRecords(newRecords);
   };
 
@@ -166,15 +177,29 @@ export default function WaterProductionPage() {
     isDirty.current = true;
     const val = value === '' ? 0 : parseInt(value);
     const newRecords = [...milkRecords];
-    newRecords[dayIndex] = { ...newRecords[dayIndex], [field]: isNaN(val) ? 0 : val };
+    newRecords[dayIndex] = { ...newRecords[dayIndex], [field]: isNaN(val) ? 0 : Math.max(0, val) };
+    dirtyMilk.current.add(newRecords[dayIndex].dateStr);
     setMilkRecords(newRecords);
   };
 
-  const changeMonth = (offset: number) => {
-    const d = new Date(selectedDate);
-    d.setMonth(d.getMonth() + offset);
-    setSelectedDate(d);
+  // Save anything still waiting for the auto-save timer (it was dropped when the month changed).
+  const flushPending = async () => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    if (dirtyWater.current.size || dirtyMilk.current.size) await saveToDatabase(records, milkRecords);
   };
+
+  const changeMonth = async (offset: number) => {
+    await flushPending();
+    setSelectedDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth() + offset, 1));
+  };
+
+  useEffect(() => {
+    const warn = (e: BeforeUnloadEvent) => {
+      if (dirtyWater.current.size || dirtyMilk.current.size) { e.preventDefault(); e.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, []);
 
   const stats = useMemo(() => {
     let totals = { 
@@ -311,26 +336,26 @@ export default function WaterProductionPage() {
         
         if (currentSection === "1000") {
             if (isBreak) newRecord.b1000_break = val;
-            else if (line.includes("still")) newRecord.b1000_fnb_still = val;
-            else if (line.includes("sparkling") && !line.includes("unused")) newRecord.b1000_fnb_spk = val;
             else if (line.includes("unused") || line.includes("return")) {
                 if(line.includes("sparkling")) newRecord.b1000_ret_spk = val;
                 else newRecord.b1000_ret_still = val; 
             }
+            else if (line.includes("sparkling")) newRecord.b1000_fnb_spk = val;
+            else if (line.includes("still")) newRecord.b1000_fnb_still = val;
         } else if (currentSection === "500") {
             if (isBreak) newRecord.b500_break = val;
-            else if (line.includes("still") && !line.includes("unused")) newRecord.b500_hsk_still = val;
-            else if (line.includes("tropic")) newRecord.b500_tropic_still = val;
             else if (line.includes("unused") || line.includes("return")) newRecord.b500_ret_still = val;
+            else if (line.includes("tropic")) newRecord.b500_tropic_still = val;
+            else if (line.includes("still")) newRecord.b500_hsk_still = val;
         } else if (currentSection === "350") {
             if (isBreak) newRecord.b350_break = val;
-            else if (line.includes("sparkling") && !line.includes("unused")) newRecord.b350_hsk_spk = val;
-            else if (line.includes("spa") && !line.includes("sparkling")) newRecord.b350_spa_still = val;
-            else if (line.includes("water") || line.includes("sports")) newRecord.b350_ws_still = val;
             else if (line.includes("unused") || line.includes("return")) {
                  if(line.includes("sparkling")) newRecord.b350_ret_spk = val;
                  else newRecord.b350_ret_still = val;
             }
+            else if (line.includes("sparkling")) newRecord.b350_hsk_spk = val;
+            else if (line.includes("spa")) newRecord.b350_spa_still = val;
+            else if (line.includes("water") || line.includes("sports")) newRecord.b350_ws_still = val;
         } else if (currentSection === "200") {
             if (isBreak) newRecord.b200_break = val;
         } else if (currentSection === "TMA") {
@@ -343,13 +368,17 @@ export default function WaterProductionPage() {
         }
     });
 
+    await flushPending();
+    const hasMilk = lines.some(l => l.includes("waste milk") || l.includes("milk waste"));
     const { error: wErr } = await supabase.from('water_records').upsert(newRecord, { onConflict: 'date' });
-    const { error: mErr } = await supabase.from('milk_records').upsert(newMilkRecord, { onConflict: 'date' });
+    // A report without a milk section must not wipe that day's milk figure
+    const { error: mErr } = hasMilk ? await supabase.from('milk_records').upsert(newMilkRecord, { onConflict: 'date' }) : { error: null as any };
     
     if (wErr || (mErr && mErr.code !== '42P01')) { alert("Failed to save: " + (wErr?.message || mErr?.message)); } 
     else {
         setIsPasteModalOpen(false); setPasteText(""); setSavedDate(manualDateStr || "");
-        setSelectedDate(new Date(targetYear, targetMonth, 1)); fetchMonthData(new Date(targetYear, targetMonth, 1));
+        setSelectedDate(new Date(targetYear, targetMonth, 1));
+        setTimeout(() => setSavedDate(""), 4000);
     }
   };
 
@@ -358,8 +387,8 @@ export default function WaterProductionPage() {
     const rows = records.map(r => [ r.dateStr, r.b1000_fnb_still, r.b1000_fnb_spk, r.b1000_ret_spk, r.b1000_ret_still, r.b1000_break, r.b500_hsk_still, r.b500_tropic_still, r.b500_ret_still, r.b500_break, r.b350_spa_still, r.b350_ws_still, r.b350_hsk_spk, r.b350_ret_still, r.b350_ret_spk, r.b350_break, r.b250_tma_still, r.b250_break, r.b200_break ]);
     const csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" + rows.map(e => e.join(",")).join("\n");
     const link = document.createElement("a"); link.setAttribute("href", encodeURI(csvContent));
-    link.setAttribute("download", `Water_Log_${selectedDate.toISOString().slice(0,7)}.csv`);
-    document.body.appendChild(link); link.click();
+    link.setAttribute("download", `Water_Log_${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}.csv`);
+    document.body.appendChild(link); link.click(); link.remove();
   };
 
   const handleDownloadPDF = async () => {
@@ -409,162 +438,136 @@ export default function WaterProductionPage() {
   if (!isMounted) return null;
 
   return (
-    // FIX: Using absolute inset-0 overrides any top padding from layouts, ensuring mobile visibility
-    <div className="absolute inset-0 md:static z-[60] md:z-10 flex flex-col bg-slate-100 text-slate-900 font-sans text-xs overflow-hidden">
+    <div className="flex flex-col h-[calc(100dvh-4rem-env(safe-area-inset-bottom))] md:h-[100dvh] bg-slate-50 text-slate-900 font-sans text-xs overflow-hidden">
       <style dangerouslySetInnerHTML={{__html: `
         input[type="number"]::-webkit-inner-spin-button,
         input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
         input[type="number"] { -moz-appearance: textfield; }
       `}} />
 
-      {errorMessage && <div className="bg-red-500 text-white text-center py-1 font-bold flex justify-center items-center gap-2"><AlertTriangle size={12}/> {errorMessage}</div>}
+      {errorMessage && <div className="bg-rose-600 text-white text-center py-1.5 font-bold flex justify-center items-center gap-2"><AlertTriangle size={12}/> {errorMessage}</div>}
 
-      <div className="bg-white shadow-sm shrink-0 z-40">
-        <div className="px-4 md:px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 mt-8 md:mt-0">
-            <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-start">
-                <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg text-white shadow-md ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-500'}`}>
-                        {activeTab === 'water' ? <Droplets size={20} /> : <Coffee size={20} />}
-                    </div>
-                    <div>
-                        <h1 className="text-lg md:text-xl font-black text-slate-800 uppercase tracking-tight">
-                            {activeTab === 'water' ? 'Water Production' : 'Milk Waste Tracker'}
-                        </h1>
-                        <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
-                            <button onClick={() => changeMonth(-1)} className={`hover:text-[#6D2158] ${activeTab === 'milk' ? 'hover:text-red-500' : ''}`}><ChevronLeft size={16}/></button>
-                            <span className="w-28 text-center">{selectedDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
-                            <button onClick={() => changeMonth(1)} className={`hover:text-[#6D2158] ${activeTab === 'milk' ? 'hover:text-red-500' : ''}`}><ChevronRight size={16}/></button>
-                        </div>
-                    </div>
+      <div className="bg-white border-b border-slate-200 shrink-0 z-40">
+        <div className="px-4 md:px-6 pt-4 pb-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+                <div className={`p-2.5 rounded-2xl text-white shadow-sm shrink-0 ${activeTab === 'milk' ? 'bg-rose-500' : activeTab === 'compare' ? 'bg-slate-800' : 'bg-[#6D2158]'}`}>
+                    {activeTab === 'water' ? <Droplets size={20} /> : activeTab === 'milk' ? <Coffee size={20} /> : <BarChart3 size={20} />}
+                </div>
+                <div className="min-w-0">
+                    <h1 className="text-lg md:text-xl font-black text-slate-900 tracking-tight truncate">
+                        {activeTab === 'water' ? 'Water Production' : activeTab === 'milk' ? 'Milk Waste' : 'Compare & Trends'}
+                    </h1>
+                    <p className="text-[11px] font-semibold text-slate-400">
+                        {activeTab === 'compare' ? 'Production, breakage and milk waste across months' : 'Daily log · saves automatically'}
+                    </p>
                 </div>
             </div>
-            
-            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
-                <div className="text-[10px] font-bold uppercase tracking-wider mr-2 text-right hidden md:block">
-                    {saveStatus === 'saving' && <span className="text-blue-500 flex items-center justify-end gap-1"><Loader2 size={10} className="animate-spin"/> Saving...</span>}
-                    {saveStatus === 'saved' && <span className="text-emerald-600 flex items-center justify-end gap-1"><Check size={10}/> Saved</span>}
-                </div>
-                <button onClick={() => setIsPasteModalOpen(true)} className="btn-secondary"><ClipboardPaste size={16}/> <span className="hidden md:inline">Paste Log</span></button>
+
+            <div className="flex items-center gap-2 flex-wrap">
+                {activeTab !== 'compare' && (
+                    <div className="flex items-center bg-slate-100 rounded-xl p-1">
+                        <button onClick={() => changeMonth(-1)} className="p-1.5 rounded-lg hover:bg-white text-slate-500" aria-label="Previous month"><ChevronLeft size={16}/></button>
+                        <span className="w-32 text-center text-sm font-black text-slate-800">{selectedDate.toLocaleString('en-GB', { month: 'long', year: 'numeric' })}</span>
+                        <button onClick={() => changeMonth(1)} className="p-1.5 rounded-lg hover:bg-white text-slate-500" aria-label="Next month"><ChevronRight size={16}/></button>
+                    </div>
+                )}
+                {activeTab !== 'compare' && (
+                    <span className={`hidden md:inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${saveStatus === 'saving' ? 'bg-blue-50 text-blue-600' : saveStatus === 'error' ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-700'}`}>
+                        {saveStatus === 'saving' ? <><Loader2 size={10} className="animate-spin"/> Saving</> : saveStatus === 'error' ? <><AlertTriangle size={10}/> Not saved</> : <><Check size={10}/> Saved</>}
+                    </span>
+                )}
+                {activeTab !== 'compare' && <button onClick={() => setIsPasteModalOpen(true)} className={BTN}><ClipboardPaste size={15}/> <span className="hidden sm:inline">Paste report</span></button>}
                 {activeTab === 'water' && (
                     <>
-                        <button onClick={handleExportCSV} className="btn-secondary"><Download size={16}/> <span className="hidden md:inline">CSV</span></button>
-                        <button onClick={handleDownloadPDF} className="btn-secondary text-[#6D2158] border-[#6D2158]/30 hover:bg-[#6D2158]/5"><FileText size={16}/> <span className="hidden md:inline">PDF</span></button>
+                        <button onClick={handleExportCSV} className={BTN}><Download size={15}/> <span className="hidden sm:inline">CSV</span></button>
+                        <button onClick={handleDownloadPDF} className={`${BTN} text-[#6D2158] border-[#6D2158]/30 hover:bg-[#6D2158]/5`}><FileText size={15}/> <span className="hidden sm:inline">PDF</span></button>
                     </>
                 )}
             </div>
         </div>
 
         {/* TABS */}
-        <div className="flex gap-4 px-4 md:px-6 bg-slate-50 border-t border-b border-slate-300">
-            <button 
-                onClick={() => setActiveTab('water')} 
-                className={`py-3 font-black text-xs uppercase tracking-widest border-b-2 transition-all ${activeTab === 'water' ? 'border-[#6D2158] text-[#6D2158]' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-            >
-                💧 Water Production
-            </button>
-            <button 
-                onClick={() => setActiveTab('milk')} 
-                className={`py-3 font-black text-xs uppercase tracking-widest border-b-2 transition-all ${activeTab === 'milk' ? 'border-red-500 text-red-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-            >
-                🥛 Milk Waste
-            </button>
+        <div className="flex gap-1 px-4 md:px-6">
+            {([
+                { id: 'water', label: 'Water', icon: Droplets, on: 'border-[#6D2158] text-[#6D2158]' },
+                { id: 'milk', label: 'Milk waste', icon: Coffee, on: 'border-rose-500 text-rose-600' },
+                { id: 'compare', label: 'Compare', icon: BarChart3, on: 'border-slate-800 text-slate-900' },
+            ] as const).map(t => (
+                <button key={t.id} onClick={async () => { await flushPending(); setActiveTab(t.id); }}
+                    className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-black border-b-2 transition-colors ${activeTab === t.id ? t.on : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                    <t.icon size={14}/> {t.label}
+                </button>
+            ))}
         </div>
-        
+      </div>
+
+      {activeTab === 'compare' ? (
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 pb-24 md:pb-6">
+            <WaterCompare initialMonth={`${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}`} />
+        </div>
+      ) : (<>
+      <div className="shrink-0 bg-slate-50 border-b border-slate-200">
         {/* STATS AREA (Water) */}
         {activeTab === 'water' && (
-            <div className="flex gap-6 px-6 py-4 bg-slate-50 border-b border-slate-200 overflow-x-auto no-scrollbar">
-                <div className="flex gap-3 min-w-max">
-                    <StatCard label="Total L" val={(stats.l_still + stats.l_spk).toFixed(0)} unit="L" color="text-blue-700" bg="bg-blue-100" />
-                    <StatCard label="Still L" val={stats.l_still.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
-                    <StatCard label="Sparkling L" val={stats.l_spk.toFixed(0)} unit="L" color="text-purple-700" bg="bg-purple-100" />
-                    <StatCard label="Bottles Filled" val={stats.bottles.toLocaleString()} unit="Qty" color="text-emerald-700" bg="bg-emerald-100" />
-                    <StatCard label="Breakage" val={stats.breakage} unit="Qty" color="text-red-700" bg="bg-red-100" />
+            <div className="px-4 md:px-6 py-3 flex flex-col lg:flex-row gap-3">
+                <div className="grid grid-cols-6 sm:grid-cols-5 gap-2 lg:w-[58%] shrink-0 [&>*:nth-child(-n+3)]:col-span-2 [&>*:nth-child(n+4)]:col-span-3 sm:[&>*]:!col-span-1">
+                    <StatCard label="Total" val={(stats.l_still + stats.l_spk).toFixed(0)} unit="L" accent="#6D2158" />
+                    <StatCard label="Still" val={stats.l_still.toFixed(0)} unit="L" accent="#2a78d6" />
+                    <StatCard label="Sparkling" val={stats.l_spk.toFixed(0)} unit="L" accent="#eb6834" />
+                    <StatCard label="Bottles" val={stats.bottles.toLocaleString()} unit="" accent="#1baf7a" />
+                    <StatCard label="Breakage" val={stats.breakage} unit="" accent="#e34948" />
                 </div>
-                
-                {/* GRAPHS */}
-                <div className="flex-1 flex gap-6 border-l border-slate-200 pl-6 min-w-[300px]">
-                    <div className="flex-1 flex flex-col justify-center gap-2">
-                        <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Still Breakdown</span></div>
-                        <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                            {chartData.still.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
+                <div className="hidden md:grid grid-cols-2 gap-3 flex-1 bg-white rounded-2xl border border-slate-200 p-3">
+                    {([['Still by outlet', chartData.still], ['Sparkling by outlet', chartData.spk]] as const).map(([title, items]) => (
+                        <div key={title} className="flex flex-col justify-center gap-2 min-w-0">
+                            <span className="text-[10px] uppercase font-black tracking-widest text-slate-400">{title}</span>
+                            <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden flex gap-[2px]">
+                                {items.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
+                            </div>
+                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-bold text-slate-600">
+                                {items.length === 0 && <span className="text-slate-400 font-semibold">Nothing logged yet</span>}
+                                {items.map((item, i) => (
+                                    <span key={i} className="flex items-center gap-1">
+                                        <span className={`w-2 h-2 rounded-full ${item.color}`}></span>
+                                        {item.label} <span className="text-slate-400 font-semibold">{item.pct.toFixed(0)}%</span>
+                                    </span>
+                                ))}
+                            </div>
                         </div>
-                        <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
-                            {chartData.still.map((item, i) => (
-                                <div key={i} className="flex items-center gap-1">
-                                    <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
-                                    {item.label} 
-                                    <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                    <div className="flex-1 flex flex-col justify-center gap-2 border-l border-slate-200 pl-6">
-                        <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400"><span>Sparkling Breakdown</span></div>
-                        <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                            {chartData.spk.map((item, i) => (<div key={i} className={`h-full ${item.color}`} style={{ width: `${item.pct}%` }}></div>))}
-                        </div>
-                        <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-500">
-                            {chartData.spk.map((item, i) => (
-                                <div key={i} className="flex items-center gap-1">
-                                    <div className={`w-2 h-2 rounded-full ${item.color}`}></div>
-                                    {item.label}
-                                    <span className="text-slate-400 font-normal">({item.pct.toFixed(0)}%)</span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
+                    ))}
                 </div>
             </div>
         )}
 
         {/* MILK DASHBOARD */}
         {activeTab === 'milk' && (
-            <div className="flex flex-col gap-6 px-6 py-4 bg-red-50/30 border-b border-red-100">
-                <div className="flex gap-4">
-                    <div className="flex-1 flex gap-3 min-w-max">
-                        <div className="flex flex-col p-4 rounded-2xl bg-white border border-red-100 shadow-sm flex-1">
-                            <span className="flex items-center gap-2 text-[10px] uppercase font-black text-red-400"><TrendingUp size={14}/> Total Waste (Liters)</span>
-                            <span className="text-3xl font-black text-red-600 mt-1">{milkStats.totalLiters.toFixed(1)} <span className="text-sm text-red-300">L</span></span>
-                        </div>
-                        <div className="flex flex-col p-4 rounded-2xl bg-white border border-red-100 shadow-sm flex-1">
-                            <span className="flex items-center gap-2 text-[10px] uppercase font-black text-orange-400"><TrendingDown size={14}/> Daily Average</span>
-                            <span className="text-3xl font-black text-orange-500 mt-1">{milkStats.avgDailyLiters.toFixed(1)} <span className="text-sm text-orange-300">L/day</span></span>
-                        </div>
-                        <div className="flex flex-col p-4 rounded-2xl bg-red-500 text-white shadow-md flex-1">
-                            <span className="flex items-center gap-2 text-[10px] uppercase font-black text-red-200"><AlertOctagon size={14}/> Highest Waste Day</span>
-                            <div className="flex items-baseline gap-2 mt-1">
-                                <span className="text-3xl font-black text-white">{milkStats.maxWasteLiters.toFixed(1)} <span className="text-sm text-red-200">L</span></span>
-                                <span className="text-xs font-bold text-red-100 bg-red-600 px-2 py-0.5 rounded-full">Day {milkStats.maxWasteDay}</span>
-                            </div>
-                        </div>
-                    </div>
+            <div className="px-4 md:px-6 py-3 flex flex-col lg:flex-row gap-3">
+                <div className="grid grid-cols-3 gap-2 lg:w-[46%] shrink-0">
+                    <StatCard label="Wasted this month" val={milkStats.totalLiters.toFixed(1)} unit="L" accent="#e34948" />
+                    <StatCard label="Per logged day" val={milkStats.avgDailyLiters.toFixed(1)} unit="L" accent="#eb6834" />
+                    <StatCard label="Worst day" val={milkStats.maxWasteML > 0 ? milkStats.maxWasteLiters.toFixed(1) : '—'} unit={milkStats.maxWasteML > 0 ? `L · day ${milkStats.maxWasteDay}` : ''} accent="#6D2158" />
                 </div>
-                
-                {/* 31-Day Bar Chart */}
-                <div className="bg-white p-5 rounded-2xl border border-red-100 shadow-sm">
-                    <h3 className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Daily Waste Trend (Liters)</h3>
-                    <div className="flex items-end gap-1 h-32 w-full">
+                <div className="flex-1 bg-white rounded-2xl border border-slate-200 p-3 min-w-0">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Litres wasted per day</p>
+                    <div className="flex items-end gap-[2px] h-20 w-full">
                         {milkRecords.map((r, i) => {
                             const maxVal = milkStats.maxWasteML > 0 ? milkStats.maxWasteML : 1000;
                             const heightPct = (r.total_ml / maxVal) * 100;
-                            const liters = (r.total_ml / 1000).toFixed(1);
                             return (
-                                <div key={i} className="flex-1 flex flex-col items-center gap-2 group relative">
+                                <div key={i} className="flex-1 h-full flex flex-col justify-end items-center group relative">
                                     {r.total_ml > 0 && (
-                                        <div className="opacity-0 group-hover:opacity-100 absolute -top-8 bg-slate-800 text-white text-[10px] font-bold py-1 px-2 rounded whitespace-nowrap z-10 transition-opacity pointer-events-none">
-                                            Day {r.day}: {liters} L
+                                        <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-1 bg-slate-900 text-white text-[10px] font-bold py-1 px-2 rounded-md whitespace-nowrap z-10 pointer-events-none">
+                                            Day {r.day}: {(r.total_ml / 1000).toFixed(1)} L
                                         </div>
                                     )}
-                                    <div className="w-full bg-red-50 rounded-t-sm flex items-end h-full">
-                                        <div 
-                                            className={`w-full rounded-t-sm transition-all duration-500 ${r.day === milkStats.maxWasteDay && r.total_ml > 0 ? 'bg-red-500' : 'bg-orange-300 group-hover:bg-orange-400'}`} 
-                                            style={{ height: `${Math.max(heightPct, r.total_ml > 0 ? 5 : 0)}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className={`text-[8px] font-bold ${r.day % 5 === 0 || r.day === 1 ? 'text-slate-400' : 'text-transparent'}`}>{r.day}</span>
+                                    <div className={`w-full max-w-[14px] rounded-t-[4px] ${r.day === milkStats.maxWasteDay && r.total_ml > 0 ? 'bg-[#e34948]' : 'bg-[#e34948]/45 group-hover:bg-[#e34948]/70'}`}
+                                        style={{ height: `${r.total_ml > 0 ? Math.max(heightPct, 4) : 0}%` }} />
                                 </div>
                             );
                         })}
+                    </div>
+                    <div className="flex gap-[2px] mt-1">
+                        {milkRecords.map(r => <span key={r.day} className={`flex-1 text-center text-[8px] font-bold ${r.day % 5 === 0 || r.day === 1 ? 'text-slate-400' : 'text-transparent'}`}>{r.day}</span>)}
                     </div>
                 </div>
             </div>
@@ -572,9 +575,9 @@ export default function WaterProductionPage() {
       </div>
 
       {/* --- DESKTOP VIEW: SPREADSHEET --- */}
-      <div className="hidden md:block flex-1 overflow-auto bg-slate-100 p-4">
+      <div className="hidden md:block flex-1 overflow-auto bg-slate-50 p-4">
         {activeTab === 'water' ? (
-            <div className="bg-white shadow rounded-lg overflow-hidden border border-slate-300 h-full flex flex-col">
+            <div className="bg-white shadow-sm rounded-2xl overflow-hidden border border-slate-200 h-full flex flex-col">
                 <div className="overflow-auto flex-1 custom-scrollbar">
                     <table className="w-full table-fixed border-collapse text-[10px]">
                         <thead className="bg-slate-50 border-b-2 border-slate-300">
@@ -650,7 +653,7 @@ export default function WaterProductionPage() {
             </div>
         ) : (
             // MILK DESKTOP TABLE
-            <div className="bg-white shadow rounded-lg overflow-hidden border border-red-200 max-w-lg mx-auto mt-4">
+            <div className="bg-white shadow-sm rounded-2xl overflow-hidden border border-slate-200 max-w-lg mx-auto">
                 <table className="w-full table-fixed border-collapse text-sm">
                     <thead className="bg-red-50 border-b-2 border-red-200">
                         <tr>
@@ -680,7 +683,7 @@ export default function WaterProductionPage() {
       </div>
 
       {/* --- MOBILE VIEW: CARD LIST --- */}
-      <div className="md:hidden flex-1 overflow-auto bg-slate-100 p-4 space-y-3 pb-24 custom-scrollbar">
+      <div className="md:hidden flex-1 overflow-auto bg-slate-50 p-4 space-y-2 pb-6 custom-scrollbar">
         {activeTab === 'water' ? (
             records.map((r, i) => {
                 const hasData = hasRowData(r);
@@ -740,10 +743,12 @@ export default function WaterProductionPage() {
         )}
       </div>
 
+      </>)}
+
       {/* --- MOBILE EDIT MODAL --- */}
       {mobileEditIndex !== null && (
-        <div className="fixed inset-0 z-50 bg-white flex flex-col md:hidden animate-in slide-in-from-bottom-full duration-200">
-            <div className={`text-white p-4 flex justify-between items-center shrink-0 pt-12 ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-600'}`}>
+        <div className="fixed inset-0 z-[1000] bg-white flex flex-col md:hidden animate-in slide-in-from-bottom-full duration-200">
+            <div className={`text-white p-4 flex justify-between items-center shrink-0 pt-[calc(env(safe-area-inset-top)+1rem)] ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-600'}`}>
                 <div className="flex items-center gap-2">
                     <Calendar size={18}/>
                     <span className="font-bold text-lg">{selectedDate.toLocaleString('default', { month: 'long' })} {records[mobileEditIndex].day}</span>
@@ -807,7 +812,7 @@ export default function WaterProductionPage() {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200 shrink-0">
-                <button onClick={() => { saveToDatabase(records, milkRecords); setMobileEditIndex(null); }} className={`w-full text-white py-3 rounded-xl font-bold text-sm shadow-lg active:scale-95 transition-transform ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-600'}`}>
+                <button onClick={() => { flushPending(); setMobileEditIndex(null); }} className={`w-full text-white py-3 rounded-xl font-bold text-sm shadow-lg active:scale-95 transition-transform ${activeTab === 'water' ? 'bg-[#6D2158]' : 'bg-red-600'}`}>
                     Save & Close
                 </button>
             </div>
@@ -840,19 +845,19 @@ export default function WaterProductionPage() {
         </div>
       )}
 
-      <style jsx global>{`
-        .btn-secondary { @apply flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all; }
-      `}</style>
     </div>
   );
 }
 
 // --- COMPONENTS ---
-interface StatCardProps { label: string; val: string | number; unit: string; color: string; bg: string; }
-const StatCard = ({ label, val, unit, color, bg }: StatCardProps) => (
-    <div className={`flex flex-col p-3 rounded-lg ${bg} border border-slate-200 min-w-[120px]`}>
-        <span className="text-[10px] uppercase font-bold text-slate-500">{label}</span>
-        <span className={`text-2xl font-black ${color} tracking-tight`}>{val} <span className="text-xs text-slate-400 font-medium">{unit}</span></span>
+const BTN = 'flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 active:scale-95 transition-all';
+
+interface StatCardProps { label: string; val: string | number; unit: string; accent: string; }
+const StatCard = ({ label, val, unit, accent }: StatCardProps) => (
+    <div className="relative overflow-hidden flex flex-col p-3 rounded-2xl bg-white border border-slate-200 min-w-0">
+        <span className="absolute left-0 top-3 bottom-3 w-1 rounded-r-full" style={{ background: accent }} />
+        <span className="text-[10px] uppercase font-black tracking-wider text-slate-400 truncate">{label}</span>
+        <span className="text-xl md:text-2xl font-black text-slate-900 tracking-tight tabular-nums truncate">{val} <span className="text-[10px] text-slate-400 font-bold">{unit}</span></span>
     </div>
 );
 interface GroupHeaderProps { label: string; color: string; span: number; }

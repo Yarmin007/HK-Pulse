@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import { projectGuestDay } from '@/lib/guestDay';
+import { useConfirm } from '@/components/ConfirmProvider';
 
 // ⚡ BULLETPROOF ABSOLUTE IMPORTS
 import { AREAS } from '@/app/allocation/lib/constants';
@@ -28,10 +30,12 @@ const getToday = () => {
 };
 
 export default function AllocationPage() {
+  const { confirmAction } = useConfirm();
   const [selectedDate, setSelectedDate] = useState(getToday());
   const [hosts, setHosts] = useState<any[]>([]);
   const [allocations, setAllocations] = useState<any[]>([]);
   const [masterList, setMasterList] = useState<any[]>([]); 
+  const [prevMasterList, setPrevMasterList] = useState<any[]>([]); // yesterday's guest list, for combined statuses (DEP/TMA N, TMA/ARR…)
   const [activeLeaves, setActiveLeaves] = useState<any[]>([]);
   const [activeArea, setActiveArea] = useState('villa');
   const [isProcessing, setIsProcessing] = useState(true);
@@ -39,6 +43,22 @@ export default function AllocationPage() {
 
   // Only reload when the DATE changes. Switching tabs must keep unsaved edits from other tabs.
   useEffect(() => { fetchData(); }, [selectedDate]);
+
+  // Keep villa statuses in step with the Guest List while the board is open.
+  useEffect(() => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const channel = supabase
+          .channel(`alloc_guest_${selectedDate}`)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_summary' }, () => {
+              if (timer) clearTimeout(timer);
+              timer = setTimeout(() => {
+                  projectGuestDay(selectedDate).then(r => setMasterList(r.rows));
+                  projectGuestDay(shiftDate(selectedDate, -1)).then(r => setPrevMasterList(r.rows));
+              }, 800);
+          })
+          .subscribe();
+      return () => { if (timer) clearTimeout(timer); supabase.removeChannel(channel); };
+  }, [selectedDate]);
 
   // Warn before closing the page with unsaved changes.
   useEffect(() => {
@@ -63,11 +83,10 @@ export default function AllocationPage() {
         .eq('report_date', selectedDate);
       if (allocData) setAllocations(allocData); else setAllocations([]);
 
-      const { data: guestData } = await supabase
-        .from('hsk_daily_summary')
-        .select('villa_number, status, arrival_time, departure_time')
-        .eq('report_date', selectedDate);
-      if (guestData) setMasterList(guestData);
+      // Same guest list the Guest List page shows (including days projected from the last saved day)
+      const [{ rows: guestRows }, { rows: prevRows }] = await Promise.all([projectGuestDay(selectedDate), projectGuestDay(shiftDate(selectedDate, -1))]);
+      setMasterList(guestRows);
+      setPrevMasterList(prevRows);
 
       const { data: leavesData } = await supabase
         .from('hsk_leave_requests')
@@ -116,7 +135,7 @@ export default function AllocationPage() {
   };
 
   const handleCopyYesterday = async () => {
-      if (!confirm("This will pull yesterday's allocations into today. Proceed?")) return;
+      if (!(await confirmAction({ title: 'Copy yesterday?', message: "This replaces the board with yesterday's allocations. Nothing is saved until you press Save changes.", confirmText: 'Copy yesterday', icon: 'question' }))) return;
       setIsProcessing(true);
       const yesterday = shiftDate(selectedDate, -1);
       const { data: yesterdayAllocs } = await supabase.from('hsk_allocations').select('*').eq('report_date', yesterday);
@@ -135,9 +154,9 @@ export default function AllocationPage() {
       setIsProcessing(false);
   };
 
-  const goToDate = (next: string) => {
+  const goToDate = async (next: string) => {
       if (!next || next === selectedDate) return;
-      if (isDirty && !confirm("You have unsaved changes. Discard them?")) return;
+      if (isDirty && !(await confirmAction({ title: 'Unsaved changes', message: 'You have changes on this day that are not saved. Leave without saving them?', confirmText: 'Discard changes', cancelText: 'Stay here', isDestructive: true }))) return;
       setSelectedDate(next);
   };
   const changeDate = (days: number) => goToDate(shiftDate(selectedDate, days));
@@ -163,6 +182,14 @@ export default function AllocationPage() {
                   <input type="date" value={selectedDate} onChange={(e) => goToDate(e.target.value)} className="bg-transparent text-xs font-bold text-slate-700 outline-none px-1 cursor-pointer"/>
                   <button onClick={() => changeDate(1)} className="p-1.5 hover:bg-white rounded-md text-slate-500"><ChevronRight size={16}/></button>
               </div>
+              <button
+                  onClick={async () => {
+                      const url = `${window.location.origin}/share/front-office`;
+                      try { await navigator.clipboard.writeText(url); toast.success('Front Office link copied'); }
+                      catch { window.prompt('Front Office link', url); }
+                  }}
+                  title="Public page for Front Office: villa attendants and their work numbers"
+                  className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">FO Link</button>
               <button onClick={handleCopyYesterday} className="bg-blue-50 text-blue-700 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">Copy Yesterday</button>
               <button onClick={handleSave} disabled={isProcessing || !isDirty} className={`px-4 py-1.5 rounded-lg text-xs font-bold shadow-sm ${isDirty ? 'bg-[#6D2158] text-white hover:bg-[#5a1b49]' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
                   {isProcessing ? <Loader2 size={14} className="animate-spin inline mr-1"/> : null} {isDirty ? 'Save changes' : 'Saved'}
@@ -186,6 +213,7 @@ export default function AllocationPage() {
               allocations={allocations} 
               setAllocations={setAllocations} 
               masterList={masterList} 
+              prevMasterList={prevMasterList}
               setIsDirty={setIsDirty} 
               selectedDate={selectedDate} 
               activeArea={activeArea} 

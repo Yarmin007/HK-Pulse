@@ -2,6 +2,8 @@
 
 import React from "react";
 
+export type SheetVilla = { number: string | number; status: string; bg?: string; textColor?: string };
+
 export interface AllocationSheetData {
   summary: {
     report_date?: string;
@@ -36,22 +38,22 @@ export interface AllocationSheetData {
   jettyA: Array<{
     name: string;
     contact: string;
-    villas: Array<{ number: string | number; status: string }>;
+    villas: Array<SheetVilla>;
   }>;
   jettyB: Array<{
     name: string;
     contact: string;
-    villas: Array<{ number: string | number; status: string }>;
+    villas: Array<SheetVilla>;
   }>;
   jettyC: Array<{
     name: string;
     contact: string;
-    villas: Array<{ number: string | number; status: string }>;
+    villas: Array<SheetVilla>;
   }>;
   beach: Array<{
     name: string;
     contact: string;
-    villas: Array<{ number: string | number; status: string }>;
+    villas: Array<SheetVilla>;
   }>;
   pool: {
     hosts: Array<{ name: string; mvpn: string; allocation: string }>;
@@ -191,9 +193,10 @@ const toNaturalCase = (name?: string) => {
   return str;
 };
 
-// Status Box Color Helper
-const getStatusTheme = (statusStr?: string) => {
-  const st = String(statusStr || "").trim().toUpperCase();
+// Status Box Color Helper: uses the board's status colour when given (bg / textColor), else the old fallback
+const getStatusTheme = (v?: SheetVilla) => {
+  if (v?.bg) return { bg: v.bg, text: v.textColor || "#231f20" };
+  const st = String(v?.status || "").trim().toUpperCase();
   if (st.includes("ARR")) {
     return { bg: "#22c55e", text: "#000000" };
   }
@@ -1181,7 +1184,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         {t1.map((col, cIdx) => (
           col.villas?.map((v, rIdx) => {
             if (!v || !v.status) return null;
-            const theme = getStatusTheme(v.status);
+            const theme = getStatusTheme(v);
             if (theme.bg === "#ffffff") return null;
             const x = 36.53 + cIdx * 82.5;
             const y = 118.71 + rIdx * 15.88;
@@ -1203,7 +1206,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         {t2.map((col, cIdx) => (
           col.villas?.map((v, rIdx) => {
             if (!v || !v.status) return null;
-            const theme = getStatusTheme(v.status);
+            const theme = getStatusTheme(v);
             if (theme.bg === "#ffffff") return null;
             const x = 36.53 + cIdx * 82.5;
             const y = 294.47 + rIdx * 15.88;
@@ -1225,7 +1228,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         {t3.map((col, cIdx) => (
           col.villas?.map((v, rIdx) => {
             if (!v || !v.status) return null;
-            const theme = getStatusTheme(v.status);
+            const theme = getStatusTheme(v);
             if (theme.bg === "#ffffff") return null;
             const x = 36.53 + cIdx * 82.5;
             const y = 454.35 + rIdx * 15.88;
@@ -1501,7 +1504,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((rIdx) => {
                 const y = 128.35 + rIdx * 15.88;
                 const v = col.villas?.[rIdx];
-                const theme = getStatusTheme(v?.status);
+                const theme = getStatusTheme(v);
                 return (
                   <React.Fragment key={`t1-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
@@ -1522,7 +1525,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               {[0, 1, 2, 3, 4, 5, 6, 7].map((rIdx) => {
                 const y = 304.12 + rIdx * 15.88;
                 const v = col.villas?.[rIdx];
-                const theme = getStatusTheme(v?.status);
+                const theme = getStatusTheme(v);
                 return (
                   <React.Fragment key={`t2-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
@@ -1543,7 +1546,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               {[0, 1, 2, 3, 4, 5, 6].map((rIdx) => {
                 const y = 464 + rIdx * 15.88;
                 const v = col.villas?.[rIdx];
-                const theme = getStatusTheme(v?.status);
+                const theme = getStatusTheme(v);
                 return (
                   <React.Fragment key={`t3-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>

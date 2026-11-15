@@ -8,6 +8,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { getSpecialKind, isOpenStay, serviceRemarkFor } from '@/lib/specialVillas';
+import { normalizeVilla, extractDepInfo, checkStayStatusForDate, projectGuestDay } from '@/lib/guestDay';
 
 const TOTAL_VILLAS = 97;
 const EXTENSION_VILLAS = ['56', '58', '88'];
@@ -31,14 +32,6 @@ const formatSyncDateTime = (dateInput: Date | string | number) => {
     minute: '2-digit',
     hour12: true,
   });
-};
-
-const normalizeVilla = (raw: any): string | null => {
-    if (!raw) return null;
-    const str = String(raw).trim();
-    const match = str.match(/^(\d{1,3})/); 
-    if (!match) return null;
-    return parseInt(match[1], 10).toString();
 };
 
 const extractTime = (val: any) => {
@@ -166,71 +159,11 @@ const getAssociatedVillas = (villa: string) => LINKABLE_VILLAS[villa] || [];
 // Helper to pack & unpack departing guest details into remarks column safely
 type DepInfo = { name: string; time: string; dates: string };
 
-const extractDepInfo = (remarksStr?: string): { cleanRemarks: string; depInfo: DepInfo | null } => {
-    const raw = String(remarksStr || '');
-    const match = raw.match(/\[DEP_INFO\](.*?)\[\/DEP_INFO\]/);
-    if (!match) return { cleanRemarks: raw.trim(), depInfo: null };
-    const cleanRemarks = raw.replace(/\[DEP_INFO\].*?\[\/DEP_INFO\]/g, '').trim();
-    try {
-        const parsed = JSON.parse(match[1]);
-        return {
-            cleanRemarks,
-            depInfo: {
-                name: parsed.name || '',
-                time: parsed.time || '',
-                dates: parsed.dates || ''
-            }
-        };
-    } catch {
-        return { cleanRemarks, depInfo: null };
-    }
-};
-
 const packRemarksWithDep = (cleanRemarks: string, depInfo: DepInfo | null): string => {
     const base = String(cleanRemarks || '').replace(/\[DEP_INFO\].*?\[\/DEP_INFO\]/g, '').trim();
     if (!depInfo || (!depInfo.name && !depInfo.time && !depInfo.dates)) return base;
     const tag = `[DEP_INFO]${JSON.stringify(depInfo)}[/DEP_INFO]`;
     return base ? `${base} ${tag}` : tag;
-};
-
-// stay_dates is "DD/MM - DD/MM" (no year). Years are inferred relative to the selected date so Dec→Jan stays work.
-const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: string): { isActive: boolean; isDepartingToday: boolean } => {
-    const inactive = { isActive: false, isDepartingToday: false };
-    if (!stayDatesStr || !stayDatesStr.includes('-')) return inactive;
-    const parts = stayDatesStr.split('-');
-    if (parts.length !== 2) return inactive;
-
-    const parseDM = (str: string) => {
-        const p = str.trim().split('/').map(Number);
-        if (p.length < 2 || p.some(isNaN)) return null;
-        return { d: p[0], m: p[1], y: p.length === 3 ? (p[2] < 100 ? 2000 + p[2] : p[2]) : null as number | null };
-    };
-
-    const arr = parseDM(parts[0]);
-    const dep = parseDM(parts[1]);
-    if (!dep) return inactive;
-
-    const [selY, selM, selD] = selectedDateStr.split('-').map(Number);
-    const sel = new Date(selY, selM - 1, selD).getTime();
-    const HALF_YEAR = 182 * 86400000;
-
-    let arrTime: number | null = null;
-    if (arr) {
-        let arrY = arr.y ?? selY;
-        if (arr.y === null && new Date(arrY, arr.m - 1, arr.d).getTime() - sel > HALF_YEAR) arrY -= 1;
-        arrTime = new Date(arrY, arr.m - 1, arr.d).getTime();
-    }
-
-    let depY = dep.y ?? (arrTime !== null ? new Date(arrTime).getFullYear() : selY);
-    let depTime = new Date(depY, dep.m - 1, dep.d).getTime();
-    if (dep.y === null && arrTime !== null && depTime < arrTime) {
-        depY += 1;
-        depTime = new Date(depY, dep.m - 1, dep.d).getTime();
-    }
-
-    if (sel === depTime) return { isActive: true, isDepartingToday: true };
-    if (sel < depTime && (arrTime === null || arrTime <= sel)) return { isActive: true, isDepartingToday: false };
-    return inactive;
 };
 
 // Guarantees one person = one active villa. Villas in `authoritative` came straight from the uploaded report and win;
@@ -432,70 +365,8 @@ export default function HousekeepingSummaryPage() {
   const fetchDailyData = async (showLoading = true) => {
     if (showLoading) setIsProcessing(true);
     try {
-        let { data: dbRecords, error } = await supabase
-          .from('hsk_daily_summary')
-          .select('*')
-          .eq('report_date', selectedDate);
-
-        if (error) console.error(error);
-
-        let isProjected = false;
-        // A day holding only villas pre-registered on Special Villas is still projected from the last saved day.
-        const preRegistered = (dbRecords || []).filter(r => getSpecialKind(r.status));
-        if (!dbRecords || dbRecords.length === 0 || preRegistered.length === dbRecords.length) {
-            const { data: recentRecords } = await supabase
-              .from('hsk_daily_summary')
-              .select('*')
-              .lt('report_date', selectedDate)
-              .order('report_date', { ascending: false })
-              .limit(200);
-
-            if (recentRecords && recentRecords.length > 0) {
-                const latestDate = recentRecords[0].report_date;
-                const sourceData = recentRecords.filter(r => r.report_date === latestDate);
-
-                const projected = sourceData.map(r => {
-                    const statusStr = String(r.status || 'VAC').trim().toUpperCase();
-                    if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
-                        const check = checkStayStatusForDate(r.stay_dates || '', selectedDate);
-                        if (check.isActive) {
-                            const { cleanRemarks } = extractDepInfo(r.remarks);
-                            return {
-                                ...r,
-                                report_date: selectedDate,
-                                status: check.isDepartingToday ? 'DEP' : (statusStr.includes('VM') ? statusStr : 'OCC'),
-                                arrival_time: check.isDepartingToday ? '' : (r.arrival_time || ''),
-                                departure_time: check.isDepartingToday ? (r.departure_time || '') : '',
-                                remarks: cleanRemarks,
-                            };
-                        }
-                    } else if (statusStr.includes('HOUSE') && (!r.stay_dates || isOpenStay(r.stay_dates) || checkStayStatusForDate(r.stay_dates, selectedDate).isActive)) {
-                        // House Use carries until its departure date (or forever while open); Show Villa / TMA / Fumigation are one-off
-                        return { ...r, report_date: selectedDate, arrival_time: '', remarks: serviceRemarkFor(r.preferences, selectedDate) };
-                    }
-                    return {
-                        ...r,
-                        report_date: selectedDate,
-                        status: 'VAC',
-                        guest_name: '',
-                        pax_adults: 0,
-                        pax_kids: 0,
-                        arrival_time: '',
-                        departure_time: '',
-                        stay_dates: '',
-                        meal_plan: '',
-                        gem_name: '',
-                        preferences: '',
-                        remarks: '',
-                        stay_id: ''
-                    };
-                // Drop the source day's ids: saving a projected row must insert for this day, not move the previous day's row.
-                }).map(r => ({ ...r, id: undefined }));
-                const preVillas = new Set(preRegistered.map(r => normalizeVilla(r.villa_number)));
-                dbRecords = [...preRegistered, ...projected.filter(r => !preVillas.has(normalizeVilla(r.villa_number)))];
-                isProjected = true;
-            }
-        }
+        // Shared with the allocation board and the Front Office page (src/lib/guestDay.ts)
+        const { rows: dbRecords, isProjected } = await projectGuestDay(selectedDate);
 
         const fullList: GuestRecord[] = [];
         for (let i = 1; i <= TOTAL_VILLAS; i++) {

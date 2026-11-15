@@ -113,6 +113,7 @@ export default function MobileMenu() {
         { name: "Water Production", icon: Droplets, path: "/water" },
         { name: "AC Tracker", icon: Wind, path: "/ac-tracker" },
         { name: "Order Tracking", icon: ShoppingCart, path: "/orders" },
+        { name: "Store Requests", icon: Warehouse, path: "/store-requests" },
         { name: "Print Hub", icon: Printer, path: "/print" },
     ];
     

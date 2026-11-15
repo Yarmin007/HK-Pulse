@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
+import { usePathname } from "next/navigation";
 import { Eye, ArrowLeft, ShieldCheck } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -15,6 +16,8 @@ export default function ClientLayout({
   farumaClass = "",
 }: ClientLayoutProps) {
   const [impersonatingData, setImpersonatingData] = useState<any | null>(null);
+  // Public share pages (for other departments) show no app menus.
+  const isSharePage = (usePathname() || "").startsWith("/share/");
 
   // iOS Safari ignores user-scalable=no for pinch gestures — block them so the app never zooms.
   useEffect(() => {
@@ -154,9 +157,9 @@ export default function ClientLayout({
 
       {/* MAIN VIEWPORT LAYOUT */}
       <div className="flex-1 flex">
-        <Sidebar />
+        {!isSharePage && <Sidebar />}
         {/* On phones, leave room for the bottom navigation bar so nothing is hidden behind it. */}
-        <main className="flex-1 md:pl-64 w-full min-w-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 print:p-0">{children}</main>
+        <main className={isSharePage ? "flex-1 w-full min-w-0" : "flex-1 md:pl-64 w-full min-w-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 print:p-0"}>{children}</main>
       </div>
     </div>
   );

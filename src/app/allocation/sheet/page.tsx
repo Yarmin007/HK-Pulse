@@ -5,63 +5,11 @@ import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
 import { supabase } from "@/lib/supabase";
 import { Printer, Calendar, RefreshCw, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { getDhakaDateStr } from "@/lib/dateUtils";
+import { isWorkedLeave } from "@/lib/attendanceData";
 import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
-import { parseVillas, JETTY_A, JETTY_B, JETTY_C, BEACH, getDefaultArea } from "../lib/constants";
-
-// Exact status colors:
-// ARR: Green with Black text
-// DEP: Red with White text
-// VAC: Blue with Black text
-// OCC: Normal (White with Dark text, no effect)
-export const getStatusColors = (status: string) => {
-  const st = String(status || "").trim().toUpperCase();
-
-  if (st.includes("ARR")) {
-    return {
-      bg: "#22c55e",
-      text: "#000000",
-      colorClass: "bg-green-500 text-black",
-    };
-  }
-
-  if (st.includes("DEP")) {
-    return {
-      bg: "#ef4444",
-      text: "#ffffff",
-      colorClass: "bg-rose-500 text-white",
-    };
-  }
-
-  if (st.includes("VAC") || st === "VM/VAC") {
-    return {
-      bg: "#38bdf8",
-      text: "#000000",
-      colorClass: "bg-sky-400 text-black",
-    };
-  }
-
-  if (st.includes("FUMIG")) {
-    return {
-      bg: "#0d9488",
-      text: "#ffffff",
-      colorClass: "bg-teal-600 text-white",
-    };
-  }
-
-  if (st.includes("TMA")) {
-    return {
-      bg: "#facc15",
-      text: "#0f172a",
-      colorClass: "bg-yellow-400 text-slate-900",
-    };
-  }
-
-  return {
-    bg: "#ffffff",
-    text: "#1e293b",
-    colorClass: "bg-white text-slate-800",
-  };
-};
+import { parseVillas } from "../lib/constants";
+import { ZONES, ZoneKey, majorityZone, loadVillaLayout, slotBySections } from "../lib/villaLayout";
+import { projectGuestDay, rowsByVilla, deriveHKStatus } from "@/lib/guestDay";
 
 export default function AllocationSheetPage() {
   const [selectedDate, setSelectedDate] = useState<string>(getDhakaDateStr());
@@ -117,22 +65,17 @@ export default function AllocationSheetPage() {
         }
       }
 
-      // 2. Fetch Master Guest / Villa Statuses
-      const { data: masterVillas } = await supabase
-        .from("hsk_daily_summary")
-        .select("villa_number, status, arrival_time, departure_time")
-        .eq("report_date", selectedDate)
-        .gt("villa_number", 0);
-
-      const statusMap: Record<string, string> = {};
-      const timeMap: Record<string, string> = {};
-
-      (masterVillas || []).forEach((m: any) => {
-        const vKey = String(m.villa_number);
-        statusMap[vKey] = m.status || "VAC";
-        if (m.arrival_time) timeMap[vKey] = m.arrival_time;
-        else if (m.departure_time) timeMap[vKey] = m.departure_time;
-      });
+      // 2. Villa statuses: same guest list and same combined statuses (DEP/ARR, JOIN, TMA N…) as the Villa board
+      const prevDay = new Date(`${selectedDate}T00:00:00`);
+      prevDay.setDate(prevDay.getDate() - 1);
+      const prevDate = `${prevDay.getFullYear()}-${String(prevDay.getMonth() + 1).padStart(2, "0")}-${String(prevDay.getDate()).padStart(2, "0")}`;
+      const [{ rows: todayGuestRows }, { rows: prevGuestRows }, { layout }] = await Promise.all([
+        projectGuestDay(selectedDate),
+        projectGuestDay(prevDate),
+        loadVillaLayout(),
+      ]);
+      const todayByVilla = rowsByVilla(todayGuestRows);
+      const prevByVilla = rowsByVilla(prevGuestRows);
 
       // 3. Fetch Persistent Daily Ice Requests
       const { data: rawIceReqs } = await supabase
@@ -176,10 +119,7 @@ export default function AllocationSheetPage() {
         }
       });
 
-      const rawJA: any[] = [];
-      const rawJB: any[] = [];
-      const rawJC: any[] = [];
-      const rawBeach: any[] = [];
+      const villaByZone: Record<ZoneKey, any[]> = { jettyA: [], jettyB: [], jettyC: [], beach: [] };
 
       const poolHosts: any[] = [];
       const poolNight: string[] = [];
@@ -229,7 +169,6 @@ export default function AllocationSheetPage() {
           .filter(Boolean);
 
         const contact = contactNums.join(" / ");
-        const defaultArea = getDefaultArea(hostObj);
 
         // Runner and Luggage: MVPN ONLY
         const mvpnOnly = hostObj?.mvpn ? String(hostObj.mvpn).trim() : "";
@@ -246,35 +185,12 @@ export default function AllocationSheetPage() {
           }
 
           const villaList = vNums.map((v) => {
-            const rawStatus = statusMap[String(v)] || "VAC";
-            const colors = getStatusColors(rawStatus);
-            return {
-              number: v,
-              status: rawStatus,
-              time: timeMap[String(v)] || "",
-              bg: colors.bg,
-              textColor: colors.text,
-              colorClass: colors.colorClass,
-            };
+            const hk = deriveHKStatus(todayByVilla[v], prevByVilla[v], selectedDate);
+            return { number: v, status: hk.label, bg: hk.bg, textColor: hk.text };
           });
 
-          const firstV = vNums[0];
-
-          if (defaultArea === "beach" || hostObj?.sub_department?.toLowerCase().includes("beach")) {
-            rawBeach.push({ name, contact, villas: villaList, firstV: firstV || 999 });
-          } else {
-            if (firstV && JETTY_A.includes(firstV)) {
-              rawJA.push({ name, contact, villas: villaList, firstV });
-            } else if (firstV && JETTY_B.includes(firstV)) {
-              rawJB.push({ name, contact, villas: villaList, firstV });
-            } else if (firstV && JETTY_C.includes(firstV)) {
-              rawJC.push({ name, contact, villas: villaList, firstV });
-            } else if (firstV && BEACH.includes(firstV)) {
-              rawBeach.push({ name, contact, villas: villaList, firstV });
-            } else {
-              rawJA.push({ name, contact, villas: villaList, firstV: firstV || 999 });
-            }
-          }
+          // Same area as on the board: the jetty holding most of their villas
+          villaByZone[majorityZone(vNums) || "jettyA"].push({ name, contact, villas: villaList, vNums });
         } else if (a.area === "water") {
           const sh = (a.shift || "").toLowerCase();
           if (sh.includes("night")) {
@@ -337,11 +253,11 @@ export default function AllocationSheetPage() {
         }
       });
 
-      // Sort attendants ascending by first villa number to guarantee clean left-to-right alignment
-      rawJA.sort((a, b) => a.firstV - b.firstV);
-      rawJB.sort((a, b) => a.firstV - b.firstV);
-      rawJC.sort((a, b) => a.firstV - b.firstV);
-      rawBeach.sort((a, b) => a.firstV - b.firstV);
+      // Same left-to-right order as the board's sections (preset villas first, then by first villa)
+      const ordered = {} as Record<ZoneKey, any[]>;
+      ZONES.forEach((z) => {
+        ordered[z.key] = slotBySections(villaByZone[z.key], layout[z.key] || [], (x: any) => x.vNums).filter(Boolean);
+      });
 
       // Pack left-to-right; pad any remaining empty slots to the far right
       const expandAttendants = (list: any[], maxRows: number, maxCols: number) => {
@@ -363,10 +279,10 @@ export default function AllocationSheetPage() {
         return slots.slice(0, maxCols);
       };
 
-      const finalJA = expandAttendants(rawJA, 9, 7);
-      const finalJB = expandAttendants(rawJB, 8, 3);
-      const finalJC = expandAttendants(rawJC, 8, 4);
-      const finalBeach = expandAttendants(rawBeach, 7, 7);
+      const finalJA = expandAttendants(ordered.jettyA, 9, 7);
+      const finalJB = expandAttendants(ordered.jettyB, 8, 3);
+      const finalJC = expandAttendants(ordered.jettyC, 8, 4);
+      const finalBeach = expandAttendants(ordered.beach, 7, 7);
 
       // 5. Fetch Attendance (Leaves & Off Days)
       const { data: leaveReqs } = await supabase
@@ -378,7 +294,8 @@ export default function AllocationSheetPage() {
 
       const { data: attList } = await supabase
         .from("hsk_attendance")
-        .select("host_id, status_code, hosts:hsk_hosts(id, full_name, nicknames, personal_mobile, status)")
+        // No foreign key between attendance and hosts, so hosts are looked up by SSL number below
+        .select("host_id, status_code, shift_note")
         .eq("date", selectedDate);
 
       const { data: allHostsList } = await supabase
@@ -422,14 +339,15 @@ export default function AllocationSheetPage() {
       });
 
       (attList || []).forEach((att: any) => {
-        const hObj = att.hosts || hostMap.get(String(att.host_id));
+        const hObj = hostMap.get(String(att.host_id).trim());
+        if (isWorkedLeave(att)) return; // "working day" comment: they are on duty
         if (hObj?.status && hObj.status.toLowerCase() !== "active") return;
 
         const displayName = hObj?.nicknames ? hObj.nicknames.split(",")[0].trim() : hObj?.full_name || att.host_id;
         const personalNo = hObj?.personal_mobile || "";
         const sc = (att.status_code || "").toUpperCase();
 
-        if (["O", "OFF", "PH"].includes(sc)) {
+        if (["O", "OFF", "PH", "RO"].includes(sc)) {
           if (!offMap.has(String(att.host_id))) {
             offMap.set(String(att.host_id), {
               name: displayName,

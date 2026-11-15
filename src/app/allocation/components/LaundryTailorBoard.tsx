@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { useConfirm } from '@/components/ConfirmProvider';
 import { supabase } from "@/lib/supabase";
 import { 
   Shirt, 
@@ -228,6 +229,7 @@ export default function LaundryTailorBoard({
   setIsDirty,
   selectedDate,
 }: LaundryTailorBoardProps) {
+  const { confirmAction } = useConfirm();
   const [activeSubTab, setActiveSubTab] = useState<"laundry" | "tailor">("laundry");
   const [activeLeaveRecords, setActiveLeaveRecords] = useState<ActiveLeaveRecord[]>([]);
 
@@ -554,7 +556,7 @@ export default function LaundryTailorBoard({
       // The board only holds the day being viewed. A roster dated for another day
       // is applied to the viewed day (after asking), never mixed in under its own date.
       if (parsedSchedule.detectedDate && parsedSchedule.detectedDate !== selectedDate &&
-          !confirm(`This roster is dated ${parsedSchedule.detectedDate}, but you are viewing ${selectedDate}.\n\nApply it to ${selectedDate}?`)) {
+          !(await confirmAction({ title: 'Different roster date', message: `This roster is dated ${parsedSchedule.detectedDate}, but you are viewing ${selectedDate}. Apply it to ${selectedDate}?`, confirmText: `Apply to ${selectedDate}`, icon: 'warning' }))) {
         return;
       }
       const targetDate = selectedDate;

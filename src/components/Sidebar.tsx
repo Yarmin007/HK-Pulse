@@ -81,6 +81,7 @@ const MINIBAR_ITEMS = [
 // --- OPERATIONS MENUS ---
 const OPERATIONS_ITEMS = [
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders", key: "orders" },
+  { name: "Store Requests", icon: Warehouse, path: "/store-requests", key: "orders" },
   { name: "Cost Saving", icon: TrendingUp, path: "/cost-saving", key: "cost-saving" },
   { name: "Print Hub", icon: Printer, path: "/print", key: "print" },
   { name: "Settings", icon: Settings, path: "/settings", key: "settings" },

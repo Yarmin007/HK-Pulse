@@ -1,16 +1,18 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
 import { 
     Search, Plus, X, Pointer, RefreshCw, Users, Share2, 
-    Calendar, Plane, AlertTriangle, UserCheck 
+    Calendar, Plane, UserCheck, Settings2, Wand2, Minus 
 } from "lucide-react";
+import { villaStatusMap, deriveHKStatus, rowsByVilla, HK_STATUS_KEY } from '@/lib/guestDay';
 import toast from 'react-hot-toast';
-import { 
-    AREAS, TOTAL_VILLAS, JETTY_A, JETTY_B, JETTY_C, BEACH, 
-    parseVillas, getDefaultArea 
-} from '../lib/constants';
+import { useConfirm } from '@/components/ConfirmProvider';
+import { TOTAL_VILLAS, parseVillas, getDefaultArea } from '../lib/constants';
+
+import { ZONES, ZoneKey, zoneOfVilla, majorityZone, Layout, DEFAULT_LAYOUT, LAYOUT_TYPE, loadVillaLayout, slotBySections } from '../lib/villaLayout';
 
 interface Host {
   id: string;
@@ -47,6 +49,7 @@ interface VillaBoardProps {
   allocations: Allocation[];
   setAllocations: React.Dispatch<React.SetStateAction<Allocation[]>>;
   masterList: any[];
+  prevMasterList?: any[];
   setIsDirty: (val: boolean) => void;
   selectedDate: string;
   activeArea?: string;
@@ -62,6 +65,77 @@ const LEAVE_TYPES = [
   { value: "SL", label: "Sick Leave (SL)" },
   { value: "EL", label: "Emergency Leave (EL)" },
 ];
+
+// --- SECTION PICKER: shows each preset section with its villas (coloured by status) and who has it ---
+type PickerSection = { value: string; name: string; villas: number[]; owner?: string };
+const SectionPicker = ({ value, groups, villaLook, onPick }: {
+    value: string;
+    groups: { label: string; sections: PickerSection[] }[];
+    villaLook: (v: number) => { cls: string; title: string } | null;
+    onPick: (value: string) => void;
+}) => {
+    const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+    const current = groups.flatMap(g => g.sections).find(s => s.value === value);
+    useEffect(() => {
+        if (!pos) return;
+        const close = () => setPos(null);
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+    }, [pos]);
+    return (
+        <>
+            <button
+                type="button"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    const r = e.currentTarget.getBoundingClientRect();
+                    const w = 288;
+                    setPos(pos ? null : { top: r.bottom + 4, left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) });
+                }}
+                title={current ? `${current.name}: ${current.villas.join(', ')}` : 'Choose a preset section'}
+                className="shrink-0 min-w-[30px] px-1 py-0.5 rounded bg-white/15 hover:bg-white/30 text-white text-[9px] font-black"
+            >
+                {current ? current.name : 'Sec'}
+            </button>
+            {/* Portal to <body>: the block is a z-indexed grid item (own stacking context),
+                so rendering inline let the sticky sidebar (z-20) paint over the popover. */}
+            {pos && typeof document !== 'undefined' && createPortal(
+                <div className="fixed inset-0 z-[90]" onClick={(e) => { e.stopPropagation(); setPos(null); }}>
+                    <div
+                        className="absolute w-72 max-h-[60vh] overflow-y-auto bg-white rounded-2xl shadow-2xl border border-slate-200 p-2 animate-in zoom-in-95"
+                        style={{ top: Math.min(pos.top, window.innerHeight - 320), left: pos.left }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <button onClick={() => { onPick(''); setPos(null); }} className="w-full text-left px-2 py-1.5 rounded-lg text-[11px] font-bold text-slate-500 hover:bg-slate-50">
+                            Manual: type villa numbers in the block
+                        </button>
+                        {groups.map(g => g.sections.length > 0 && (
+                            <div key={g.label} className="mt-1">
+                                <p className="input-label !mb-0.5 !ml-2">{g.label}</p>
+                                {g.sections.map(sec => (
+                                    <button key={sec.value} onClick={() => { onPick(sec.value); setPos(null); }}
+                                        className={`w-full text-left px-2 py-1.5 rounded-xl flex items-start gap-2 hover:bg-[#6D2158]/5 ${sec.value === value ? 'bg-[#6D2158]/10' : ''}`}>
+                                        <span className="w-8 shrink-0 text-xs font-black text-[#6D2158] pt-0.5">{sec.name}</span>
+                                        <span className="flex-1 min-w-0">
+                                            {sec.villas.length ? (
+                                                <span className="flex flex-wrap gap-0.5">
+                                                    {sec.villas.map(v => { const l = villaLook(v); return <span key={v} title={l?.title} className={`px-1 rounded text-[10px] font-black ${l?.cls || 'bg-slate-100 text-slate-600'}`}>{v}</span>; })}
+                                                </span>
+                                            ) : <span className="text-[10px] font-semibold text-slate-400">No preset villas</span>}
+                                            {sec.owner && <span className="block text-[9px] font-bold text-amber-700 mt-0.5">With {sec.owner}</span>}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ))}
+                    </div>
+                </div>,
+                document.body
+            )}
+        </>
+    );
+};
 
 // --- INLINE SEARCH COMPONENT FOR BLOCKS ---
 const EmptyBlockSearch = ({ candidates, onAssign, placeholder = "+ Search & Add VA", onCancel }: any) => {
@@ -115,13 +189,20 @@ export default function VillaBoard({
   allocations,
   setAllocations,
   masterList,
+  prevMasterList = [],
   setIsDirty,
   selectedDate,
 }: VillaBoardProps) {
+    const { confirmAction } = useConfirm();
     const [villaSearchQuery, setVillaSearchQuery] = useState('');
     const [selectedVA, setSelectedVA] = useState<string | null>(null);
     const [swappingHostId, setSwappingHostId] = useState<string | null>(null);
-    const [intendedJetties, setIntendedJetties] = useState<Record<string, string>>({});
+    // Where an attendant was placed before they have villas: zone + section index
+    const [intendedJetties, setIntendedJetties] = useState<Record<string, { zone: ZoneKey; slot: number }>>({});
+    const [layout, setLayout] = useState<Layout>(DEFAULT_LAYOUT);
+    const [layoutId, setLayoutId] = useState<string | null>(null);
+    const [layoutDraft, setLayoutDraft] = useState<Layout | null>(null);
+    const [layoutZone, setLayoutZone] = useState<ZoneKey>('jettyA');
     const [typingState, setTypingState] = useState<Record<string, string>>({});
     
     // Add Host to Pool Modal
@@ -140,6 +221,30 @@ export default function VillaBoard({
     useEffect(() => {
         fetchActiveLeaves();
     }, [selectedDate]);
+
+    useEffect(() => {
+        loadVillaLayout().then(({ id, layout }) => { if (id) { setLayoutId(id); setLayout(layout); } });
+    }, []);
+
+    const saveLayout = async (next: Layout) => {
+        const label = JSON.stringify(next);
+        const { data: existing } = await supabase.from('hsk_constants').select('id').eq('type', LAYOUT_TYPE).limit(1);
+        const id = existing?.[0]?.id || layoutId;
+        const { data, error } = id
+            ? await supabase.from('hsk_constants').update({ label }).eq('id', id).select().single()
+            : await supabase.from('hsk_constants').insert({ type: LAYOUT_TYPE, label }).select().single();
+        if (error) { toast.error('Sections not saved: ' + error.message); return; }
+        setLayoutId(data.id);
+        setLayout(next);
+        setLayoutDraft(null);
+        toast.success('Sections saved');
+    };
+
+    // Guest status per villa, same source as the Guest List
+    const statusByVilla = React.useMemo(() => villaStatusMap(masterList), [masterList]);
+    const todayRows = React.useMemo(() => rowsByVilla(masterList), [masterList]);
+    const prevRows = React.useMemo(() => rowsByVilla(prevMasterList), [prevMasterList]);
+    const villaAllocOf = (hostId: string) => allocations.find((a: any) => String(a.host_id) === String(hostId) && a.area === 'villa');
 
     const fetchActiveLeaves = async () => {
         try {
@@ -312,41 +417,124 @@ export default function VillaBoard({
 
     const getVillaData = (vNum?: number) => {
         if (!vNum) return null;
-        const match = masterList.find((r: any) => parseInt(r.villa_number) === vNum);
-        const st = match?.status?.toUpperCase() || 'VAC';
-        
-        let colorClass = 'bg-white text-slate-800'; 
-        let shortStatus = st;
+        const info = statusByVilla[vNum];
+        const hk = deriveHKStatus(todayRows[vNum], prevRows[vNum], selectedDate);
         let timeStr = '';
-
-        if (st.includes('ARR')) { colorClass = 'bg-green-500 text-white'; if(match?.arrival_time) timeStr = match.arrival_time; }
-        else if (st.includes('VAC') || st === 'VM/VAC') { colorClass = 'bg-sky-500 text-white'; shortStatus = 'VAC'; }
-        else if (st.includes('FUMIG')) { colorClass = 'bg-teal-600 text-white'; shortStatus = 'FUMIG'; }
-        else if (st.includes('TMA')) { colorClass = 'bg-yellow-400 text-slate-900'; }
-        else if (st.includes('DEP')) { colorClass = 'bg-rose-500 text-white'; if(match?.departure_time) timeStr = match.departure_time; }
-
-        return { status: shortStatus, colorClass, timeStr };
+        if (hk.code === 'DEP/ARR' || hk.code === 'TMA/ARR') timeStr = [info?.departure && `D ${info.departure}`, info?.arrival && `A ${info.arrival}`].filter(Boolean).join(' ');
+        else if (hk.code.includes('ARR') || hk.code === 'JOIN') timeStr = info?.arrival || '';
+        else if (hk.code.startsWith('DEP')) timeStr = info?.departure || '';
+        return { status: hk.label, colorClass: hk.cls, timeStr, title: hk.title };
     };
 
-    const handleBlockAssign = (hostId: string, jettyName: string) => {
+    const allocatedVillaOwner = (v: number, exceptHost?: string) =>
+        allocations.find((a: any) => a.area === 'villa' && String(a.host_id) !== String(exceptHost) && parseVillas(a.task_details || '').includes(v));
+
+    const handleBlockAssign = (hostId: string, zone: ZoneKey, slot: number) => {
         if (!hostId) return;
-        const existingAlloc = allocations.find((a: any) => String(a.host_id) === String(hostId));
-        const filteredAllocs = allocations.filter((a: any) => String(a.host_id) !== String(hostId));
-        
+        const existingAlloc = villaAllocOf(hostId);
+        const otherAreas = allocations.filter((a: any) => String(a.host_id) === String(hostId) && a.area !== 'villa');
+        if (otherAreas.length) toast(`Moved from ${otherAreas.map((a: any) => a.area).join(', ')} to villas`, { icon: '↪️' });
+
+        // Preset villas of this section that nobody else has yet
+        const preset = parseVillas(layout[zone]?.[slot]?.villas || '');
+        const mine = parseVillas(existingAlloc?.task_details || '');
+        const free = preset.filter(v => !allocatedVillaOwner(v, hostId) && !mine.includes(v));
+        const taken = preset.length - free.length - preset.filter(v => mine.includes(v)).length;
+        const villas = [...mine, ...free];
+        if (taken > 0) toast(`${taken} preset villa${taken === 1 ? ' is' : 's are'} already with someone else`, { icon: 'ℹ️' });
+
+        const rest = allocations.filter((a: any) => String(a.host_id) !== String(hostId));
         let shiftToSet = 'Split';
         if (existingAlloc && existingAlloc.shift !== 'Unassigned') shiftToSet = existingAlloc.shift;
 
-        setAllocations([...filteredAllocs, { report_date: selectedDate, host_id: hostId, area: 'villa', shift: shiftToSet, task_details: existingAlloc?.task_details || '' }]);
-        setIntendedJetties(prev => ({ ...prev, [hostId]: jettyName }));
+        setAllocations([...rest, { report_date: selectedDate, host_id: hostId, area: 'villa', shift: shiftToSet, task_details: villas.join(',') }]);
+        setIntendedJetties(prev => ({ ...prev, [hostId]: { zone, slot } }));
         setSelectedVA(hostId);
         setIsDirty(true);
+    };
+
+    // Give the attendant a whole section: its preset villas replace what they had (manual numbers still possible after)
+    const handleSectionPick = async (hostId: string, value: string) => {
+        if (!value) return;
+        const [zone, slotStr] = value.split(':') as [ZoneKey, string];
+        const slot = Number(slotStr);
+        const preset = parseVillas(layout[zone]?.[slot]?.villas || '');
+        const me = hosts.find(h => String(h.id) === String(hostId));
+        if (preset.length === 0) {
+            // No preset villas: only move the block into that section
+            setIntendedJetties(prev => ({ ...prev, [hostId]: { zone, slot } }));
+            return;
+        }
+        const clashes = preset.map(v => ({ v, owner: allocatedVillaOwner(v, hostId) })).filter(x => x.owner);
+        let takeOver = false;
+        if (clashes.length) {
+            const names = [...new Set(clashes.map(c => { const h = hosts.find(x => String(x.id) === String(c.owner!.host_id)); return h ? getHostLabel(h) : 'someone'; }))].join(', ');
+            takeOver = await confirmAction({
+                title: 'Villas already allocated',
+                message: `Villa${clashes.length === 1 ? '' : 's'} ${clashes.map(c => c.v).join(', ')} ${clashes.length === 1 ? 'is' : 'are'} with ${names}. Move ${clashes.length === 1 ? 'it' : 'them'} to ${me ? getHostLabel(me) : 'this attendant'}, or give only the free villas?`,
+                confirmText: `Move to ${me ? getHostLabel(me) : 'them'}`,
+                cancelText: 'Only free villas',
+                icon: 'warning',
+            });
+        }
+        const give = preset.filter(v => takeOver || !clashes.some(c => c.v === v));
+        let next = allocations.map((a: any) => {
+            if (a.area !== 'villa' || String(a.host_id) === String(hostId)) return a;
+            const vs = parseVillas(a.task_details || '');
+            return vs.some(v => give.includes(v)) ? { ...a, task_details: vs.filter(v => !give.includes(v)).join(',') } : a;
+        });
+        const mine = next.find((a: any) => String(a.host_id) === String(hostId) && a.area === 'villa');
+        if (mine) next = next.map((a: any) => a === mine ? { ...a, task_details: give.join(',') } : a);
+        else next = [...next.filter((a: any) => String(a.host_id) !== String(hostId)), { report_date: selectedDate, host_id: hostId, area: 'villa', shift: 'Split', task_details: give.join(',') }];
+        setAllocations(next);
+        setIntendedJetties(prev => ({ ...prev, [hostId]: { zone, slot } }));
+        setSelectedVA(hostId);
+        setIsDirty(true);
+    };
+
+    const villaLook = (v: number) => { const d = getVillaData(v); return d ? { cls: d.colorClass, title: d.title } : null; };
+    const pickerGroups = (hostId: string) => ZONES.map(z => ({
+        label: z.label,
+        sections: (layout[z.key] || []).map((sec, i) => {
+            const villas = parseVillas(sec.villas || '');
+            const owners = [...new Set(villas.map(v => allocatedVillaOwner(v, hostId)).filter(Boolean).map((a: any) => {
+                const h = hosts.find(x => String(x.id) === String(a.host_id)); return h ? getHostLabel(h) : '';
+            }).filter(Boolean))];
+            return { value: `${z.key}:${i}`, name: `${z.short}${i + 1}`, villas, owner: owners.join(', ') || undefined };
+        }),
+    }));
+
+    // Section whose preset villas this attendant holds (all of them), for the picker
+    const sectionOf = (hostId: string): string => {
+        const mine = parseVillas(villaAllocOf(hostId)?.task_details || '');
+        if (mine.length === 0) return '';
+        for (const z of ZONES) {
+            const secs = layout[z.key] || [];
+            for (let i = 0; i < secs.length; i++) {
+                const p = parseVillas(secs[i].villas || '');
+                if (p.length && p.every(v => mine.includes(v))) return `${z.key}:${i}`;
+            }
+        }
+        return '';
+    };
+
+    // Add this section's preset villas (the ones still free) to the attendant already in it
+    const fillPreset = (hostId: string, zone: ZoneKey, slot: number) => {
+        const alloc = villaAllocOf(hostId);
+        if (!alloc) return;
+        const mine = parseVillas(alloc.task_details || '');
+        const free = parseVillas(layout[zone]?.[slot]?.villas || '').filter(v => !mine.includes(v) && !allocatedVillaOwner(v, hostId));
+        if (free.length === 0) return toast('All preset villas are already allocated');
+        setAllocations(allocations.map((a: any) => a === alloc ? { ...a, task_details: [...mine, ...free].join(',') } : a));
+        setIsDirty(true);
+        toast.success(`Added ${free.join(', ')}`);
     };
 
     const handleSwapHost = (oldHostId: string, newHostId: string) => {
         if (!newHostId || oldHostId === newHostId) return setSwappingHostId(null);
         
         const newAllocs = [...allocations];
-        const idx = newAllocs.findIndex((a: any) => String(a.host_id) === String(oldHostId));
+        const idx = newAllocs.findIndex((a: any) => String(a.host_id) === String(oldHostId) && a.area === 'villa');
         const newHostExistingIdx = newAllocs.findIndex((a: any) => String(a.host_id) === String(newHostId));
         
         if (newHostExistingIdx >= 0) {
@@ -371,7 +559,7 @@ export default function VillaBoard({
     };
 
     const handleRemove = (hostId: string) => {
-        setAllocations(allocations.filter((a: any) => String(a.host_id) !== String(hostId)));
+        setAllocations(allocations.filter((a: any) => !(String(a.host_id) === String(hostId) && a.area === 'villa')));
         if (selectedVA === hostId) setSelectedVA(null);
         if (swappingHostId === hostId) setSwappingHostId(null);
         setIntendedJetties(prev => { const next = { ...prev }; delete next[hostId]; return next; });
@@ -379,7 +567,7 @@ export default function VillaBoard({
     };
 
     const handleVillaInputBlur = (hostId: string, index: number, value: string) => {
-        const existingIndex = allocations.findIndex((a: any) => String(a.host_id) === String(hostId));
+        const existingIndex = allocations.findIndex((a: any) => String(a.host_id) === String(hostId) && a.area === 'villa');
         if (existingIndex < 0) return;
 
         let newAllocs = [...allocations];
@@ -435,7 +623,7 @@ export default function VillaBoard({
         if (!selectedVA) return toast.error("Click a Villa Attendant's purple header first to select them!");
         
         let newAllocs = [...allocations];
-        let myAllocIndex = newAllocs.findIndex((a: any) => String(a.host_id) === selectedVA);
+        const myAllocIndex = newAllocs.findIndex((a: any) => String(a.host_id) === selectedVA && a.area === 'villa');
         if (myAllocIndex < 0) return;
 
         newAllocs = newAllocs.map((alloc: any) => {
@@ -459,7 +647,9 @@ export default function VillaBoard({
     };
 
     // --- DATA GROUPINGS ---
-    const hostGroups = { jettyA: [] as any[], jettyB: [] as any[], jettyC: [] as any[], beach: [] as any[] };
+    // Each attendant sits in the area holding most of their villas, then in the section whose preset
+    // villas they share most; nobody is hidden when an area has more attendants than sections.
+    const zoneSlots: Record<ZoneKey, (any | null)[]> = { jettyA: [], jettyB: [], jettyC: [], beach: [] };
     const unassignedVAs: any[] = [];
     const allAllocatedVillas = new Set<number>();
 
@@ -467,24 +657,21 @@ export default function VillaBoard({
         parseVillas(a.task_details).forEach((v: any) => allAllocatedVillas.add(v));
     });
 
+    const byZone: Record<ZoneKey, any[]> = { jettyA: [], jettyB: [], jettyC: [], beach: [] };
     currentAreaHosts.forEach((host: any) => {
-        const alloc = allocations.find((a: any) => String(a.host_id) === String(host.id));
-        const myVillas = parseVillas(alloc?.task_details || '');
-        const intended = intendedJetties[host.id];
-        
-        const targetJetty = intended || (
-            myVillas.length === 0 ? null :
-            JETTY_A.includes(myVillas[0]) ? 'jettyA' :
-            JETTY_B.includes(myVillas[0]) ? 'jettyB' :
-            JETTY_C.includes(myVillas[0]) ? 'jettyC' :
-            BEACH.includes(myVillas[0]) ? 'beach' : 'jettyA'
-        );
+        const alloc = villaAllocOf(host.id);
+        if (!alloc) { unassignedVAs.push(host); return; }
+        const zone = majorityZone(parseVillas(alloc.task_details || '')) || intendedJetties[host.id]?.zone;
+        if (!zone) unassignedVAs.push(host);
+        else byZone[zone].push(host);
+    });
 
-        if (!alloc || !targetJetty) unassignedVAs.push(host);
-        else if (targetJetty === 'jettyA') hostGroups.jettyA.push(host);
-        else if (targetJetty === 'jettyB') hostGroups.jettyB.push(host);
-        else if (targetJetty === 'jettyC') hostGroups.jettyC.push(host);
-        else if (targetJetty === 'beach') hostGroups.beach.push(host);
+    ZONES.forEach(z => {
+        const sections = layout[z.key] || [];
+        const it = (h: any) => intendedJetties[h.id];
+        const slots = slotBySections(byZone[z.key], sections, h => parseVillas(villaAllocOf(h.id)?.task_details || ''),
+            h => (it(h) && it(h).zone === z.key ? it(h).slot : undefined));
+        zoneSlots[z.key] = slots;
     });
 
     const unallocatedVillas: number[] = [];
@@ -496,7 +683,7 @@ export default function VillaBoard({
     if (villaSearchQuery) {
         const vNum = parseInt(villaSearchQuery, 10);
         if (!isNaN(vNum)) {
-            const allocMatch = allocations.find((a: any) => a.area === 'villa' && parseVillas(a.task_details).includes(vNum));
+            const allocMatch = allocatedVillaOwner(vNum);
             if (allocMatch) {
                 const h = hosts.find((h: any) => String(h.id) === String(allocMatch.host_id));
                 if (h) searchedVillaAllocatedTo = h.nicknames ? h.nicknames.split(',')[0] : h.full_name.split(' ')[0];
@@ -504,29 +691,42 @@ export default function VillaBoard({
         }
     }
 
-    const renderBlock = (host: any, jettyId: string, key: string) => {
+    const renderBlock = (host: any, zone: ZoneKey, slot: number) => {
+        const key = `${zone}-${slot}`;
+        const preset = parseVillas(layout[zone]?.[slot]?.villas || '');
+        const sectionName = `${ZONES.find(z => z.key === zone)?.short}${slot + 1}`;
         if (!host) {
             return (
                 <div key={key} className="flex flex-col bg-slate-50 border w-full border-slate-400 rounded-sm overflow-hidden shadow-sm h-full">
                     <div className="bg-[#6D2158] p-1 border-b border-slate-400">
-                        <EmptyBlockSearch candidates={unassignedVAs} onAssign={(hId: string) => handleBlockAssign(hId, jettyId)} />
+                        <EmptyBlockSearch candidates={unassignedVAs} onAssign={(hId: string) => handleBlockAssign(hId, zone, slot)} />
                     </div>
-                    <div className="bg-slate-100 border-b border-slate-400 text-[8px] font-mono text-slate-400 px-1 py-0.5 text-center truncate italic">No Contact Info</div>
+                    <div className="bg-slate-100 border-b border-slate-400 text-[8px] font-bold text-slate-500 px-1 py-0.5 text-center truncate" title={preset.length ? `Preset villas: ${preset.join(', ')}` : undefined}>
+                        {sectionName}{preset.length ? ` · preset ${preset.join(', ')}` : ''}
+                    </div>
                     <div className="grid grid-cols-2 bg-slate-200 border-b border-slate-400">
                         <div className="text-center font-black text-[8px] py-1 border-r border-slate-400 text-slate-700">VILLA NO</div>
                         <div className="text-center font-black text-[8px] py-1 text-slate-700">STATUS</div>
                     </div>
                     <div className="flex flex-col flex-1">
-                        {Array.from({length: 9}).map((_, i) => (
-                            <div key={`empty-${i}`} className="grid grid-cols-2 border-b border-slate-400 min-h-[24px] bg-white"><div className="border-r border-slate-400"></div><div></div></div>
-                        ))}
+                        {Array.from({length: 9}).map((_, i) => {
+                            const pv = preset[i];
+                            const d = pv ? getVillaData(pv) : null;
+                            return (
+                                <div key={`empty-${i}`} className="grid grid-cols-2 border-b border-slate-400 min-h-[24px] bg-white">
+                                    <div className="border-r border-slate-400 flex items-center justify-center text-[11px] font-bold text-slate-300">{pv || ''}</div>
+                                    <div className={`flex items-center justify-center text-[9px] font-bold ${d ? d.colorClass + ' opacity-40' : ''}`}>{d?.status || ''}</div>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             );
         }
 
-        const alloc = allocations.find((a: any) => String(a.host_id) === String(host.id));
+        const alloc = villaAllocOf(host.id);
         const myVillas = (alloc?.task_details || '').split(',').map((s: string) => s.trim()).filter((s: string) => s !== '');
+        const missingPreset = preset.filter(v => !myVillas.includes(String(v)) && !allocatedVillaOwner(v, host.id));
         
         const rowsCount = Math.max(9, myVillas.length + 1);
         const paddedVillas = Array.from({length: rowsCount}).map((_, i) => myVillas[i] || '');
@@ -547,15 +747,19 @@ export default function VillaBoard({
                             <div className="flex items-center gap-1 min-w-0 pr-1">
                                 <span className="text-[11px] font-bold pl-1 leading-tight truncate">{displayName}</span>
                                 {leave && <span className="text-[7px] bg-rose-200 text-rose-900 px-1 rounded font-black">{leave.leave_type}</span>}
+                                <SectionPicker value={sectionOf(host.id)} groups={pickerGroups(host.id)} villaLook={villaLook} onPick={(v) => handleSectionPick(host.id, v)} />
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
+                                {missingPreset.length > 0 && (
+                                    <button onClick={(e) => { e.stopPropagation(); fillPreset(host.id, zone, slot); }} className="text-white/70 hover:text-white px-0.5" title={`Add preset villas ${missingPreset.join(', ')}`}><Wand2 size={10}/></button>
+                                )}
                                 <button onClick={(e) => { e.stopPropagation(); setSwappingHostId(host.id); }} className="text-white/60 hover:text-white px-1" title="Swap VA"><RefreshCw size={10}/></button>
                                 <button onClick={(e) => { e.stopPropagation(); handleRemove(host.id); }} className="text-white/60 hover:text-white px-1" title="Remove VA"><X size={12}/></button>
                             </div>
                         </>
                     )}
                 </div>
-                <div className="bg-slate-100 border-b border-slate-400 text-[7px] font-mono text-slate-600 px-1 py-0.5 text-center truncate">{contactInfo}</div>
+                <div className="bg-slate-100 border-b border-slate-400 text-[7px] font-mono text-slate-600 px-1 py-0.5 text-center truncate" title={contactInfo}><span className="font-sans font-black text-slate-500 mr-1">{sectionName}</span>{contactInfo}</div>
                 <div className="grid grid-cols-2 bg-slate-200 border-b border-slate-400">
                     <div className="text-center font-black text-[8px] py-1 border-r border-slate-400 text-slate-700">VILLA NO</div>
                     <div className="text-center font-black text-[8px] py-1 text-slate-700">STATUS</div>
@@ -573,6 +777,13 @@ export default function VillaBoard({
                                     <input 
                                         id={`input-${host.id}-${i}`}
                                         type="text"
+                                        inputMode="numeric"
+                                        autoComplete="off"
+                                        autoCorrect="off"
+                                        spellCheck={false}
+                                        name={`villa-${host.id}-${i}-${selectedDate}`}
+                                        data-lpignore="true"
+                                        data-1p-ignore="true"
                                         className="w-full h-full text-center font-bold text-[12px] outline-none focus:bg-indigo-50 text-slate-800 bg-transparent"
                                         value={displayValue}
                                         onChange={(e) => setTypingState(prev => ({ ...prev, [inputKey]: e.target.value }))}
@@ -585,6 +796,7 @@ export default function VillaBoard({
                                     />
                                 </div>
                                 <div 
+                                    title={data?.title}
                                     className={`text-center flex flex-col items-center justify-center text-[10px] font-bold leading-tight px-0.5 ${data?.colorClass || 'bg-slate-50 text-slate-400'}`}
                                     onClick={(e) => { if(vNum) { e.stopPropagation(); handleVillaClick(vNum); } }}
                                 >
@@ -603,37 +815,35 @@ export default function VillaBoard({
         <div className="flex flex-col-reverse xl:flex-row gap-4 items-start w-full">
             <div className="flex-1 w-full min-w-0 flex flex-col gap-4">
                 
-                {/* ROW 1: JETTY A */}
-                <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-300">
-                    <div className="bg-[#6D2158] text-white font-black text-center py-1.5 text-[10px] tracking-widest uppercase rounded-sm mb-2">Jetty A</div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2 w-full">
-                        {Array.from({length: 7}).map((_, i) => renderBlock(hostGroups.jettyA[i], 'jettyA', `A-${i}`))}
-                    </div>
-                </div>
-
-                {/* ROW 2: JETTY B & C */}
-                <div className="flex flex-col xl:flex-row gap-4 w-full">
-                    <div className="flex-1 bg-white p-2 rounded-xl shadow-sm border border-slate-300">
-                        <div className="bg-[#6D2158] text-white font-black text-center py-1.5 text-[10px] tracking-widest uppercase rounded-sm mb-2">Jetty B</div>
-                        <div className="grid grid-cols-2 xl:grid-cols-3 gap-2 w-full">
-                            {Array.from({length: 3}).map((_, i) => renderBlock(hostGroups.jettyB[i], 'jettyB', `B-${i}`))}
+                {/* AREAS: sections come from the saved layout (Sections button) */}
+                {(() => {
+                    const zoneCard = (z: typeof ZONES[number], cols: string) => (
+                        <div key={z.key} className="flex-1 min-w-0 bg-white p-2 rounded-xl shadow-sm border border-slate-300">
+                            <div className="bg-[#6D2158] text-white font-black py-1.5 px-2 text-[10px] tracking-widest uppercase rounded-sm mb-2 flex items-center justify-between">
+                                <span className="w-16" />
+                                <span>{z.label}</span>
+                                <button onClick={() => { setLayoutDraft(JSON.parse(JSON.stringify(layout))); setLayoutZone(z.key); }}
+                                    className="w-16 flex items-center justify-end gap-1 text-white/70 hover:text-white normal-case tracking-normal font-bold text-[10px]" title={`Set ${z.label} sections`}>
+                                    <Settings2 size={12}/> Sections
+                                </button>
+                            </div>
+                            <div className={`grid gap-2 w-full ${cols}`}>
+                                {zoneSlots[z.key].map((h, i) => renderBlock(h, z.key, i))}
+                            </div>
                         </div>
-                    </div>
-                    <div className="flex-1 bg-white p-2 rounded-xl shadow-sm border border-slate-300">
-                        <div className="bg-[#6D2158] text-white font-black text-center py-1.5 text-[10px] tracking-widest uppercase rounded-sm mb-2">Jetty C</div>
-                        <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 w-full">
-                            {Array.from({length: 4}).map((_, i) => renderBlock(hostGroups.jettyC[i], 'jettyC', `C-${i}`))}
-                        </div>
-                    </div>
-                </div>
-
-                {/* ROW 3: BEACH */}
-                <div className="bg-white p-2 rounded-xl shadow-sm border border-slate-300">
-                    <div className="bg-[#6D2158] text-white font-black text-center py-1.5 text-[10px] tracking-widest uppercase rounded-sm mb-2">Beach Villas</div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2 w-full">
-                        {Array.from({length: 7}).map((_, i) => renderBlock(hostGroups.beach[i], 'beach', `Beach-${i}`))}
-                    </div>
-                </div>
+                    );
+                    const [A, B, C, BV] = ZONES;
+                    return (
+                        <>
+                            {zoneCard(A, 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7')}
+                            <div className="flex flex-col xl:flex-row gap-4 w-full">
+                                {zoneCard(B, 'grid-cols-2 xl:grid-cols-3')}
+                                {zoneCard(C, 'grid-cols-2 xl:grid-cols-4')}
+                            </div>
+                            {zoneCard(BV, 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7')}
+                        </>
+                    );
+                })()}
 
                 {/* VILLA STAFF POOL & LEAVE MANAGEMENT */}
                 <div className="mt-4 bg-white p-4 rounded-xl border border-slate-300 shadow-sm">
@@ -729,26 +939,102 @@ export default function VillaBoard({
                         {unallocatedVillas.map(v => {
                             const vData = getVillaData(v);
                             return (
-                                <button key={v} onClick={() => handleVillaClick(v)} className={`w-[34px] h-[30px] rounded border border-slate-300 shadow-sm flex items-center justify-center transition-all ${vData?.colorClass || 'bg-white'} hover:scale-105 active:scale-95`}>
+                                <button key={v} title={`Villa ${v}: ${vData?.title || ''}`} onClick={() => handleVillaClick(v)} className={`w-[34px] h-[30px] rounded border border-slate-300 shadow-sm flex items-center justify-center transition-all ${vData?.colorClass || 'bg-white'} hover:scale-105 active:scale-95`}>
                                     <span className="text-[11px] font-black leading-none">{v}</span>
                                 </button>
                             );
                         })}
                     </div>
                 </div>
+                <details className="bg-white p-3 rounded-xl border border-slate-300 shadow-sm group" open>
+                    <summary className="text-[10px] font-black uppercase text-slate-700 tracking-widest cursor-pointer list-none flex items-center justify-between">Status key <span className="text-slate-400 group-open:rotate-180 transition-transform">▾</span></summary>
+                    <div className="mt-2 space-y-1">
+                        {HK_STATUS_KEY.map(st => (
+                            <div key={st.code} className="flex items-center gap-2" title={st.title}>
+                                <span className={`shrink-0 w-[62px] text-center text-[9px] font-black rounded py-0.5 ${st.cls}`}>{st.label}</span>
+                                <span className="text-[9px] font-semibold text-slate-500 leading-tight">{st.title}</span>
+                            </div>
+                        ))}
+                    </div>
+                </details>
             </div>
+
+            {/* SECTIONS (PRESET) SETTINGS */}
+            {layoutDraft && (() => {
+                const secs = layoutDraft[layoutZone] || [];
+                const setSecs = (next: { villas: string }[]) => setLayoutDraft({ ...layoutDraft, [layoutZone]: next });
+                const z = ZONES.find(x => x.key === layoutZone)!;
+                // villas used by more than one section in this area
+                const seen = new Map<number, number>();
+                secs.forEach(sec => parseVillas(sec.villas).forEach(v => seen.set(v, (seen.get(v) || 0) + 1)));
+                const dupes = [...seen.entries()].filter(([, n]) => n > 1).map(([v]) => v);
+                const covered = new Set(seen.keys());
+                const uncovered = z.villas.filter(v => !covered.has(v));
+                return (
+                    <div className="modal-overlay" onClick={() => setLayoutDraft(null)}>
+                        <div className="modal-content !max-w-lg !p-0 !rounded-[2rem] max-h-[85vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+                            <div className="p-6 pb-4 border-b border-slate-100 flex items-start justify-between gap-3">
+                                <div>
+                                    <h3 className="text-xl font-black text-[#6D2158] tracking-tight flex items-center gap-2"><Settings2 size={20}/> Sections &amp; preset villas</h3>
+                                    <p className="text-[11px] text-slate-500 mt-0.5">Set how many sections each area has and the villas each section usually covers. Putting an attendant into a section fills in its preset villas that are still free.</p>
+                                </div>
+                                <button onClick={() => setLayoutDraft(null)} className="p-2 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 shrink-0"><X size={16}/></button>
+                            </div>
+                            <div className="px-6 pt-3 flex gap-1 border-b border-slate-100">
+                                {ZONES.map(zz => (
+                                    <button key={zz.key} onClick={() => setLayoutZone(zz.key)}
+                                        className={`px-3 py-2 text-xs font-black border-b-2 -mb-px ${layoutZone === zz.key ? 'border-[#6D2158] text-[#6D2158]' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                                        {zz.label} <span className="text-[10px] font-bold opacity-60">{(layoutDraft[zz.key] || []).length}</span>
+                                    </button>
+                                ))}
+                            </div>
+                            <div className="px-6 py-4 overflow-y-auto flex-1 space-y-2">
+                                <div className="flex items-center justify-between mb-1">
+                                    <span className="text-[11px] font-bold text-slate-500">{z.label}: villas {z.villas[0]}–{z.villas[z.villas.length - 1]}{z.key === 'beach' ? ' (36, 51–58, 80–97)' : ''}</span>
+                                    <div className="flex items-center gap-1">
+                                        <button onClick={() => secs.length > 1 && setSecs(secs.slice(0, -1))} className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50" title="Remove last section"><Minus size={14}/></button>
+                                        <span className="w-8 text-center text-sm font-black text-slate-800">{secs.length}</span>
+                                        <button onClick={() => secs.length < 14 && setSecs([...secs, { villas: '' }])} className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50" title="Add a section"><Plus size={14}/></button>
+                                    </div>
+                                </div>
+                                {secs.map((sec, i) => {
+                                    const vs = parseVillas(sec.villas);
+                                    const outside = vs.filter(v => zoneOfVilla(v) !== layoutZone);
+                                    return (
+                                        <div key={i} className="flex items-center gap-2">
+                                            <span className="w-10 shrink-0 text-xs font-black text-[#6D2158]">{z.short}{i + 1}</span>
+                                            <input value={sec.villas} onChange={e => setSecs(secs.map((x, k) => k === i ? { villas: e.target.value } : x))}
+                                                autoComplete="off" placeholder="e.g. 1-5, 18, 34"
+                                                className="input-field !p-2.5 !text-xs flex-1 min-w-0" />
+                                            <span className={`w-16 shrink-0 text-right text-[10px] font-bold ${outside.length ? 'text-amber-600' : 'text-slate-400'}`} title={outside.length ? `Not in ${z.label}: ${outside.join(', ')}` : undefined}>
+                                                {vs.length} villa{vs.length === 1 ? '' : 's'}{outside.length ? ' ⚠' : ''}
+                                            </span>
+                                        </div>
+                                    );
+                                })}
+                                {dupes.length > 0 && <p className="text-[11px] font-bold text-amber-700 bg-amber-50 rounded-lg px-3 py-2">In more than one section: {dupes.join(', ')}</p>}
+                                {secs.some(x => x.villas.trim()) && uncovered.length > 0 && <p className="text-[11px] font-semibold text-slate-500 bg-slate-50 rounded-lg px-3 py-2">Not in any section: {uncovered.join(', ')}</p>}
+                            </div>
+                            <div className="p-6 pt-4 border-t border-slate-100 flex justify-end gap-2">
+                                <button onClick={() => setLayoutDraft(null)} className="btn-secondary">Cancel</button>
+                                <button onClick={() => saveLayout(layoutDraft)} className="btn-primary">Save sections</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* SET LEAVE & RETURN DATE MODAL */}
             {selectedHostForLeave && (
-                <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden flex flex-col p-5 gap-4">
+                <div className="modal-overlay" onClick={() => setSelectedHostForLeave(null)}>
+                    <div className="modal-content !max-w-md !p-6 !rounded-[2rem] gap-4" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                             <div className="flex items-center gap-2">
                                 <div className="p-2 bg-rose-50 text-rose-700 rounded-lg">
                                     <Calendar size={18} />
                                 </div>
                                 <div>
-                                    <h3 className="text-sm font-black text-slate-800">
+                                    <h3 className="text-lg font-black text-[#6D2158] tracking-tight">
                                         Set Leave for {getHostLabel(selectedHostForLeave)}
                                     </h3>
                                     <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
@@ -766,7 +1052,7 @@ export default function VillaBoard({
 
                         <div className="space-y-3">
                             <div>
-                                <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Status / Leave Type</label>
+                                <label className="input-label">Status / Leave Type</label>
                                 <div className="grid grid-cols-2 gap-1.5">
                                     {LEAVE_TYPES.map((lt) => (
                                         <button
@@ -787,19 +1073,19 @@ export default function VillaBoard({
 
                             <div className="grid grid-cols-2 gap-3 pt-2">
                                 <div>
-                                    <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Start Date</label>
+                                    <label className="input-label">Start Date</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2 font-bold text-xs outline-none focus:border-[#6D2158]"
+                                        className="input-field !p-3 !text-xs"
                                         value={leaveForm.start_date}
                                         onChange={(e) => setLeaveForm({ ...leaveForm, start_date: e.target.value })}
                                     />
                                 </div>
                                 <div>
-                                    <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Return / End Date</label>
+                                    <label className="input-label">Return / End Date</label>
                                     <input
                                         type="date"
-                                        className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2 font-bold text-xs outline-none focus:border-[#6D2158]"
+                                        className="input-field !p-3 !text-xs"
                                         value={leaveForm.end_date}
                                         onChange={(e) => setLeaveForm({ ...leaveForm, end_date: e.target.value })}
                                     />
@@ -821,13 +1107,13 @@ export default function VillaBoard({
                             <div className="flex items-center gap-2">
                                 <button
                                     onClick={() => setSelectedHostForLeave(null)}
-                                    className="px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                                    className="btn-secondary !px-4"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     onClick={handleSaveLeave}
-                                    className="bg-[#6D2158] hover:bg-[#521643] text-white px-4 py-1.5 rounded-xl text-xs font-black shadow-sm"
+                                    className="btn-primary !px-4"
                                 >
                                     Apply Leave
                                 </button>
@@ -839,8 +1125,8 @@ export default function VillaBoard({
 
             {/* ADD HOST TO VILLA POOL MODAL */}
             {isAddHostModalOpen && (
-                <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-                    <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200 max-h-[80vh]">
+                <div className="modal-overlay" onClick={() => setIsAddHostModalOpen(false)}>
+                    <div className="modal-content !max-w-md !p-0 !rounded-[2rem] overflow-hidden max-h-[80vh]" onClick={e => e.stopPropagation()}>
                         <div className="bg-[#6D2158] p-5 text-white flex justify-between items-center">
                             <h3 className="text-lg font-bold flex items-center gap-2"><Users size={18}/> Add Staff to Villa Pool</h3>
                             <button onClick={() => setIsAddHostModalOpen(false)} className="bg-white/10 p-1.5 rounded-full hover:bg-white/20"><X size={18}/></button>
@@ -848,7 +1134,7 @@ export default function VillaBoard({
                         <div className="p-4 border-b border-slate-200 bg-slate-50">
                             <div className="relative">
                                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                <input type="text" placeholder="Search entire island staff..." className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:border-[#6D2158] shadow-sm" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} autoFocus />
+                                <input type="text" placeholder="Search entire island staff..." autoComplete="off" className="input-field !pl-9 !py-2.5 !text-xs" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} autoFocus />
                             </div>
                         </div>
                         <div className="p-0 flex-1 overflow-y-auto custom-scrollbar">
