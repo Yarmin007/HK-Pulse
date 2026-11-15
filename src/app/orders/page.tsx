@@ -1,8 +1,9 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, X, Trash2, ClipboardPaste, FileUp, FileDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, Plus, X, Trash2, ClipboardPaste, FileUp, FileDown, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import { useConfirm } from '@/components/ConfirmProvider';
 
 // Order Tracking: Purchase Requests (PR). Store Requests have their own page: /store-requests
 
@@ -140,6 +141,7 @@ type PurchaseOrderRecord = {
 };
 
 export default function OrderTrackingPage() {
+  const { confirmAction } = useConfirm();
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderRecord[]>([]);
@@ -166,6 +168,8 @@ export default function OrderTrackingPage() {
 
   // List shows one month at a time ('' = all months)
   const [month, setMonth] = useState<string>(thisMonth());
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState<number>(new Date().getFullYear());
 
   const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -234,17 +238,65 @@ export default function OrderTrackingPage() {
     setMonth(months.length === 1 ? months[0] : '');
   };
 
+  // A CSV line is the same as a saved one when PR No and item name match (case / spacing ignored)
+  const lineKey = (prNo: string, item: string) => `${prNo.trim().toUpperCase()}|${item.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+  const existingByKey = new Map<string, PurchaseOrderRecord>();
+  purchaseOrders.forEach((o) => { if (o.request_no) existingByKey.set(lineKey(o.request_no, o.item_name || ''), o); });
+
+  /** Fields the saved line is missing that the CSV line has (nothing already filled is overwritten). */
+  const missingFrom = (o: PurchaseOrderRecord, it: PastedPrItem) => {
+    const patch: Record<string, any> = {};
+    if (!o.request_date && it.request_date) patch.request_date = it.request_date;
+    if (!o.article_number && it.article_number) patch.article_number = it.article_number;
+    if (!o.unit && it.unit) patch.unit = it.unit;
+    if (!o.remarks && it.remarks) patch.remarks = it.remarks;
+    if (!o.received_date && it.received_date) patch.received_date = it.received_date;
+    if (!(Number(o.received_qty) > 0) && it.received_qty) patch.received_qty = it.received_qty;
+    if (patch.received_qty !== undefined) patch.status = prStatusFor(Number(o.ordered_qty) || 0, patch.received_qty);
+    return patch;
+  };
+
+  const planCsv = (items: PastedPrItem[]) => {
+    const inserts: PastedPrItem[] = [];
+    const updates: { order: PurchaseOrderRecord; patch: Record<string, any> }[] = [];
+    let unchanged = 0;
+    items.forEach((it) => {
+      const found = it.request_no ? existingByKey.get(lineKey(it.request_no, it.item_name)) : undefined;
+      if (!found) { inserts.push(it); return; }
+      const patch = missingFrom(found, it);
+      if (Object.keys(patch).length) updates.push({ order: found, patch }); else unchanged++;
+    });
+    return { inserts, updates, unchanged };
+  };
+
   const handleImportCsv = async () => {
     if (!csvImport) return;
     const today = new Date().toISOString().split('T')[0];
-    const rows = csvImport.items.map((it) => toPrRow(it, today));
+    const plan = planCsv(csvImport.items);
+    const rows = plan.inserts.map((it) => toPrRow(it, today));
     setIsImporting(true);
-    const error = await insertPrRows(rows);
+    if (rows.length) {
+      const error = await insertPrRows(rows);
+      if (error) { setIsImporting(false); return toast.error('Import failed: ' + error.message); }
+    }
+    let failed = 0;
+    for (const u of plan.updates) {
+      let { error } = await supabase.from('hsk_procurement_orders').update(u.patch).eq('id', u.order.id);
+      if (error && /remarks/i.test(error.message || '') && 'remarks' in u.patch) {
+        const { remarks: _r, ...rest } = u.patch;
+        ({ error } = Object.keys(rest).length ? await supabase.from('hsk_procurement_orders').update(rest).eq('id', u.order.id) : { error: null });
+      }
+      if (error) failed++;
+    }
     setIsImporting(false);
-    if (error) return toast.error('Import failed: ' + error.message);
-    const prCount = new Set(rows.map((r) => r.request_no || `-${r.request_date}`)).size;
-    toast.success(`Imported ${rows.length} line${rows.length === 1 ? '' : 's'} in ${prCount} PR${prCount === 1 ? '' : 's'}`);
-    showMonthsOf(rows);
+    const parts = [
+      rows.length && `${rows.length} added`,
+      plan.updates.length - failed > 0 && `${plan.updates.length - failed} updated`,
+      plan.unchanged && `${plan.unchanged} already up to date`,
+    ].filter(Boolean);
+    if (failed) toast.error(`${failed} line${failed === 1 ? '' : 's'} could not be updated`);
+    toast.success(parts.join(' · ') || 'Nothing to import');
+    showMonthsOf([...rows, ...plan.updates.map((u) => u.order)]);
     setCsvImport(null);
     fetchPurchaseOrders();
   };
@@ -353,8 +405,30 @@ export default function OrderTrackingPage() {
   );
 
   const deleteLine = async (order: PurchaseOrderRecord) => {
-    if (!confirm(`Delete "${order.item_name}" from this PR?`)) return;
-    await supabase.from('hsk_procurement_orders').delete().eq('id', order.id);
+    const ok = await confirmAction({
+      title: 'Delete this item?',
+      message: `"${order.item_name}" will be removed${order.request_no ? ` from PR ${order.request_no}` : ''}.`,
+      confirmText: 'Delete item',
+      isDestructive: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from('hsk_procurement_orders').delete().eq('id', order.id);
+    if (error) return toast.error('Could not delete: ' + error.message);
+    toast.success('Item deleted');
+    fetchPurchaseOrders();
+  };
+
+  const deletePr = async (lines: PurchaseOrderRecord[], prNo: string) => {
+    const ok = await confirmAction({
+      title: prNo ? `Delete PR ${prNo}?` : 'Delete these items?',
+      message: `All ${lines.length} item${lines.length === 1 ? '' : 's'} in this PR will be removed. This cannot be undone.`,
+      confirmText: prNo ? 'Delete whole PR' : `Delete ${lines.length} items`,
+      isDestructive: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.from('hsk_procurement_orders').delete().in('id', lines.map((l) => l.id));
+    if (error) return toast.error('Could not delete: ' + error.message);
+    toast.success(prNo ? `PR ${prNo} deleted` : 'Items deleted');
     fetchPurchaseOrders();
   };
 
@@ -453,7 +527,45 @@ export default function OrderTrackingPage() {
         <div className="flex items-center gap-1.5">
           <div className="flex items-center bg-white border border-slate-200/90 rounded-xl shadow-xs">
             <button onClick={() => setMonth(shiftMonth(month || thisMonth(), -1))} className="p-2.5 text-slate-500 hover:text-[#6D2158]" title="Previous month"><ChevronLeft size={15}/></button>
-            <span className="px-1 min-w-[112px] text-center text-xs font-black text-slate-700">{month ? monthLabel(month) : 'All months'}</span>
+            <div className="relative">
+              <button
+                onClick={() => { setPickerYear(Number((month || thisMonth()).slice(0, 4))); setMonthPickerOpen((o) => !o); }}
+                className="px-2 py-1.5 min-w-[128px] text-center text-xs font-black text-slate-700 hover:text-[#6D2158] rounded-lg hover:bg-slate-50 flex items-center justify-center gap-1"
+                title="Choose a month"
+              >
+                {month ? monthLabel(month) : 'All months'} <ChevronDown size={13} className="text-slate-400" />
+              </button>
+              {monthPickerOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setMonthPickerOpen(false)} />
+                  <div className="absolute right-0 lg:left-1/2 lg:-translate-x-1/2 top-full mt-2 z-40 w-64 bg-white border border-slate-200 rounded-2xl shadow-xl p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <button onClick={() => setPickerYear((y) => y - 1)} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><ChevronLeft size={15} /></button>
+                      <span className="text-sm font-black text-slate-800">{pickerYear}</span>
+                      <button onClick={() => setPickerYear((y) => y + 1)} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"><ChevronRight size={15} /></button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {Array.from({ length: 12 }, (_, i) => {
+                        const ym = `${pickerYear}-${String(i + 1).padStart(2, '0')}`;
+                        const count = purchaseOrders.filter((o) => String(o.request_date || '').startsWith(ym)).length;
+                        const active = ym === month;
+                        return (
+                          <button
+                            key={ym}
+                            onClick={() => { setMonth(ym); setMonthPickerOpen(false); }}
+                            className={`py-2 rounded-xl text-xs font-bold flex flex-col items-center leading-tight transition-colors ${active ? 'bg-[#6D2158] text-white' : count ? 'bg-[#6D2158]/5 text-slate-800 hover:bg-[#6D2158]/10' : 'text-slate-400 hover:bg-slate-50'}`}
+                          >
+                            {new Date(pickerYear, i, 1).toLocaleDateString('en-GB', { month: 'short' })}
+                            <span className={`text-[9px] font-black ${active ? 'text-white/80' : count ? 'text-[#6D2158]' : 'text-transparent'}`}>{count || 0}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button onClick={() => { setMonth(''); setMonthPickerOpen(false); }} className="mt-2 w-full py-2 rounded-xl text-[11px] font-bold text-slate-500 bg-slate-50 hover:bg-slate-100">All months</button>
+                  </div>
+                </>
+              )}
+            </div>
             <button onClick={() => setMonth(shiftMonth(month || thisMonth(), 1))} className="p-2.5 text-slate-500 hover:text-[#6D2158]" title="Next month"><ChevronRight size={15}/></button>
           </div>
           {month !== thisMonth() && (
@@ -480,7 +592,9 @@ export default function OrderTrackingPage() {
                 <div key={g.key} className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden flex">
                   <div className={`w-28 shrink-0 p-3 border-r flex flex-col justify-center ${g.prNo ? 'bg-[#6D2158]/[0.04] border-[#6D2158]/10' : 'bg-amber-50/70 border-amber-100'}`}>
                     {prNoInput(g.lines, g.prNo, 'text-xs w-full')}
-                    <div className="text-[10px] font-mono font-semibold text-slate-400 mt-0.5">{dates[0]}{dates.length > 1 ? ' …' : ''}</div>
+                    <div className="text-[10px] font-mono font-semibold text-slate-400 mt-0.5">{dates[0] || 'No date'}{dates.length > 1 ? ' …' : ''}</div>
+                    <div className="text-[10px] font-bold text-slate-400">{g.lines.length} item{g.lines.length === 1 ? '' : 's'}</div>
+                    <button onClick={() => deletePr(g.lines, g.prNo)} className="mt-1.5 text-[10px] font-bold text-slate-400 hover:text-rose-600 flex items-center gap-0.5"><Trash2 size={11} /> Delete PR</button>
                   </div>
                   <div className="flex-1 min-w-0 divide-y divide-slate-100">
                     {g.lines.map((order) => (
@@ -525,20 +639,31 @@ export default function OrderTrackingPage() {
                 {prGroups.map((g, gi) => {
                   const dates = [...g.dates].sort();
                   const n = g.lines.length;
-                  const tone = g.prNo ? 'bg-[#6D2158]/[0.03]' : 'bg-amber-50/60';
+                  // Every other PR is shaded and each PR starts with a strong rule, so PRs never blur together
+                  const shade = gi % 2 === 1 ? 'bg-slate-50/70' : 'bg-white';
+                  const prCell = g.prNo ? 'bg-[#6D2158]/[0.06]' : 'bg-amber-50';
                   return (
-                    <tbody key={g.key} className={gi > 0 ? 'border-t-[10px] border-[#F8FAFC]' : ''}>
+                    <tbody key={g.key} className={`${shade} ${gi > 0 ? 'border-t-2 border-[#6D2158]/25' : ''}`}>
                       {g.lines.map((order, i) => (
-                        <tr key={order.id} className={`hover:bg-slate-50 transition-colors ${i > 0 ? 'border-t border-slate-100' : ''}`}>
+                        <tr key={order.id} className={`hover:bg-[#6D2158]/[0.03] transition-colors ${i > 0 ? 'border-t border-dashed border-slate-200' : ''}`}>
                           {i === 0 && (
                             <>
-                              <td rowSpan={n} className={`py-2.5 px-4 align-middle font-mono text-[11px] font-semibold text-slate-500 border-r border-slate-100 ${tone}`}>
-                                {dates[0]}
+                              <td rowSpan={n} className={`py-2.5 px-4 align-middle font-mono text-[11px] font-bold text-slate-600 border-r border-slate-200 ${prCell}`}>
+                                {dates[0] || <span className="font-sans text-slate-400">No date</span>}
                                 {dates.length > 1 && <div className="text-[10px] text-slate-400">– {dates[dates.length - 1]}</div>}
                               </td>
-                              <td rowSpan={n} className={`py-2.5 px-4 align-middle border-r border-slate-100 ${tone}`}>
-                                {prNoInput(g.lines, g.prNo, 'text-xs w-full')}
-                                {n > 1 && <div className="text-[10px] font-bold text-slate-400 mt-0.5">{n} items</div>}
+                              <td rowSpan={n} className={`py-2.5 px-4 align-middle border-r border-slate-200 ${prCell}`}>
+                                {prNoInput(g.lines, g.prNo, 'text-[13px] w-full')}
+                                <div className="flex items-center justify-between gap-2 mt-1">
+                                  <span className={`text-[10px] font-bold ${g.prNo ? 'text-slate-500' : 'text-amber-700'}`}>{g.prNo ? `${n} item${n === 1 ? '' : 's'}` : `No PR No · ${n} item${n === 1 ? '' : 's'}`}</span>
+                                  <button
+                                    onClick={() => deletePr(g.lines, g.prNo)}
+                                    className="text-[10px] font-bold text-slate-400 hover:text-rose-600 flex items-center gap-0.5"
+                                    title={g.prNo ? `Delete PR ${g.prNo} (all items)` : 'Delete all these items'}
+                                  >
+                                    <Trash2 size={11} /> Delete PR
+                                  </button>
+                                </div>
                               </td>
                             </>
                           )}
@@ -739,6 +864,8 @@ export default function OrderTrackingPage() {
           g.items.push(it);
         });
         const noPr = csvImport.items.filter((it) => !it.request_no).length;
+        const plan = planCsv(csvImport.items);
+        const tagOf = (it: PastedPrItem) => plan.inserts.includes(it) ? 'new' : plan.updates.some((u) => existingByKey.get(lineKey(it.request_no || '', it.item_name)) === u.order) ? 'update' : 'same';
         return (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-end md:items-center justify-center p-0 md:p-4">
             <div className="bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-2xl p-5 sm:p-6 animate-in slide-in-from-bottom-6 md:zoom-in-95 border border-slate-200 max-h-[92vh] flex flex-col">
@@ -748,6 +875,11 @@ export default function OrderTrackingPage() {
                   <p className="text-[11px] font-bold text-slate-400 mt-0.5">
                     <span className="font-mono">{csvImport.name}</span> · {csvImport.items.length} line{csvImport.items.length === 1 ? '' : 's'} in {groups.length} PR{groups.length === 1 ? '' : 's'}
                   </p>
+                  <div className="flex flex-wrap gap-1.5 mt-2 text-[10px] font-black uppercase">
+                    <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700">{plan.inserts.length} new</span>
+                    <span className="px-2 py-0.5 rounded-md bg-sky-50 text-sky-700">{plan.updates.length} fill missing info</span>
+                    <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">{plan.unchanged} already saved</span>
+                  </div>
                 </div>
                 <button onClick={() => setCsvImport(null)} className="bg-slate-100 p-1.5 rounded-full text-slate-500 hover:text-slate-800">
                   <X size={18} />
@@ -771,7 +903,10 @@ export default function OrderTrackingPage() {
                     <div className="flex-1 min-w-0 divide-y divide-slate-100">
                       {g.items.map((it, i) => (
                         <div key={i} className="px-3 py-2 flex items-center justify-between gap-3">
-                          <span className="font-bold text-slate-800 min-w-0">{it.item_name}</span>
+                          <span className="font-bold text-slate-800 min-w-0 flex items-center gap-1.5">
+                            {(() => { const t = tagOf(it); return <span className={`shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${t === 'new' ? 'bg-emerald-50 text-emerald-700' : t === 'update' ? 'bg-sky-50 text-sky-700' : 'bg-slate-100 text-slate-400'}`}>{t === 'update' ? 'fill' : t === 'same' ? 'saved' : 'new'}</span>; })()}
+                            <span className="min-w-0">{it.item_name}</span>
+                          </span>
                           <span className="shrink-0 text-right">
                             <span className="font-black text-slate-900">{it.ordered_qty}</span> <span className="font-bold text-slate-500">{it.unit}</span>
                             {!!it.received_qty && <span className="block text-[10px] font-bold text-emerald-600">Recv {it.received_qty}{it.received_date ? ` · ${it.received_date}` : ''}</span>}
@@ -790,10 +925,10 @@ export default function OrderTrackingPage() {
                 <button
                   type="button"
                   onClick={handleImportCsv}
-                  disabled={isImporting}
+                  disabled={isImporting || plan.inserts.length + plan.updates.length === 0}
                   className="px-6 py-2.5 bg-[#6D2158] hover:bg-[#5a1b49] text-white rounded-xl text-xs font-bold uppercase tracking-wider shadow-md disabled:opacity-50"
                 >
-                  {isImporting ? 'Importing...' : `Import ${csvImport.items.length} line${csvImport.items.length === 1 ? '' : 's'}`}
+                  {isImporting ? 'Importing...' : (plan.inserts.length + plan.updates.length) === 0 ? 'Nothing new' : `Import ${plan.inserts.length + plan.updates.length} line${plan.inserts.length + plan.updates.length === 1 ? '' : 's'}`}
                 </button>
               </div>
             </div>

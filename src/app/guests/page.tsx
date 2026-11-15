@@ -7,8 +7,8 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
-import { getSpecialKind, isOpenStay, serviceRemarkFor } from '@/lib/specialVillas';
-import { normalizeVilla, extractDepInfo, checkStayStatusForDate, projectGuestDay } from '@/lib/guestDay';
+import { normalizeVilla, extractDepInfo, projectGuestDay } from '@/lib/guestDay';
+import { isSameGuest, parseOccXml, parseArrivalsXml, parseMemo, parseDelimited, applyOcc, applyArrivals, applyMemo, MEAL_PLAN_CODES, type ImportResult } from '@/lib/guestImport';
 
 const TOTAL_VILLAS = 97;
 const EXTENSION_VILLAS = ['56', '58', '88'];
@@ -34,120 +34,7 @@ const formatSyncDateTime = (dateInput: Date | string | number) => {
   });
 };
 
-const extractTime = (val: any) => {
-    if (!val) return "";
-    const str = String(val).trim();
-    const matchColon = str.match(/(\d{1,2}[:.]\d{2})/);
-    if (matchColon) return matchColon[1].replace('.', ':');
-    return "";
-};
-
-const monthToNum = (mStr: string) => {
-    const months: {[key:string]: string} = {
-        'JAN':'01', 'FEB':'02', 'MAR':'03', 'APR':'04', 'MAY':'05', 'JUN':'06',
-        'JUL':'07', 'AUG':'08', 'SEP':'09', 'OCT':'10', 'NOV':'11', 'DEC':'12'
-    };
-    const upperM = (mStr || '').toUpperCase();
-    return months[upperM] || (mStr || '').padStart(2, '0');
-};
-
-// Opera dates come as "14-11-26" (arrivals XML) or "12-NOV-26" (OCC XML). Returns { iso: 'YYYY-MM-DD', dm: 'DD/MM', id: 'YYMMDD' }
-const parseOperaDate = (raw: string): { iso: string; dm: string; id: string } | null => {
-    const parts = String(raw || '').trim().split('-');
-    if (parts.length !== 3) return null;
-    const dd = parts[0].padStart(2, '0');
-    const mm = monthToNum(parts[1]);
-    const yy = parts[2].length === 4 ? parts[2].slice(2) : parts[2].padStart(2, '0');
-    if (!/^\d{2}$/.test(dd) || !/^\d{2}$/.test(mm) || !/^\d{2}$/.test(yy)) return null;
-    return { iso: `20${yy}-${mm}-${dd}`, dm: `${dd}/${mm}`, id: `${yy}${mm}${dd}` };
-};
-
-export const MEAL_PLANS = ['RO', 'BB', 'HB', 'HBSI', 'HBSA', 'FB', 'FBSI', 'FBSA', 'AI'];
-
-const parseMealPlan = (raw: string): string => {
-    const u = String(raw || '').trim().toUpperCase();
-    if (!u) return '';
-    const compact = u.replace(/[\s\-_]/g, '');
-    if (MEAL_PLANS.includes(compact)) return compact;
-    const variant = u.match(/\b(HB|FB)\s*[-_]?\s*(SI|SA)\b/);
-    if (variant) return `${variant[1]}${variant[2]}`;
-    if (/\bAI\b|ALL\s*INC/.test(u)) return 'AI';
-    if (/\bFB\b|FULL\s*BOARD/.test(u)) return 'FB';
-    if (/\bHB\b|HALF\s*BOARD/.test(u)) return 'HB';
-    if (/\bBB\b|BED\s*(AND|&)\s*BREAKFAST/.test(u)) return 'BB';
-    if (/\bRO\b|ROOM\s*ONLY/.test(u)) return 'RO';
-    return '';
-};
-
-// Arrivals XML has no meal plan column; derive the base board from PRODUCTS (e.g. XBFS30RA = breakfast, XDIN30RA = dinner)
-const mealPlanFromProducts = (products: string): string => {
-    const codes = String(products || '').toUpperCase().split(',').map(c => c.trim().replace(/^-?\d+\*/, ''));
-    if (codes.some(c => /^X?AI\d|ALLINC/.test(c))) return 'AI';
-    const hasBf = codes.some(c => /^XBF/.test(c));
-    const hasLunch = codes.some(c => /^XLUN|^XLU\d/.test(c));
-    const hasDinner = codes.some(c => /^XDIN/.test(c));
-    if (hasBf && hasLunch && hasDinner) return 'FB';
-    if (hasBf && hasDinner) return 'HB';
-    if (hasBf) return 'BB';
-    return '';
-};
-
-const formatGuestName = (rawName: string, rawTitle: string = "", rawAgeNote: any = null) => {
-  if (!rawName) return "";
-  let name = String(rawName).trim();
-  const upper = name.toUpperCase();
-  let title = String(rawTitle || "").trim();
-  
-  if (upper.includes("ALFAALILA")) { title = "Ms"; name = name.replace(/ALFAALILA/ig, ""); }
-  else if (upper.includes("ALFAALIL")) { title = "Mr"; name = name.replace(/ALFAALIL/ig, ""); }
-  else if (upper.includes("KOKKO")) { title = "Mstr/Miss"; name = name.replace(/KOKKO/ig, ""); }
-
-  let age = "";
-  if (rawAgeNote) {
-      const noteMatch = String(rawAgeNote).match(/(\d+)\s*(Y|YR|YRS|AP|AG)/i);
-      if (noteMatch) age = noteMatch[1];
-      else if (String(rawAgeNote).match(/^\d+$/)) age = String(rawAgeNote);
-  }
-
-  // \p{L} keeps accented letters (Müller, José) instead of silently dropping them
-  if (name.includes(',')) {
-      const parts = name.split(',').map(s => s.trim().replace(/[^\p{L}\s\-']/gu, ""));
-      const last = parts[0];
-      const first = parts[1] || '';
-      if (parts.length > 2 && !title) title = parts[2];
-      name = `${first} ${last}`;
-  } else {
-      name = name.replace(/[^\p{L}\s\-']/gu, "");
-  }
-  name = name.replace(/\s+/g, " ").trim();
-
-  name = name.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ').trim();
-  let final = name;
-  if (title && !final.toLowerCase().startsWith(title.toLowerCase())) final = `${title} ${final}`;
-  if (age) final += ` (${age} yrs)`;
-
-  return final;
-};
-
-const cleanNameForMatch = (n: string) =>
-    String(n || '')
-        .toLowerCase()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/\(\s*\d+\s*yrs?\s*\)/g, '')
-        .replace(/\b(mr|ms|mrs|miss|mstr|master|dr|prof|mstr\/miss|alfaalil|alfaalila|kokko)\b/g, '')
-        .replace(/[^a-z]/g, '');
-
-// Split a villa's "A & B & C" guest string into individual normalized names
-const splitGuests = (names: string): string[] =>
-    String(names || '').split('&').map(cleanNameForMatch).filter(n => n.length >= 3);
-
-// True when at least one individual person appears in both guest strings (order-independent)
-const isSameGuest = (n1: string, n2: string) => {
-    const a = splitGuests(n1);
-    const b = splitGuests(n2);
-    if (a.length === 0 || b.length === 0) return false;
-    return a.some(x => b.includes(x));
-};
+export const MEAL_PLANS = MEAL_PLAN_CODES;
 
 const ACTIVE_STATUSES = ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'];
 
@@ -164,46 +51,6 @@ const packRemarksWithDep = (cleanRemarks: string, depInfo: DepInfo | null): stri
     if (!depInfo || (!depInfo.name && !depInfo.time && !depInfo.dates)) return base;
     const tag = `[DEP_INFO]${JSON.stringify(depInfo)}[/DEP_INFO]`;
     return base ? `${base} ${tag}` : tag;
-};
-
-// Guarantees one person = one active villa. Villas in `authoritative` came straight from the uploaded report and win;
-// the same person lingering in any other active villa (stale data) is removed from it.
-const enforceUniqueGuests = (
-    currentMap: Map<string, GuestRecord>,
-    authoritative: Set<string>,
-    diffs: ChangeLog[]
-) => {
-    const owner = new Map<string, string>();
-    authoritative.forEach(v => {
-        const rec = currentMap.get(v);
-        if (!rec || !ACTIVE_STATUSES.includes(rec.status)) return;
-        splitGuests(rec.guest_name).forEach(n => { if (!owner.has(n)) owner.set(n, v); });
-    });
-
-    currentMap.forEach((rec, vNum) => {
-        if (authoritative.has(vNum) || !ACTIVE_STATUSES.includes(rec.status) || !rec.guest_name) return;
-        const individuals = String(rec.guest_name).split('&').map(s => s.trim()).filter(Boolean);
-        const kept = individuals.filter(n => !owner.has(cleanNameForMatch(n)));
-        if (kept.length === individuals.length) return;
-
-        const removed = individuals.filter(n => owner.has(cleanNameForMatch(n)));
-        const movedTo = owner.get(cleanNameForMatch(removed[0]));
-        const oldStatus = rec.status;
-        if (kept.length === 0) {
-            Object.assign(rec, {
-                status: 'VAC', guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '',
-                gem_name: '', stay_id: '', arrival_time: '', departure_time: '', dep_guest_name: '', dep_stay_dates: ''
-            });
-        } else {
-            rec.guest_name = kept.join(' & ');
-        }
-        diffs.push({
-            villa: vNum, type: 'DUPLICATE REMOVED',
-            oldGuest: removed.join(' & '),
-            newGuest: `Already in V${movedTo}${kept.length ? ` (kept: ${kept.join(' & ')})` : ''}`,
-            oldStatus, newStatus: rec.status
-        });
-    });
 };
 
 export type GuestProfileItem = {
@@ -239,7 +86,7 @@ type ChangeLog = {
     newGuest: string;
     oldStatus: string;
     newStatus: string;
-    isMemoEdit?: boolean;
+    note?: string;
 };
 
 // Strips UI-only helper fields so Supabase only receives real hsk_daily_summary columns
@@ -288,7 +135,6 @@ export default function HousekeepingSummaryPage() {
   const [changes, setChanges] = useState<ChangeLog[]>([]);
   const [pendingData, setPendingData] = useState<GuestRecord[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isRollingOver, setIsRollingOver] = useState(false);
 
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isNewRegistration, setIsNewRegistration] = useState(false);
@@ -819,8 +665,7 @@ export default function HousekeepingSummaryPage() {
       setIsProcessing(true);
       setIsPasteModalOpen(false);
       
-      const rows = pastedText.split('\n').map(row => row.split('\t'));
-      processOperationalMemo(rows);
+      processOperationalMemo(pastedText);
       setPastedText(''); 
   };
 
@@ -848,738 +693,45 @@ export default function HousekeepingSummaryPage() {
           setFileInputKey(prev => prev + 1);
       };
 
-      reader.readAsText(file);
+      // Excel saves the memo CSV as Windows-1252; read it that way so accented names and quotes survive
+      reader.readAsText(file, type === 'MEMO_CSV' ? 'windows-1252' : 'utf-8');
   };
 
-  // OCC XML PARSER: In-house list. C9 villa, C27 GEM, C30 meal plan, C33 title, C36 name, C48 adults, C51 kids, C81 arr, C87 dep
-  const processOCCXML = (xmlText: string) => {
+  // Reports are parsed and merged in src/lib/guestImport.ts: a guest is one stay (villa + arrival date), so
+  // names spelled differently in each report never create a "new" guest. Upload order: OCC → Arrivals XML → Memo.
+  const showImport = (res: ImportResult) => {
+      if (res.warnings.length) {
+          res.warnings.forEach(w => toast.error(w, { duration: 7000 }));
+          if (!res.changes.length) return;
+      }
+      if (!res.changes.length) { toast.success('Already up to date: nothing in this report changes the list.'); return; }
+      setChanges(res.changes);
+      setPendingData(res.rows as GuestRecord[]);
+      setDiffModalOpen(true);
+  };
+
+  const runImport = (label: string, work: () => ImportResult) => {
       try {
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-          if (xmlDoc.querySelector('parsererror')) throw new Error('Invalid XML file');
-          const nodes = Array.from(xmlDoc.querySelectorAll('G_C9'));
-          if (nodes.length === 0) throw new Error('No in-house rows (G_C9) found — is this the OCC report?');
-          
-          const originalMap = new Map(masterList.map(r => [r.villa_number, r]));
-          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-          const diffs: ChangeLog[] = [];
-          const resByVilla: Record<string, Element[]> = {};
-          const txt = (n: Element, tag: string) => n.querySelector(tag)?.textContent?.trim() || '';
-          
-          nodes.forEach(node => {
-              const v = normalizeVilla(txt(node, 'C9'));
-              if (v) {
-                  if (!resByVilla[v]) resByVilla[v] = [];
-                  resByVilla[v].push(node);
-              }
-          });
-
-          const newOccList: any[] = [];
-
-          for (const [cleanVilla, resList] of Object.entries(resByVilla)) {
-              if (!currentMap.has(cleanVilla)) continue;
-              
-              let totalAdults = 0; let totalKids = 0;
-              const names: string[] = []; let mealPlan = ''; let gemName = '';
-              let arr: ReturnType<typeof parseOperaDate> = null;
-              let dep: ReturnType<typeof parseOperaDate> = null;
-
-              resList.forEach(res => {
-                  const rawName = txt(res, 'C36');
-                  const title = txt(res, 'C33');
-                  const formatted = rawName ? formatGuestName(rawName, title) : '';
-                  if (formatted && !names.some(n => cleanNameForMatch(n) === cleanNameForMatch(formatted))) names.push(formatted);
-                  
-                  totalAdults += parseInt(txt(res, 'C48') || '0', 10) || 0;
-                  totalKids += parseInt(txt(res, 'C51') || '0', 10) || 0;
-                  
-                  const parsedMp = parseMealPlan(txt(res, 'C30'));
-                  if (parsedMp && !mealPlan) mealPlan = parsedMp;
-                  
-                  const gem = txt(res, 'C27');
-                  if (gem) gemName = gem;
-
-                  // Sharers can arrive/leave on different days: stay spans earliest arrival → latest departure
-                  const a = parseOperaDate(txt(res, 'C81'));
-                  const d = parseOperaDate(txt(res, 'C87'));
-                  if (a && (!arr || a.iso < arr.iso)) arr = a;
-                  if (d && (!dep || d.iso > dep.iso)) dep = d;
-              });
-
-              const a = arr as ReturnType<typeof parseOperaDate>;
-              const d = dep as ReturnType<typeof parseOperaDate>;
-              newOccList.push({
-                  villa: cleanVilla,
-                  names: names.join(' & '),
-                  adults: totalAdults,
-                  kids: totalKids,
-                  mealPlan,
-                  gemName,
-                  stayDates: a && d ? `${a.dm} - ${d.dm}` : '',
-                  stayId: a ? `STAY_${cleanVilla}_${a.id}` : '',
-                  departsToday: !!d && d.iso === selectedDate
-              });
-          }
-
-          const occVillas = new Set(newOccList.map(n => n.villa));
-          // Is this person still listed in their old villa in the new report? Then it's not a move (e.g. same name in 2 villas)
-          const stillInVilla = (villa: string, names: string) => {
-              const occ = newOccList.find(n => n.villa === villa);
-              return !!occ && isSameGuest(occ.names, names);
-          };
-
-          newOccList.forEach(newOcc => {
-              const record = currentMap.get(newOcc.villa)!;
-              const original = originalMap.get(newOcc.villa)!;
-              const oldStatus = original.status || 'VAC';
-              const oldGuest = original.guest_name || '';
-              let oldVillaMatch: GuestRecord | null = null;
-
-              if (!isSameGuest(oldGuest, newOcc.names)) {
-                  for (const [vNum, rec] of originalMap.entries()) {
-                      if (vNum !== newOcc.villa && ACTIVE_STATUSES.includes(rec.status) &&
-                          isSameGuest(rec.guest_name, newOcc.names) && !stillInVilla(vNum, rec.guest_name)) {
-                          oldVillaMatch = rec;
-                          break;
-                      }
-                  }
-              }
-
-              // Arrival already loaded for today and this OCC guest is the one checking out → keep arrival, store departing guest
-              const hasTodaysArrival = ['ARR', 'DEP/ARR', 'VM/ARR'].includes(oldStatus) && oldGuest && !isSameGuest(oldGuest, newOcc.names);
-              if (hasTodaysArrival && newOcc.departsToday) {
-                  record.status = 'DEP/ARR';
-                  record.dep_guest_name = newOcc.names;
-                  record.dep_stay_dates = newOcc.stayDates;
-                  diffs.push({
-                      villa: newOcc.villa, type: 'DEP/ARR DUAL',
-                      oldGuest: `Dep: ${newOcc.names}`, newGuest: `Arr: ${oldGuest}`,
-                      oldStatus, newStatus: 'DEP/ARR'
-                  });
-                  return;
-              }
-
-              if (newOcc.departsToday) record.status = oldStatus === 'DEP/ARR' ? 'DEP/ARR' : 'DEP';
-              else if (oldStatus.startsWith('VM/') && oldStatus !== 'VM/VAC') record.status = oldStatus;
-              else record.status = 'OCC';
-
-              const existingPrefs = original.preferences || '';
-              const sameStay = isSameGuest(oldGuest, newOcc.names);
-
-              record.guest_name = newOcc.names;
-              record.pax_adults = newOcc.adults;
-              record.pax_kids = newOcc.kids;
-              record.meal_plan = newOcc.mealPlan || (sameStay ? original.meal_plan : '') || '';
-              record.stay_dates = newOcc.stayDates;
-              record.stay_id = newOcc.stayId;
-              record.gem_name = newOcc.gemName || (oldVillaMatch?.gem_name) || (sameStay ? original.gem_name : '') || '';
-              if (!sameStay && !oldVillaMatch) {
-                  // Different party in this villa: don't inherit the previous guest's notes/times
-                  record.preferences = '';
-                  record.arrival_time = '';
-                  record.departure_time = '';
-                  record.dep_guest_name = '';
-                  record.dep_stay_dates = '';
-              }
-
-              if (oldVillaMatch) {
-                  if (oldVillaMatch.arrival_time) record.arrival_time = oldVillaMatch.arrival_time;
-                  if (oldVillaMatch.departure_time) record.departure_time = oldVillaMatch.departure_time;
-                  record.preferences = oldVillaMatch.preferences || '';
-
-                  diffs.push({
-                      villa: newOcc.villa, type: 'ALLOC CHANGE',
-                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : (oldGuest || 'Vacant'),
-                      newGuest: `${newOcc.names} (Moved from V${oldVillaMatch.villa_number})`,
-                      oldStatus, newStatus: record.status
-                  });
-              } else {
-                  record.preferences = sameStay ? existingPrefs : '';
-                  diffs.push({
-                      villa: newOcc.villa, type: newOcc.departsToday ? 'DEPARTURE' : 'SYNC',
-                      oldGuest: oldStatus === 'VAC' ? 'Vacant' : (oldGuest || 'Vacant'),
-                      newGuest: record.guest_name, oldStatus, newStatus: record.status
-                  });
-              }
-          });
-
-          // Discrepancy checks: Exclude extension villas 56, 58, 88 (they are not separate Opera rooms)
-          currentMap.forEach((rec, vNum) => {
-              if (EXTENSION_VILLAS.includes(vNum) || occVillas.has(vNum)) return;
-
-              const isTMA = String(rec?.status || '').toUpperCase().includes('TMA');
-              const guestUpper = String(rec?.guest_name || '').toUpperCase();
-              const isHouseUse = guestUpper.includes('HOUSE USE') || guestUpper.includes('H/U') || String(rec?.status || '').toUpperCase().includes('HOUSE');
-              // Today's arrivals are not in the in-house report yet — don't wipe them
-              const isTodaysArrival = ['ARR', 'VM/ARR'].includes(rec.status);
-
-              if (ACTIVE_STATUSES.includes(rec.status) && !isTMA && !isHouseUse && !isTodaysArrival) {
-                  const movedTo = newOccList.find(n => isSameGuest(n.names, rec.guest_name));
-                  diffs.push(movedTo
-                      ? { villa: vNum, type: 'MOVED OUT', oldGuest: rec.guest_name, newGuest: `Moved to V${movedTo.villa}`, oldStatus: rec.status, newStatus: 'VAC' }
-                      : { villa: vNum, type: 'DISCREPANCY', oldGuest: rec.guest_name || 'Expected Guest', newGuest: 'Not in OCC List (Checked out / No Show)', oldStatus: rec.status, newStatus: 'VAC' });
-
-                  Object.assign(rec, {
-                      status: movedTo ? 'VM/VAC' : 'VAC', guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '',
-                      gem_name: '', stay_id: '', preferences: '', arrival_time: '', departure_time: '', dep_guest_name: '', dep_stay_dates: ''
-                  });
-              }
-          });
-
-          enforceUniqueGuests(currentMap, occVillas, diffs);
-
-          setChanges(diffs);
-          setPendingData(Array.from(currentMap.values()));
-          setDiffModalOpen(true);
+          showImport(work());
       } catch (err: any) {
-          console.error("processOCCXML error:", err);
-          toast.error("Failed to parse OCC XML: " + (err?.message || "Unknown error"));
+          console.error(`${label} import error:`, err);
+          toast.error(`Failed to read ${label}: ${err?.message || 'Unknown error'}`);
       } finally {
           setIsProcessing(false);
       }
   };
 
-  // ARRIVALS XML PARSER (Opera RES_DETAIL): DISP_ROOM_NO villa, ARRIVAL/DEPARTURE "DD-MM-YY", PRODUCTS → meal plan
-  const processArrDepXML = (xmlText: string) => {
-      try {
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-          if (xmlDoc.querySelector('parsererror')) throw new Error('Invalid XML file');
-          
-          const reservations = Array.from(xmlDoc.querySelectorAll('G_RESERVATION'));
-          if (reservations.length === 0) throw new Error('No reservations (G_RESERVATION) found — is this the Arrivals report?');
-          const originalMap = new Map(masterList.map(r => [r.villa_number, r]));
-          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-          const diffs: ChangeLog[] = [];
-          const resByVilla: Record<string, Element[]> = {};
-          
-          // Direct child lookup so nested lists (fixed charges, comments) never shadow reservation fields
-          const getText = (node: Element, tag: string) => {
-              const el = Array.from(node.children).find(c => c.tagName.toUpperCase() === tag);
-              return el ? el.textContent?.trim() || '' : '';
-          };
+  const processOCCXML = (xmlText: string) =>
+      runImport('OCC XML', () => applyOcc(masterList, parseOccXml(xmlText), selectedDate, EXTENSION_VILLAS));
 
-          reservations.forEach(res => {
-              const v = normalizeVilla(getText(res, 'DISP_ROOM_NO') || getText(res, 'ROOM_NO'));
-              const status = getText(res, 'SHORT_RESV_STATUS').toUpperCase();
-              if (['CXL', 'CANCEL', 'NS', 'NOSHOW'].includes(status)) return;
-              if (v) {
-                  if (!resByVilla[v]) resByVilla[v] = [];
-                  resByVilla[v].push(res);
-              }
-          });
+  const processArrDepXML = (xmlText: string) =>
+      runImport('Arrivals XML', () => applyArrivals(masterList, parseArrivalsXml(xmlText), selectedDate));
 
-          const newArrList: any[] = [];
+  const processDailyMemoCSV = (csvText: string) =>
+      runImport('Memo', () => applyMemo(masterList, parseMemo(parseDelimited(csvText, ','), selectedDate), selectedDate));
 
-          for (const [cleanVilla, resList] of Object.entries(resByVilla)) {
-              if (!currentMap.has(cleanVilla)) continue;
-
-              let isArr = false; let isDep = false;
-              let isFullyDeparting = true;
-              const arrNames: string[] = []; const depNames: string[] = [];
-              let isExtFromCarrier = false;
-
-              resList.forEach(res => {
-                  const a = parseOperaDate(getText(res, 'ARRIVAL'));
-                  const d = parseOperaDate(getText(res, 'DEPARTURE'));
-                  const arrCarrier = getText(res, 'ARRIVAL_CARRIER_CODE').toUpperCase();
-                  if (/\bEXT\b|STAY\s*EXT/.test(arrCarrier)) isExtFromCarrier = true;
-
-                  if (a && d) {
-                      const formattedName = formatGuestName(getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME'));
-                      if (a.iso === selectedDate) { isArr = true; arrNames.push(formattedName); }
-                      if (d.iso === selectedDate) { isDep = true; depNames.push(formattedName); }
-                      if (d.iso > selectedDate) isFullyDeparting = false;
-                  }
-              });
-
-              let isB2BExtension = isExtFromCarrier;
-              if (isArr && isDep && arrNames.some(aName => depNames.some(dName => isSameGuest(aName, dName)))) {
-                  isB2BExtension = true;
-              }
-
-              let finalStatus = 'OCC';
-              if (isArr && isDep && !isB2BExtension) finalStatus = 'DEP/ARR';
-              else if (isArr) finalStatus = 'ARR';
-              else if (isDep) finalStatus = isFullyDeparting ? 'DEP' : 'OCC';
-              else if (resList.every(r => getText(r, 'SHORT_RESV_STATUS').includes('CKOT'))) finalStatus = 'VAC';
-
-              let primaryResList = resList;
-              if (finalStatus === 'DEP/ARR' || isB2BExtension) {
-                  primaryResList = resList.filter(res => parseOperaDate(getText(res, 'ARRIVAL'))?.iso === selectedDate);
-              }
-
-              let totalAdults = 0; let totalKids = 0;
-              const names: string[] = []; const prefs: string[] = [];
-              let mealPlan = '';
-              let arr: ReturnType<typeof parseOperaDate> = null;
-              let dep: ReturnType<typeof parseOperaDate> = null;
-
-              primaryResList.forEach(res => {
-                  const formatted = formatGuestName(getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME'));
-                  if (formatted && !names.some(n => cleanNameForMatch(n) === cleanNameForMatch(formatted))) names.push(formatted);
-                  
-                  totalAdults += parseInt(getText(res, 'ADULTS') || '0', 10) || 0;
-                  totalKids += parseInt(getText(res, 'CHILDREN') || '0', 10) || 0;
-
-                  // RATE_CODE (IK60D, IW25PWT1…) is NOT a meal plan — never use it
-                  const parsedMp = parseMealPlan(getText(res, 'MEAL_PLAN')) || mealPlanFromProducts(getText(res, 'PRODUCTS'));
-                  if (parsedMp && !mealPlan) mealPlan = parsedMp;
-
-                  const a = parseOperaDate(getText(res, 'ARRIVAL'));
-                  const d = parseOperaDate(getText(res, 'DEPARTURE'));
-                  if (a && (!arr || a.iso < arr.iso)) arr = a;
-                  if (d && (!dep || d.iso > dep.iso)) dep = d;
-
-                  [getText(res, 'SPECIAL_REQUESTS'), getText(res, 'PREFERENCES')].forEach(t => { if (t) prefs.push(t.replace(/\s+/g, ' ')); });
-                  res.querySelectorAll('RES_COMMENT').forEach(c => { if (c.textContent?.trim()) prefs.push(c.textContent.trim().replace(/\s+/g, ' ')); });
-              });
-
-              const a = arr as ReturnType<typeof parseOperaDate>;
-              const d = dep as ReturnType<typeof parseOperaDate>;
-              newArrList.push({
-                  villa: cleanVilla,
-                  names: names.join(' & '),
-                  adults: totalAdults,
-                  kids: totalKids,
-                  mealPlan,
-                  stayDates: a && d ? `${a.dm} - ${d.dm}` : '',
-                  stayId: a ? `STAY_${cleanVilla}_${a.id}` : '',
-                  status: finalStatus,
-                  isB2B: isB2BExtension,
-                  prefs: Array.from(new Set(prefs)).join('\n\n')
-              });
-          }
-
-          // Base board from PRODUCTS is only "HB/FB/BB" — keep a richer manual/OCC value like HBSI for the same stay
-          const mergeMeal = (existing: string, incoming: string) =>
-              !incoming ? existing : (existing && existing.startsWith(incoming) ? existing : incoming);
-          const mergePrefs = (existing: string, incoming: string) =>
-              !incoming ? existing : !existing ? incoming : existing.includes(incoming) ? existing : `${existing}\n\n${incoming}`;
-
-          newArrList.forEach(newArr => {
-              const record = currentMap.get(newArr.villa)!;
-              const original = originalMap.get(newArr.villa)!;
-              const oldStatus = original.status || 'VAC';
-              const oldGuest = original.guest_name || '';
-              const sameParty = isSameGuest(oldGuest, newArr.names);
-              const newStatus = newArr.status;
-
-              const hasDepartingGuest = oldGuest && !sameParty && (String(oldStatus).includes('DEP') ||
-                  (ACTIVE_STATUSES.includes(oldStatus) && checkStayStatusForDate(original.stay_dates, selectedDate).isDepartingToday));
-
-              if (newStatus === 'DEP/ARR' || (String(newStatus).includes('ARR') && hasDepartingGuest)) {
-                  // Preserve departing guest in dep_guest_name, set arriving guest as primary guest_name
-                  if (hasDepartingGuest) {
-                      record.dep_guest_name = oldGuest;
-                      record.dep_stay_dates = original.stay_dates;
-                  }
-                  record.status = 'DEP/ARR';
-                  record.guest_name = newArr.names;
-                  record.pax_adults = newArr.adults;
-                  record.pax_kids = newArr.kids;
-                  record.stay_dates = newArr.stayDates;
-                  record.stay_id = newArr.stayId;
-                  record.arrival_time = sameParty ? original.arrival_time : '';
-                  record.meal_plan = mergeMeal(sameParty ? original.meal_plan : '', newArr.mealPlan);
-                  record.preferences = mergePrefs(sameParty ? original.preferences || '' : '', newArr.prefs);
-                  if (!sameParty) record.gem_name = '';
-
-                  diffs.push({
-                      villa: newArr.villa,
-                      type: 'DEP/ARR DUAL',
-                      oldGuest: record.dep_guest_name ? `Dep: ${record.dep_guest_name}` : 'Departing Guest',
-                      newGuest: `Arr: ${newArr.names}`,
-                      oldStatus,
-                      newStatus: 'DEP/ARR'
-                  });
-                  return;
-              }
-
-              if (ACTIVE_STATUSES.includes(oldStatus) && oldGuest && !sameParty && newStatus === 'ARR') {
-                  // Villa still shows a staying guest who isn't checking out today — flag instead of silently overwriting
-                  diffs.push({
-                      villa: newArr.villa, type: 'CONFLICT',
-                      oldGuest: `${oldGuest} (in-house until ${original.stay_dates.split('-')[1]?.trim() || '?'})`,
-                      newGuest: `${newArr.names} arriving`, oldStatus, newStatus
-                  });
-              }
-
-              record.status = newStatus;
-              record.guest_name = newArr.names;
-              record.pax_adults = newArr.adults;
-              record.pax_kids = newArr.kids;
-              record.stay_dates = newArr.stayDates;
-              record.stay_id = newArr.stayId;
-              record.meal_plan = mergeMeal(sameParty ? original.meal_plan : '', newArr.mealPlan);
-              record.preferences = mergePrefs(sameParty ? original.preferences || '' : '', newArr.prefs);
-              if (!sameParty) {
-                  record.gem_name = '';
-                  record.arrival_time = '';
-                  record.departure_time = '';
-                  record.dep_guest_name = '';
-                  record.dep_stay_dates = '';
-              }
-
-              diffs.push({
-                  villa: newArr.villa,
-                  type: newStatus === 'ARR' ? 'ARRIVAL' : 'SYNC',
-                  oldGuest: oldStatus === 'VAC' ? 'Vacant' : (oldGuest || 'Vacant'),
-                  newGuest: newArr.names,
-                  oldStatus,
-                  newStatus
-              });
-          });
-
-          enforceUniqueGuests(currentMap, new Set(newArrList.map(n => n.villa)), diffs);
-
-          setChanges(diffs);
-          setPendingData(Array.from(currentMap.values()));
-          setDiffModalOpen(true);
-      } catch (err: any) {
-          console.error("processArrDepXML error:", err);
-          toast.error("Failed to parse Arrivals XML: " + (err?.message || "Unknown error"));
-      } finally {
-          setIsProcessing(false);
-      }
-  };
-
-  // PARSE FULL DAILY MEMO (CSV / TEXT)
-  const processDailyMemoCSV = (csvText: string) => {
-      try {
-          const lines = csvText.split(/\r?\n/).map(l => l.split(','));
-          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-          const diffs: ChangeLog[] = [];
-
-          const memoTouched = new Set<string>();
-          let section: 'ARRIVALS' | 'DEPARTURES' | 'MOVES' | 'NONE' = 'NONE';
-          let headerRowIndex = -1;
-
-          for (let i = 0; i < lines.length; i++) {
-              const row = lines[i];
-              const lineText = row.join(' ').toUpperCase();
-
-              if (lineText.includes('ARRIVALS') && !lineText.includes('ATTENDEES')) {
-                  section = 'ARRIVALS';
-                  headerRowIndex = i + 1;
-                  continue;
-              } else if (lineText.includes('DEPARTURES')) {
-                  section = 'DEPARTURES';
-                  headerRowIndex = i + 1;
-                  continue;
-              } else if (lineText.includes('ROOM MOVES')) {
-                  section = 'MOVES';
-                  headerRowIndex = i + 1;
-                  continue;
-              }
-
-              if (section === 'ARRIVALS' && row.length > 5 && i > headerRowIndex) {
-                  const vNum = normalizeVilla(row[1]) || normalizeVilla(row[0]);
-                  if (vNum && currentMap.has(vNum)) {
-                      const record = currentMap.get(vNum)!;
-                      const rawName = row[7] || row[8] || '';
-                      const guestName = formatGuestName(rawName);
-                      const gem = (row[9] || row[10] || '').trim();
-                      const special = (row[11] || row[12] || '').trim();
-                      const mealRaw = (row[13] || row[14] || '').trim();
-                      const parsedMp = parseMealPlan(mealRaw);
-                      const depDateStr = (row[5] || row[6] || '').trim();
-                      const arrTime = extractTime(row[3] || row[4] || '');
-
-                      if (guestName) {
-                          if (record.status.includes('DEP')) {
-                              record.dep_guest_name = record.guest_name;
-                              record.dep_stay_dates = record.stay_dates;
-                              record.status = 'DEP/ARR';
-                          } else {
-                              record.status = 'ARR';
-                          }
-                          record.guest_name = guestName;
-                          memoTouched.add(vNum);
-                          if (arrTime) record.arrival_time = arrTime;
-                          if (gem) record.gem_name = gem;
-                          if (parsedMp) record.meal_plan = parsedMp;
-                          if (depDateStr) record.stay_dates = `${selectedDate.slice(8, 10)}/${selectedDate.slice(5, 7)} - ${depDateStr.replace(/\n/g, ' ').trim()}`;
-                          if (special) record.preferences = record.preferences ? `${record.preferences}\n\n${special}` : special;
-
-                          diffs.push({
-                              villa: vNum,
-                              type: 'MEMO ARRIVAL',
-                              oldGuest: 'Vacant / Old',
-                              newGuest: guestName,
-                              oldStatus: 'VAC',
-                              newStatus: record.status
-                          });
-                      }
-                  }
-              } else if (section === 'DEPARTURES' && row.length > 5 && i > headerRowIndex) {
-                  const vNum = normalizeVilla(row[0]) || normalizeVilla(row[1]);
-                  if (vNum && currentMap.has(vNum)) {
-                      const record = currentMap.get(vNum)!;
-                      const depTime = extractTime(row[3] || row[2] || '');
-                      if (depTime) record.departure_time = depTime;
-                      record.status = record.status.includes('ARR') ? 'DEP/ARR' : 'DEP';
-
-                      diffs.push({
-                          villa: vNum,
-                          type: 'MEMO DEPARTURE',
-                          oldGuest: record.guest_name,
-                          newGuest: `Dep at ${depTime}`,
-                          oldStatus: record.status,
-                          newStatus: record.status
-                      });
-                  }
-              } else if (section === 'MOVES' && row.length >= 2 && i > headerRowIndex) {
-                  const fromV = normalizeVilla(row[0]);
-                  const toV = normalizeVilla(row[1]);
-                  if (fromV && toV && currentMap.has(fromV) && currentMap.has(toV)) {
-                      const sRec = currentMap.get(fromV)!;
-                      const dRec = currentMap.get(toV)!;
-
-                      dRec.status = 'VM/OCC';
-                      dRec.guest_name = sRec.guest_name;
-                      dRec.pax_adults = sRec.pax_adults;
-                      dRec.pax_kids = sRec.pax_kids;
-                      dRec.preferences = sRec.preferences;
-                      dRec.meal_plan = sRec.meal_plan;
-                      dRec.gem_name = sRec.gem_name;
-                      dRec.stay_dates = sRec.stay_dates;
-
-                      dRec.stay_id = sRec.stay_id;
-                      memoTouched.add(toV);
-
-                      Object.assign(sRec, {
-                          status: 'VM/VAC', guest_name: '', pax_adults: 0, pax_kids: 0, preferences: '', meal_plan: '',
-                          gem_name: '', stay_dates: '', stay_id: '', arrival_time: '', departure_time: ''
-                      });
-
-                      diffs.push({
-                          villa: toV,
-                          type: 'ROOM MOVE',
-                          oldGuest: 'Vacant',
-                          newGuest: `${dRec.guest_name} (From V${fromV})`,
-                          oldStatus: 'VAC',
-                          newStatus: 'VM/OCC'
-                      });
-                  }
-              }
-          }
-
-          if (diffs.length === 0) {
-              toast.error("No arrivals, departures, or room moves found in memo.");
-              return;
-          }
-
-          enforceUniqueGuests(currentMap, memoTouched, diffs);
-
-          setChanges(diffs);
-          setPendingData(Array.from(currentMap.values()));
-          setDiffModalOpen(true);
-      } catch (err: any) {
-          console.error("processDailyMemoCSV error:", err);
-          toast.error("Failed to parse Daily Memo: " + err.message);
-      } finally {
-          setIsProcessing(false);
-      }
-  };
-
-  const processOperationalMemo = (rows: any[][]) => {
-      try {
-          const currentMap = new Map(masterList.map(r => [r.villa_number, { ...r }]));
-          const diffs: ChangeLog[] = [];
-
-          let isArrSection = false, isDepSection = false;
-          
-          for (let i = 0; i < rows.length; i++) {
-              const row = rows[i] || [];
-              if (row.length < 2) continue;
-              const rowStr = row.map(c => String(c || '').toUpperCase()).join(' ');
-
-              if (rowStr.includes('ARRIVALS') && !rowStr.includes('VS')) { isArrSection = true; isDepSection = false; continue; }
-              if (rowStr.includes('DEPARTURES')) { isArrSection = false; isDepSection = true; continue; }
-              if (rowStr.includes('ROOM MOVES')) break; 
-
-              if (isArrSection) {
-                  let v = normalizeVilla(row[1]) || normalizeVilla(row[0]); 
-                  if (v && currentMap.has(v)) {
-                      const record = currentMap.get(v)!;
-                      const gemName = row[9] ? String(row[9]).split('\n')[0] : null; 
-                      const arrTimeRaw = String(row[4] || '') + " " + String(row[5] || '') + " " + String(row[3] || ''); 
-
-                      let isTMA = rowStr.includes('8Q') || rowStr.includes('TMA') || rowStr.includes('SHUT');
-                      let madeChange = false;
-
-                      if (isTMA && !String(record?.status || '').includes('TMA')) {
-                          record.status = 'TMA (Day)';
-                          madeChange = true;
-                      }
-                      if (gemName && gemName.length > 1 && !gemName.includes(',')) {
-                          record.gem_name = gemName.trim();
-                          madeChange = true;
-                      }
-                      const t = extractTime(arrTimeRaw);
-                      if (t && record.arrival_time !== t) {
-                          record.arrival_time = t;
-                          madeChange = true;
-                      }
-
-                      if (madeChange) {
-                          diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
-                      }
-                  }
-              }
-
-              if (isDepSection) {
-                  let v = normalizeVilla(row[1]) || normalizeVilla(row[0]);
-                  if (v && currentMap.has(v)) {
-                      const record = currentMap.get(v)!;
-                      const gemName = row[10] ? String(row[10]).split('\n')[0] : null; 
-                      const depTimeRaw = String(row[4] || '') + " " + String(row[5] || '') + " " + String(row[7] || ''); 
-
-                      let madeChange = false;
-                      const t = extractTime(depTimeRaw);
-                      if (t && record.departure_time !== t) {
-                          record.departure_time = t;
-                          madeChange = true;
-                      }
-                      if (gemName && gemName.length > 1 && !gemName.includes(',') && !record.gem_name) {
-                          record.gem_name = gemName.trim();
-                          madeChange = true;
-                      }
-
-                      if (madeChange) {
-                          diffs.push({ villa: v, type: 'INFO SYNC', isMemoEdit: true, oldGuest: record.guest_name, newGuest: record.guest_name, oldStatus: record.status, newStatus: record.status });
-                      }
-                  }
-              }
-          }
-
-          if (diffs.length === 0) {
-              toast.success("No new operational times found in memo.");
-              return;
-          }
-
-          setChanges(diffs);
-          setPendingData(Array.from(currentMap.values()));
-          setDiffModalOpen(true);
-      } catch (err: any) {
-          console.error("processOperationalMemo error:", err);
-          toast.error("Failed to parse memo: " + (err?.message || "Unknown error"));
-      } finally {
-          setIsProcessing(false);
-      }
-  };
-
-  const handleRollOver = () => {
-      setConfirmDialog({
-          isOpen: true,
-          title: "Confirm Rollover",
-          message: `Bring forward all active guests into ${selectedDate}?`,
-          confirmText: "Yes, Roll Over",
-          confirmColor: "bg-[#6D2158] hover:bg-[#5a1b49]",
-          onConfirm: async () => {
-              setConfirmDialog(null);
-              setIsRollingOver(true);
-              try {
-                  const { data: recentRecords, error: fetchErr } = await supabase
-                      .from('hsk_daily_summary')
-                      .select('*')
-                      .lt('report_date', selectedDate)
-                      .order('report_date', { ascending: false })
-                      .limit(250);
-
-                  if (fetchErr) throw fetchErr;
-
-                  if (!recentRecords || recentRecords.length === 0) { 
-                      toast.error("No previous day records found to roll over."); 
-                      return; 
-                  }
-
-                  const lastDate = recentRecords[0].report_date;
-                  const sourceData = recentRecords.filter(r => r.report_date === lastDate);
-                  
-                  const updates: Array<{ id: string; payload: any }> = [];
-                  const inserts: any[] = [];
-
-                  for (let i = 1; i <= TOTAL_VILLAS; i++) {
-                      const vNum = i.toString();
-                      const prevRec = sourceData.find(r => normalizeVilla(r.villa_number) === vNum);
-                      const existingRow = masterList.find(m => m.villa_number === vNum);
-                      // Villas already registered for this day on Special Villas stay as they are
-                      if (existingRow?.id && getSpecialKind(existingRow.status)) continue;
-
-                      let newStatus = 'VAC';
-                      let keepDetails = false;
-
-                      if (prevRec) {
-                          const statusStr = String(prevRec.status || 'VAC').trim().toUpperCase();
-
-                          if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
-                              const check = checkStayStatusForDate(prevRec.stay_dates || '', selectedDate);
-                              if (check.isActive) {
-                                  newStatus = check.isDepartingToday ? 'DEP' : (statusStr.includes('VM') ? statusStr : 'OCC');
-                                  keepDetails = true;
-                              }
-                          } else if (['DEP', 'DAY USE', 'VM/VAC'].includes(statusStr) || statusStr.includes('TMA')) {
-                              newStatus = 'VAC';
-                              keepDetails = false;
-                          } else if (statusStr.includes('HOUSE') && (!prevRec.stay_dates || isOpenStay(prevRec.stay_dates) || checkStayStatusForDate(prevRec.stay_dates, selectedDate).isActive)) {
-                              // House Use carries until its departure date; Show Villa / Fumigation are one-off
-                              newStatus = prevRec.status;
-                              keepDetails = true;
-                          }
-                      }
-
-                      const payload = {
-                          report_date: selectedDate,
-                          villa_number: vNum,
-                          status: newStatus,
-                          guest_name: keepDetails && prevRec ? (prevRec.guest_name || '') : '',
-                          pax_adults: keepDetails && prevRec ? (prevRec.pax_adults || 0) : 0,
-                          pax_kids: keepDetails && prevRec ? (prevRec.pax_kids || 0) : 0,
-                          gem_name: keepDetails && prevRec ? (prevRec.gem_name || '') : '',
-                          meal_plan: keepDetails && prevRec ? (prevRec.meal_plan || '') : '',
-                          stay_dates: keepDetails && prevRec ? (prevRec.stay_dates || '') : '',
-                          remarks: keepDetails && prevRec && getSpecialKind(prevRec.status) === 'HOUSE_USE' ? serviceRemarkFor(prevRec.preferences, selectedDate) : '',
-                          preferences: keepDetails && prevRec ? (prevRec.preferences || '') : '',
-                          arrival_time: '',
-                          departure_time: '',
-                          stay_id: keepDetails && prevRec ? (prevRec.stay_id || '') : '',
-                      };
-
-                      if (existingRow?.id) {
-                          updates.push({ id: existingRow.id, payload });
-                      } else if (newStatus !== 'VAC') {
-                          inserts.push(payload);
-                      }
-                  }
-
-                  const BATCH_SIZE = 20;
-                  for (let i = 0; i < updates.length; i += BATCH_SIZE) {
-                      const slice = updates.slice(i, i + BATCH_SIZE);
-                      const results = await Promise.all(
-                          slice.map(u => supabase.from('hsk_daily_summary').update(u.payload).eq('id', u.id))
-                      );
-                      const firstErr = results.find(r => r.error)?.error;
-                      if (firstErr) throw firstErr;
-                  }
-
-                  if (inserts.length > 0) {
-                      const { error: insertErr } = await supabase.from('hsk_daily_summary').insert(inserts);
-                      if (insertErr) throw insertErr;
-                  }
-
-                  await fetchDailyData();
-                  toast.success("Rollover completed!");
-              } catch (err: any) {
-                  console.error("Rollover failed:", err);
-                  toast.error("Rollover failed: " + (err?.message || "Database error"));
-              } finally {
-                  setIsRollingOver(false);
-              }
-          }
-      });
-  };
+  const processOperationalMemo = (pasted: string) =>
+      runImport('pasted Memo', () => applyMemo(masterList, parseMemo(parseDelimited(pasted, '\t'), selectedDate), selectedDate));
 
   const changeDate = (days: number) => {
       const [year, month, day] = selectedDate.split('-').map(Number);
@@ -1794,10 +946,6 @@ export default function HousekeepingSummaryPage() {
                <>
                    <button onClick={openRegisterModal} className="flex items-center gap-1.5 bg-[#6D2158] text-white hover:bg-[#5a1b49] px-3.5 py-2 rounded-lg text-xs font-black uppercase tracking-wider shadow-sm transition-all cursor-pointer">
                         <Plus size={15}/> <span>Register Guest</span>
-                   </button>
-
-                   <button onClick={handleRollOver} disabled={isRollingOver} className="hidden md:flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50">
-                        {isRollingOver ? <Loader2 size={16} className="animate-spin"/> : <RotateCw size={16}/>} <span>Roll Over</span>
                    </button>
 
                    <input key={`occ-${fileInputKey}`} type="file" id="fileOcc" className="hidden" accept=".xml" onChange={(e) => handleFileProcess(e, 'OCC')} />
@@ -2081,11 +1229,11 @@ export default function HousekeepingSummaryPage() {
               <div className="bg-slate-50 p-6 border-b border-slate-200 flex justify-between items-center">
                   <div>
                       <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-                        {changes.length > 0 && changes.some(c => c.type === 'DISCREPANCY') ? <AlertTriangle className="text-red-500"/> : changes.length > 0 ? <AlertTriangle className="text-amber-500"/> : <CheckCircle className="text-emerald-500"/>}
-                        {changes[0]?.type === 'INFO SYNC' ? 'Data Overlay Sync' : 'Review Updates'}
+                        {changes.some(c => c.type === 'NOT IN HOUSE' || c.note) ? <AlertTriangle className="text-amber-500"/> : <CheckCircle className="text-emerald-500"/>}
+                        Review Updates
                       </h3>
                       <p className="text-sm text-slate-500 mt-1">
-                          {changes.length === 0 ? "The uploaded data matches the current database." : `Found ${changes.length} change(s) ready to synchronize.`}
+                          {changes.length === 0 ? "The uploaded data matches the current database." : `${changes.length} villa${changes.length === 1 ? '' : 's'} change. Villas that stay the same are not listed.`}
                       </p>
                   </div>
                   <button onClick={() => setDiffModalOpen(false)} className="cursor-pointer"><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
@@ -2116,14 +1264,15 @@ export default function HousekeepingSummaryPage() {
                                           <td className="p-4 font-bold text-slate-700">{c.villa}</td>
                                           <td className="p-4">
                                               <span className={`px-2 py-1 rounded text-[10px] font-bold ${
-                                                  c.type === 'DISCREPANCY' ? 'bg-red-100 text-red-700 border border-red-300' :
-                                                  c.type === 'ALLOC CHANGE' ? 'bg-indigo-100 text-indigo-700' :
-                                                  c.type === 'MOVED OUT' ? 'bg-slate-200 text-slate-500' :
-                                                  c.type === 'DEP/ARR DUAL' ? 'bg-purple-100 text-purple-700' :
-                                                  c.type === 'MEMO ARRIVAL' ? 'bg-teal-100 text-teal-800' :
-                                                  c.type === 'MEMO DEPARTURE' ? 'bg-rose-100 text-rose-800' :
-                                                  c.type === 'ROOM MOVE' ? 'bg-indigo-100 text-indigo-800' :
-                                                  'bg-emerald-100 text-emerald-700'
+                                                  c.type === 'NOT IN HOUSE' ? 'bg-red-100 text-red-700 border border-red-300' :
+                                                  c.type === 'ARRIVAL' ? 'bg-blue-100 text-blue-700' :
+                                                  c.type === 'DEPARTURE' ? 'bg-rose-100 text-rose-800' :
+                                                  c.type === 'DEP/ARR' ? 'bg-purple-100 text-purple-700' :
+                                                  c.type === 'ROOM MOVE' || c.type === 'MOVED OUT' ? 'bg-indigo-100 text-indigo-800' :
+                                                  c.type === 'NEW GUEST' ? 'bg-amber-100 text-amber-800' :
+                                                  c.type === 'CREW' ? 'bg-orange-100 text-orange-800' :
+                                                  c.type === 'EXTENDED' ? 'bg-teal-100 text-teal-800' :
+                                                  'bg-slate-100 text-slate-600'
                                               }`}>{c.type}</span>
                                           </td>
                                           <td className="p-4 text-slate-500">
@@ -2158,6 +1307,7 @@ export default function HousekeepingSummaryPage() {
                                                           </select>
                                                           <div className="text-xs leading-tight font-bold text-slate-700">{c.newGuest ? c.newGuest : 'Vacant'}</div>
                                                       </div>
+                                                      {c.note && <div className="text-[11px] font-bold text-amber-700 flex items-center gap-1"><AlertTriangle size={12}/> {c.note}</div>}
                                                   </div>
                                               ) : (
                                                   <>

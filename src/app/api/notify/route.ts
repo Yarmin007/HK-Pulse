@@ -24,10 +24,15 @@ export async function POST(req: Request) {
     const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const { title, body } = await req.json();
+    const { title, body, url, tag, hostIds } = await req.json();
 
-    // 2. Get all subscribed devices from the database
-    const { data: subs, error } = await supabase.from('hsk_push_subscriptions').select('*');
+    // 2. Subscribed devices — everyone, or only the given hosts (e.g. today's runners)
+    let query = supabase.from('hsk_push_subscriptions').select('*');
+    if (Array.isArray(hostIds)) {
+      if (hostIds.length === 0) return NextResponse.json({ success: true, count: 0 });
+      query = query.in('host_id', hostIds);
+    }
+    const { data: subs, error } = await query;
     if (error || !subs) throw new Error('Failed to fetch subscriptions');
 
     // 3. Send the push notification to every device
@@ -37,7 +42,7 @@ export async function POST(req: Request) {
         keys: { auth: sub.auth, p256dh: sub.p256dh }
       };
       
-      return webpush.sendNotification(pushSubscription, JSON.stringify({ title, body }))
+      return webpush.sendNotification(pushSubscription, JSON.stringify({ title, body, url, tag }))
         .catch(async (err) => {
           // If a device uninstalled the app or blocked notifications, delete it from the DB
           if (err.statusCode === 410 || err.statusCode === 404) {

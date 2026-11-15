@@ -39,7 +39,6 @@ const ALLOCATION_ITEMS = [
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
   { name: "Special Villas", icon: Key, path: "/allocation/special" },
   { name: "Allocation Sheet", icon: Map, path: "/allocation/sheet" },
-  { name: "Runner View", icon: Bike, path: "/runner" },
 ];
 
 const INVENTORY_ITEMS = [
@@ -134,6 +133,7 @@ export default function Sidebar() {
   const [allHosts, setAllHosts] = useState<any[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRunnerToday, setIsRunnerToday] = useState(false);
+  const [isVaToday, setIsVaToday] = useState(false);
 
   useEffect(() => {
       const sessionData = localStorage.getItem('hk_pulse_session');
@@ -144,13 +144,17 @@ export default function Sidebar() {
 
               // On Runner duty today? Then they get the Runner page.
               if (parsed.id) {
+                // Runner duty or villas today? Then they get the Requests page.
                 supabase
                   .from("hsk_allocations")
                   .select("area, shift, task_details")
                   .eq("report_date", getDhakaDateStr())
                   .eq("host_id", parsed.id)
-                  .eq("area", "riders")
-                  .then(({ data }) => setIsRunnerToday((data || []).some((a: any) => !isOffShift(a.shift) && riderDutyOf(a, { role: parsed.role }) === "Runner")));
+                  .then(({ data }) => {
+                    const rows = (data || []).filter((a: any) => !isOffShift(a.shift));
+                    setIsRunnerToday(rows.some((a: any) => a.area === "riders" && riderDutyOf(a, { role: parsed.role }) === "Runner"));
+                    setIsVaToday(rows.some((a: any) => a.area === "villa" && String(a.task_details || "").trim()));
+                  });
               }
 
               if (parsed.is_super_admin || parsed.impersonating_from) {
@@ -253,8 +257,8 @@ export default function Sidebar() {
           { name: "Water Prod.", icon: Droplets, path: "/water" },
           STAFF_CORE_BASE[1]  
       ];
-      return isRunnerToday ? [base[0], { name: "Runner", icon: Bike, path: "/runner" }, ...base.slice(1)] : base;
-  }, [isPoolAttendant, isRunnerToday]);
+      return isRunnerToday || isVaToday ? [base[0], { name: "Requests", icon: isRunnerToday ? Bike : ClipboardList, path: "/requests" }, ...base.slice(1)] : base;
+  }, [isPoolAttendant, isRunnerToday, isVaToday]);
 
   const dynamicStaffMenuItems = STAFF_MENU_ITEMS;
 
@@ -267,8 +271,12 @@ export default function Sidebar() {
 
   const STAFF_BOTTOM_TABS = isRunnerToday ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
-      { name: "Runner", icon: Bike, path: "/runner" },
+      { name: "Requests", icon: Bike, path: "/requests" },
       { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
+  ] : isVaToday && !isPoolAttendant ? [
+      { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" },
+      { name: "Requests", icon: Wine, path: "/requests" }
   ] : isPoolAttendant ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Water Prod.", icon: Droplets, path: "/water" },

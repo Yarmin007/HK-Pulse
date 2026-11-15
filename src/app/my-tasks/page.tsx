@@ -17,6 +17,7 @@ import AssetInventoryGrid from './_components/AssetInventoryGrid';
 import MinibarInventoryGrid from './_components/MinibarInventoryGrid';
 import LinenInventoryGrid from './_components/LinenInventoryGrid';
 import BottleInventoryGrid from './_components/BottleInventoryGrid';
+import RequestsBanner from './_components/RequestsBanner';
 
 export type Host = { id: string; full_name: string; host_id: string; role?: string; };
 export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; sort_order?: number; };
@@ -237,11 +238,13 @@ export default function MyTasksHub() {
       const att = allAtt?.find(a => a.host_id === host.id || a.host_id === host.host_id);
       if (att) setDailyTask(att as any);
 
-      const { data: allAllocData } = await supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', todayStr);
-      const allocData = allAllocData?.find(a => a.host_id === host.id || a.host_id === host.host_id);
+      const { data: allAllocData } = await supabase.from('hsk_allocations').select('host_id, area, task_details').eq('report_date', todayStr);
+      // Villa duty first. Runners, housemates, FOH etc. have a duty name ("Runner") in task_details, not villas.
+      const myAllocs = (allAllocData || []).filter(a => a.host_id === host.id || a.host_id === host.host_id);
+      const allocData = myAllocs.find(a => a.area === 'villa') || myAllocs.find(a => a.area !== 'riders');
+      const assignedCleanVillas = allocData?.task_details ? parseVillas(allocData.task_details, []).filter(v => !/[a-z]/i.test(v)) : [];
 
-      if (allocData && allocData.task_details) {
-          const assignedCleanVillas = parseVillas(allocData.task_details, []);
+      if (assignedCleanVillas.length > 0) {
           setMyCleaningVillas(assignedCleanVillas);
 
           const { data: allExistingLogs } = await supabase.from('hsk_cleaning_logs').select('*').eq('report_date', todayStr);
@@ -970,6 +973,7 @@ export default function MyTasksHub() {
                     <div className="flex justify-center py-20"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>
                 ) : (
                     <div className="space-y-6">
+                        <RequestsBanner villas={myCleaningVillas} />
                         <RoomCleaningGrid 
                             displayVillas={displayVillas}
                             myCleaningVillas={myCleaningVillas}
