@@ -468,7 +468,8 @@ export default function DepartureMode() {
                               const page = pages.find(pg => pg.node.Annots()?.asArray().some(a => a === ref)) || pages[0];
                               const scale = Math.min(r.width / img.width, r.height / img.height);
                               const w = img.width * scale, h = img.height * scale;
-                              page.drawImage(img, { x: r.x + (r.width - w) / 2, y: r.y + (r.height - h) / 2, width: w, height: h });
+                              // Sit on the bottom-left of the box, a touch lower, so it hugs the name below
+                              page.drawImage(img, { x: r.x - 10, y: r.y - 4, width: w, height: h });
                           }
                           form.removeField(field);
                       } catch (err) { console.error(err); }
