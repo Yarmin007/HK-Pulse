@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "react-hot-toast";
-import { ChevronLeft, ChevronRight, Plus, Trash2, Loader2, WashingMachine, Sheet, Download, Copy, Clock, Check, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Trash2, Loader2, WashingMachine, Sheet, Download, Copy, Check, X, Play } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getDhakaDateStr } from "@/lib/dateUtils";
 import { readSession, isAdminSession } from "@/lib/requestsShared";
@@ -67,7 +67,7 @@ export default function LaundryProductionPage() {
   }
 
   return (
-    <div className={`mx-auto px-4 pt-3 text-slate-800 ${tab === "enter" ? "max-w-xl pb-44 md:pb-10" : "max-w-[1600px] pb-24 md:pb-10"}`}>
+    <div className={`mx-auto px-4 pt-3 text-slate-800 ${tab === "enter" ? "max-w-xl pb-24 md:pb-10" : "max-w-[1600px] pb-24 md:pb-10"}`}>
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
           <h1 className="text-xl font-black tracking-tight" style={{ color: BRAND }}>Laundry Production</h1>
@@ -107,197 +107,344 @@ export default function LaundryProductionPage() {
 
 function EntryTab({ today, me, admin, onMissingTable }: { today: string; me: string; admin: boolean; onMissingTable: () => void }) {
   const [date, setDate] = useState(today);
-  const [machine, setMachine] = useState("M1");
-  const [item, setItem] = useState("");
-  const [kg, setKg] = useState("");
-  const [timeIn, setTimeIn] = useState(nowHHMM());
-  const [timeOut, setTimeOut] = useState("");
   const [entries, setEntries] = useState<ProductionEntry[]>([]);
+  const [running, setRunning] = useState<ProductionEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [startFor, setStartFor] = useState<string | null>(null);   // machine id → "start a load" sheet
+  const [editing, setEditing] = useState<ProductionEntry | null>(null);
+  const [, tick] = useState(0);
+  const isToday = date === today;
 
-  const size = machineById(machine)?.size || "55kg";
-  const programmes = PROGRAMMES[size];
-
-  // Each phone remembers its last machine
-  useEffect(() => { try { const m = localStorage.getItem("lp_machine"); if (m && machineById(m)) setMachine(m); } catch {} }, []);
-  const pickMachine = (id: string) => { setMachine(id); try { localStorage.setItem("lp_machine", id); } catch {} };
-  useEffect(() => { if (item && !programmes.some(p => p.item === item)) setItem(""); }, [programmes, item]);
+  // Timers on running machines
+  useEffect(() => { const t = setInterval(() => tick(n => n + 1), 30000); return () => clearInterval(t); }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase.from(TABLE).select("*").eq("prod_date", date).order("time_in", { ascending: false }).order("created_at", { ascending: false });
-    if (error) { if (isMissingTable(error)) onMissingTable(); else toast.error(error.message); setEntries([]); }
-    else setEntries((data || []) as ProductionEntry[]);
+    const [day, run] = await Promise.all([
+      supabase.from(TABLE).select("*").eq("prod_date", date).order("time_in", { ascending: false }).order("created_at", { ascending: false }),
+      // Still in a machine (also from yesterday, for overnight loads)
+      supabase.from(TABLE).select("*").is("time_out", null).gte("prod_date", shiftDay(today, -1)),
+    ]);
+    const err = day.error || run.error;
+    if (err) { if (isMissingTable(err)) onMissingTable(); else toast.error(err.message); }
+    setEntries((day.data || []) as ProductionEntry[]);
+    setRunning((run.data || []) as ProductionEntry[]);
     setLoading(false);
-  }, [date, onMissingTable]);
+  }, [date, today, onMissingTable]);
   useEffect(() => { load(); }, [load]);
 
-  const prog = programmeFor(machine, item);
+  const runningOn = (machineId: string) => running.find(r => r.machine === machineId);
+  const loadsToday = (machineId: string) => entries.filter(e => e.machine === machineId).length;
+  const dayKg = entries.reduce((s, e) => s + (Number(e.weight_kg) || 0), 0);
 
-  const save = async () => {
-    if (!prog) return toast.error("Pick the item");
-    if (!kg || Number(kg) <= 0) return toast.error("Enter the weight");
-    if (!timeIn) return toast.error("Enter the In time");
-    setSaving(true);
-    const row = { prod_date: date, machine, item, weight_kg: Number(kg), time_in: timeIn, time_out: timeOut || null, operator: me || null, dose: prog.dose };
+  const upsertLocal = (row: ProductionEntry) => {
+    setEntries(prev => (row.prod_date === date ? [row, ...prev.filter(x => x.id !== row.id)].sort((a, b) => hhmm(b.time_in).localeCompare(hhmm(a.time_in))) : prev.filter(x => x.id !== row.id)));
+    setRunning(prev => (row.time_out ? prev.filter(x => x.id !== row.id) : [row, ...prev.filter(x => x.id !== row.id)]));
+  };
+
+  const start = async (machine: string, item: string, kg: number, timeIn: string, timeOut: string, forDate: string) => {
+    const prog = programmeFor(machine, item);
+    const row = { prod_date: forDate, machine, item, weight_kg: kg, time_in: timeIn, time_out: timeOut || null, operator: me || null, dose: prog?.dose || null };
     const { data, error } = await supabase.from(TABLE).insert(row).select().single();
-    setSaving(false);
-    if (error) { if (isMissingTable(error)) onMissingTable(); return toast.error(isMissingTable(error) ? "Run the SQL shown above first" : error.message); }
-    setEntries(prev => [data as ProductionEntry, ...prev]);
-    toast.success(`${machineById(machine)?.label} · ${item} · ${kg} kg`);
-    setKg(""); setTimeOut(""); setTimeIn(nowHHMM());
+    if (error) { if (isMissingTable(error)) onMissingTable(); toast.error(isMissingTable(error) ? "Run the SQL shown above first" : error.message); return false; }
+    upsertLocal(data as ProductionEntry);
+    toast.success(timeOut ? `Saved · ${machineById(machine)?.label} · ${item}` : `${machineById(machine)?.label} started · ${item}`);
+    return true;
   };
 
   const finish = async (e: ProductionEntry) => {
     const t = nowHHMM();
-    const { error } = await supabase.from(TABLE).update({ time_out: t }).eq("id", e.id);
+    const { data, error } = await supabase.from(TABLE).update({ time_out: t }).eq("id", e.id).select().single();
     if (error) return toast.error(error.message);
-    setEntries(prev => prev.map(x => (x.id === e.id ? { ...x, time_out: t } : x)));
+    upsertLocal(data as ProductionEntry);
+    toast((tt) => (
+      <span className="flex items-center gap-3 text-sm">
+        <span><b>{machineById(e.machine)?.label}</b> finished · {t}</span>
+        <button className="font-black" style={{ color: BRAND }} onClick={async () => {
+          toast.dismiss(tt.id);
+          const r = await supabase.from(TABLE).update({ time_out: null }).eq("id", e.id).select().single();
+          if (!r.error) upsertLocal(r.data as ProductionEntry);
+        }}>Undo</button>
+      </span>
+    ), { duration: 6000 });
+  };
+
+  const saveEdit = async (e: ProductionEntry, patch: Partial<ProductionEntry>) => {
+    const { data, error } = await supabase.from(TABLE).update(patch).eq("id", e.id).select().single();
+    if (error) { toast.error(error.message); return false; }
+    upsertLocal(data as ProductionEntry);
+    return true;
   };
 
   const remove = async (e: ProductionEntry) => {
-    if (!confirm(`Delete ${machineById(e.machine)?.label} · ${e.item}?`)) return;
+    if (!confirm(`Delete ${machineById(e.machine)?.label} · ${e.item}?`)) return false;
     const { error } = await supabase.from(TABLE).delete().eq("id", e.id);
-    if (error) return toast.error(error.message);
+    if (error) { toast.error(error.message); return false; }
     setEntries(prev => prev.filter(x => x.id !== e.id));
+    setRunning(prev => prev.filter(x => x.id !== e.id));
+    return true;
   };
 
-  const dayKg = entries.reduce((s, e) => s + (Number(e.weight_kg) || 0), 0);
-  const perMachine = useMemo(() => {
-    const m: Record<string, number> = {};
-    entries.forEach(e => { m[e.machine] = (m[e.machine] || 0) + 1; });
-    return m;
-  }, [entries]);
-  const busy = useMemo(() => new Set(entries.filter(e => !e.time_out).map(e => e.machine)), [entries]);
+  const canEdit = (e: ProductionEntry) => admin || (!!me && e.operator === me);
 
   return (
     <div className="flex flex-col gap-3">
       {/* Day */}
-      <div className="flex items-center gap-2 bg-white rounded-2xl border border-slate-200 p-2">
-        <button onClick={() => setDate(shiftDay(date, -1))} className="p-2.5 rounded-xl bg-slate-50 active:scale-95"><ChevronLeft size={18} /></button>
-        <label className="flex-1 text-center relative">
-          <span className="block text-sm font-black" style={{ color: BRAND }}>{dayLabel(date, today)}</span>
-          <span className="block text-[10px] font-bold text-slate-400">{new Date(`${date}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</span>
+      <div className="flex items-center gap-2">
+        <button onClick={() => setDate(shiftDay(date, -1))} className="p-2 rounded-xl bg-white border border-slate-200 active:scale-95"><ChevronLeft size={16} /></button>
+        <label className="flex-1 relative text-center bg-white border border-slate-200 rounded-xl py-1.5">
+          <span className="text-sm font-black" style={{ color: BRAND }}>{dayLabel(date, today)}</span>
+          <span className="ml-2 text-[11px] font-bold text-slate-400">{entries.length} loads{dayKg ? ` · ${Math.round(dayKg)} kg` : ""}</span>
           <input type="date" value={date} max={today} onChange={e => e.target.value && setDate(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
         </label>
-        <button onClick={() => setDate(shiftDay(date, 1))} disabled={date >= today} className="p-2.5 rounded-xl bg-slate-50 active:scale-95 disabled:opacity-30"><ChevronRight size={18} /></button>
+        <button onClick={() => setDate(shiftDay(date, 1))} disabled={isToday} className="p-2 rounded-xl bg-white border border-slate-200 active:scale-95 disabled:opacity-30"><ChevronRight size={16} /></button>
       </div>
 
-      {/* Machine */}
-      <section className="bg-white rounded-2xl border border-slate-200 p-3">
-        <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Machine</h2>
-        <div className="grid grid-cols-5 gap-2">
-          {MACHINES.map(m => {
-            const on = m.id === machine;
-            return (
-              <button key={m.id} onClick={() => pickMachine(m.id)}
-                className={`relative rounded-xl py-3 border-2 transition-all active:scale-95 ${on ? "text-white shadow-md" : "bg-slate-50 border-slate-100 text-slate-700"}`}
-                style={on ? { background: BRAND, borderColor: BRAND } : undefined}>
-                <span className="block text-base font-black leading-none">{m.label}</span>
-                <span className={`block text-[9px] font-bold mt-1 ${on ? "text-white/70" : "text-slate-400"}`}>{busy.has(m.id) ? "running" : m.size}</span>
-                {!!perMachine[m.id] && (
-                  <span className={`absolute -top-1.5 -right-1.5 min-w-[20px] h-5 px-1 rounded-full text-[10px] font-black flex items-center justify-center ${on ? "bg-white" : "text-white"}`}
-                    style={on ? { color: BRAND } : { background: BRAND }}>{perMachine[m.id]}</span>
-                )}
-                {busy.has(m.id) && <span className="absolute top-1 left-1 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />}
+      {/* Machines */}
+      {isToday ? (
+        <div className="grid grid-cols-2 gap-3">
+          {MACHINES.map((m, i) => {
+            const r = runningOn(m.id);
+            const mins = r ? minutesBetween(r.time_in, nowHHMM()) : null;
+            const wide = i === MACHINES.length - 1 && MACHINES.length % 2 === 1;
+            return r ? (
+              <div key={m.id} className={`rounded-3xl p-4 text-white shadow-lg relative overflow-hidden ${wide ? "col-span-2" : ""}`} style={{ background: BRAND }}>
+                <span className="absolute -right-6 -top-6 w-24 h-24 rounded-full border-[10px] border-white/10 animate-spin [animation-duration:6s]" />
+                <div className="flex items-baseline justify-between">
+                  <span className="text-2xl font-black">{m.label}</span>
+                  <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-emerald-300"><span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" /> Running</span>
+                </div>
+                <button onClick={() => canEdit(r) && setEditing(r)} className="block text-left mt-1 w-full">
+                  <p className="text-sm font-bold leading-tight truncate">{r.item}</p>
+                  <p className="text-[11px] text-white/70">{r.weight_kg} kg · in {hhmm(r.time_in)} · <b className="text-white">{fmtDuration(mins)}</b></p>
+                </button>
+                <button onClick={() => finish(r)} className="mt-3 w-full h-12 rounded-2xl bg-white font-black text-sm uppercase tracking-wider active:scale-[0.98]" style={{ color: BRAND }}>
+                  Finish
+                </button>
+              </div>
+            ) : (
+              <button key={m.id} onClick={() => setStartFor(m.id)}
+                className={`rounded-3xl p-4 bg-white border-2 border-dashed border-slate-200 text-left active:scale-[0.98] hover:border-[#6D2158]/40 transition-colors ${wide ? "col-span-2" : ""}`}>
+                <div className="flex items-baseline justify-between">
+                  <span className="text-2xl font-black text-slate-700">{m.label}</span>
+                  <span className="text-[10px] font-bold text-slate-400">{m.size}</span>
+                </div>
+                <p className="text-[11px] font-bold text-slate-400 mt-1">Idle{loadsToday(m.id) ? ` · ${loadsToday(m.id)} today` : ""}</p>
+                <span className="mt-3 h-12 rounded-2xl flex items-center justify-center gap-1.5 font-black text-sm uppercase tracking-wider text-white" style={{ background: BRAND }}>
+                  <Plus size={16} /> Start
+                </span>
               </button>
             );
           })}
         </div>
-      </section>
-
-      {/* Item */}
-      <section className="bg-white rounded-2xl border border-slate-200 p-3">
-        <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Name of the item</h2>
-        <div className="grid grid-cols-2 gap-2">
-          {programmes.map(p => {
-            const on = p.item === item;
-            return (
-              <button key={p.item} onClick={() => setItem(p.item)}
-                className={`text-left rounded-xl px-3 py-2.5 border-2 text-xs font-bold leading-tight transition-all active:scale-[0.98] ${on ? "text-white" : "bg-slate-50 border-slate-100 text-slate-700"}`}
-                style={on ? { background: BRAND, borderColor: BRAND } : undefined}>
-                {p.item}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      {/* Weight, times, operator */}
-      <section className="bg-white rounded-2xl border border-slate-200 p-3 grid grid-cols-3 gap-2">
-        <label className="col-span-3">
-          <span className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Weight (kg)</span>
-          <input type="number" inputMode="decimal" min={0} step="0.1" value={kg} onChange={e => setKg(e.target.value)} placeholder="0"
-            className="w-full h-14 px-4 text-2xl font-black rounded-2xl border-2 border-slate-100 outline-none focus:border-[#6D2158]" style={{ color: BRAND }} />
-        </label>
-        <TimeBox label="In time" value={timeIn} onChange={setTimeIn} />
-        <TimeBox label="Out time" value={timeOut} onChange={setTimeOut} />
-        <div className="min-w-0">
-          <span className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Operator</span>
-          <span className="h-12 px-2 rounded-xl bg-slate-50 flex items-center text-xs font-bold text-slate-600 truncate">{me || "—"}</span>
-        </div>
-        <p className="col-span-3 text-[10px] text-slate-400">Out time can be left empty and filled with “Out now” when the machine finishes.</p>
-      </section>
-
-      {/* Save — sits above the phone's bottom bar */}
-      <div className="fixed md:static bottom-[calc(4rem+env(safe-area-inset-bottom))] inset-x-0 z-30 p-3 md:p-0 bg-white/95 md:bg-transparent backdrop-blur border-t md:border-0 border-slate-200">
-        <button onClick={save} disabled={saving || !prog}
-          className="w-full max-w-xl mx-auto h-14 rounded-2xl text-white font-black uppercase tracking-widest text-sm shadow-lg flex items-center justify-center gap-2 disabled:opacity-40 active:scale-[0.99]"
-          style={{ background: BRAND }}>
-          {saving ? <Loader2 className="animate-spin" size={18} /> : <Plus size={18} />}
-          {prog ? `Save load · ${machineById(machine)?.label}` : "Pick machine & item"}
+      ) : (
+        <button onClick={() => setStartFor(MACHINES[0].id)} className="h-12 rounded-2xl text-white font-black text-sm flex items-center justify-center gap-2" style={{ background: BRAND }}>
+          <Plus size={16} /> Add a missed load for {dayLabel(date, today)}
         </button>
-      </div>
+      )}
 
-      {/* The day so far */}
+      {/* Log */}
       <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-100">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-100">
           <h2 className="text-xs font-black text-slate-700">{dayLabel(date, today)}&apos;s loads</h2>
-          <span className="text-[11px] font-bold text-slate-500">{entries.length} load{entries.length === 1 ? "" : "s"}{dayKg ? ` · ${Math.round(dayKg * 10) / 10} kg` : ""}</span>
+          {isToday && <button onClick={() => setStartFor(MACHINES[0].id + "|past")} className="text-[11px] font-bold" style={{ color: BRAND }}>+ Missed load</button>}
         </div>
         {loading ? (
           <div className="p-6 flex justify-center"><Loader2 className="animate-spin text-slate-300" /></div>
         ) : entries.length === 0 ? (
-          <p className="p-6 text-center text-xs text-slate-400">Nothing entered yet.</p>
+          <p className="p-6 text-center text-xs text-slate-400">{isToday ? "Tap a machine to start the first load." : "Nothing entered."}</p>
         ) : (
           <ul className="divide-y divide-slate-100">
-            {entries.map(e => {
-              const mine = admin || (!!me && e.operator === me);
-              return (
-                <li key={e.id} className="flex items-center gap-3 px-3 py-2.5">
-                  <span className="w-11 h-11 rounded-xl flex items-center justify-center text-white text-[11px] font-black shrink-0" style={{ background: BRAND }}>
+            {entries.map(e => (
+              <li key={e.id}>
+                <button onClick={() => canEdit(e) && setEditing(e)} className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-slate-50">
+                  <span className="w-10 h-10 rounded-xl flex items-center justify-center text-[11px] font-black shrink-0" style={{ background: `${BRAND}14`, color: BRAND }}>
                     {machineById(e.machine)?.label || e.machine}
                   </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-bold text-slate-700 truncate">{e.item}</p>
-                    <p className="text-[10px] text-slate-400 truncate">
-                      {hhmm(e.time_in)} → {e.time_out ? hhmm(e.time_out) : <span className="text-emerald-600 font-bold">running</span>}
-                      {e.operator ? ` · ${e.operator}` : ""}
-                    </p>
-                  </div>
-                  <span className="text-sm font-black shrink-0" style={{ color: BRAND }}>{e.weight_kg ?? "–"} kg</span>
-                  {!e.time_out && mine && (
-                    <button onClick={() => finish(e)} className="px-2.5 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-[10px] font-black flex items-center gap-1 active:scale-95"><Clock size={12} /> Out now</button>
-                  )}
-                  {mine && <button onClick={() => remove(e)} className="p-2 rounded-lg text-slate-300 hover:text-rose-500 hover:bg-rose-50"><Trash2 size={15} /></button>}
-                </li>
-              );
-            })}
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-xs font-bold text-slate-700 truncate">{e.item}</span>
+                    <span className="block text-[10px] text-slate-400 truncate">
+                      {hhmm(e.time_in)} – {e.time_out ? hhmm(e.time_out) : <b className="text-emerald-600">running</b>}
+                      {e.time_out ? ` · ${fmtDuration(minutesBetween(e.time_in, e.time_out))}` : ""}{e.operator ? ` · ${e.operator}` : ""}
+                    </span>
+                  </span>
+                  <span className="text-sm font-black shrink-0 text-slate-700">{e.weight_kg ?? "–"}<span className="text-[10px] text-slate-400"> kg</span></span>
+                </button>
+              </li>
+            ))}
           </ul>
         )}
       </section>
+
+      {startFor && (
+        <StartSheet
+          initialMachine={startFor.split("|")[0]}
+          past={!isToday || startFor.endsWith("|past")}
+          busy={new Set(running.map(r => r.machine))}
+          forDate={date}
+          operator={me}
+          onClose={() => setStartFor(null)}
+          onStart={async (...a) => { if (await start(...a)) setStartFor(null); }}
+        />
+      )}
+      {editing && (
+        <EditSheet entry={editing} onClose={() => setEditing(null)}
+          onSave={async patch => { if (await saveEdit(editing, patch)) setEditing(null); }}
+          onDelete={async () => { if (await remove(editing)) setEditing(null); }} />
+      )}
     </div>
   );
 }
 
-function TimeBox({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+// Bottom sheet above everything (incl. the phone's bottom bar)
+function BottomSheet({ title, onClose, children, footer }: { title: React.ReactNode; onClose: () => void; children: React.ReactNode; footer: React.ReactNode }) {
+  useEffect(() => { const o = document.body.style.overflow; document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = o; }; }, []);
   return (
-    <div className="min-w-0">
-      <span className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">{label}</span>
+    <div className="fixed inset-0 z-[1000] flex items-end md:items-center justify-center">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px] animate-in fade-in" onClick={onClose} />
+      <div className="relative w-full md:max-w-lg bg-white rounded-t-3xl md:rounded-3xl max-h-[92vh] flex flex-col animate-in slide-in-from-bottom-8 duration-200">
+        <div className="flex items-center justify-between px-5 pt-4 pb-2 shrink-0">
+          <div className="text-lg font-black text-slate-800">{title}</div>
+          <button onClick={onClose} className="p-2 -mr-2 rounded-full text-slate-400 hover:bg-slate-100"><X size={20} /></button>
+        </div>
+        <div className="overflow-y-auto px-5 pb-3 flex-1">{children}</div>
+        <div className="px-5 pt-3 border-t border-slate-100 shrink-0" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{footer}</div>
+      </div>
+    </div>
+  );
+}
+
+const WEIGHT_CHIPS: Record<string, number[]> = { "55kg": [25, 30, 35, 40, 45, 50, 55], "23kg": [10, 12, 15, 18, 20, 23] };
+const recentKey = (machine: string) => `lp_recent_${machineById(machine)?.size}`;
+
+function StartSheet({ initialMachine, past, busy, forDate, operator, onClose, onStart }: {
+  initialMachine: string; past: boolean; busy: Set<string>; forDate: string; operator: string;
+  onClose: () => void; onStart: (machine: string, item: string, kg: number, timeIn: string, timeOut: string, forDate: string) => Promise<void>;
+}) {
+  const [machine, setMachine] = useState(initialMachine);
+  const [item, setItem] = useState("");
+  const [kg, setKg] = useState("");
+  const [timeIn, setTimeIn] = useState(nowHHMM());
+  const [timeOut, setTimeOut] = useState(past ? nowHHMM() : "");
+  const [saving, setSaving] = useState(false);
+  const size = machineById(machine)?.size || "55kg";
+  const recent = useMemo(() => { try { return JSON.parse(localStorage.getItem(recentKey(machine)) || "[]") as string[]; } catch { return []; } }, [machine]);
+  const programmes = useMemo(() => {
+    const list = PROGRAMMES[size];
+    return [...list].sort((a, b) => (recent.indexOf(a.item) + 1 || 99) - (recent.indexOf(b.item) + 1 || 99));
+  }, [size, recent]);
+
+  const ok = !!item && Number(kg) > 0 && (!past || (!!timeIn && !!timeOut));
+  const go = async () => {
+    if (!ok) return;
+    setSaving(true);
+    try { localStorage.setItem(recentKey(machine), JSON.stringify([item, ...recent.filter(r => r !== item)].slice(0, 4))); } catch {}
+    await onStart(machine, item, Number(kg), past ? timeIn : nowHHMM(), past ? timeOut : "", forDate);
+    setSaving(false);
+  };
+
+  return (
+    <BottomSheet
+      title={past ? "Add a missed load" : <>Start <span style={{ color: BRAND }}>{machineById(machine)?.label}</span></>}
+      onClose={onClose}
+      footer={
+        <button onClick={go} disabled={!ok || saving}
+          className="w-full h-14 rounded-2xl text-white font-black uppercase tracking-widest text-sm flex items-center justify-center gap-2 disabled:opacity-30 active:scale-[0.99]" style={{ background: BRAND }}>
+          {saving ? <Loader2 className="animate-spin" size={18} /> : past ? <Check size={18} /> : <Play size={18} />}
+          {!item ? "Pick the items" : !(Number(kg) > 0) ? "Enter the weight" : past ? "Save load" : `Start now · ${nowHHMM()}`}
+        </button>
+      }>
+      {past && (
+        <div className="grid grid-cols-5 gap-1.5 mb-4">
+          {MACHINES.map(m => (
+            <button key={m.id} onClick={() => { setMachine(m.id); if (machineById(m.id)?.size !== size) setItem(""); }}
+              className={`py-2 rounded-xl text-sm font-black ${m.id === machine ? "text-white" : "bg-slate-100 text-slate-600"}`}
+              style={m.id === machine ? { background: BRAND } : undefined}>{m.label}</button>
+          ))}
+        </div>
+      )}
+      {!past && busy.has(machine) && <p className="mb-3 text-xs font-bold text-amber-600">This machine already has a load running.</p>}
+
+      <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-2">Items</p>
+      <div className="flex flex-col gap-1.5">
+        {programmes.map(p => {
+          const on = p.item === item;
+          return (
+            <button key={p.item} onClick={() => setItem(p.item)}
+              className={`flex items-center justify-between px-4 h-12 rounded-2xl text-left text-sm font-bold transition-colors ${on ? "text-white" : "bg-slate-50 text-slate-700 active:bg-slate-100"}`}
+              style={on ? { background: BRAND } : undefined}>
+              <span className="truncate">{p.item}</span>
+              {on ? <Check size={18} /> : recent.includes(p.item) ? <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">recent</span> : null}
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 mt-5 mb-2">Weight</p>
+      <div className="flex items-center gap-2">
+        <input type="number" inputMode="decimal" min={0} step="0.1" value={kg} onChange={e => setKg(e.target.value)} placeholder="0"
+          className="w-28 h-14 px-3 text-3xl font-black text-center rounded-2xl border-2 border-slate-200 outline-none focus:border-[#6D2158]" style={{ color: BRAND }} />
+        <span className="text-lg font-black text-slate-400">kg</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 mt-2">
+        {WEIGHT_CHIPS[size].map(w => (
+          <button key={w} onClick={() => setKg(String(w))}
+            className={`px-3.5 h-10 rounded-xl text-sm font-black ${Number(kg) === w ? "text-white" : "bg-slate-100 text-slate-600 active:bg-slate-200"}`}
+            style={Number(kg) === w ? { background: BRAND } : undefined}>{w}</button>
+        ))}
+      </div>
+
+      {past && (
+        <div className="grid grid-cols-2 gap-3 mt-5">
+          <TimeField label="In" value={timeIn} onChange={setTimeIn} />
+          <TimeField label="Out" value={timeOut} onChange={setTimeOut} />
+        </div>
+      )}
+      <p className="mt-4 text-[11px] text-slate-400">Operator: <b className="text-slate-600">{operator || "—"}</b>{!past && " · in time is set when you tap Start, out time when you tap Finish"}</p>
+    </BottomSheet>
+  );
+}
+
+function EditSheet({ entry, onClose, onSave, onDelete }: { entry: ProductionEntry; onClose: () => void; onSave: (p: Partial<ProductionEntry>) => Promise<void>; onDelete: () => Promise<void> }) {
+  const [kg, setKg] = useState(String(entry.weight_kg ?? ""));
+  const [timeIn, setTimeIn] = useState(hhmm(entry.time_in));
+  const [timeOut, setTimeOut] = useState(hhmm(entry.time_out));
+  return (
+    <BottomSheet title={<>{machineById(entry.machine)?.label} · <span className="text-slate-500 text-base">{entry.item}</span></>} onClose={onClose}
+      footer={
+        <div className="flex gap-2">
+          <button onClick={onDelete} className="h-14 px-4 rounded-2xl bg-rose-50 text-rose-600 font-black"><Trash2 size={18} /></button>
+          <button onClick={() => onSave({ weight_kg: kg ? Number(kg) : null, time_in: timeIn || null, time_out: timeOut || null })}
+            className="flex-1 h-14 rounded-2xl text-white font-black uppercase tracking-widest text-sm" style={{ background: BRAND }}>Save</button>
+        </div>
+      }>
+      <p className="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-2">Weight</p>
+      <div className="flex items-center gap-2">
+        <input type="number" inputMode="decimal" value={kg} onChange={e => setKg(e.target.value)}
+          className="w-28 h-14 px-3 text-3xl font-black text-center rounded-2xl border-2 border-slate-200 outline-none focus:border-[#6D2158]" style={{ color: BRAND }} />
+        <span className="text-lg font-black text-slate-400">kg</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 mt-5">
+        <TimeField label="In" value={timeIn} onChange={setTimeIn} />
+        <TimeField label="Out" value={timeOut} onChange={setTimeOut} allowEmpty />
+      </div>
+      <p className="mt-4 text-[11px] text-slate-400">Entered by <b className="text-slate-600">{entry.operator || "—"}</b></p>
+    </BottomSheet>
+  );
+}
+
+function TimeField({ label, value, onChange, allowEmpty }: { label: string; value: string; onChange: (v: string) => void; allowEmpty?: boolean }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[11px] font-black uppercase tracking-widest text-slate-400">{label}</span>
+        <span className="flex gap-2">
+          {allowEmpty && value && <button type="button" onClick={() => onChange("")} className="text-[11px] font-bold text-slate-400">Clear</button>}
+          <button type="button" onClick={() => onChange(nowHHMM())} className="text-[11px] font-bold" style={{ color: BRAND }}>Now</button>
+        </span>
+      </div>
       <input type="time" value={value} onChange={e => onChange(e.target.value)}
-        className="w-full min-w-0 h-12 px-2 text-sm font-black rounded-xl border-2 border-slate-100 outline-none focus:border-[#6D2158] text-slate-700" />
-      <button type="button" onClick={() => onChange(nowHHMM())} className="mt-1 text-[10px] font-bold" style={{ color: BRAND }}>Now</button>
+        className="w-full h-14 px-3 text-xl font-black rounded-2xl border-2 border-slate-200 outline-none focus:border-[#6D2158] text-slate-700" />
     </div>
   );
 }
