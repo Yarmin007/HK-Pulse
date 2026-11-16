@@ -23,7 +23,7 @@ import {
   Minus,
   Tag,
 } from "lucide-react";
-import { Toaster, toast } from "react-hot-toast";
+import { toast } from "react-hot-toast";
 import { supabase } from "@/lib/supabase";
 
 interface UniformRecord {
@@ -656,7 +656,6 @@ export default function UniformDirectoryPage() {
 
   return (
     <div className="p-3 sm:p-6 md:p-8 max-w-7xl mx-auto flex flex-col gap-4 sm:gap-6 pb-24 md:pb-8">
-      <Toaster position="top-right" />
 
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-200 pb-4">

@@ -2,7 +2,7 @@
 
 import React from "react";
 
-export type SheetVilla = { number: string | number; status: string; bg?: string; textColor?: string };
+export type SheetVilla = { number: string | number; status: string; bg?: string; textColor?: string; time?: string };
 
 export interface AllocationSheetData {
   summary: {
@@ -208,6 +208,18 @@ const getStatusTheme = (v?: SheetVilla) => {
   }
   return { bg: "#ffffff", text: "#231f20" };
 };
+
+// Status box text. With a movement time: status on top, time (arr / dep) in small type underneath.
+const statusCell = (v: SheetVilla | undefined, theme: { text: string }, x: number, y: number) => (
+  v?.time ? (
+    <>
+      <text className="cls-4" fill={theme.text} style={{ fill: theme.text, fontSize: "5.6px" }} textAnchor="middle" transform={`translate(${x} ${y - 2.4})`}><tspan x="0" y="0">{v.status}</tspan></text>
+      <text className="cls-4" fill={theme.text} style={{ fill: theme.text, fontSize: "4.4px" }} textAnchor="middle" transform={`translate(${x} ${y + 3.4})`}><tspan x="0" y="0">{v.time}</tspan></text>
+    </>
+  ) : (
+    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${x} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+  )
+);
 
 export default function AllocationSheetSvg({ data }: { data: AllocationSheetData }) {
   const d = data;
@@ -1508,7 +1520,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
                 return (
                   <React.Fragment key={`t1-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
-                    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+                    {statusCell(v, theme, xSt, y)}
                   </React.Fragment>
                 );
               })}
@@ -1529,7 +1541,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
                 return (
                   <React.Fragment key={`t2-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
-                    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+                    {statusCell(v, theme, xSt, y)}
                   </React.Fragment>
                 );
               })}
@@ -1550,7 +1562,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
                 return (
                   <React.Fragment key={`t3-${cIdx}-${rIdx}`}>
                     <text className="cls-4" textAnchor="middle" transform={`translate(${xV} ${y})`}><tspan x="0" y="0">{v?.number || ""}</tspan></text>
-                    <text className="cls-4" fill={theme.text} style={{ fill: theme.text }} textAnchor="middle" transform={`translate(${xSt} ${y})`}><tspan x="0" y="0">{v?.status || ""}</tspan></text>
+                    {statusCell(v, theme, xSt, y)}
                   </React.Fragment>
                 );
               })}

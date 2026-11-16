@@ -16,7 +16,7 @@ import {
   Shirt,
   Tag,
 } from "lucide-react";
-import { Toaster, toast } from "react-hot-toast";
+import { toast } from "react-hot-toast";
 import { supabase } from "@/lib/supabase";
 
 interface HostUniform {
@@ -367,7 +367,6 @@ export default function UniformTrackerPage() {
 
   return (
     <div className="p-2 sm:p-4 max-w-full mx-auto flex flex-col gap-2.5 pb-20 md:pb-4 text-slate-800">
-      <Toaster position="top-right" />
 
       {/* COMPACT TOP BAR */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 pb-2">

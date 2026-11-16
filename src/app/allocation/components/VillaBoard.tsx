@@ -7,7 +7,8 @@ import {
     Search, Plus, X, Pointer, RefreshCw, Users, Share2, 
     Calendar, Plane, UserCheck, Settings2, Wand2, Minus 
 } from "lucide-react";
-import { villaStatusMap, deriveHKStatus, rowsByVilla, HK_STATUS_KEY } from '@/lib/guestDay';
+import { isServiceDay } from '@/lib/specialVillas';
+import { villaStatusMap, deriveHKStatus, rowsByVilla, HK_STATUS_KEY, movementTime } from '@/lib/guestDay';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { TOTAL_VILLAS, parseVillas, getDefaultArea } from '../lib/constants';
@@ -244,6 +245,7 @@ export default function VillaBoard({
     const statusByVilla = React.useMemo(() => villaStatusMap(masterList), [masterList]);
     const todayRows = React.useMemo(() => rowsByVilla(masterList), [masterList]);
     const prevRows = React.useMemo(() => rowsByVilla(prevMasterList), [prevMasterList]);
+    const prevStatusByVilla = React.useMemo(() => villaStatusMap(prevMasterList), [prevMasterList]);
     const villaAllocOf = (hostId: string) => allocations.find((a: any) => String(a.host_id) === String(hostId) && a.area === 'villa');
 
     const fetchActiveLeaves = async () => {
@@ -419,10 +421,8 @@ export default function VillaBoard({
         if (!vNum) return null;
         const info = statusByVilla[vNum];
         const hk = deriveHKStatus(todayRows[vNum], prevRows[vNum], selectedDate);
-        let timeStr = '';
-        if (hk.code === 'DEP/ARR' || hk.code === 'TMA/ARR') timeStr = [info?.departure && `D ${info.departure}`, info?.arrival && `A ${info.arrival}`].filter(Boolean).join(' ');
-        else if (hk.code.includes('ARR') || hk.code === 'JOIN') timeStr = info?.arrival || '';
-        else if (hk.code.startsWith('DEP')) timeStr = info?.departure || '';
+        // House use: show when today is one of its service days
+        const timeStr = hk.code === 'H/U' ? (isServiceDay(todayRows[vNum]?.remarks) ? 'Service day' : '') : movementTime(hk, info, prevStatusByVilla[vNum]);
         return { status: hk.label, colorClass: hk.cls, timeStr, title: hk.title };
     };
 

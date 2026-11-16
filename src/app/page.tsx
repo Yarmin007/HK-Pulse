@@ -20,6 +20,31 @@ import { getProfileType, type ProfileType } from '@/lib/hostProfile';
 import { fetchROEvents, isWorkedLeave } from '@/lib/attendanceData';
 
 // =========================================================================
+// Monday from 18:00 (resort time): tomorrow is the Tuesday cocktail → sarongs reminder for admins
+// =========================================================================
+const CocktailReminder = () => {
+    const [now, setNow] = useState<Date>(getDhakaTime());
+    useEffect(() => {
+        const t = setInterval(() => setNow(getDhakaTime()), 60000);
+        return () => clearInterval(t);
+    }, []);
+    if (now.getDay() !== 1 || now.getHours() < 18) return null;
+    return (
+        <Link href="/guests?sarong=1" className="block rounded-3xl bg-gradient-to-r from-[#6D2158] to-[#8a2a6f] text-white p-4 md:p-5 shadow-lg hover:shadow-xl active:scale-[0.99] transition-all">
+            <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center shrink-0 text-2xl">🍹</div>
+                <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/60">Reminder</p>
+                    <p className="text-base md:text-lg font-black leading-tight">Cocktail tomorrow (Tuesday)</p>
+                    <p className="text-xs font-semibold text-white/75 mt-0.5">Prepare the sarongs tonight — tap to see Black / Maroon / Kids per jetty</p>
+                </div>
+                <span className="shrink-0 text-xs font-black bg-white text-[#6D2158] rounded-xl px-3 py-2">Sarongs →</span>
+            </div>
+        </Link>
+    );
+};
+
+// =========================================================================
 // ⚡ PERFORMANCE FIX: LIVE CLOCK
 // =========================================================================
 const LiveClock = () => {
@@ -700,6 +725,8 @@ export default function Dashboard() {
         )}
 
         <OccasionBanner />
+
+        {isAdmin && <CocktailReminder />}
 
         {/* UPCOMING / CURRENT LEAVE */}
         {upcomingLeaveInfo && (

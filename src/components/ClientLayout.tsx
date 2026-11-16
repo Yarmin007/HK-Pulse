@@ -5,6 +5,7 @@ import Sidebar from "@/components/Sidebar";
 import { usePathname } from "next/navigation";
 import { Eye, ArrowLeft, ShieldCheck } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { Toaster } from "react-hot-toast";
 
 interface ClientLayoutProps {
   children: React.ReactNode;
@@ -161,6 +162,9 @@ export default function ClientLayout({
         {/* On phones, leave room for the bottom navigation bar so nothing is hidden behind it. */}
         <main className={isSharePage ? "flex-1 w-full min-w-0" : "flex-1 md:pl-64 w-full min-w-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 print:p-0"}>{children}</main>
       </div>
+
+      {/* One place for every page's toast messages (saved, errors, "already up to date"...) */}
+      <Toaster position="top-center" containerStyle={{ zIndex: 100000 }} />
     </div>
   );
 }

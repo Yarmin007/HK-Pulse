@@ -3,12 +3,14 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Edit3, X, ChevronLeft, ChevronRight,
   FileSpreadsheet, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock,
-  Shirt, Trash2, Plus, Search, Eye, EyeOff, BedDouble, ShieldCheck, Link2
+  Shirt, Trash2, Plus, Search, Eye, EyeOff, BedDouble, ShieldCheck, Link2, Check
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { normalizeVilla, extractDepInfo, projectGuestDay } from '@/lib/guestDay';
-import { isSameGuest, parseOccXml, parseArrivalsXml, parseMemo, parseDelimited, applyOcc, applyArrivals, applyMemo, MEAL_PLAN_CODES, type ImportResult } from '@/lib/guestImport';
+import { parseVillas } from '@/app/allocation/lib/constants';
+import { saveMemoSummary } from '@/lib/memoSummary';
+import { isSameGuest, parseOccXml, parseArrivalsXml, parseMemo, parseDelimited, applyOcc, applyArrivals, applyMemo, MEAL_PLAN_CODES, MEMO_GROUPS, type ImportResult } from '@/lib/guestImport';
 
 const TOTAL_VILLAS = 97;
 const EXTENSION_VILLAS = ['56', '58', '88'];
@@ -87,6 +89,7 @@ type ChangeLog = {
     oldStatus: string;
     newStatus: string;
     note?: string;
+    group?: string;
 };
 
 // Strips UI-only helper fields so Supabase only receives real hsk_daily_summary columns
@@ -151,6 +154,56 @@ export default function HousekeepingSummaryPage() {
   const [pastedText, setPastedText] = useState('');
   
   const [isSarongModalOpen, setIsSarongModalOpen] = useState(false);
+  // Sarongs are for the Tuesday cocktail: counts and VA allocation come from the coming Tuesday
+  // (the selected day if it is a Tuesday). Beach VAs who use the Jetty B pantry are a saved choice (by host),
+  // so their villas move to Jetty B whatever villas they get that Tuesday.
+  const sarongDate = (() => {
+      const d = new Date(`${selectedDate}T00:00:00`);
+      d.setDate(d.getDate() + ((2 - d.getDay() + 7) % 7));
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+  const [sarongRows, setSarongRows] = useState<any[]>([]);
+  const [sarongVAs, setSarongVAs] = useState<{ id: string; name: string; villas: number[] }[]>([]);
+  const [sarongHosts, setSarongHosts] = useState<string[]>([]);
+  const [sarongAllocDate, setSarongAllocDate] = useState('');
+  const [sarongCustomise, setSarongCustomise] = useState(false);
+  const [sarongSaving, setSarongSaving] = useState(false);
+  useEffect(() => {
+      if (!isSarongModalOpen) return;
+      (async () => {
+          const allocFor = (d: string) => supabase.from('hsk_allocations').select('host_id, task_details, shift, hosts:hsk_hosts(id, host_id, full_name, nicknames)').eq('report_date', d).eq('area', 'villa');
+          const [{ rows }, tueAlloc, saved] = await Promise.all([
+              projectGuestDay(sarongDate),
+              allocFor(sarongDate),
+              supabase.from('hsk_constants').select('label').eq('type', 'sarong_jetty_b').limit(1),
+          ]);
+          // Tuesday's allocation is often made the night before: until then use the latest allocation before it
+          let alloc = tueAlloc, allocDate = sarongDate;
+          if (!tueAlloc.data?.length) {
+              const { data: last } = await supabase.from('hsk_allocations').select('report_date').eq('area', 'villa').lt('report_date', sarongDate).order('report_date', { ascending: false }).limit(1);
+              if (last?.[0]?.report_date) { allocDate = last[0].report_date; alloc = await allocFor(allocDate); }
+          }
+          setSarongAllocDate(allocDate);
+          setSarongRows(rows.filter((r: any) => Number(normalizeVilla(r.villa_number)) > 0));
+          setSarongVAs((alloc.data || []).map((a: any) => {
+              const h = Array.isArray(a.hosts) ? a.hosts[0] : a.hosts;
+              const name = h?.nicknames ? String(h.nicknames).split(',')[0].trim() : h?.full_name || 'VA';
+              return { id: String(h?.id || a.host_id), name, villas: parseVillas(a.task_details || '') };
+          }).filter(va => va.villas.length).sort((x, y) => Math.min(...x.villas) - Math.min(...y.villas)));
+          try { setSarongHosts(JSON.parse(saved.data?.[0]?.label || '{}').hosts || []); } catch { setSarongHosts([]); }
+      })();
+  }, [isSarongModalOpen, sarongDate]);
+  // Dashboard reminder links here with ?sarong=1
+  useEffect(() => {
+      if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('sarong') === '1') setIsSarongModalOpen(true);
+  }, []);
+  const saveSarongJettyB = async (hosts: string[]) => {
+      setSarongSaving(true);
+      await supabase.from('hsk_constants').delete().eq('type', 'sarong_jetty_b');
+      const { error } = hosts.length ? await supabase.from('hsk_constants').insert({ type: 'sarong_jetty_b', label: JSON.stringify({ hosts }) }) : { error: null };
+      setSarongSaving(false);
+      if (error) toast.error('Not saved'); else { toast.success('Jetty B pantry villas saved'); setSarongCustomise(false); }
+  };
 
   const [confirmDialog, setConfirmDialog] = useState<{
       isOpen: boolean;
@@ -727,8 +780,26 @@ export default function HousekeepingSummaryPage() {
   const processArrDepXML = (xmlText: string) =>
       runImport('Arrivals XML', () => applyArrivals(masterList, parseArrivalsXml(xmlText), selectedDate));
 
-  const processDailyMemoCSV = (csvText: string) =>
-      runImport('Memo', () => applyMemo(masterList, parseMemo(parseDelimited(csvText, ','), selectedDate), selectedDate));
+  // Villas that had the TMA night crew yesterday: they check out this morning (time comes from the memo)
+  const leavingCrewVillas = async () => {
+      const [y, m, d] = selectedDate.split('-').map(Number);
+      const prev = new Date(y, m - 1, d - 1);
+      const prevDate = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-${String(prev.getDate()).padStart(2, '0')}`;
+      const { rows } = await projectGuestDay(prevDate);
+      return rows.filter((r: any) => /TMA/i.test(r.status || '') && !/DAY/i.test(r.status || '')).map((r: any) => normalizeVilla(r.villa_number)).filter(Boolean) as string[];
+  };
+
+  const processDailyMemoCSV = async (csvText: string) => {
+      const memo = parseMemo(parseDelimited(csvText, ','), selectedDate);
+      const leaving = await leavingCrewVillas().catch(() => [] as string[]);
+      runImport('Memo', () => applyMemo(masterList, memo, selectedDate, leaving));
+      // Same memo also fills the day's stats on the Allocation → Summary board (only when it is for this day).
+      if (!memo.reportDate || memo.reportDate === selectedDate) {
+          saveMemoSummary(csvText, selectedDate)
+              .then(f => { if (f.length) toast.success(`Daily stats updated: ${f.join(', ')}`, { duration: 6000 }); })
+              .catch(e => toast.error(`Daily stats not saved: ${e?.message || e}`));
+      }
+  };
 
   const processOperationalMemo = (pasted: string) =>
       runImport('pasted Memo', () => applyMemo(masterList, parseMemo(parseDelimited(pasted, '\t'), selectedDate), selectedDate));
@@ -742,6 +813,12 @@ export default function HousekeepingSummaryPage() {
       setSelectedDate(`${y}-${m}-${dy}`);
   };
 
+  const sarongHomeArea = (v: number): 'jettyA' | 'jettyB' | 'jettyC' | 'beach' =>
+      v >= 1 && v <= 35 ? 'jettyA' : v >= 37 && v <= 50 ? 'jettyB' : v >= 59 && v <= 79 ? 'jettyC' : 'beach';
+  const beachVAs = sarongVAs.map(va => ({ ...va, beach: va.villas.filter(v => sarongHomeArea(v) === 'beach') })).filter(va => va.beach.length);
+  const sarongJettyB = beachVAs.filter(va => sarongHosts.includes(va.id)).flatMap(va => va.beach).sort((a, b) => a - b).map(String);
+  const sarongAreaOf = (v: number) => (sarongHomeArea(v) === 'beach' && sarongJettyB.includes(String(v)) ? 'jettyB' : sarongHomeArea(v));
+
   const getSarongCounts = () => {
       let counts = {
           jettyA: { villas: 0, male: 0, female: 0, kids: 0 },
@@ -751,12 +828,14 @@ export default function HousekeepingSummaryPage() {
           total:  { villas: 0, male: 0, female: 0, kids: 0 }
       };
 
-      masterList.forEach(rec => {
+      (sarongRows.length ? sarongRows : masterList).forEach(rec => {
           const st = String(rec?.status || 'VAC').toUpperCase();
           if (st === 'VAC' || (st.includes('DEP') && !st.includes('ARR'))) return;
           if (st === 'VM/VAC') return;
           if (st.includes('TMA')) return;
           if (st === 'SHOW VILLA' || st === 'FUMIGATION') return;
+          // Day use = departing guest waiting for late check-out: leaving, so no sarong
+          if (st === 'DAY USE' || st === 'VM/DU') return;
           
           const gUpper = String(rec?.guest_name || '').toUpperCase();
           if (gUpper && (gUpper.includes('HOUSE USE') || gUpper.includes('H/U') || st === 'HOUSE USE')) return;
@@ -764,10 +843,7 @@ export default function HousekeepingSummaryPage() {
           const v = parseInt(rec.villa_number, 10);
           if (isNaN(v)) return;
 
-          let area: 'jettyA' | 'jettyB' | 'jettyC' | 'beach' = 'beach';
-          if (v >= 1 && v <= 35) area = 'jettyA';
-          else if (v >= 37 && v <= 50) area = 'jettyB';
-          else if (v >= 59 && v <= 79) area = 'jettyC';
+          const area = sarongAreaOf(v);
 
           let adults = rec.pax_adults || 0;
           let kids = rec.pax_kids || 0;
@@ -775,11 +851,18 @@ export default function HousekeepingSummaryPage() {
           let male = 0;
           let female = 0;
 
-          const mrCount = (gUpper.match(/\bMR\b/g) || []).length;
-          const msCount = (gUpper.match(/\b(MS|MRS|MISS|ALFAALILA)\b/g) || []).length;
-          
-          male += mrCount;
-          female += msCount;
+          // Adults by title. A name with an age "(5 yrs)" or a child title (Mstr / Master / Kokko) is a child:
+          // children are counted from pax_kids, never as Black / Maroon.
+          let girlsTitledMiss = 0;
+          gUpper.split('&').map(n => n.trim()).filter(Boolean).forEach(n => {
+              const isChild = /\(\s*\d+\s*(YRS?|MTHS?)\s*\)/.test(n) || /^(MSTR|MASTER|KOKKO)\b/.test(n);
+              if (isChild) return;
+              if (/^(MR|ALFAALIL)\b/.test(n)) male += 1;
+              else if (/^(MS|MRS|MME|ALFAALILA)\b/.test(n)) female += 1;
+              else if (/^MISS\b/.test(n)) { female += 1; girlsTitledMiss += 1; }
+          });
+          // More titled adults than booked adults: a "Miss" without an age is most likely a child
+          while (male + female > adults && girlsTitledMiss > 0 && adults > 0) { female -= 1; girlsTitledMiss -= 1; }
 
           let remaining = adults - (male + female);
           if (remaining > 0) {
@@ -811,28 +894,30 @@ export default function HousekeepingSummaryPage() {
       return counts;
   };
 
-  const renderSarongArea = (title: string, data: any) => (
-      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col gap-2">
-          <div className="flex justify-between items-center mb-1">
-              <h4 className="font-bold text-sm text-slate-800">{title}</h4>
-              <span className="text-[10px] font-bold bg-white px-2 py-1 rounded-md text-slate-500 border border-slate-200">{data.villas} Villas</span>
+  // Sarong colours: Black = adult men, Maroon = adult women, Kids
+  const SARONG_KINDS = [
+      { key: 'male', label: 'Black', sub: 'Men', chip: 'bg-slate-900', ring: 'ring-slate-900/10' },
+      { key: 'female', label: 'Maroon', sub: 'Women', chip: 'bg-[#7A1F3D]', ring: 'ring-[#7A1F3D]/15' },
+      { key: 'kids', label: 'Kids', sub: 'Children', chip: 'bg-amber-400', ring: 'ring-amber-400/30' },
+  ] as const;
+
+  const renderSarongArea = (title: string, range: string, data: any) => (
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+          <div className="flex items-baseline justify-between gap-2 mb-3">
+              <div className="min-w-0">
+                  <h4 className="font-black text-sm text-slate-800 truncate">{title}</h4>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{range}</p>
+              </div>
+              <span className="shrink-0 text-[10px] font-black text-slate-500 bg-slate-100 px-2 py-1 rounded-full">{data.villas} villas</span>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-              <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col items-center justify-center">
-                  <span className="text-xl">⬛</span>
-                  <span className="text-[10px] font-bold text-slate-500 mt-1">Black (Male)</span>
-                  <span className="text-lg font-black text-slate-800">{data.male}</span>
-              </div>
-              <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col items-center justify-center">
-                  <span className="text-xl">🟥</span>
-                  <span className="text-[10px] font-bold text-slate-500 mt-1">Maroon (Fem)</span>
-                  <span className="text-lg font-black text-slate-800">{data.female}</span>
-              </div>
-              <div className="bg-white p-2 rounded-lg border border-slate-200 flex flex-col items-center justify-center">
-                  <span className="text-xl">🟨</span>
-                  <span className="text-[10px] font-bold text-slate-500 mt-1">Kids</span>
-                  <span className="text-lg font-black text-slate-800">{data.kids}</span>
-              </div>
+          <div className="space-y-1.5">
+              {SARONG_KINDS.map(k => (
+                  <div key={k.key} className="flex items-center gap-2.5">
+                      <span className={`w-3 h-3 rounded-full ${k.chip} ring-4 ${k.ring} shrink-0`} />
+                      <span className="text-xs font-bold text-slate-500 flex-1">{k.label}</span>
+                      <span className={`text-lg font-black tabular-nums ${data[k.key] ? 'text-slate-800' : 'text-slate-300'}`}>{data[k.key]}</span>
+                  </div>
+              ))}
           </div>
       </div>
   );
@@ -1257,7 +1342,16 @@ export default function HousekeepingSummaryPage() {
                               </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                              {changes.map((c, i) => {
+                              {(changes.some(c => c.group) ? [...MEMO_GROUPS, ''] : [null]).flatMap(g => {
+                                  // Memo upload: one heading per memo section (Arrival villas, Departure villas, ...)
+                                  const items = changes.map((c, i) => ({ c, i })).filter(x => g === null || (x.c.group || '') === g);
+                                  if (!items.length) return [];
+                                  const head = g === null ? [] : [
+                                      <tr key={`h-${g}`} className="bg-[#6D2158]/5">
+                                          <td colSpan={6} className="px-4 py-2 text-[11px] font-black uppercase tracking-widest text-[#6D2158]">{g || 'Other'} <span className="text-slate-400">· {items.length}</span></td>
+                                      </tr>,
+                                  ];
+                                  return [...head, ...items.map(({ c, i }) => {
                                   const pendingRec = pendingData.find(p => p.villa_number === c.villa);
                                   return (
                                       <tr key={i} className="hover:bg-slate-50">
@@ -1323,6 +1417,7 @@ export default function HousekeepingSummaryPage() {
                                           </td>
                                       </tr>
                                   );
+                              })];
                               })}
                           </tbody>
                       </table>
@@ -1345,48 +1440,91 @@ export default function HousekeepingSummaryPage() {
       )}
 
       {/* SARONG MODAL */}
-      {isSarongModalOpen && isAdmin && (
-          <div className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white w-full max-w-3xl rounded-3xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
-                  <div className="bg-pink-600 p-5 text-white flex justify-between items-center">
-                      <h3 className="text-lg font-bold flex items-center gap-2"><Shirt size={18}/> Tuesday Sarong Allocation</h3>
-                      <button onClick={() => setIsSarongModalOpen(false)} className="bg-white/10 p-1.5 rounded-full hover:bg-white/20 cursor-pointer"><X size={18}/></button>
+      {isSarongModalOpen && isAdmin && (() => {
+          const sc = getSarongCounts();
+          return (
+          <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4" onClick={() => setIsSarongModalOpen(false)}>
+              <div className="bg-slate-50 w-full max-w-3xl rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+                  {/* Header + island total */}
+                  <div className="bg-[#6D2158] text-white px-5 pt-5 pb-6 shrink-0">
+                      <div className="flex justify-between items-start gap-3">
+                          <div>
+                              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/60">Tuesday</p>
+                              <h3 className="text-xl font-black flex items-center gap-2"><Shirt size={20}/> Sarong Allocation</h3>
+                              <p className="text-[11px] font-semibold text-white/60 mt-0.5">{new Date(`${sarongDate}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' })} · {sc.total.villas} villas{sarongDate !== selectedDate ? ' · from that day’s list' : ''}</p>
+                          </div>
+                          <button onClick={() => setIsSarongModalOpen(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 cursor-pointer" aria-label="Close"><X size={18}/></button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 mt-5">
+                          {SARONG_KINDS.map(k => (
+                              <div key={k.key} className="bg-white/10 rounded-2xl px-3 py-3 flex flex-col items-center">
+                                  <span className={`w-6 h-6 rounded-full ${k.chip} ring-2 ring-white/70 shadow`} />
+                                  <span className="text-3xl font-black tabular-nums mt-2 leading-none">{sc.total[k.key]}</span>
+                                  <span className="text-[10px] font-black uppercase tracking-widest text-white/70 mt-1.5">{k.label}</span>
+                                  <span className="text-[9px] font-semibold text-white/50">{k.sub}</span>
+                              </div>
+                          ))}
+                      </div>
                   </div>
-                  <div className="p-6 space-y-6 bg-slate-100">
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                          {renderSarongArea("Jetty A (1-35)", getSarongCounts().jettyA)}
-                          {renderSarongArea("Jetty B (37-50)", getSarongCounts().jettyB)}
-                          {renderSarongArea("Jetty C (59-79)", getSarongCounts().jettyC)}
-                          {renderSarongArea("Beach Villas", getSarongCounts().beach)}
+
+                  {/* Per area */}
+                  <div className="overflow-y-auto p-4 sm:p-5">
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                          {renderSarongArea("Jetty A", "Villas 1–35", sc.jettyA)}
+                          {renderSarongArea("Jetty B", sarongJettyB.length ? `37–50 + beach ${sarongJettyB.join(', ')}` : "Villas 37–50", sc.jettyB)}
+                          {renderSarongArea("Jetty C", "Villas 59–79", sc.jettyC)}
+                          {renderSarongArea("Beach", sarongJettyB.length ? "Beach (rest)" : "Beach villas", sc.beach)}
                       </div>
 
-                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col lg:flex-row justify-between items-center gap-6">
-                          <div>
-                              <h3 className="text-lg font-black text-slate-800">Total Island Distribution</h3>
-                              <p className="text-xs text-slate-400 font-bold mt-1">Excludes Departures, TMA, and House Use</p>
+                      {/* Customise: beach villas served from the Jetty B pantry */}
+                      <div className="mt-4 bg-white rounded-2xl border border-slate-200 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                  <p className="text-sm font-black text-slate-800">Jetty B pantry</p>
+                                  <p className="text-[11px] font-semibold text-slate-400">{beachVAs.some(va => sarongHosts.includes(va.id)) ? `${beachVAs.filter(va => sarongHosts.includes(va.id)).map(va => va.name).join(', ')} — beach villas ${sarongJettyB.join(', ')} counted with Jetty B` : 'Pick the beach VAs who use the Jetty B pantry'}</p>
+                              </div>
+                              <button onClick={() => setSarongCustomise(c => !c)} className={`shrink-0 px-3 py-2 rounded-xl text-xs font-black cursor-pointer transition-colors ${sarongCustomise ? 'bg-slate-200 text-slate-600' : 'bg-[#6D2158] text-white hover:bg-[#5a1b49]'}`}>{sarongCustomise ? 'Close' : 'Customise'}</button>
                           </div>
-                          <div className="flex gap-4">
-                              <div className="flex flex-col items-center justify-center">
-                                  <span className="text-2xl">⬛</span>
-                                  <span className="text-[10px] font-bold text-slate-500 mt-1 uppercase">Adult Males</span>
-                                  <span className="text-2xl font-black text-slate-800">{getSarongCounts().total.male}</span>
+                          {sarongCustomise && (
+                              <div className="mt-3">
+                                  {beachVAs.length === 0 ? (
+                                      <p className="text-xs font-semibold text-slate-400 py-2">No villa attendant has beach villas in the allocation for {new Date(`${sarongDate}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' })} yet.</p>
+                                  ) : (
+                                      <div className="space-y-1.5">
+                                          {beachVAs.map(va => {
+                                              const on = sarongHosts.includes(va.id);
+                                              return (
+                                                  <button key={va.id} onClick={() => setSarongHosts(l => on ? l.filter(x => x !== va.id) : [...l, va.id])}
+                                                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 text-left cursor-pointer transition-colors ${on ? 'bg-[#6D2158]/5 border-[#6D2158]' : 'bg-white border-slate-100 hover:border-slate-200'}`}>
+                                                      <span className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 ${on ? 'bg-[#6D2158] border-[#6D2158] text-white' : 'border-slate-300'}`}>{on && <Check size={12} strokeWidth={4}/>}</span>
+                                                      <span className="min-w-0 flex-1">
+                                                          <span className="block text-sm font-black text-slate-800 truncate">{va.name}</span>
+                                                          <span className="block text-[11px] font-semibold text-slate-400 truncate">Beach villas {va.beach.join(', ')}</span>
+                                                      </span>
+                                                      <span className={`shrink-0 text-[10px] font-black uppercase tracking-wider ${on ? 'text-[#6D2158]' : 'text-slate-300'}`}>{on ? 'Jetty B' : 'Beach'}</span>
+                                                  </button>
+                                              );
+                                          })}
+                                      </div>
+                                  )}
+                                  {sarongAllocDate && sarongAllocDate !== sarongDate && (
+                                      <p className="mt-2 text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">No allocation for {new Date(`${sarongDate}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' })} yet — showing {new Date(`${sarongAllocDate}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'short' })}. Open this again once Tuesday is allocated.</p>
+                                  )}
+                                  <div className="flex items-center justify-between gap-2 mt-3">
+                                      <p className="text-[10px] font-semibold text-slate-400">Ticked VAs use the Jetty B pantry: their beach villas are counted with Jetty B. Remembered for the next weeks.</p>
+                                      <button onClick={() => saveSarongJettyB(sarongHosts)} disabled={sarongSaving} className="shrink-0 px-4 py-2 rounded-xl text-xs font-black bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 cursor-pointer">{sarongSaving ? 'Saving…' : 'Save'}</button>
+                                  </div>
                               </div>
-                              <div className="flex flex-col items-center justify-center">
-                                  <span className="text-2xl">🟥</span>
-                                  <span className="text-[10px] font-bold text-slate-500 mt-1 uppercase">Adult Females</span>
-                                  <span className="text-2xl font-black text-slate-800">{getSarongCounts().total.female}</span>
-                              </div>
-                              <div className="flex flex-col items-center justify-center">
-                                  <span className="text-2xl">🟨</span>
-                                  <span className="text-[10px] font-bold text-slate-500 mt-1 uppercase">Kids</span>
-                                  <span className="text-2xl font-black text-slate-800">{getSarongCounts().total.kids}</span>
-                              </div>
-                          </div>
+                          )}
                       </div>
+                      <p className="text-[11px] font-semibold text-slate-400 mt-4 leading-relaxed">
+                          Not counted: departures, day use, TMA, house use, show villas and fumigation. Back-to-back counts the arriving guest; a villa move counts in the new villa.
+                      </p>
                   </div>
               </div>
           </div>
-      )}
+          );
+      })()}
 
       {/* MANUAL MOVE MODAL */}
       {isMoveModalOpen && isAdmin && (

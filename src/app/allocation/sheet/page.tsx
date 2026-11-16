@@ -9,7 +9,8 @@ import { isWorkedLeave } from "@/lib/attendanceData";
 import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
 import { parseVillas } from "../lib/constants";
 import { ZONES, ZoneKey, majorityZone, loadVillaLayout, slotBySections } from "../lib/villaLayout";
-import { projectGuestDay, rowsByVilla, deriveHKStatus } from "@/lib/guestDay";
+import { isServiceDay } from "@/lib/specialVillas";
+import { projectGuestDay, rowsByVilla, deriveHKStatus, villaStatusMap, movementTime, sheetColours } from "@/lib/guestDay";
 
 export default function AllocationSheetPage() {
   const [selectedDate, setSelectedDate] = useState<string>(getDhakaDateStr());
@@ -76,6 +77,8 @@ export default function AllocationSheetPage() {
       ]);
       const todayByVilla = rowsByVilla(todayGuestRows);
       const prevByVilla = rowsByVilla(prevGuestRows);
+      const timesByVilla = villaStatusMap(todayGuestRows);
+      const prevTimesByVilla = villaStatusMap(prevGuestRows);
 
       // 3. Fetch Persistent Daily Ice Requests
       const { data: rawIceReqs } = await supabase
@@ -186,7 +189,8 @@ export default function AllocationSheetPage() {
 
           const villaList = vNums.map((v) => {
             const hk = deriveHKStatus(todayByVilla[v], prevByVilla[v], selectedDate);
-            return { number: v, status: hk.label, bg: hk.bg, textColor: hk.text };
+            const c = sheetColours(hk);
+            return { number: v, status: hk.label, bg: c.bg, textColor: c.text, time: hk.code === 'H/U' ? (isServiceDay(todayByVilla[v]?.remarks) ? 'SERVICE DAY' : '') : movementTime(hk, timesByVilla[v], prevTimesByVilla[v]) };
           });
 
           // Same area as on the board: the jetty holding most of their villas

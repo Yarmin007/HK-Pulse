@@ -79,8 +79,12 @@ export const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: st
  * stay OCC (or become DEP on their departure day), House Use carries on, everything else is VAC.
  */
 export const projectGuestDay = async (date: string): Promise<{ rows: any[]; isProjected: boolean }> => {
-    const { data: dbRecords, error } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', date);
+    const { data: allRecords, error } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', date);
     if (error) console.error(error);
+    // The day's stats row (villa_number 0 / null, Summary board) shares this table: it is not a villa and must not
+    // count as "this day is saved", or the projection is skipped and every villa shows vacant.
+    const isVillaRow = (r: any) => Number(normalizeVilla(r.villa_number)) > 0;
+    const dbRecords = (allRecords || []).filter(isVillaRow);
     const preRegistered = (dbRecords || []).filter(r => getSpecialKind(r.status));
     if (dbRecords && dbRecords.length > 0 && preRegistered.length !== dbRecords.length) return { rows: dbRecords, isProjected: false };
 
@@ -90,10 +94,11 @@ export const projectGuestDay = async (date: string): Promise<{ rows: any[]; isPr
         .lt('report_date', date)
         .order('report_date', { ascending: false })
         .limit(200);
-    if (!recentRecords || recentRecords.length === 0) return { rows: dbRecords || [], isProjected: false };
+    const recentVillas = (recentRecords || []).filter(isVillaRow);
+    if (recentVillas.length === 0) return { rows: dbRecords, isProjected: false };
 
-    const latestDate = recentRecords[0].report_date;
-    const sourceData = recentRecords.filter(r => r.report_date === latestDate);
+    const latestDate = recentVillas[0].report_date;
+    const sourceData = recentVillas.filter(r => r.report_date === latestDate);
     const projected = sourceData.map(r => {
         const statusStr = String(r.status || 'VAC').trim().toUpperCase();
         if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
@@ -205,6 +210,27 @@ export const deriveHKStatus = (today: any | undefined, prev: any | undefined, da
     if (prevTmaNight) return pick('TMA DEP');
     return pick('VAC');
 };
+
+/** Movement time shown next to a status: arrival / departure time, both for back-to-back (D 12:00 A 14:30).
+ *  `prev` = yesterday's row for the villa: a TMA crew or guest leaving today may only have its time there. */
+export const movementTime = (hk: HKStatus, info?: VillaStatus, prev?: VillaStatus) => {
+    // TMA: crew arrival and / or departure (TMA D has both the same day)
+    if (hk.code.includes('TMA')) {
+        const dep = (hk.code !== 'TMA N' && (info?.departure || prev?.departure)) || '';
+        const arr = hk.code === 'TMA DEP' ? '' : info?.arrival || '';
+        return [dep && `D ${dep}`, arr && `A ${arr}`].filter(Boolean).join(' ');
+    }
+    if (!info) return '';
+    if (hk.code === 'DEP/ARR') return [info.departure && `D ${info.departure}`, info.arrival && `A ${info.arrival}`].filter(Boolean).join(' ');
+    if (hk.code.includes('ARR') || hk.code === 'JOIN') return info.arrival || '';
+    if (hk.code.startsWith('DEP')) return info.departure || '';
+    return '';
+};
+
+/** Printed allocation sheet: every TMA status is one orange, except TMA leaving + guest arriving (TMA/ARR). */
+export const SHEET_TMA_BG = '#fb923c';
+export const sheetColours = (hk: HKStatus) =>
+    hk.code.includes('TMA') && hk.code !== 'TMA/ARR' ? { bg: SHEET_TMA_BG, text: '#ffffff' } : { bg: hk.bg, text: hk.text };
 
 /** villa number → raw guest-list row */
 export const rowsByVilla = (rows: any[]) => {
