@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useConfirm } from '@/components/ConfirmProvider';
 import { supabase } from "@/lib/supabase";
+import { distributeSpecialTasks, isSpecialTaskRow, specialTaskText, SPECIAL_TASK_SHIFT } from "@/lib/specialTasks";
 import { 
   MapPin, 
   Home, 
@@ -38,7 +39,7 @@ interface Host {
 
 interface Allocation {
   id?: string;
-  host_id: string;
+  host_id: string | null; // null for Special Task rows (hsk_allocations.host_id is a uuid)
   area: string;
   shift: string;
   task_details: string;
@@ -306,8 +307,8 @@ export default function PublicAreaBoard({
 
   useEffect(() => {
     const existingSpecial = allocations
-      .filter((a) => a.area === "public" && (a.task_details || "").toLowerCase().includes("special"))
-      .map((a) => a.task_details.replace(/^special:\s*/i, ""));
+      .filter(isSpecialTaskRow)
+      .map((a) => specialTaskText(a.task_details));
 
     setSpecialTasks([
       existingSpecial[0] || "",
@@ -554,7 +555,7 @@ export default function PublicAreaBoard({
     setParsedSchedule({
       detectedDate,
       items,
-      deepCleanTasks: deepClean,
+      deepCleanTasks: distributeSpecialTasks(deepClean).filter(Boolean),
     });
   };
 
@@ -657,10 +658,10 @@ export default function PublicAreaBoard({
         parsedSchedule.deepCleanTasks.slice(0, 4).forEach((task, i) => {
           newSpecials[i] = task;
           newAllocs.push({
-            host_id: "special_task_placeholder",
+            host_id: null,
             area: "public",
-            shift: "Special Task",
-            task_details: `Special: ${task.trim()}`,
+            shift: SPECIAL_TASK_SHIFT,
+            task_details: task.trim(),
             report_date: targetDate,
           });
         });
@@ -843,17 +844,27 @@ export default function PublicAreaBoard({
   const handleSpecialChange = (index: number, val: string) => {
     const updated = [...specialTasks];
     updated[index] = val;
+    applySpecialTasks(updated);
+  };
+
+  // On leaving a box: split one-line lists across the 4 slots, fix spelling & capitals
+  const handleSpecialBlur = () => {
+    const tidied = distributeSpecialTasks(specialTasks);
+    if (tidied.some((t, i) => t !== specialTasks[i])) applySpecialTasks(tidied);
+  };
+
+  const applySpecialTasks = (updated: string[]) => {
     setSpecialTasks(updated);
 
     const nonSpecials = allocations.filter(
-      (a) => !(a.area === "public" && (a.task_details || "").toLowerCase().includes("special"))
+      (a) => !isSpecialTaskRow(a)
     );
 
     const newSpecials: Allocation[] = updated.filter(Boolean).map((t) => ({
-      host_id: "special_task_placeholder",
+      host_id: null,
       area: "public",
-      shift: "Special Task",
-      task_details: `Special: ${t.trim()}`,
+      shift: SPECIAL_TASK_SHIFT,
+      task_details: t.trim(),
       report_date: selectedDate,
     }));
 
@@ -911,13 +922,13 @@ export default function PublicAreaBoard({
                       <p className="text-xs font-black text-slate-800">{name}</p>
                       <div className="flex items-center gap-1.5">
                         {contact && <span className="text-[9px] font-bold text-slate-400">{contact}</span>}
-                        {getLeaveBadge(a.host_id)}
+                        {getLeaveBadge(a.host_id ?? "")}
                       </div>
                     </div>
                   </div>
 
                   <button
-                    onClick={() => handleRemoveAllocation(a.host_id, area, a.shift, a.task_details)}
+                    onClick={() => handleRemoveAllocation(a.host_id ?? "", area, a.shift, a.task_details)}
                     className="p-1 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                     title="Remove from shift"
                   >
@@ -1116,6 +1127,7 @@ export default function PublicAreaBoard({
                     placeholder={`e.g. Task ${idx + 1}`}
                     value={task}
                     onChange={(e) => handleSpecialChange(idx, e.target.value)}
+                    onBlur={handleSpecialBlur}
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 font-bold text-xs text-slate-800 outline-none focus:border-[#6D2158]"
                   />
                 </div>

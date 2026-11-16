@@ -109,7 +109,7 @@ export default function AllocationPage() {
           if (readErr) throw readErr;
           const payload = allocations.map((a: any) => {
               // eslint-disable-next-line @typescript-eslint/no-unused-vars
-              const { id, created_at, ...rest } = a;
+              const { id, created_at, updated_at, ...rest } = a;
               const cleaned = rest.task_details ? String(rest.task_details).split(',').filter((s: string) => s.trim() !== '').join(',') : '';
               return { ...rest, report_date: selectedDate, task_details: cleaned };
           });

@@ -10,6 +10,7 @@ import AllocationSheetSvg, { AllocationSheetData } from "@/components/Allocation
 import { parseVillas } from "../lib/constants";
 import { ZONES, ZoneKey, majorityZone, loadVillaLayout, slotBySections } from "../lib/villaLayout";
 import { isServiceDay } from "@/lib/specialVillas";
+import { isSpecialTaskRow, specialTaskText } from "@/lib/specialTasks";
 import { projectGuestDay, rowsByVilla, deriveHKStatus, villaStatusMap, movementTime, sheetColours } from "@/lib/guestDay";
 
 export default function AllocationSheetPage() {
@@ -231,6 +232,11 @@ export default function AllocationSheetPage() {
             });
           }
         } else if (a.area === "public") {
+          if (isSpecialTaskRow(a)) {
+            const task = specialTaskText(a.task_details);
+            if (task) paSpecialTasks.push(task);
+            if (!a.host_id) return; // special-task row, not an attendant
+          }
           const sh = (a.shift || "").toLowerCase();
           if (sh.includes("morning") || sh.includes("06:30")) {
             if (sh.includes("boh") || a.task_details?.toLowerCase().includes("boh")) paMorningBoh.push(rawName);
@@ -240,9 +246,6 @@ export default function AllocationSheetPage() {
             else paAfternoonFoh.push(rawName);
           } else {
             paMorningFoh.push(rawName);
-          }
-          if (a.task_details && a.task_details.toLowerCase().includes("special")) {
-            paSpecialTasks.push(a.task_details);
           }
         } else if (a.area === "admin") {
           // Exclude if already assigned to Water Room or any other operational area
