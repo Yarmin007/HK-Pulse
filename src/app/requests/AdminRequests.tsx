@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import {
   TOTAL_VILLAS, normalizeVillaNumber, classifyTarget, parseVillas, isOnlyRefills,
-  isCoordinator, packageOf, isHardLiquor, parseItemLine, deliveryOf, deliveryPatch, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM,
+  isCoordinator, packageOf, isHardLiquor, parseItemLine, deliveryOf, deliveryPatch, markAllItems, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM,
   GENERIC_RUNNER, itemsPending,
   type Delivery,
 } from '@/lib/requestsShared';
@@ -204,6 +204,7 @@ export default function CoordinatorLog() {
   const [currentUser, setCurrentUser] = useState<any>(null); 
   const [coord, setCoord] = useState(false); // Abdulla Yamin only: private requests + banking
   const [isPrivate, setIsPrivate] = useState(false);
+  const [vaOnly, setVaOnly] = useState(false); // handed straight to the VA — runners never see it
   const [mbHistory, setMbHistory] = useState<MbHistory[]>([]);
   const [bankedByReq, setBankedByReq] = useState<Record<string, BankedRow[]>>({});
   const [stayStart, setStayStart] = useState('');
@@ -524,7 +525,7 @@ export default function CoordinatorLog() {
     setManualTime(dhakaTimeFormatter.format(getDhakaTime()));
     
     setVillaNumber(''); setGuestOptions([]); setGuestRole(''); setEditingGuestName(''); setMbTrayOpen(false); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch(''); setOtherItemSearch('');
-    setOtherCategory('General'); setIsEditing(false); setEditingId(null); setIsPrivate(false);
+    setOtherCategory('General'); setIsEditing(false); setEditingId(null); setIsPrivate(false); setVaOnly(false);
     setMbCategory('Frequent');
     
     if (type === 'Minibar') setIsMinibarOpen(true);
@@ -540,6 +541,7 @@ export default function CoordinatorLog() {
     setRequesterSearch(GENERIC_REQUESTERS.includes((record.attendant_name || '').toUpperCase()) ? '' : record.attendant_name);
     setEditingGuestName(record.guest_name || '');
     setIsPrivate(!!record.is_private);
+    setVaOnly(deliveryOf(record) === 'va');
     setMbTrayOpen(false);
     
     if (record.request_type === 'Minibar') {
@@ -677,6 +679,13 @@ export default function CoordinatorLog() {
        logged_by: loggedByName,
        ...(coord ? { is_private: isPrivate } : {}),
     };
+    // VA only: goes straight to the villa attendant (status "with VA"), not to the runners.
+    const editRec = isEditing ? records.find(r => r.id === editingId) : null;
+    const vaStep = target.kind !== 'villa' ? {}
+      : vaOnly && (!editRec || deliveryOf(editRec) === 'new') ? { delivery_status: 'va', taken_by: vaFor(cleanV) || 'VA', taken_at: new Date().toISOString(), ...(reqType === 'Minibar' ? { is_sent: true, item_details: markAllItems(details, true) } : {}) }
+      : !vaOnly && editRec && deliveryOf(editRec) === 'va' ? { delivery_status: null, taken_by: null, taken_at: null, ...(reqType === 'Minibar' ? { is_sent: false } : {}) }
+      : {};
+    Object.assign(payload, vaStep);
 
  // Banked lines go to the coordinator's ledger only. "direct" = banked from the form, not from posting.
     const saveBank = async (requestId: string | null) => {
@@ -717,7 +726,7 @@ export default function CoordinatorLog() {
     if (!error) { 
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
       // New, non-private request for today → ping the runners on duty.
-      if (!isEditing && !(coord && isPrivate) && dateStr === getDhakaDateStr()) {
+      if (!isEditing && !(coord && isPrivate) && !(vaOnly && target.kind === 'villa') && dateStr === getDhakaDateStr()) {
         notifyRunners(cleanV, reqType, details).then(n => toast.success(n ? `Saved · ${n} runner phone${n > 1 ? 's' : ''} notified` : 'Saved · no runner has notifications on'));
       } else toast.success(isEditing ? "Updated" : "Saved"); 
     } else {
@@ -1268,6 +1277,17 @@ export default function CoordinatorLog() {
       </button>
   ) : null;
 
+  // VA only: the villa attendant does it, the runners never see it.
+  const vaOnlyToggle = classifyTarget(villaNumber).kind === 'villa' ? (
+      <button type="button" onClick={() => setVaOnly(v => !v)}
+        className={`w-full mb-2 px-3 py-2 rounded-xl border text-xs font-bold flex items-center justify-between gap-2 transition-colors cursor-pointer ${vaOnly ? 'bg-amber-500 border-amber-500 text-white' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+        <span className="flex items-center gap-1.5 min-w-0"><User size={13} className="shrink-0"/> <span className="truncate">VA only{vaFor(villaNumber) ? ` · ${vaFor(villaNumber)}` : ''} — runner won&rsquo;t see it</span></span>
+        <span className={`w-9 h-5 rounded-full p-0.5 shrink-0 transition-colors ${vaOnly ? 'bg-white/60' : 'bg-slate-300'}`}>
+          <span className={`block w-4 h-4 rounded-full bg-white transition-transform ${vaOnly ? 'translate-x-4' : ''}`}/>
+        </span>
+      </button>
+  ) : null;
+
   // Sinner stay: spirits already sent this stay, shown while adding a minibar request.
   const renderStaySpirits = () => {
       if (packageOf(guestInfo?.mealPlan) !== 'Sinner') return null;
@@ -1589,7 +1609,7 @@ export default function CoordinatorLog() {
                       <div className={`-mt-2 mb-3 px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 ${
                         delivery === 'delivered' ? 'bg-emerald-50 text-emerald-700' : delivery === 'pantry' || delivery === 'va' ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-blue-50 text-blue-700'
                       }`}>
-                        {delivery === 'taken' && <><Bike size={12} className="shrink-0"/> With {r.taken_by === GENERIC_RUNNER ? 'runner' : r.taken_by} · {shortHHMM(r.taken_at)}{itemsPending(r.item_details) > 0 ? ` · ${itemsPending(r.item_details)} still at office` : ''}</>}
+                        {delivery === 'taken' && <><Bike size={12} className="shrink-0"/> With {r.taken_by === GENERIC_RUNNER ? 'runner' : r.taken_by} · {shortHHMM(r.taken_at)}{r.request_type === 'Minibar' && itemsPending(r.item_details) > 0 ? ` · ${itemsPending(r.item_details)} still at office` : ''}</>}
                         {delivery === 'va' && <><User size={12} className="shrink-0"/> With VA {r.taken_by} · {shortHHMM(r.taken_at)} — to confirm in villa</>}
                         {delivery === 'pantry' && <><Package size={12} className="shrink-0"/> At pantry since {shortHHMM(r.pantry_at)} ({r.pantry_by}) — VA to confirm</>}
                         {delivery === 'delivered' && <><CheckCircle2 size={12} className="shrink-0"/> In villa · {r.delivered_by} {shortHHMM(r.delivered_at)}{r.pantry_at ? ' · via pantry' : ''}</>}
@@ -1917,7 +1937,7 @@ export default function CoordinatorLog() {
 
                     <div className="p-3 border-t border-slate-200 bg-white" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
                       {renderStaySpirits()}
-                      {privateToggle}
+                      {vaOnlyToggle}{privateToggle}
                       <button
                         onClick={() => submitRequest('Minibar')}
                         className="w-full py-3.5 2xl:py-4 bg-rose-600 hover:bg-rose-700 active:scale-[0.98] text-white rounded-xl text-sm 2xl:text-base font-black uppercase tracking-wider shadow-md shadow-rose-600/20 transition-all cursor-pointer"
@@ -2182,7 +2202,7 @@ export default function CoordinatorLog() {
                </div>
 
                <div className="p-4 bg-white border-t border-slate-100 pb-6 md:pb-4 shrink-0">
-                  {privateToggle}
+                  {vaOnlyToggle}{privateToggle}
                   <button 
                     onClick={() => submitRequest('Other')} 
                     className={`w-full py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider text-white shadow-lg transition-all cursor-pointer ${

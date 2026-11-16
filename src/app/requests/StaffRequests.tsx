@@ -199,9 +199,17 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
   const rank = groupOf;
   // Runner's jetty filter; comp codes / "Beach bar" style targets show under All only.
   const inJetty = (r: Req) => !isRunner || jetty === 'All' || jettyOf(r.villa_number) === jetty;
-  const jettyCount = (j: Jetty) => requests.filter(r => isTodo(r) && (j === 'All' || jettyOf(r.villa_number) === j)).length;
-  const todo = requests.filter(r => isTodo(r) && inJetty(r)).sort((a, b) => rank(a) - rank(b) || a.request_time.localeCompare(b.request_time));
-  const done = requests.filter(r => !isTodo(r) && inJetty(r)).sort((a, b) => (b.delivered_at || b.pantry_at || b.request_time).localeCompare(a.delivered_at || a.pantry_at || a.request_time));
+  const vaOf = (villa: string) => { const t = classifyTarget(villa); return t.kind === 'villa' ? (villaVA[t.value] || villaVA[t.base] || '') : ''; };
+  // VA-only jobs (handed to the villa attendant) are not the runner's business.
+  const forMe = (r: Req) => {
+    if (!isRunner) return true;
+    const d = deliveryOf(r);
+    if (d === 'va') return false;
+    return !(d === 'delivered' && !r.pantry_at && r.taken_by && sameName(r.taken_by, vaOf(r.villa_number)));
+  };
+  const jettyCount = (j: Jetty) => requests.filter(r => forMe(r) && isTodo(r) && (j === 'All' || jettyOf(r.villa_number) === j)).length;
+  const todo = requests.filter(r => forMe(r) && isTodo(r) && inJetty(r)).sort((a, b) => rank(a) - rank(b) || a.request_time.localeCompare(b.request_time));
+  const done = requests.filter(r => forMe(r) && !isTodo(r) && inJetty(r)).sort((a, b) => (b.delivered_at || b.pantry_at || b.request_time).localeCompare(a.delivered_at || a.pantry_at || a.request_time));
   const list = tab === 'todo' ? todo : done;
   const pantryCount = requests.filter(r => deliveryOf(r) === 'pantry' || deliveryOf(r) === 'va').length;
   const GROUP_TITLE = isRunner
@@ -224,7 +232,6 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
     else if (to === 'va') toast.success(`Handed to ${holder || 'VA'}`);
     else if (to === 'undo') toast.success('Undone');
   };
-  const vaOf = (villa: string) => { const t = classifyTarget(villa); return t.kind === 'villa' ? (villaVA[t.value] || villaVA[t.base] || '') : ''; };
 
   // ---------------- New request (VA) ----------------
   const openSheet = async () => {
@@ -386,7 +393,7 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
           const guestName = r.guest_name || extractMainGuest(g?.guest_name || '');
           const pantryWait = d === 'pantry' ? minutesAgo(r.pantry_at || r.request_time) : 0;
           const pending = d === 'new' ? items.length : itemsPending(r.item_details);
-          const partial = d !== 'new' && pending > 0;
+          const partial = r.request_type === 'Minibar' && d !== 'new' && pending > 0;
           return (
             <React.Fragment key={r.id}>
             {showHead && <h2 className={`px-1 pt-2 text-[11px] font-black uppercase tracking-wider ${grp === 0 ? (isRunner ? 'text-orange-600' : 'text-amber-700') : 'text-slate-400'}`}>{GROUP_TITLE[grp]}</h2>}
