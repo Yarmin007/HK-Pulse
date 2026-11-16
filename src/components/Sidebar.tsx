@@ -8,7 +8,7 @@ import {
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
   Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Key, Plane, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
-  Eye, ArrowLeft, UserCog, Search, Bike
+  Eye, ArrowLeft, UserCog, Search, Bike, WashingMachine
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getDhakaDateStr } from "@/lib/dateUtils";
@@ -53,6 +53,7 @@ const INVENTORY_ITEMS = [
 ];
 
 const LAUNDRY_ITEMS = [
+  { name: "Laundry Production", icon: WashingMachine, path: "/laundry/production" },
   { name: "Laundry Chemicals", icon: Droplets, path: "/laundry/chemicals" },
   { name: "Host Uniforms", icon: Shirt, path: "/laundry/uniforms" },
   { name: "Uniform Tracker", icon: Layers, path: "/laundry/tracker" },
@@ -133,6 +134,7 @@ export default function Sidebar() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRunnerToday, setIsRunnerToday] = useState(false);
   const [isVaToday, setIsVaToday] = useState(false);
+  const [isLaundryToday, setIsLaundryToday] = useState(false);
 
   useEffect(() => {
       const sessionData = localStorage.getItem('hk_pulse_session');
@@ -153,6 +155,7 @@ export default function Sidebar() {
                     const rows = (data || []).filter((a: any) => !isOffShift(a.shift));
                     setIsRunnerToday(rows.some((a: any) => a.area === "riders" && riderDutyOf(a, { role: parsed.role }) === "Runner"));
                     setIsVaToday(rows.some((a: any) => a.area === "villa" && String(a.task_details || "").trim()));
+                    setIsLaundryToday(rows.some((a: any) => a.area === "laundry"));
                   });
               }
 
@@ -246,6 +249,9 @@ export default function Sidebar() {
   const isAdmin = currentUser?.system_role === 'admin' || (currentUser?.is_super_admin && !currentUser?.impersonating_from);
 
   const canAccessLaundry = isAdmin || roleLower.includes('laundry') || deptLower.includes('laundry') || canAccess("laundry");
+  // Laundry Production: admins + whoever is on laundry duty in today's allocation
+  const canAccessProduction = isAdmin || isLaundryToday;
+  const laundryItems = LAUNDRY_ITEMS.filter(i => (i.path === '/laundry/production' ? canAccessProduction : canAccessLaundry));
   const canAccessWater = isAdmin || isPoolAttendant || canAccess("water");
   const canAccessMinibar = isAdmin || canAccess("minibar");
   const canAccessInventory = isAdmin; // inventory sheets are admin-only
@@ -256,8 +262,9 @@ export default function Sidebar() {
           { name: "Water Prod.", icon: Droplets, path: "/water" },
           STAFF_CORE_BASE[1]  
       ];
-      return isRunnerToday || isVaToday ? [base[0], { name: "Requests", icon: isRunnerToday ? Bike : ClipboardList, path: "/requests" }, ...base.slice(1)] : base;
-  }, [isPoolAttendant, isRunnerToday, isVaToday]);
+      const withRequests = isRunnerToday || isVaToday ? [base[0], { name: "Requests", icon: isRunnerToday ? Bike : ClipboardList, path: "/requests" }, ...base.slice(1)] : base;
+      return isLaundryToday ? [withRequests[0], { name: "Laundry Production", icon: WashingMachine, path: "/laundry/production" }, ...withRequests.slice(1)] : withRequests;
+  }, [isPoolAttendant, isRunnerToday, isVaToday, isLaundryToday]);
 
   const dynamicStaffMenuItems = STAFF_MENU_ITEMS;
 
@@ -268,7 +275,11 @@ export default function Sidebar() {
       { name: "Tasks", icon: CheckSquare, path: "/tasks" },
   ];
 
-  const STAFF_BOTTOM_TABS = isRunnerToday ? [
+  const STAFF_BOTTOM_TABS = isLaundryToday && !isRunnerToday ? [
+      { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+      { name: "Production", icon: WashingMachine, path: "/laundry/production" },
+      { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
+  ] : isRunnerToday ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Requests", icon: Bike, path: "/requests" },
       { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
@@ -299,7 +310,7 @@ export default function Sidebar() {
   const allocationItems = isAdmin ? ALLOCATION_ITEMS : ALLOCATION_ITEMS.filter(i => ['/forecast', '/guests', '/allocation/sheet'].includes(i.path));
   sections.push({ key: 'allocation', group: 'Departments', title: 'Allocation Hub', icon: ListChecks, tone: 'brand', items: allocationItems, collapsible: true, open: isAllocationOpen, toggle: () => setIsAllocationOpen(o => !o) });
   if (canAccessInventory) sections.push({ key: 'inventory', group: 'Departments', title: 'Inventory Hub', icon: Warehouse, tone: 'emerald', items: INVENTORY_ITEMS, collapsible: true, open: isInventoryOpen, toggle: () => setIsInventoryOpen(o => !o) });
-  if (canAccessLaundry) sections.push({ key: 'laundry', group: 'Departments', title: 'Laundry Hub', icon: Droplets, tone: 'purple', items: LAUNDRY_ITEMS, collapsible: true, open: isLaundryOpen, toggle: () => setIsLaundryOpen(o => !o) });
+  if (laundryItems.length) sections.push({ key: 'laundry', group: 'Departments', title: 'Laundry Hub', icon: Droplets, tone: 'purple', items: laundryItems, collapsible: true, open: isLaundryOpen, toggle: () => setIsLaundryOpen(o => !o) });
   if (canAccessWater) sections.push({ key: 'water', group: 'Departments', title: 'Water Production', icon: Droplets, tone: 'sky', items: [{ name: 'Water Production', icon: Droplets, path: '/water' }], collapsible: false });
   if (canAccessMinibar) sections.push({ key: 'minibar', group: 'Departments', title: 'Minibar', icon: Wine, tone: 'rose', items: MINIBAR_ITEMS, collapsible: true, open: isMinibarOpen, toggle: () => setIsMinibarOpen(o => !o) });
   if (isAdmin || isSuperAdmin) sections.push({ key: 'team', group: 'Departments', title: 'Team Hub', icon: Briefcase, tone: 'blue', items: TEAM_ITEMS, collapsible: true, open: isTeamOpen, toggle: () => setIsTeamOpen(o => !o) });
