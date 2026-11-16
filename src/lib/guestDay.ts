@@ -88,17 +88,20 @@ export const projectGuestDay = async (date: string): Promise<{ rows: any[]; isPr
     const preRegistered = (dbRecords || []).filter(r => getSpecialKind(r.status));
     if (dbRecords && dbRecords.length > 0 && preRegistered.length !== dbRecords.length) return { rows: dbRecords, isProjected: false };
 
-    const { data: recentRecords } = await supabase
+    // Source = the latest day with a real guest list. Days ahead can already hold only pre-registered special rows
+    // (house use is written a month ahead, TMA departure days...): those days are not a guest list to copy.
+    const { data: lastFull } = await supabase
         .from('hsk_daily_summary')
-        .select('*')
+        .select('report_date')
         .lt('report_date', date)
+        .not('status', 'ilike', '%HOUSE%').not('status', 'ilike', '%TMA%').not('status', 'ilike', '%SHOW%').not('status', 'ilike', '%FUMIG%')
+        .not('villa_number', 'in', '("0")')
         .order('report_date', { ascending: false })
-        .limit(200);
-    const recentVillas = (recentRecords || []).filter(isVillaRow);
-    if (recentVillas.length === 0) return { rows: dbRecords, isProjected: false };
-
-    const latestDate = recentVillas[0].report_date;
-    const sourceData = recentVillas.filter(r => r.report_date === latestDate);
+        .limit(1);
+    const latestDate = lastFull?.[0]?.report_date;
+    if (!latestDate) return { rows: dbRecords, isProjected: false };
+    const { data: sourceRows } = await supabase.from('hsk_daily_summary').select('*').eq('report_date', latestDate);
+    const sourceData = (sourceRows || []).filter(isVillaRow);
     const projected = sourceData.map(r => {
         const statusStr = String(r.status || 'VAC').trim().toUpperCase();
         if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {

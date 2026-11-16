@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
 import { supabase } from "@/lib/supabase";
-import { Printer, Calendar, RefreshCw, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
+import { Printer, Calendar, RefreshCw, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight } from "lucide-react";
 import { getDhakaDateStr } from "@/lib/dateUtils";
 import { isWorkedLeave } from "@/lib/attendanceData";
 import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
@@ -18,11 +18,31 @@ export default function AllocationSheetPage() {
   const [sheetData, setSheetData] = useState<AllocationSheetData | null>(null);
 
   // Zoom control state (0.7x to 2.0x)
+  // Opens bigger on desktop (the A4 sheet is small at 100%); phones keep 100%.
+  const [defaultZoom, setDefaultZoom] = useState<number>(1);
   const [zoom, setZoom] = useState<number>(1);
+  useEffect(() => {
+    const z = window.innerWidth >= 768 ? 1.35 : 1;
+    setDefaultZoom(z);
+    setZoom(z);
+  }, []);
+
+  // Date helpers: ‹ › step a day, quick Yesterday / Today / Tomorrow
+  const shiftDate = (ymd: string, days: number) => {
+    const [y, m, d] = ymd.split("-").map(Number);
+    const x = new Date(y, m - 1, d + days);
+    return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+  };
+  const todayStr = getDhakaDateStr();
+  const QUICK_DAYS = [
+    { label: "Yesterday", date: shiftDate(todayStr, -1) },
+    { label: "Today", date: todayStr },
+    { label: "Tomorrow", date: shiftDate(todayStr, 1) },
+  ];
 
   const handleZoomIn = () => setZoom((prev) => Math.min(2.0, +(prev + 0.15).toFixed(2)));
   const handleZoomOut = () => setZoom((prev) => Math.max(0.7, +(prev - 0.15).toFixed(2)));
-  const handleResetZoom = () => setZoom(1);
+  const handleResetZoom = () => setZoom(defaultZoom);
 
   useEffect(() => {
     fetchSheetData();
@@ -434,10 +454,7 @@ export default function AllocationSheetPage() {
     <div className="min-h-screen bg-slate-200 p-2 md:p-6 print:p-0 print:bg-white flex flex-col items-center">
       {/* SCREEN CONTROLS BAR WITH INTERACTIVE ZOOM */}
       <div className="print:hidden w-full max-w-[210mm] mb-4 bg-white p-3 rounded-2xl shadow-sm border border-slate-300 flex flex-wrap items-center justify-between gap-3 sticky top-2 z-50">
-        <div>
-          <h1 className="text-sm font-black text-slate-800">Housekeeping Allocation Report</h1>
-          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Live Bound to Board Data</p>
-        </div>
+        <h1 className="text-sm font-black text-slate-800">Housekeeping Allocation Report</h1>
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Zoom In, Zoom Out, Reset Controls */}
@@ -459,26 +476,47 @@ export default function AllocationSheetPage() {
             >
               <ZoomIn size={14} />
             </button>
-            {zoom !== 1 && (
+            {zoom !== defaultZoom && (
               <button
                 onClick={handleResetZoom}
                 className="p-1.5 hover:bg-white rounded-lg text-[#691c56] border-l border-slate-200 ml-1 transition-colors cursor-pointer"
-                title="Reset to 100%"
+                title="Reset zoom"
               >
                 <RotateCcw size={13} />
               </button>
             )}
           </div>
 
-          {/* Date Picker */}
-          <div className="flex items-center bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200 gap-2">
-            <Calendar size={14} className="text-[#691c56]" />
-            <input
-              type="date"
-              className="bg-transparent font-black text-xs text-[#691c56] outline-none cursor-pointer"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-            />
+          {/* Quick days */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+            {QUICK_DAYS.map((q) => (
+              <button
+                key={q.label}
+                onClick={() => setSelectedDate(q.date)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer ${selectedDate === q.date ? "bg-[#691c56] text-white shadow-sm" : "text-slate-500 hover:bg-white"}`}
+              >
+                {q.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Date: step back / pick / step forward */}
+          <div className="flex items-center bg-slate-50 rounded-xl border border-slate-200">
+            <button onClick={() => setSelectedDate((d) => shiftDate(d, -1))} className="p-1.5 hover:bg-white rounded-l-xl text-slate-600 cursor-pointer" title="Previous day">
+              <ChevronLeft size={15} />
+            </button>
+            <div className="flex items-center gap-1.5 px-1.5 py-1.5 border-x border-slate-200">
+              <Calendar size={14} className="text-[#691c56]" />
+              <input
+                type="date"
+                className="bg-transparent font-black text-xs text-[#691c56] outline-none cursor-pointer"
+                value={selectedDate}
+                onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+              />
+            </div>
+            <button onClick={() => setSelectedDate((d) => shiftDate(d, 1))} className="p-1.5 hover:bg-white rounded-r-xl text-slate-600 cursor-pointer" title="Next day">
+              <ChevronRight size={15} />
+            </button>
           </div>
 
           {/* Refresh */}
@@ -502,14 +540,11 @@ export default function AllocationSheetPage() {
       </div>
 
       {/* RENDER EXACT A4 SVG COMPONENT WITH DYNAMIC ZOOM CONTAINER */}
-      <div className="w-full flex justify-center overflow-auto print:overflow-visible">
+      {/* CSS zoom (not transform) so a bigger sheet scrolls properly instead of being cut off at the sides */}
+      <div className="w-full overflow-auto print:overflow-visible">
         <div
-          className="bg-white border border-slate-300 shadow-xl print:border-0 print:shadow-none transition-transform duration-150 origin-top"
-          style={{
-            width: "210mm",
-            transform: `scale(${zoom})`,
-            marginBottom: zoom > 1 ? `${(zoom - 1) * 1180}px` : "0px",
-          }}
+          className="sheet-zoom mx-auto bg-white border border-slate-300 shadow-xl print:border-0 print:shadow-none"
+          style={{ width: "210mm", zoom }}
         >
           {sheetData && <AllocationSheetSvg data={sheetData} />}
         </div>
@@ -517,6 +552,9 @@ export default function AllocationSheetPage() {
 
       <style jsx global>{`
         @media print {
+          .sheet-zoom {
+            zoom: 1 !important;
+          }
           @page {
             size: A4 portrait;
             margin: 0;

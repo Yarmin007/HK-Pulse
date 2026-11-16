@@ -781,18 +781,33 @@ export default function HousekeepingSummaryPage() {
       runImport('Arrivals XML', () => applyArrivals(masterList, parseArrivalsXml(xmlText), selectedDate));
 
   // Villas that had the TMA night crew yesterday: they check out this morning (time comes from the memo)
-  const leavingCrewVillas = async () => {
-      const [y, m, d] = selectedDate.split('-').map(Number);
+  const prevDateOf = (ymd: string) => {
+      const [y, m, d] = ymd.split('-').map(Number);
       const prev = new Date(y, m - 1, d - 1);
-      const prevDate = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-${String(prev.getDate()).padStart(2, '0')}`;
-      const { rows } = await projectGuestDay(prevDate);
-      return rows.filter((r: any) => /TMA/i.test(r.status || '') && !/DAY/i.test(r.status || '')).map((r: any) => normalizeVilla(r.villa_number)).filter(Boolean) as string[];
+      return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}-${String(prev.getDate()).padStart(2, '0')}`;
+  };
+  const isNightCrew = (r: any) => /TMA/i.test(r.status || '') && !/DAY/i.test(r.status || '');
+  const leavingCrewVillas = async () => {
+      const { rows } = await projectGuestDay(prevDateOf(selectedDate));
+      return rows.filter(isNightCrew).map((r: any) => normalizeVilla(r.villa_number)).filter(Boolean) as string[];
+  };
+  // The Special villas page shows a TMA stay's departure from its last row. A crew entered by yesterday's memo
+  // ends on yesterday's row, so the check-out time from today's memo is written there too.
+  const saveCrewCheckout = async (time: string) => {
+      if (!time) return;
+      const prevDate = prevDateOf(selectedDate);
+      const { data } = await supabase.from('hsk_daily_summary').select('id, status, departure_time').eq('report_date', prevDate).ilike('status', '%TMA%');
+      const ids = (data || []).filter(r => isNightCrew(r) && r.departure_time !== time).map(r => r.id);
+      if (!ids.length) return;
+      const { error } = await supabase.from('hsk_daily_summary').update({ departure_time: time }).in('id', ids);
+      if (!error) toast.success(`Last night's TMA crew: check-out ${time} saved`);
   };
 
   const processDailyMemoCSV = async (csvText: string) => {
       const memo = parseMemo(parseDelimited(csvText, ','), selectedDate);
       const leaving = await leavingCrewVillas().catch(() => [] as string[]);
       runImport('Memo', () => applyMemo(masterList, memo, selectedDate, leaving));
+      if (!memo.reportDate || memo.reportDate === selectedDate) saveCrewCheckout(memo.crewTimes?.nightLeave || '').catch(() => {});
       // Same memo also fills the day's stats on the Allocation → Summary board (only when it is for this day).
       if (!memo.reportDate || memo.reportDate === selectedDate) {
           saveMemoSummary(csvText, selectedDate)
