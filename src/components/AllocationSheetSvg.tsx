@@ -81,6 +81,7 @@ export interface AllocationSheetData {
     hosts: Array<{ name: string; contact: string; area: string }>;
   };
   laundry: Array<{ name: string; no: string }>;
+  laundrySplit?: Array<{ name: string; no: string }>;
   laundryDutyTitle1?: string;
   laundryDutyTitle2?: string;
   pestControl: Array<{ name: string; no: string }>;
@@ -110,7 +111,7 @@ const formatDateDdMm = (dateStr?: string) => {
   return dateStr;
 };
 
-// Formats leave dates into "7-Nov" style
+// Formats dates into "07-Nov" style (leave from/to, ice dep)
 const formatLeaveDate = (dateStr?: string) => {
   if (!dateStr || dateStr === "NA" || dateStr === "N/A" || dateStr === "-") return "NA";
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -119,7 +120,7 @@ const formatLeaveDate = (dateStr?: string) => {
     const day = parseInt(parts[2], 10);
     const monthIdx = parseInt(parts[1], 10) - 1;
     if (!isNaN(day) && monthIdx >= 0 && monthIdx < 12) {
-      return `${day}-${months[monthIdx]}`;
+      return `${String(day).padStart(2, "0")}-${months[monthIdx]}`;
     }
   }
   const partsSlash = String(dateStr).trim().split("/");
@@ -127,57 +128,37 @@ const formatLeaveDate = (dateStr?: string) => {
     const day = parseInt(partsSlash[0], 10);
     const monthIdx = parseInt(partsSlash[1], 10) - 1;
     if (!isNaN(day) && monthIdx >= 0 && monthIdx < 12) {
-      return `${day}-${months[monthIdx]}`;
+      return `${String(day).padStart(2, "0")}-${months[monthIdx]}`;
     }
   }
   return dateStr;
 };
 
 // Calculates remaining days
-const formatRemainingDays = (fromStr?: string, toStr?: string, duration?: string | number) => {
-  if (!toStr || toStr === "NA" || toStr === "N/A" || toStr === "-") {
-    if (duration) {
-      const num = parseInt(String(duration), 10) || 1;
-      return `${num} ${num > 1 ? "Days" : "Day"}`;
-    }
-    return "1 Day";
+const parseSheetDate = (str?: string): Date | null => {
+  if (!str || str === "NA" || str === "N/A" || str === "-") return null;
+  if (str.includes("-")) {
+    const p = str.split("-").map(Number);
+    if (p.length === 3 && !p.some(isNaN)) return new Date(p[0], p[1] - 1, p[2]);
+  } else if (str.includes("/")) {
+    const p = str.split("/").map(Number);
+    const yr = p[2] ? (p[2] < 100 ? 2000 + p[2] : p[2]) : new Date().getFullYear();
+    if (p.length >= 2 && !isNaN(p[0]) && !isNaN(p[1])) return new Date(yr, p[1] - 1, p[0]);
   }
+  return null;
+};
 
-  try {
-    let d1: Date | null = null;
-    let d2: Date | null = null;
-
-    if (fromStr && fromStr.includes("-")) {
-      const p = fromStr.split("-").map(Number);
-      if (p.length === 3) d1 = new Date(p[0], p[1] - 1, p[2]);
-    } else if (fromStr && fromStr.includes("/")) {
-      const p = fromStr.split("/").map(Number);
-      const yr = p[2] ? (p[2] < 100 ? 2000 + p[2] : p[2]) : new Date().getFullYear();
-      if (p.length >= 2) d1 = new Date(yr, p[1] - 1, p[0]);
-    }
-
-    if (toStr && toStr.includes("-")) {
-      const p = toStr.split("-").map(Number);
-      if (p.length === 3) d2 = new Date(p[0], p[1] - 1, p[2]);
-    } else if (toStr && toStr.includes("/")) {
-      const p = toStr.split("/").map(Number);
-      const yr = p[2] ? (p[2] < 100 ? 2000 + p[2] : p[2]) : new Date().getFullYear();
-      if (p.length >= 2) d2 = new Date(yr, p[1] - 1, p[0]);
-    }
-
-    if (d1 && d2) {
-      const diffTime = d2.getTime() - d1.getTime();
-      const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-      if (diffDays <= 0) return "1 Day";
-      return `${diffDays} ${diffDays > 1 ? "Days" : "Day"}`;
-    }
-  } catch (e) {}
-
-  if (duration) {
-    const num = parseInt(String(duration), 10) || 1;
-    return `${num} ${num > 1 ? "Days" : "Day"}`;
-  }
-  return "1 Day";
+// Days of leave left counting from the sheet's date, both ends included:
+// 12-Nov → 04-Dec seen on 16-Nov = 19 Days; a single day off = 1 Day.
+const formatRemainingDays = (fromStr?: string, toStr?: string, sheetDate?: string) => {
+  const from = parseSheetDate(fromStr);
+  const to = parseSheetDate(toStr) || from;
+  const today = parseSheetDate(sheetDate);
+  if (!to) return "1 Day";
+  const start = today && from ? (today > from ? today : from) : (today || from)!;
+  const days = Math.round((to.getTime() - start.getTime()) / 86400000) + 1;
+  const n = Math.max(1, days);
+  return `${n} ${n > 1 ? "Days" : "Day"}`;
 };
 
 // Natural casing converter for lower section staff
@@ -966,6 +947,8 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-14" x="8.98" y="682.47" width="137.54" height="76.24"/>
         <rect className="cls-14" x="119.03" y="623.18" width="55" height="33.88"/>
         <rect className="cls-14" x="283.9" y="580.82" width="109.86" height="76.24"/>
+        {/* Admin Duty: divider between name and contact, in line with the column line above */}
+        <line className="cls-12" x1="339.02" y1="580.82" x2="339.02" y2="657.06"/>
         <rect className="cls-12" x="64" y="580.82" width="27.52" height="8.47"/>
         <rect className="cls-12" x="64" y="589.29" width="27.52" height="8.47"/>
         <rect className="cls-12" x="64" y="597.76" width="27.52" height="8.47"/>
@@ -1116,6 +1099,8 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-14" x="476.54" y="580.82" width="109.99" height="76.24"/>
         <rect className="cls-14" x="174.01" y="573.18" width="109.97" height="83.88"/>
         <rect className="cls-14" x="504.03" y="433.06" width="82.5" height="132.47"/>
+        {/* Thick bottom edge under the Pest Control column, matching the tables either side */}
+        <line className="cls-14" x1="146.52" y1="834.94" x2="256.48" y2="834.94"/>
         <rect className="cls-13" x="91.5" y="433.06" width="82.5" height="11.53"/>
         <rect className="cls-13" x="174.01" y="433.06" width="82.5" height="11.53"/>
         <rect className="cls-13" x="256.51" y="433.06" width="82.5" height="11.53"/>
@@ -1502,7 +1487,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
             <React.Fragment key={`ice-${r}`}>
               <text className="cls-4" textAnchor="middle" transform={`translate(462.70 ${y})`}><tspan x="0" y="0">{req?.villa || ""}</tspan></text>
               <text className="cls-4" textAnchor="middle" transform={`translate(504.12 ${y})`}><tspan x="0" y="0">{req?.time || ""}</tspan></text>
-              <text className="cls-4" textAnchor="middle" transform={`translate(559.06 ${y})`}><tspan x="0" y="0">{req?.dep || ""}</tspan></text>
+              <text className="cls-4" textAnchor="middle" transform={`translate(559.06 ${y})`}><tspan x="0" y="0">{req?.dep ? formatLeaveDate(req.dep) : ""}</tspan></text>
             </React.Fragment>
           );
         })}
@@ -1619,7 +1604,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
           <React.Fragment key={`adm-${i}`}>
             <text className="cls-duty-val" transform={`translate(286.67 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.admin?.[i]?.name)}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(340.58 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.admin?.[i]?.contact || ""}</tspan></text>
+            <text className="cls-duty-val" textAnchor="middle" transform={`translate(366.39 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.admin?.[i]?.contact || ""}</tspan></text>
           </React.Fragment>
         ))}
 
@@ -1627,31 +1612,31 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         {[0, 1, 2, 3, 4].map((i) => (
           <React.Fragment key={`tailor-${i}`}>
             <text className="cls-duty-val" transform={`translate(395.68 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.tailor?.[i]?.name)}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(450.74 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.tailor?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" textAnchor="middle" transform={`translate(462.8 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{d.tailor?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
         {[0, 1, 2].map((i) => (
           <React.Fragment key={`hsm-${i}`}>
             <text className="cls-duty-val" transform={`translate(395.68 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{toNaturalCase(d.housemate?.[i]?.name)}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(451.55 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{d.housemate?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" textAnchor="middle" transform={`translate(462.8 ${637.15 + i * 8.38})`}><tspan x="0" y="0">{d.housemate?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
 
         {/* Runner, Step, Luggage (ONLY MVPN) */}
         <text className="cls-duty-val" transform="translate(478.6 586.77)"><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.runner?.[0]?.name)}</tspan></text>
         <text className="cls-duty-val" transform="translate(533.23 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.duty || ""}</tspan></text>
-        <text className="cls-duty-val" transform="translate(560.91 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.mvpn || ""}</tspan></text>
+        <text className="cls-duty-val" textAnchor="middle" transform="translate(572.78 586.77)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[0]?.mvpn || ""}</tspan></text>
         <text className="cls-duty-val" transform="translate(478.6 595.24)"><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.runner?.[1]?.name)}</tspan></text>
         <text className="cls-duty-val" transform="translate(533.23 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.duty || ""}</tspan></text>
-        <text className="cls-duty-val" transform="translate(560.91 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.mvpn || ""}</tspan></text>
+        <text className="cls-duty-val" textAnchor="middle" transform="translate(572.78 595.24)"><tspan x="0" y="0">{d.runnerStepLuggage?.runner?.[1]?.mvpn || ""}</tspan></text>
         <text className="cls-duty-val" transform="translate(478.6 612.18)"><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.step?.[0]?.name)}</tspan></text>
         <text className="cls-duty-val" transform="translate(533.04 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.duty || ""}</tspan></text>
-        <text className="cls-duty-val" transform="translate(561.3 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.mvpn || ""}</tspan></text>
+        <text className="cls-duty-val" textAnchor="middle" transform="translate(572.78 612.18)"><tspan x="0" y="0">{d.runnerStepLuggage?.step?.[0]?.mvpn || ""}</tspan></text>
         {[0, 1, 2].map((i) => (
           <React.Fragment key={`lug-${i}`}>
             <text className="cls-duty-val" transform={`translate(478.61 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.runnerStepLuggage?.luggage?.[i]?.name)}</tspan></text>
             <text className="cls-duty-val" transform={`translate(532.47 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.duty || ""}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(565.99 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.mvpn || ""}</tspan></text>
+            <text className="cls-duty-val" textAnchor="middle" transform={`translate(572.78 ${637.59 + i * 8.47})`}><tspan x="0" y="0">{d.runnerStepLuggage?.luggage?.[i]?.mvpn || ""}</tspan></text>
           </React.Fragment>
         ))}
 
@@ -1665,18 +1650,26 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         ))}
 
         {/* Laundry Duty */}
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
+        {/* Morning: 7 rows under the first title */}
+        {[0, 1, 2, 3, 4, 5, 6].map((i) => (
           <React.Fragment key={`lnd-${i}`}>
             <text className="cls-duty-val" transform={`translate(148.32 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.laundry?.[i]?.name)}</tspan></text>
             <text className="cls-duty-val" transform={`translate(211.67 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.laundry?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
+        {/* Split: 4 rows under the second title */}
+        {[0, 1, 2, 3].map((i) => (
+          <React.Fragment key={`lnd-split-${i}`}>
+            <text className="cls-duty-val" transform={`translate(148.32 ${756.19 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.laundrySplit?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(211.67 ${756.19 + i * 8.47})`}><tspan x="0" y="0">{d.laundrySplit?.[i]?.no || ""}</tspan></text>
+          </React.Fragment>
+        ))}
 
         {/* Pest Control */}
-        {[0, 1, 2, 3].map((i) => (
+        {[0, 1, 2, 3, 4].map((i) => (
           <React.Fragment key={`pest-${i}`}>
-            <text className="cls-duty-val" transform={`translate(148.32 ${807 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.pestControl?.[i]?.name)}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(215.06 ${807 + i * 8.47})`}><tspan x="0" y="0">{d.pestControl?.[i]?.no || ""}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(148.32 ${798.53 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.pestControl?.[i]?.name)}</tspan></text>
+            <text className="cls-duty-val" transform={`translate(215.06 ${798.53 + i * 8.47})`}><tspan x="0" y="0">{d.pestControl?.[i]?.no || ""}</tspan></text>
           </React.Fragment>
         ))}
 
@@ -1701,7 +1694,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               <text className="cls-duty-val" transform={`translate(258.8 ${y})`}><tspan x="0" y="0">{toNaturalCase(al?.name)}</tspan></text>
               <text className="cls-duty-val" textAnchor="middle" transform={`translate(341.95 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(al?.from) : ""}</tspan></text>
               <text className="cls-duty-val" textAnchor="middle" transform={`translate(373.71 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(al?.to) : ""}</tspan></text>
-              <text className="cls-duty-val" textAnchor="middle" transform={`translate(405.54 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(al?.from, al?.to, al?.duration) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(405.54 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(al?.from, al?.to, s.report_date) : ""}</tspan></text>
             </React.Fragment>
           );
         })}
@@ -1716,7 +1709,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               <text className="cls-duty-val" transform={`translate(258.8 ${y})`}><tspan x="0" y="0">{toNaturalCase(sl?.name)}</tspan></text>
               <text className="cls-duty-val" textAnchor="middle" transform={`translate(341.86 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(sl?.from) : ""}</tspan></text>
               <text className="cls-duty-val" textAnchor="middle" transform={`translate(373.69 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(sl?.to) : ""}</tspan></text>
-              <text className="cls-duty-val" textAnchor="middle" transform={`translate(405.52 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(sl?.from, sl?.to, sl?.duration) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(405.52 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(sl?.from, sl?.to, s.report_date) : ""}</tspan></text>
             </React.Fragment>
           );
         })}
@@ -1731,8 +1724,8 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
             <React.Fragment key={`off-${i}`}>
               <text className="cls-duty-val" transform={`translate(424.16 ${y})`}><tspan x="0" y="0">{toNaturalCase(off?.name)}</tspan></text>
               <text className="cls-duty-val" textAnchor="middle" transform={`translate(506.91 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(off?.from) : ""}</tspan></text>
-              <text className="cls-duty-val" textAnchor="middle" transform={`translate(538.75 ${y})`}><tspan x="0" y="0">{hasRecord ? (off?.to && off.to !== "NA" ? formatLeaveDate(off.to) : "NA") : ""}</tspan></text>
-              <text className="cls-duty-val" textAnchor="middle" transform={`translate(570.59 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(off?.from, off?.to, off?.duration) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(538.75 ${y})`}><tspan x="0" y="0">{hasRecord ? formatLeaveDate(off?.to && off.to !== "NA" ? off.to : off?.from) : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(570.59 ${y})`}><tspan x="0" y="0">{hasRecord ? formatRemainingDays(off?.from, off?.to, s.report_date) : ""}</tspan></text>
             </React.Fragment>
           );
         })}

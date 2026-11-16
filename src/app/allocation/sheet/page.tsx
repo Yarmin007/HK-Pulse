@@ -11,6 +11,8 @@ import { parseVillas } from "../lib/constants";
 import { ZONES, ZoneKey, majorityZone, loadVillaLayout, slotBySections } from "../lib/villaLayout";
 import { isServiceDay } from "@/lib/specialVillas";
 import { isSpecialTaskRow, specialTaskText } from "@/lib/specialTasks";
+import { loadSinnerSaint } from "@/lib/sinnerSaint";
+import { loadPestControl } from "@/lib/pestControl";
 import { projectGuestDay, rowsByVilla, deriveHKStatus, villaStatusMap, movementTime, sheetColours } from "@/lib/guestDay";
 
 export default function AllocationSheetPage() {
@@ -63,29 +65,10 @@ export default function AllocationSheetPage() {
       const summaryData = sumRows && sumRows.length > 0 ? sumRows[0] : null;
 
       let finalSummary = summaryData ? { ...summaryData } : { report_date: selectedDate };
-      if (!finalSummary.sinner_villa || !finalSummary.saint_villa) {
-        const d = new Date(selectedDate);
-        d.setDate(d.getDate() - 1);
-        const yesterday = d.toISOString().split("T")[0];
-
-        const { data: yestRows } = await supabase
-          .from("hsk_daily_summary")
-          .select("sinner_villa, sinner_dep, saint_villa, saint_dep")
-          .eq("report_date", yesterday)
-          .or("villa_number.is.null,villa_number.eq.0")
-          .limit(1);
-
-        const yestSummary = yestRows && yestRows.length > 0 ? yestRows[0] : null;
-
-        if (yestSummary) {
-          if (!finalSummary.sinner_villa && yestSummary.sinner_villa && (!yestSummary.sinner_dep || yestSummary.sinner_dep >= selectedDate)) {
-            finalSummary.sinner_villa = yestSummary.sinner_villa;
-          }
-          if (!finalSummary.saint_villa && yestSummary.saint_villa && (!yestSummary.saint_dep || yestSummary.saint_dep >= selectedDate)) {
-            finalSummary.saint_villa = yestSummary.saint_villa;
-          }
-        }
-      }
+      // Sinner / Saint: same list as the Summary board (carried until the guests depart, following villa moves)
+      const ss = await loadSinnerSaint(selectedDate);
+      finalSummary.sinner_villa = ss.sinners.map((e) => e.villa).join(" ");
+      finalSummary.saint_villa = ss.saints.map((e) => e.villa).join(" ");
 
       // 2. Villa statuses: same guest list and same combined statuses (DEP/ARR, JOIN, TMA N…) as the Villa board
       const prevDay = new Date(`${selectedDate}T00:00:00`);
@@ -165,9 +148,9 @@ export default function AllocationSheetPage() {
       const gardenList: any[] = [];
       let gardenIncharge = { name: "", contact: "" };
       const laundryList: any[] = [];
+      const laundrySplitList: any[] = [];
       let laundryTitle1 = "MORNING";
-      let laundryTitle2 = "EVENING";
-      const pestList: any[] = [];
+      let laundryTitle2 = "SPLIT";
 
       (allocs || []).forEach((a: any) => {
         const hostObj = a.hosts;
@@ -255,7 +238,7 @@ export default function AllocationSheetPage() {
           // Display actual contact number (no "8 AM" fallback)
           adminList.push({ name: rawName, contact });
         } else if (a.area === "tailor") {
-          tailorList.push({ name: rawName, no: contact });
+          tailorList.push({ name: rawName, no: personalOnly || contact }); // tailors: personal number
         } else if (a.area === "housemate") {
           housemateList.push({ name: rawName, no: mvpnOnly || contact });
         } else if (a.area === "riders") {
@@ -271,7 +254,9 @@ export default function AllocationSheetPage() {
           }
         } else if (a.area === "laundry") {
           // Personal contact ONLY for laundry
-          laundryList.push({ name: rawName, no: personalOnly });
+          // Split shift goes in the second (SPLIT) section, everyone else under MORNING
+          if ((a.shift || "").toLowerCase().includes("split")) laundrySplitList.push({ name: rawName, no: personalOnly });
+          else laundryList.push({ name: rawName, no: personalOnly });
           if (a.shift && a.shift.includes("/")) {
             const parts = a.shift.split("/");
             if (parts[0]) laundryTitle1 = parts[0].trim().toUpperCase();
@@ -348,7 +333,7 @@ export default function AllocationSheetPage() {
         const lt = (lr.leave_type || "").toUpperCase();
 
         const fromDate = lr.start_date || selectedDate;
-        const toDate = lr.end_date && lr.end_date !== lr.start_date ? lr.end_date : "NA";
+        const toDate = lr.end_date || fromDate; // single day off: from = to
 
         if (lt === "OFF" || lt === "PH" || lt === "O") {
           offMap.set(String(lr.host_id), {
@@ -380,7 +365,7 @@ export default function AllocationSheetPage() {
               name: displayName,
               contact: personalNo,
               from: selectedDate,
-              to: "NA",
+              to: selectedDate,
               duration: "01",
             });
           }
@@ -430,9 +415,10 @@ export default function AllocationSheetPage() {
           hosts: gardenList,
         },
         laundry: laundryList,
+        laundrySplit: laundrySplitList,
         laundryDutyTitle1: laundryTitle1,
         laundryDutyTitle2: laundryTitle2,
-        pestControl: pestList,
+        pestControl: (await loadPestControl()).team,
         specialTasks: {
           task1: paSpecialTasks[0] || "",
           task2: paSpecialTasks[1] || "",

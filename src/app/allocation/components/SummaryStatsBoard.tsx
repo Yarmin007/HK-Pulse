@@ -21,6 +21,9 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { parseMemoSummary, type ExtractedMemoData, type SpecialGuestVilla } from "@/lib/memoSummary";
+import { projectGuestDay } from "@/lib/guestDay";
+import { followGuest } from "@/lib/followGuest";
+import { loadSinnerSaint, latestDep } from "@/lib/sinnerSaint";
 
 interface SummaryStatsBoardProps {
   selectedDate: string;
@@ -74,7 +77,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   const [extractedPreview, setExtractedPreview] = useState<ExtractedMemoData | null>(null);
 
   // Persistent Daily Ice Requests
-  const [iceRequests, setIceRequests] = useState<Array<{ id?: string; villa: string; time: string; dep_date: string }>>([
+  const [iceRequests, setIceRequests] = useState<Array<{ id?: string; villa: string; time: string; dep_date: string; guest_name?: string }>>([
     { villa: "", time: "", dep_date: "" },
     { villa: "", time: "", dep_date: "" },
     { villa: "", time: "", dep_date: "" },
@@ -86,22 +89,6 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   useEffect(() => {
     fetchData();
   }, [selectedDate]);
-
-  const parseGuestPairs = (villasStr?: string, depsStr?: string): SpecialGuestVilla[] => {
-    if (!villasStr) return [];
-    try {
-      if (depsStr && depsStr.startsWith("[")) {
-        return JSON.parse(depsStr);
-      }
-    } catch {}
-
-    const vList = (villasStr || "").split(" ").filter(Boolean);
-    const dList = (depsStr || "").split(" ").filter(Boolean);
-    return vList.map((v, i) => ({
-      villa: v,
-      dep_date: dList[i] || "",
-    }));
-  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -120,14 +107,6 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
       d.setDate(d.getDate() - 1);
       const yesterday = d.toISOString().split("T")[0];
 
-      const { data: yestRows } = await supabase
-        .from("hsk_daily_summary")
-        .select("*")
-        .eq("report_date", yesterday)
-        .or("villa_number.is.null,villa_number.eq.0")
-        .limit(1);
-
-      const yestData = yestRows && yestRows.length > 0 ? yestRows[0] : null;
 
       if (sumData) {
         setSummary({
@@ -151,11 +130,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
           mod_villa: sumData.mod_villa || "",
         });
 
-        const loadedSinners = parseGuestPairs(sumData.sinner_villa, sumData.sinner_dep);
-        setSinnerList(loadedSinners.length > 0 ? loadedSinners : [{ villa: "", dep_date: "" }]);
 
-        const loadedSaints = parseGuestPairs(sumData.saint_villa, sumData.saint_dep);
-        setSaintList(loadedSaints.length > 0 ? loadedSaints : [{ villa: "", dep_date: "" }]);
 
         const ds = (sumData.day_shut || "").split(" ").filter(Boolean);
         setDayShutBoxes([ds[0] || "", ds[1] || "", ds[2] || ""]);
@@ -172,17 +147,6 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
         setNightShut2Boxes([ns2[0] || "", ns2[1] || "", ns2[2] || ""]);
         setNightShut2Arr(sumData.night_shut_2_arr || "");
       } else {
-        let carriedSinners: SpecialGuestVilla[] = [];
-        let carriedSaints: SpecialGuestVilla[] = [];
-
-        if (yestData) {
-          const ySinners = parseGuestPairs(yestData.sinner_villa, yestData.sinner_dep);
-          carriedSinners = ySinners.filter(s => !s.dep_date || s.dep_date >= selectedDate);
-
-          const ySaints = parseGuestPairs(yestData.saint_villa, yestData.saint_dep);
-          carriedSaints = ySaints.filter(s => !s.dep_date || s.dep_date >= selectedDate);
-        }
-
         setSummary({
           occupancy_pct: "",
           occupied_count: "",
@@ -203,8 +167,6 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
           show_villa: "",
           mod_villa: "",
         });
-        setSinnerList(carriedSinners.length > 0 ? carriedSinners : [{ villa: "", dep_date: "" }]);
-        setSaintList(carriedSaints.length > 0 ? carriedSaints : [{ villa: "", dep_date: "" }]);
         setDayShutBoxes(["", "", ""]);
         setDayShutTimes({ arr: "", dep: "" });
         setNightShut1Boxes(["", "", ""]);
@@ -236,10 +198,32 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
           villa: item.villa_number || "",
           time: timeStr || "",
           dep_date: item.item_details || "",
+          guest_name: item.guest_name || "",
         };
       });
 
-      setIceRequests(mappedIce);
+      // Follow each guest on the guest list: new villa after a move, departure date from their stay
+      const [{ rows: todayGuests }, { rows: prevGuests }] = await Promise.all([projectGuestDay(selectedDate), projectGuestDay(yesterday)]);
+
+      // Sinner / Saint: kept until the guest departs, carried over from the last saved day
+      const { sinners, saints } = await loadSinnerSaint(selectedDate, { today: todayGuests, prev: prevGuests });
+      setSinnerList(sinners.length > 0 ? sinners : [{ villa: "", dep_date: "" }]);
+      setSaintList(saints.length > 0 ? saints : [{ villa: "", dep_date: "" }]);
+
+      // Ice: rows live across days, so a move / new dep date is written straight back (no Save needed)
+      const fIce = mappedIce.map((item) => {
+        if (!item.villa.trim()) return item;
+        const g = followGuest(item.villa, selectedDate, todayGuests, prevGuests, item.guest_name);
+        if (!g) return item;
+        return { ...item, villa: g.villa, dep_date: g.dep_date || item.dep_date, guest_name: g.guest_name || item.guest_name };
+      });
+      setIceRequests(fIce);
+      const iceUpdates = fIce.filter((it, i) => it.id && (it.villa !== mappedIce[i].villa || it.dep_date !== mappedIce[i].dep_date || it.guest_name !== mappedIce[i].guest_name));
+      await Promise.all(iceUpdates.map((it) =>
+        supabase.from("hsk_daily_requests").update({ villa_number: it.villa, item_details: it.dep_date, guest_name: it.guest_name || null }).eq("id", it.id!)
+      ));
+      const moved = iceUpdates.filter((it) => it.villa !== mappedIce.find((m) => m.id === it.id)?.villa);
+      if (moved.length > 0) toast.success(`Ice moved with guest: ${moved.map((it) => `${mappedIce.find((m) => m.id === it.id)?.villa} → ${it.villa}`).join(", ")}`);
     } catch (err: any) {
       console.error("Failed to load summary stats:", err);
       toast.error(err?.message || "Failed to load summary stats");
@@ -435,11 +419,11 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
 
       const validSinners = sinnerList.filter((s) => s.villa.trim() !== "");
       const sinnerVillaStr = validSinners.map((s) => s.villa.trim()).join(" ");
-      const sinnerDepDate = validSinners[0]?.dep_date?.trim() || null;
+      const sinnerDepDate = latestDep(validSinners);
 
       const validSaints = saintList.filter((s) => s.villa.trim() !== "");
       const saintVillaStr = validSaints.map((s) => s.villa.trim()).join(" ");
-      const saintDepDate = validSaints[0]?.dep_date?.trim() || null;
+      const saintDepDate = latestDep(validSaints);
 
       const payload: any = {
         report_date: selectedDate,
@@ -512,6 +496,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
           villa_number: item.villa.trim(),
           request_time: dateTimeStr,
           item_details: item.dep_date.trim(),
+          guest_name: item.guest_name || null,
         };
 
         if (item.id) {

@@ -1,6 +1,7 @@
 // Daily memo (ARRIVALS & DEPARTURES CSV) → the day's summary stats (occupancy, counts, celebrations,
 // Sinner / Saint villas, seaplane shut crews). Used by the Summary board and by the Guest List memo upload.
 import { supabase } from '@/lib/supabase';
+import { loadSinnerSaint, latestDep } from '@/lib/sinnerSaint';
 
 export interface SpecialGuestVilla {
   villa: string;
@@ -376,12 +377,6 @@ export const parseMemoSummary = (csvText: string, selectedDate: string): Extract
 // Save straight to the day's summary row (villa_number 0) — same merge as "Apply" on the Summary board:
 // only values found in the memo replace what is there; Sinner / Saint villas are added, not replaced.
 // ---------------------------------------------------------------------------------------------------------------
-const pairsOf = (villasStr?: string | null, depsStr?: string | null): SpecialGuestVilla[] => {
-  if (!villasStr) return [];
-  try { if (depsStr && depsStr.startsWith("[")) return JSON.parse(depsStr); } catch {}
-  const d = (depsStr || "").split(" ").filter(Boolean);
-  return villasStr.split(" ").filter(Boolean).map((v, i) => ({ villa: v, dep_date: d[i] || "" }));
-};
 const mergePairs = (old: SpecialGuestVilla[], add: SpecialGuestVilla[]) => {
   const out = old.filter(p => p.villa.trim());
   add.forEach(p => { const i = out.findIndex(o => o.villa === p.villa); if (i < 0) out.push(p); else if (p.dep_date) out[i] = p; });
@@ -405,13 +400,15 @@ export const saveMemoSummary = async (csvText: string, date: string): Promise<st
   txt("repeater_villas", "repeaters"); txt("birthday_villas", "birthdays"); txt("anniversary_villas", "anniversaries");
   txt("honeymoon_villas", "honeymoons"); txt("show_villa", "show villa");
 
+  // New Sinner / Saint villas are added to the ones still in house (carried over), never replace them
+  const current = (m.sinners.length || m.saints.length) ? await loadSinnerSaint(date) : { sinners: [], saints: [] };
   if (m.sinners.length) {
-    const all = mergePairs(pairsOf(cur?.sinner_villa, cur?.sinner_dep), m.sinners);
-    patch.sinner_villa = all.map(p => p.villa.trim()).join(" "); patch.sinner_dep = all[0]?.dep_date || null; filled.push("Sinner");
+    const all = mergePairs(current.sinners, m.sinners);
+    patch.sinner_villa = all.map(p => p.villa.trim()).join(" "); patch.sinner_dep = latestDep(all); filled.push("Sinner");
   }
   if (m.saints.length) {
-    const all = mergePairs(pairsOf(cur?.saint_villa, cur?.saint_dep), m.saints);
-    patch.saint_villa = all.map(p => p.villa.trim()).join(" "); patch.saint_dep = all[0]?.dep_date || null; filled.push("Saint");
+    const all = mergePairs(current.saints, m.saints);
+    patch.saint_villa = all.map(p => p.villa.trim()).join(" "); patch.saint_dep = latestDep(all); filled.push("Saint");
   }
   if (m.day_shut.some(Boolean)) {
     patch.day_shut = m.day_shut.filter(Boolean).join(" ");

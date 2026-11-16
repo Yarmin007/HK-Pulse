@@ -34,11 +34,11 @@ export const extractDepInfo = (remarksStr?: string): { cleanRemarks: string; dep
 };
 
 // stay_dates is "DD/MM - DD/MM" (no year). Years are inferred relative to the selected date so Dec→Jan stays work.
-export const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: string): { isActive: boolean; isDepartingToday: boolean } => {
-    const inactive = { isActive: false, isDepartingToday: false };
-    if (!stayDatesStr || !stayDatesStr.includes('-')) return inactive;
+// Arrival / departure of a stay as timestamps, years inferred around `selectedDateStr`.
+const stayRange = (stayDatesStr: string, selectedDateStr: string): { sel: number; arrTime: number | null; depTime: number } | null => {
+    if (!stayDatesStr || !stayDatesStr.includes('-')) return null;
     const parts = stayDatesStr.split('-');
-    if (parts.length !== 2) return inactive;
+    if (parts.length !== 2) return null;
 
     const parseDM = (str: string) => {
         const p = str.trim().split('/').map(Number);
@@ -48,7 +48,7 @@ export const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: st
 
     const arr = parseDM(parts[0]);
     const dep = parseDM(parts[1]);
-    if (!dep) return inactive;
+    if (!dep) return null;
 
     const [selY, selM, selD] = selectedDateStr.split('-').map(Number);
     const sel = new Date(selY, selM - 1, selD).getTime();
@@ -67,6 +67,22 @@ export const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: st
         depY += 1;
         depTime = new Date(depY, dep.m - 1, dep.d).getTime();
     }
+    return { sel, arrTime, depTime };
+};
+
+/** Departure date of a stay ("DD/MM - DD/MM") as YYYY-MM-DD, or "" when it has none. */
+export const stayDepartureIso = (stayDatesStr: string, selectedDateStr: string): string => {
+    const r = stayRange(stayDatesStr, selectedDateStr);
+    if (!r) return '';
+    const d = new Date(r.depTime);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+export const checkStayStatusForDate = (stayDatesStr: string, selectedDateStr: string): { isActive: boolean; isDepartingToday: boolean } => {
+    const inactive = { isActive: false, isDepartingToday: false };
+    const r = stayRange(stayDatesStr, selectedDateStr);
+    if (!r) return inactive;
+    const { sel, arrTime, depTime } = r;
 
     if (sel === depTime) return { isActive: true, isDepartingToday: true };
     if (sel < depTime && (arrTime === null || arrTime <= sel)) return { isActive: true, isDepartingToday: false };
@@ -232,8 +248,13 @@ export const movementTime = (hk: HKStatus, info?: VillaStatus, prev?: VillaStatu
 
 /** Printed allocation sheet: every TMA status is one orange, except TMA leaving + guest arriving (TMA/ARR). */
 export const SHEET_TMA_BG = '#fb923c';
-export const sheetColours = (hk: HKStatus) =>
-    hk.code.includes('TMA') && hk.code !== 'TMA/ARR' ? { bg: SHEET_TMA_BG, text: '#ffffff' } : { bg: hk.bg, text: hk.text };
+// Also on the sheet: a moved-out villa (VM/VAC) looks vacant, and DEP/FUM is the same red as DEP.
+const SHEET_SAME_AS: Record<string, string> = { 'VM/VAC': 'VAC', 'DEP/FUM': 'DEP' };
+export const sheetColours = (hk: HKStatus) => {
+    if (hk.code.includes('TMA') && hk.code !== 'TMA/ARR') return { bg: SHEET_TMA_BG, text: '#ffffff' };
+    const base = BY_CODE[SHEET_SAME_AS[hk.code]] || hk;
+    return { bg: base.bg, text: base.text };
+};
 
 /** villa number → raw guest-list row */
 export const rowsByVilla = (rows: any[]) => {

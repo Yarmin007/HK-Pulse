@@ -23,6 +23,7 @@ import {
   Sparkles
 } from "lucide-react";
 import toast from "react-hot-toast";
+import PestControlPanel from "./PestControlPanel";
 
 interface Host {
   id: string;
@@ -229,6 +230,7 @@ export default function GardeningBoard({
   selectedDate,
 }: GardeningBoardProps) {
   const { confirmAction } = useConfirm();
+  const [gardenTab, setGardenTab] = useState<"garden" | "pest">("garden");
   const [activeLeaveRecords, setActiveLeaveRecords] = useState<ActiveLeaveRecord[]>([]);
 
   // Leave Modal State
@@ -880,6 +882,24 @@ export default function GardeningBoard({
         </div>
       </div>
 
+      {/* SUB TABS */}
+      <div className="bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm flex gap-1 w-fit">
+        {([["garden", "Gardening"], ["pest", "Pest Control"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setGardenTab(key)}
+            className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              gardenTab === key ? "bg-[#6D2158] text-white shadow-sm" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {gardenTab === "pest" && <PestControlPanel />}
+
+      <div className={gardenTab === "pest" ? "hidden" : "contents"}>
       {/* POOL DRAWER */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-3">
@@ -1505,6 +1525,7 @@ export default function GardeningBoard({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
