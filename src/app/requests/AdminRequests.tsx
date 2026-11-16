@@ -15,7 +15,7 @@ import {
 } from '@/lib/requestsShared';
 import { parseStayRange } from '@/lib/guestImport';
 import PackageRibbon, { PackageTag } from '@/components/PackageRibbon';
-import { notifyRunners } from '@/lib/requestNotify';
+import { notifyRunners, notifyVillaVA } from '@/lib/requestNotify';
 import { riderDutyOf, isOffShift } from '@/app/allocation/lib/riders';
 import { Home, CornerUpLeft } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -856,6 +856,10 @@ export default function CoordinatorLog() {
       if (to === 'taken') toast.success(`Handed to ${holder || 'runner'}`);
       else if (to === 'va') toast.success(`Handed to ${holder || 'VA'}`);
       else if (to === 'delivered') toast.success('Placed in villa');
+      else if (to === 'pantry') {
+          toast.success('Left at pantry');
+          notifyVillaVA(rec.villa_number, `📦 At pantry · ${classifyTarget(rec.villa_number).label}`, rec.item_details, doubleVillas);
+      }
   };
 
   // An older open request shows on the runner / VA phones only once it is re-assigned to today.
@@ -1572,7 +1576,7 @@ export default function CoordinatorLog() {
                             const displayText = cleanItem.replace(/\s*\(SENT\)$/, '');
                             
                             return (
-                                <div key={idx} className={`flex items-start justify-between gap-2 ${isSentItem ? 'text-slate-400 line-through' : ''}`}>
+                                <div key={idx} className={`flex items-start justify-between gap-2 ${isSentItem ? 'text-slate-500' : ''}`}>
                                     <span>• {displayText}</span>
                                     {isSentItem && <CheckCircle2 size={13} className="text-emerald-500 shrink-0 mt-0.5" />}
                                 </div>
@@ -2217,6 +2221,7 @@ export default function CoordinatorLog() {
                   {runners.length > 1 && opt('any', 'Runner', 'Whoever is on runner duty', <Bike size={18}/>, d === 'taken' && rec.taken_by === GENERIC_RUNNER, () => handOver(rec, 'taken', GENERIC_RUNNER), 'bg-blue-50 text-blue-700')}
                   {(runners.length ? runners : [GENERIC_RUNNER]).map(n => opt(`r-${n}`, runners.length > 1 ? n : `Runner${runners.length === 1 ? ` · ${n}` : ''}`, 'Handed to the runner', <Bike size={18}/>, d === 'taken' && (rec.taken_by === n || runners.length <= 1), () => handOver(rec, 'taken', n), 'bg-blue-50 text-blue-700'))}
                   {classifyTarget(rec.villa_number).kind === 'villa' && opt('va', `Villa attendant${va ? ` · ${va}` : ''}`, 'They confirm once it is in the villa', <User size={18}/>, d === 'va', () => handOver(rec, 'va', va || 'VA'), 'bg-amber-50 text-amber-800')}
+                  {classifyTarget(rec.villa_number).kind === 'villa' && opt('pantry', 'At the pantry', `Left at the pantry — ${va || 'VA'} to confirm`, <Package size={18}/>, d === 'pantry', () => handOver(rec, 'pantry'), 'bg-amber-50 text-amber-800')}
                   {opt('villa', 'In the villa', 'Delivered — done', <Home size={18}/>, d === 'delivered', () => handOver(rec, 'delivered'), 'bg-emerald-50 text-emerald-700')}
                   {d !== 'new' && (
                     <button onClick={() => handOver(rec, 'new')} className="w-full py-2.5 text-xs font-bold text-rose-500 hover:underline cursor-pointer">Not sent — still at the office</button>

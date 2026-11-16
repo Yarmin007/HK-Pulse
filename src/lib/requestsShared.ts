@@ -158,10 +158,37 @@ export const deliveryPatch = (r: DeliveryFields, to: Delivery, who: string, hold
   const mb = (left: boolean) => (isMb ? { is_sent: left, item_details: markAllItems(r.item_details || '', left) } : {});
   const done = (d: boolean) => (isMb ? {} : { is_done: d });
   if (to === 'new') return { ...clear, delivery_status: null, ...mb(false), ...done(false) };
-  if (to === 'taken' || to === 'va') return { ...clear, delivery_status: to, taken_by: holder || who, taken_at: now, ...mb(true), ...done(false) };
+  if (to === 'taken' || to === 'va') {
+    // Same holder again (re-tapped, or stepping back from pantry / villa) keeps the original hand-over time.
+    const by = holder || who;
+    const keepTime = !!r.taken_at && deliveryOf(r) !== 'new' && sameName(r.taken_by, by);
+    return { ...clear, delivery_status: to, taken_by: by, taken_at: keepTime ? r.taken_at : now, ...mb(true), ...done(false) };
+  }
   const taken = { taken_by: r.taken_by || holder || who, taken_at: r.taken_at || now };
   if (to === 'pantry') return { ...clear, ...taken, delivery_status: 'pantry', pantry_by: r.pantry_by || who, pantry_at: r.pantry_at || now, ...mb(true), ...done(false) };
   return { ...taken, pantry_by: r.pantry_by || null, pantry_at: r.pantry_at || null, delivery_status: 'delivered', delivered_by: who, delivered_at: now, ...mb(true), ...done(true) };
+};
+
+export const sameName = (a?: string | null, b?: string | null) =>
+  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+// Undo one step, restoring the previous step exactly (same holder, same times).
+//  delivered → pantry (if it went via pantry) → with runner / VA → office.
+// `vaName` = the VA looking at it, so a request handed to them goes back to "with VA", not "with runner".
+export const undoPatch = (r: DeliveryFields, vaName?: string) => {
+  const d = deliveryOf(r);
+  const isMb = r.request_type === 'Minibar';
+  const done = isMb ? {} : { is_done: false };
+  const toOffice = deliveryPatch(r, 'new', '');
+  if (d === 'delivered') {
+    const back = { delivered_by: null, delivered_at: null, ...done };
+    if (r.pantry_at) return { ...back, delivery_status: 'pantry' };
+    // Placed straight in the villa from the office: taken_at was stamped at the same moment.
+    if (!r.taken_at || r.taken_at === r.delivered_at) return toOffice;
+    return { ...back, delivery_status: vaName && sameName(r.taken_by, vaName) ? 'va' : 'taken' };
+  }
+  if (d === 'pantry') return { delivery_status: 'taken', pantry_by: null, pantry_at: null, ...done };
+  return toOffice;
 };
 
 // Runner / VA lists: today's requests, plus older open ones the coordinator re-assigned to today.

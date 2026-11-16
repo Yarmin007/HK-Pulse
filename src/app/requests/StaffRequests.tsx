@@ -9,7 +9,7 @@ import { supabase } from '@/lib/supabase';
 import { getDhakaDateStr, getDhakaTime, formatDisplayTime } from '@/lib/dateUtils';
 import {
   classifyTarget, parseVillas, isOnlyRefills, splitItems, normalizeVillaNumber, packageOf,
-  deliveryOf, deliveryPatch, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM, isForToday, itemsPending, GENERIC_RUNNER,
+  deliveryOf, deliveryPatch, undoPatch, sameName, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM, isForToday, itemsPending, GENERIC_RUNNER,
   type Delivery, type Session,
 } from '@/lib/requestsShared';
 import PackageRibbon from '@/components/PackageRibbon';
@@ -183,7 +183,7 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
 
   // Runner: their part ends at the pantry. VA: a pantry drop is still theirs to finish.
   // Runner: handed to them (or to "Runner") is theirs; it's done for them once it is at the pantry, with the VA or in the villa.
-  const isMineRunner = (r: Req) => deliveryOf(r) === 'taken' && (!r.taken_by || r.taken_by === me || r.taken_by === GENERIC_RUNNER);
+  const isMineRunner = (r: Req) => deliveryOf(r) === 'taken' && (!r.taken_by || sameName(r.taken_by, me) || r.taken_by === GENERIC_RUNNER);
   const isTodo = (r: Req) => {
     const d = deliveryOf(r);
     if (d === 'delivered') return false;
@@ -208,8 +208,8 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
     ? ['Handed to you — take it out', 'At the office — not handed over yet', 'With another runner']
     : ['With you or at the pantry — put it in the villa', 'Coming — not with you yet'];
 
-  const move = async (r: Req, to: Delivery, holder?: string) => {
-    const patch = deliveryPatch(r, to, me, holder);
+  const move = async (r: Req, to: Delivery | 'undo', holder?: string) => {
+    const patch = to === 'undo' ? undoPatch(r, isRunner ? undefined : me) : deliveryPatch(r, to, me, holder);
     setBusy(r.id);
     setRequests(prev => prev.map(x => (x.id === r.id ? { ...x, ...patch } as Req : x)));
     const { error } = await supabase.from('hsk_daily_requests').update(patch).eq('id', r.id);
@@ -221,7 +221,10 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
       notifyVillaVA(r.villa_number, `📦 At pantry · ${classifyTarget(r.villa_number).label}`, r.item_details, doubleVillas);
     }
     else if (to === 'taken') toast.success('With you');
+    else if (to === 'va') toast.success(`Handed to ${holder || 'VA'}`);
+    else if (to === 'undo') toast.success('Undone');
   };
+  const vaOf = (villa: string) => { const t = classifyTarget(villa); return t.kind === 'villa' ? (villaVA[t.value] || villaVA[t.base] || '') : ''; };
 
   // ---------------- New request (VA) ----------------
   const openSheet = async () => {
@@ -437,31 +440,32 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
               )}
 
               <div className="px-3 pb-3 pt-1 space-y-2">
-                {isRunner && (d === 'va' || (d === 'pantry' && r.pantry_by !== me) || (d === 'delivered' && r.delivered_by !== me)) ? null
+                {isRunner && (d === 'va' || (d === 'pantry' && !sameName(r.pantry_by, me)) || (d === 'delivered' && !sameName(r.delivered_by, me))) ? null
                 : d === 'delivered' || (isRunner && d === 'pantry') ? (
                   // Undo one step
-                  <button onClick={() => (d === 'delivered' && r.pantry_at && !isRunner ? move(r, 'pantry')
-                      : isRunner || (r.taken_by && r.taken_by !== me) ? move(r, 'taken', r.taken_by || undefined)
-                      : move(r, 'new'))} disabled={busy === r.id}
+                  <button onClick={() => move(r, 'undo')} disabled={busy === r.id}
                     className="w-full py-2.5 rounded-2xl text-xs font-bold text-slate-500 bg-slate-100 flex items-center justify-center gap-1.5"><Undo2 size={13} /> Undo</button>
                 ) : isRunner && d === 'new' ? (
                   <button onClick={() => move(r, 'taken')} disabled={busy === r.id}
                     className="w-full py-3 rounded-2xl text-sm font-bold text-slate-600 bg-slate-100 active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60">
                     {busy === r.id ? <Loader2 size={16} className="animate-spin" /> : <Bike size={17} />} I collected it from the office
                   </button>
-                ) : isRunner && !isMineRunner(r) ? (
-                  <p className="text-center text-[11px] font-bold text-slate-400 py-1">With {r.taken_by}</p>
                 ) : isRunner ? (
                   <>
                     {partial && (
                       <button onClick={() => move(r, 'taken', r.taken_by || undefined)} disabled={busy === r.id}
                         className="w-full py-2 rounded-2xl text-xs font-bold text-slate-600 bg-slate-100">I have the rest too ({pending} at office)</button>
                     )}
-                    <div className="grid grid-cols-2 gap-2">
+                    {!isMineRunner(r) && <p className="text-center text-[11px] font-bold text-slate-400">With {r.taken_by} — you can still finish it</p>}
+                    <div className={`grid gap-2 ${classifyTarget(r.villa_number).kind === 'villa' ? 'grid-cols-3' : 'grid-cols-2'}`}>
                       <button onClick={() => move(r, 'delivered')} disabled={busy === r.id || partial}
-                        className="py-3 rounded-2xl text-sm font-black text-white bg-emerald-600 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><Home size={17} /> To Villa</button>
+                        className="py-3 rounded-2xl text-sm font-black text-white bg-emerald-600 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><Home size={17} /> Villa</button>
                       <button onClick={() => move(r, 'pantry')} disabled={busy === r.id || partial}
-                        className="py-3 rounded-2xl text-sm font-black text-amber-950 bg-amber-400 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><Package size={17} /> To Pantry</button>
+                        className="py-3 rounded-2xl text-sm font-black text-amber-950 bg-amber-400 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><Package size={17} /> Pantry</button>
+                      {classifyTarget(r.villa_number).kind === 'villa' && (
+                        <button onClick={() => move(r, 'va', vaOf(r.villa_number) || 'VA')} disabled={busy === r.id || partial}
+                          className="py-3 rounded-2xl text-sm font-black text-amber-900 bg-amber-100 border border-amber-300 active:scale-[0.99] flex items-center justify-center gap-1.5 disabled:opacity-40"><User size={17} /> To VA</button>
+                      )}
                     </div>
                     {partial && <p className="text-center text-[11px] font-semibold text-slate-400">Wait until everything is handed over, or tap “I have the rest too”.</p>}
                     <button onClick={() => move(r, 'new')} disabled={busy === r.id} className="w-full py-1.5 text-[11px] font-bold text-slate-400">Return to office</button>
