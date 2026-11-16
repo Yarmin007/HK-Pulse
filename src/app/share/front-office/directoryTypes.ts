@@ -1,10 +1,13 @@
 import type { ElementType } from "react";
-import { Wine, Moon, UtensilsCrossed, Martini, Flower2, Waves, Baby, Map, Shirt, Bath, ShieldCheck, FileText } from "lucide-react";
+import { Wine, Flame, Leaf, Moon, Shirt, Tv, ListChecks, ClipboardList, Baby, FileText } from "lucide-react";
 
 // Document types of the In-Villa Directory. The type is guessed from the name and can be changed.
+// `group` joins types under one filter — the three minibar menus show together as "Minibar Menus".
 export type DocType = {
   key: string;
   label: string;
+  group: string;
+  groupLabel: string;
   icon: ElementType;
   gradient: string; // cover background when there is no picture yet
   chip: string; // label colour on the card
@@ -12,26 +15,34 @@ export type DocType = {
 };
 
 export const DOC_TYPES: DocType[] = [
-  { key: "minibar", label: "Minibar Menu", icon: Wine, gradient: "from-rose-500 to-red-700", chip: "bg-rose-600", words: /mini\s*bar|minibar/i },
-  { key: "pillow", label: "Pillow Menu", icon: Moon, gradient: "from-indigo-500 to-violet-700", chip: "bg-indigo-600", words: /pillow|sleep|turn\s*down/i },
-  { key: "dining", label: "In-Villa Dining", icon: UtensilsCrossed, gradient: "from-amber-500 to-orange-700", chip: "bg-amber-600", words: /dining|room\s*service|breakfast|food|restaurant|menu/i },
-  { key: "drinks", label: "Wine & Drinks", icon: Martini, gradient: "from-fuchsia-700 to-rose-900", chip: "bg-fuchsia-700", words: /wine|cocktail|drink|bar\b|beverage|champagne/i },
-  { key: "spa", label: "Spa & Wellness", icon: Flower2, gradient: "from-teal-500 to-emerald-700", chip: "bg-teal-600", words: /spa|wellness|massage|yoga|treatment/i },
-  { key: "activities", label: "Activities", icon: Waves, gradient: "from-sky-500 to-blue-700", chip: "bg-sky-600", words: /activit|excursion|dive|diving|snorkel|sunset|tour|water\s*sport|experience/i },
-  { key: "kids", label: "Kids", icon: Baby, gradient: "from-yellow-400 to-orange-500", chip: "bg-yellow-500", words: /kid|child|baby|family/i },
-  { key: "guide", label: "Resort Guide", icon: Map, gradient: "from-emerald-600 to-teal-800", chip: "bg-emerald-700", words: /guide|directory|map|welcome|information|info|compendium/i },
-  { key: "laundry", label: "Laundry", icon: Shirt, gradient: "from-slate-500 to-slate-700", chip: "bg-slate-600", words: /laundry|pressing|dry\s*clean/i },
-  { key: "amenities", label: "Bath & Amenities", icon: Bath, gradient: "from-cyan-500 to-sky-700", chip: "bg-cyan-600", words: /amenit|bath|toiletr|shampoo|aroma/i },
-  { key: "safety", label: "Safety & Sustainability", icon: ShieldCheck, gradient: "from-lime-600 to-green-800", chip: "bg-green-700", words: /safety|emergency|fire|sustainab|eco|green/i },
-  { key: "other", label: "Other", icon: FileText, gradient: "from-[#6D2158] to-[#3b0f2f]", chip: "bg-[#6D2158]", words: /$^/ },
+  { key: "minibar", label: "Minibar Menu", group: "minibar", groupLabel: "Minibar Menus", icon: Wine, gradient: "from-rose-500 to-red-700", chip: "bg-rose-600", words: /mini\s*bar|minibar/i },
+  { key: "sinner", label: "Sinner Menu", group: "minibar", groupLabel: "Minibar Menus", icon: Flame, gradient: "from-orange-500 to-rose-700", chip: "bg-orange-600", words: /sinner/i },
+  { key: "saint", label: "Saint Menu", group: "minibar", groupLabel: "Minibar Menus", icon: Leaf, gradient: "from-emerald-500 to-teal-700", chip: "bg-emerald-600", words: /saint/i },
+  { key: "pillow", label: "Pillow Menu", group: "pillow", groupLabel: "Pillow Menu", icon: Moon, gradient: "from-indigo-500 to-violet-700", chip: "bg-indigo-600", words: /pillow/i },
+  { key: "laundry", label: "Laundry Price List", group: "laundry", groupLabel: "Laundry Price List", icon: Shirt, gradient: "from-sky-500 to-blue-700", chip: "bg-sky-600", words: /laundry|pressing|dry\s*clean/i },
+  { key: "tv", label: "TV Channel List", group: "tv", groupLabel: "TV Channel List", icon: Tv, gradient: "from-slate-600 to-slate-900", chip: "bg-slate-700", words: /\btv\b|channel|television/i },
+  { key: "guide", label: "In-Villa Guide", group: "guide", groupLabel: "In-Villa Guide", icon: ListChecks, gradient: "from-[#6D2158] to-[#3b0f2f]", chip: "bg-[#6D2158]", words: /guide|bullet|directory|welcome/i },
+  { key: "request", label: "Item Request Form", group: "request", groupLabel: "Item Request Forms", icon: ClipboardList, gradient: "from-amber-500 to-orange-600", chip: "bg-amber-600", words: /request|order\s*form|item\s*form/i },
+  { key: "kids", label: "Kids Item Request Form", group: "request", groupLabel: "Item Request Forms", icon: Baby, gradient: "from-pink-400 to-fuchsia-600", chip: "bg-pink-500", words: /kid|child|baby/i },
+  { key: "other", label: "Other", group: "other", groupLabel: "Other", icon: FileText, gradient: "from-slate-400 to-slate-600", chip: "bg-slate-500", words: /$^/ },
 ];
 
-export const typeOf = (key?: string | null) => DOC_TYPES.find(t => t.key === key) || DOC_TYPES[DOC_TYPES.length - 1];
+const OTHER = DOC_TYPES[DOC_TYPES.length - 1];
+export const typeOf = (key?: string | null) => DOC_TYPES.find(t => t.key === key) || OTHER;
 
-// Specific words first; the broad ones ("menu", "guide") last — so "Spa Menu" is Spa, not Dining.
-const BROAD = ["dining", "guide", "other"];
-const GUESS_ORDER = [...DOC_TYPES.filter(t => !BROAD.includes(t.key)), ...DOC_TYPES.filter(t => BROAD.includes(t.key) && t.key !== "other")];
-export const guessType = (title: string) => (GUESS_ORDER.find(t => t.words.test(title)) || DOC_TYPES[DOC_TYPES.length - 1]).key;
+// Most specific first: Sinner/Saint before plain Minibar, Kids before the general Item Request Form.
+const GUESS_ORDER = ["sinner", "saint", "minibar", "pillow", "laundry", "tv", "kids", "request", "guide"].map(k => typeOf(k));
+export const guessType = (title: string) => (GUESS_ORDER.find(t => t.words.test(title)) || OTHER).key;
+
+// Saved type if it is still one of ours, else guessed from the name (older uploads used other types).
+export const resolveType = (category: string | null | undefined, title: string) =>
+  DOC_TYPES.some(t => t.key === category) ? typeOf(category) : typeOf(guessType(title));
+
+// Filter groups, in list order.
+export const DOC_GROUPS = DOC_TYPES.reduce<{ key: string; label: string; icon: ElementType; chip: string }[]>((acc, t) => {
+  if (!acc.some(g => g.key === t.group)) acc.push({ key: t.group, label: t.groupLabel, icon: t.icon, chip: t.chip });
+  return acc;
+}, []);
 
 // First page of a PDF as a JPEG cover (also returns the page count).
 export async function renderCover(data: ArrayBuffer): Promise<{ blob: Blob | null; pages: number }> {

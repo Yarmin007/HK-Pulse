@@ -7,7 +7,7 @@ import toast from "react-hot-toast";
 import { supabase } from "@/lib/supabase";
 import { hasFullControl } from "@/lib/fullControl";
 import { ArrowLeft, ArrowRight, BookOpen, Download, FileText, ImagePlus, Loader2, Pencil, Plus, Trash2, Upload, X } from "lucide-react";
-import { DOC_TYPES, guessType, renderCover, typeOf } from "./directoryTypes";
+import { DOC_GROUPS, DOC_TYPES, guessType, renderCover, resolveType } from "./directoryTypes";
 
 const BUCKET = "villa-directory";
 const MAX_MB = 25;
@@ -43,8 +43,8 @@ export default function VillaDirectory() {
 
   useEffect(() => { setAdmin(hasFullControl()); load(); }, [load]);
 
-  const typesInUse = useMemo(() => DOC_TYPES.filter(t => docs.some(d => typeOf(d.category || guessType(d.title)).key === t.key)), [docs]);
-  const shown = filter === "all" ? docs : docs.filter(d => typeOf(d.category || guessType(d.title)).key === filter);
+  const typesInUse = useMemo(() => DOC_GROUPS.filter(g => docs.some(d => resolveType(d.category, d.title).group === g.key)), [docs]);
+  const shown = filter === "all" ? docs : docs.filter(d => resolveType(d.category, d.title).group === filter);
 
   // Saves a row; if the cover/type columns are not in Supabase yet, saves without them.
   const writeRow = async (id: string | undefined, row: Record<string, unknown>) => {
@@ -149,7 +149,7 @@ export default function VillaDirectory() {
   };
 
   const openForm = (d?: Doc) => setForm(d
-    ? { id: d.id, title: d.title, description: d.description || "", category: d.category || guessType(d.title), categoryTouched: true, file: null }
+    ? { id: d.id, title: d.title, description: d.description || "", category: resolveType(d.category, d.title).key, categoryTouched: true, file: null }
     : { title: "", description: "", category: "other", categoryTouched: false, file: null });
   const setTitle = (title: string) => setForm(f => (f ? { ...f, title, category: f.categoryTouched ? f.category : guessType(title) } : f));
 
@@ -199,7 +199,7 @@ export default function VillaDirectory() {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           {shown.map(d => {
-            const t = typeOf(d.category || guessType(d.title));
+            const t = resolveType(d.category, d.title);
             const Icon = t.icon;
             const idx = docs.findIndex(x => x.id === d.id);
             return (
@@ -259,7 +259,7 @@ export default function VillaDirectory() {
             </button>
             <label className="block">
               <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Name</span>
-              <input value={form.title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Pillow Menu, Minibar Menu" className="mt-1 w-full px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-base sm:text-sm font-bold outline-none focus:border-[#6D2158]" />
+              <input value={form.title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Sinner Menu, Pillow Menu, TV Channel List" className="mt-1 w-full px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-base sm:text-sm font-bold outline-none focus:border-[#6D2158]" />
             </label>
             <div>
               <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Type</span>
@@ -274,7 +274,7 @@ export default function VillaDirectory() {
             </div>
             <label className="block">
               <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Short note (optional)</span>
-              <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. 8 pillows to choose from" className="mt-1 w-full px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-base sm:text-sm font-semibold outline-none focus:border-[#6D2158]" />
+              <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Charged items, prices in USD" className="mt-1 w-full px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 text-base sm:text-sm font-semibold outline-none focus:border-[#6D2158]" />
             </label>
             <button onClick={save} disabled={saving} className="w-full py-3.5 rounded-2xl bg-[#6D2158] text-white text-sm font-black flex items-center justify-center gap-2 disabled:opacity-60">
               {saving && <Loader2 size={16} className="animate-spin" />} {saving ? "Uploading — making the cover…" : form.id ? "Save" : "Upload"}

@@ -8,7 +8,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns';
 import toast from 'react-hot-toast';
-import { fetchAttendanceRange, fetchROEvents, isWorkedLeave, isRO, hasWorkingNote, RO_EARNING_CODES, pendingWorkedDays, roForDay, roNoteFor, workedNoteWithRO, workedNoteWithoutRO, fmtNoteDate } from '@/lib/attendanceData';
+import { fetchAttendanceRange, fetchROEvents, isWorkedLeave, isRO, hasWorkingNote, RO_EARNING_CODES, pendingWorkedDays, unallocatedROs, roForDay, roTakenOn, roNoteFor, workedNoteWithRO, workedNoteWithoutRO, fmtNoteDate } from '@/lib/attendanceData';
 import { computeLeaveBalancesRPC } from '@/lib/payrollMath'; 
 
 // --- CONFIG ---
@@ -172,7 +172,7 @@ export default function AttendancePage() {
   
   const [teamConfig, setTeamConfig] = useState<any>({ hostDepartments: {}, supervisorAccess: {}, nicknames: {}, excludeAttendance: {} });
 
-  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, origStatus: string, origNote: string, roFor: string | null } | null>(null);
+  const [editCell, setEditCell] = useState<{ hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, origStatus: string, origNote: string, roFor: string | null, roTaken?: string | null } | null>(null);
   // Totals of the selected cells (shown when more than one cell is selected)
   const [selStats, setSelStats] = useState<{ hosts: number, days: number, cells: number, counts: [string, number][], worked: number, blank: number, notJoined: number } | null>(null);
 
@@ -234,7 +234,7 @@ export default function AttendancePage() {
           .eq('date', dateStr)
           .limit(1); 
           
-      if (fetchErr) throw fetchErr;
+      if (fetchErr) throw new Error(fetchErr.message || 'Could not read the attendance row');
       const existing = existingArr?.[0];
 
       if (existingArr && existingArr.length > 1) {
@@ -248,7 +248,7 @@ export default function AttendancePage() {
       if (status === '' && (!finalNote || finalNote.trim() === '') && (!finalShift || finalShift.trim() === '')) {
           if (existing && existing.id) {
               const { error } = await supabase.from('hsk_attendance').delete().eq('id', existing.id);
-              if (error) throw error;
+              if (error) throw new Error(`${error.message || 'Save failed'}${error.details ? ` (${error.details})` : ''}`);
           }
       } else {
           const payload = {
@@ -261,10 +261,10 @@ export default function AttendancePage() {
 
           if (existing && existing.id) {
               const { error } = await supabase.from('hsk_attendance').update(payload).eq('id', existing.id);
-              if (error) throw error;
+              if (error) throw new Error(`${error.message || 'Save failed'}${error.details ? ` (${error.details})` : ''}`);
           } else {
               const { error } = await supabase.from('hsk_attendance').insert(payload);
-              if (error) throw error;
+              if (error) throw new Error(`${error.message || 'Save failed'}${error.details ? ` (${error.details})` : ''}`);
           }
       }
   }, []);
@@ -588,8 +588,8 @@ export default function AttendancePage() {
       toast.promise(dbTask(), {
           loading: `Saving ${cellCount} cells...`,
           success: status === '' ? 'Cleared' : 'Saved',
-          error: 'Save failed'
-      });
+          error: (e: unknown) => `Save failed: ${e instanceof Error ? e.message : String((e as { message?: string })?.message || e)}`
+      }).catch(() => { /* shown in the toast */ });
   }, [saveToDatabase]);
 
   const quickSaveCell = useCallback(async (hostId: string, dateStr: string, status: string, rIdx: number, cIdx: number) => {
@@ -621,8 +621,8 @@ export default function AttendancePage() {
       toast.promise(saveToDatabase(hostId, dateStr, status), {
           loading: 'Saving...',
           success: status === '' ? 'Cleared' : 'Saved',
-          error: 'Save failed'
-      });
+          error: (e: unknown) => `Save failed: ${e instanceof Error ? e.message : String((e as { message?: string })?.message || e)}`
+      }).catch(() => { /* shown in the toast */ });
   }, [saveToDatabase]);
 
   const handleOpenEdit = useCallback((hostId: string, hostName: string, dateStr: string, status: string, note: string, shiftType: string, rIdx: number, cIdx: number) => {
@@ -772,12 +772,12 @@ export default function AttendancePage() {
           toast.promise(dbTask(), {
               loading: `Pasting ${updateCount} cells...`,
               success: 'Paste saved',
-              error: 'Paste failed to save'
+              error: (e: unknown) => `Paste failed to save: ${e instanceof Error ? e.message : String((e as { message?: string })?.message || e)}`
           }).then(() => {
               selectionRef.current.r2 = r1 + rows.length - 1;
               selectionRef.current.c2 = c1 + rows[0].length - 1;
               updateSelectionVisuals();
-          });
+          }).catch(() => { /* shown in the toast */ });
       }
   };
 
@@ -819,17 +819,16 @@ export default function AttendancePage() {
     const { hostId, dateStr, status, shiftType, origStatus, origNote, roFor } = editCell;
     let { note } = editCell;
 
-    if (status === 'RO' && !roFor && pendingWorkedDays(roRows, hostId, origStatus === 'RO' ? dateStr : undefined).length > 0) {
-        toast.error('Choose which working day this RO is for');
-        return;
-    }
-    if (status === 'RO' && roFor) note = roNoteFor(roFor);
+    // An RO can be saved without a working day — it stays "unallocated" until one is linked.
+    const RO_FOR_RE = /\s*[-–·|,]?\s*RO\s+FOR\s+DAY\s+WORKED\s+\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}/gi;
+    if (status === 'RO') note = roFor ? roNoteFor(roFor) : note.replace(RO_FOR_RE, '').trim();
 
-    // Worked days whose comment must change
-    const prevLink = origStatus === 'RO' ? roForDay(origNote) : null;
-    const newLink = status === 'RO' ? roFor : null;
     const findRow = (d: string) => roRows.find(r => String(r.host_id).trim() === String(hostId).trim() && String(r.date).slice(0, 10) === d);
     const linkUpdates: { date: string, status: string, note: string }[] = [];
+
+    // RO day → the worked day it pays back
+    const prevLink = origStatus === 'RO' ? roForDay(origNote) : null;
+    const newLink = status === 'RO' ? roFor : null;
     if (prevLink && prevLink !== newLink) {
         const w = findRow(prevLink);
         if (w) linkUpdates.push({ date: prevLink, status: w.status_code, note: workedNoteWithoutRO(w.shift_note) });
@@ -837,6 +836,22 @@ export default function AttendancePage() {
     if (newLink && newLink !== prevLink) {
         const w = findRow(newLink);
         if (w) linkUpdates.push({ date: newLink, status: w.status_code, note: workedNoteWithRO(w.shift_note, dateStr) });
+    }
+
+    // Worked day → an RO that was already given before it (RO can come first)
+    const isWorkedNow = RO_EARNING_CODES.includes(status) && hasWorkingNote(note);
+    const prevRO = RO_EARNING_CODES.includes(origStatus) && hasWorkingNote(origNote) ? roTakenOn(origNote) : null;
+    const newRO = isWorkedNow ? (editCell.roTaken !== undefined ? editCell.roTaken : prevRO) : null;
+    if (newRO !== prevRO) {
+        if (isWorkedNow) note = newRO ? workedNoteWithRO(note, newRO) : workedNoteWithoutRO(note);
+        if (prevRO) {
+            const r = findRow(prevRO);
+            if (r && roForDay(r.shift_note) === dateStr) linkUpdates.push({ date: prevRO, status: r.status_code, note: String(r.shift_note || '').replace(RO_FOR_RE, '').trim() });
+        }
+        if (newRO) {
+            const r = findRow(newRO);
+            if (r) linkUpdates.push({ date: newRO, status: r.status_code, note: roNoteFor(dateStr) });
+        }
     }
 
     patchLocal(hostId, dateStr, status, note, shiftType);
@@ -848,14 +863,14 @@ export default function AttendancePage() {
     };
     toast.promise(task(), {
         loading: 'Saving entry...',
-        success: newLink ? `RO linked to ${fmtNoteDate(newLink)}` : 'Entry saved',
-        error: 'Failed to save entry'
+        success: newLink ? `RO linked to ${fmtNoteDate(newLink)}` : newRO && newRO !== prevRO ? `Linked to RO on ${fmtNoteDate(newRO)}` : status === 'RO' ? 'RO saved · unallocated' : 'Entry saved',
+        error: (e: unknown) => `Failed to save entry: ${e instanceof Error ? e.message : String((e as { message?: string })?.message || e)}`
     }).then(() => {
         setEditCell(null); 
         if (selectionRef.current.r1 !== -1) {
             document.getElementById(`cell-${selectionRef.current.r1}-${selectionRef.current.c1}`)?.focus();
         }
-    });
+    }).catch(() => { /* shown in the toast; the popup stays open to try again */ });
   };
 
   const handleCfChange = async (hostId: string, field: string, val: number | '') => {
@@ -1133,8 +1148,8 @@ export default function AttendancePage() {
       {/* CELL EDITOR MODAL */}
       {editCell && (
           <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 animate-in zoom-in-95 flex flex-col relative">
-                  <div className="flex justify-between items-start mb-6 border-b border-slate-100 pb-4">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm px-6 pt-6 animate-in zoom-in-95 flex flex-col relative max-h-[85vh] overflow-y-auto custom-scrollbar">
+                  <div className="flex justify-between items-start mb-4 border-b border-slate-100 pb-4 shrink-0">
                       <div>
                           <h3 className="font-black text-xl text-[#6D2158] flex items-center gap-2">
                               <CalIcon size={20}/> {format(parseISO(editCell.dateStr), 'dd MMM yyyy')}
@@ -1143,7 +1158,8 @@ export default function AttendancePage() {
                       </div>
                       <button onClick={() => setEditCell(null)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-colors text-slate-500"><X size={18}/></button>
                   </div>
-                  
+
+                  <div>
                   <div className="mb-6">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><UserCheck size={14}/> Set Status Code</label>
                       <div className="grid grid-cols-4 gap-2">
@@ -1205,9 +1221,13 @@ export default function AttendancePage() {
                                   <div className="mt-3 rounded-2xl border border-yellow-300 bg-yellow-50 p-3">
                                       <p className="text-[10px] font-black uppercase tracking-widest text-yellow-800 mb-2">Which working day is this RO for?</p>
                                       {opts.length === 0 ? (
-                                          <p className="text-[11px] font-semibold text-rose-600">No pending working days. Add &ldquo;working day&rdquo; on the day they worked first, or the RO balance goes negative.</p>
+                                          <p className="text-[11px] font-semibold text-yellow-800">No working day waiting. It saves as an <b>unallocated RO</b> — link it from the working day when that is entered.</p>
                                       ) : (
                                           <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                                              <button type="button" onClick={() => setEditCell({ ...editCell, roFor: null, note: '' })}
+                                                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black border transition-colors ${!editCell.roFor ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+                                                  Not yet (unallocated)
+                                              </button>
                                               {opts.map(o => {
                                                   const on = editCell.roFor === o.date;
                                                   return (
@@ -1221,6 +1241,30 @@ export default function AttendancePage() {
                                           </div>
                                       )}
                                       {editCell.roFor && <p className="mt-2 text-[10px] font-semibold text-yellow-800">That day&rsquo;s comment becomes &ldquo;{workedNoteWithRO(roRows.find(r => r.host_id === editCell.hostId && r.date === editCell.roFor)?.shift_note, editCell.dateStr)}&rdquo;</p>}
+                                  </div>
+                              );
+                          })()}
+
+                          {RO_EARNING_CODES.includes(editCell.status) && hasWorkingNote(editCell.note) && (() => {
+                              // RO given before the day was worked: link this worked day to it.
+                              const wasWorked = RO_EARNING_CODES.includes(editCell.origStatus) && hasWorkingNote(editCell.origNote);
+                              const current = editCell.roTaken !== undefined ? editCell.roTaken : (wasWorked ? roTakenOn(editCell.origNote) : null);
+                              const free = unallocatedROs(roRows, editCell.hostId, wasWorked ? editCell.dateStr : undefined);
+                              const opts = current && !free.some(f => f.date === current) ? [{ date: current, note: '' }, ...free] : free;
+                              if (opts.length === 0) return <p className="mt-3 text-[11px] font-semibold text-amber-700">Earns 1 RO — it shows as waiting until an RO is linked to it.</p>;
+                              return (
+                                  <div className="mt-3 rounded-2xl border border-amber-300 bg-amber-50 p-3">
+                                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 mb-2">RO already given for this day?</p>
+                                      <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                                          <button type="button" onClick={() => setEditCell({ ...editCell, roTaken: null })}
+                                              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black border ${!current ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-500'}`}>Not yet — RO to give</button>
+                                          {opts.map(o => (
+                                              <button key={o.date} type="button" onClick={() => setEditCell({ ...editCell, roTaken: o.date })}
+                                                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black border ${current === o.date ? 'bg-yellow-400 border-yellow-500 text-yellow-950' : 'bg-white border-amber-200 text-amber-900 hover:bg-amber-100'}`}>
+                                                  RO {format(parseISO(o.date), 'dd MMM yyyy')}
+                                              </button>
+                                          ))}
+                                      </div>
                                   </div>
                               );
                           })()}
@@ -1238,7 +1282,7 @@ export default function AttendancePage() {
                       />
                   </div>
 
-                  <div className="mb-6">
+                  <div className="mb-2">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2"><MessageSquareText size={14}/> Comment / Remark (Optional)</label>
                       <textarea 
                           className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-medium outline-none focus:border-[#6D2158] resize-none h-24 shadow-inner"
@@ -1247,13 +1291,16 @@ export default function AttendancePage() {
                           onChange={e => setEditCell({...editCell, note: e.target.value})}
                       />
                   </div>
+                  </div>
 
-                  <button 
-                      onClick={handleSaveCell}
-                      className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-purple-900/20 hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2"
-                  >
-                      <Save size={16}/> Save Entry
-                  </button>
+                  <div className="sticky bottom-0 -mx-6 px-6 pt-3 pb-6 bg-white border-t border-slate-100 shrink-0">
+                      <button
+                          onClick={handleSaveCell}
+                          className="w-full py-4 bg-[#6D2158] text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl shadow-purple-900/20 hover:bg-[#5a1b49] active:scale-95 transition-all flex items-center justify-center gap-2"
+                      >
+                          <Save size={16}/> Save Entry
+                      </button>
+                  </div>
               </div>
           </div>
       )}
@@ -1272,45 +1319,58 @@ export default function AttendancePage() {
                   
                   <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scrollbar">
                       {(() => {
-                          const owed = roLedger.filter(l => l.balance > 0);
-                          const check = roLedger.filter(l => l.balance < 0).sort((a, b) => a.balance - b.balance);
-                          const renderCard = (l: (typeof roLedger)[number]) => (
-                              <div key={l.host.id} className={`p-4 border rounded-2xl ${l.balance < 0 ? 'bg-rose-50/60 border-rose-200' : 'bg-white border-yellow-200'}`}>
-                                  <div className="flex justify-between items-start gap-3">
-                                      <div className="min-w-0">
-                                          <p className="font-black text-slate-800 text-sm truncate">{l.host.full_name}</p>
-                                          <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.host_id} · worked {l.earned} · RO taken {l.taken}</p>
-                                      </div>
-                                      <div className="text-right shrink-0">
-                                          <span className={`text-xl font-black ${l.balance > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{l.balance}</span>
-                                          <span className="block text-[8px] font-bold text-slate-400 uppercase">{l.balance < 0 ? 'more RO than worked' : `RO to give`}</span>
-                                      </div>
-                                  </div>
-                                  {l.balance > 0 && (() => {
-                                      // The worked days still waiting for their RO (oldest paid back first).
-                                      const open = l.earnedDates.slice(l.taken);
-                                      return open.length > 0 && (
-                                          <div className="mt-2 flex flex-wrap gap-1.5">
-                                              {open.map((d: string) => <span key={d} className="bg-lime-50 border border-lime-200 text-lime-800 px-2 py-1 rounded text-[10px] font-bold">worked {format(parseISO(d), 'dd MMM')}</span>)}
-                                          </div>
-                                      );
-                                  })()}
-                                  {l.balance < 0 && (
-                                      <p className="mt-1.5 text-[11px] font-semibold text-rose-700">{-l.balance} RO day{l.balance === -1 ? '' : 's'} given, but the day{l.balance === -1 ? '' : 's'} worked {l.balance === -1 ? 'is' : 'are'} not marked OFF with &ldquo;working day&rdquo;.</p>
-                                  )}
+                          // Per host: worked days still waiting for an RO, and RO days not linked to a worked day.
+                          const rowsFor = roLedger.map(l => ({ l, pending: pendingWorkedDays(roRows, l.host.host_id), unalloc: unallocatedROs(roRows, l.host.host_id) }));
+                          const owed = rowsFor.filter(x => x.l.balance > 0);
+                          const unallocated = rowsFor.filter(x => x.unalloc.length > 0)
+                              .sort((a, b) => (b.unalloc.at(-1)?.date || '').localeCompare(a.unalloc.at(-1)?.date || ''));
+                          const chips = (dates: { date: string }[], cls: string, prefix: string) => (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                  {dates.map(d => <span key={d.date} className={`px-2 py-1 rounded text-[10px] font-bold border ${cls}`}>{prefix} {format(parseISO(d.date), 'dd MMM yy')}</span>)}
                               </div>
                           );
                           return (
                             <>
+                              <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">RO to give · {owed.length}</p>
                               {owed.length === 0
-                                  ? <div className="text-center py-8 text-slate-400 font-bold">Nobody is owed a working off right now.</div>
-                                  : owed.map(renderCard)}
-                              {check.length > 0 && (
-                                  <details className="pt-2">
-                                      <summary className="cursor-pointer text-[11px] font-black uppercase tracking-wider text-rose-600 py-2">Needs checking · {check.length} host{check.length === 1 ? '' : 's'} took more RO than recorded</summary>
-                                      <div className="space-y-3 pt-2">{check.map(renderCard)}</div>
-                                  </details>
-                              )}
+                                  ? <div className="text-center py-6 text-slate-400 font-bold text-sm">Nobody is owed a working off right now.</div>
+                                  : owed.map(({ l, pending }) => (
+                                      <div key={l.host.id} className="p-4 border rounded-2xl bg-white border-yellow-200">
+                                          <div className="flex justify-between items-start gap-3">
+                                              <div className="min-w-0">
+                                                  <p className="font-black text-slate-800 text-sm truncate">{l.host.full_name}</p>
+                                                  <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.host_id} · worked {l.earned} · RO taken {l.taken}</p>
+                                              </div>
+                                              <div className="text-right shrink-0">
+                                                  <span className="text-xl font-black text-amber-600">{l.balance}</span>
+                                                  <span className="block text-[8px] font-bold text-slate-400 uppercase">RO to give</span>
+                                              </div>
+                                          </div>
+                                          {pending.length > 0 && chips(pending, 'bg-lime-50 border-lime-200 text-lime-800', 'worked')}
+                                      </div>
+                                  ))}
+
+                              <p className="pt-3 text-[10px] font-black uppercase tracking-widest text-slate-500">Unallocated RO · not linked to a working day · {unallocated.length}</p>
+                              <p className="-mt-2 text-[11px] font-semibold text-slate-400">Open the working day (or the RO) on the sheet to link them. RO may be given before the day is worked.</p>
+                              {unallocated.length === 0
+                                  ? <div className="text-center py-6 text-slate-400 font-bold text-sm">Every RO is linked.</div>
+                                  : unallocated.map(({ l, pending, unalloc }) => (
+                                      <div key={l.host.id} className={`p-4 border rounded-2xl ${l.balance < 0 ? 'bg-rose-50/60 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+                                          <div className="flex justify-between items-start gap-3">
+                                              <div className="min-w-0">
+                                                  <p className="font-black text-slate-800 text-sm truncate">{l.host.full_name}</p>
+                                                  <p className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">{l.host.host_id} · {unalloc.length} RO unlinked{pending.length ? ` · ${pending.length} worked day${pending.length > 1 ? 's' : ''} waiting` : ''}</p>
+                                              </div>
+                                              <div className="text-right shrink-0">
+                                                  <span className={`text-xl font-black ${l.balance < 0 ? 'text-rose-600' : l.balance > 0 ? 'text-amber-600' : 'text-slate-400'}`}>{l.balance}</span>
+                                                  <span className="block text-[8px] font-bold text-slate-400 uppercase">balance</span>
+                                              </div>
+                                          </div>
+                                          {chips(unalloc, 'bg-yellow-50 border-yellow-300 text-yellow-900', 'RO')}
+                                          {pending.length > 0 && chips(pending, 'bg-lime-50 border-lime-200 text-lime-800', 'worked')}
+                                          {l.balance < 0 && <p className="mt-2 text-[11px] font-semibold text-rose-700">{-l.balance} more RO than worked days — the working day{l.balance === -1 ? ' is' : 's are'} not on the sheet yet.</p>}
+                                      </div>
+                                  ))}
                             </>
                           );
                       })()}

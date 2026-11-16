@@ -78,6 +78,17 @@ type MasterItem = {
   image_url?: string; 
 };
 
+// Gen Req / GEM Req pick lists (in this order).
+const REQUEST_FORM_ITEMS = [
+  'First Aid', 'Hot Water Bag', 'Magnifying Mirror', 'Nail Clipper', 'Prayer Mat', 'Pumice Stone', 'Sewing Kit', 'Yoga Mat',
+  'Dental Kit', 'Shaving Kit', 'Cotton Buds', 'Cotton Pads', 'Alarm Clock', 'Anti-Slip Mat', 'Bathroom Scale', 'Comb',
+  'Earplugs', 'Eye Mask M', 'Eye Mask L',
+];
+const PILLOW_ITEMS = [
+  'Body Pillow', 'Buckwheat Pillow', 'Butterfly Pillow', 'Cervical Support Pillow', 'Hypo Body Pillow', 'Isotonic Pillow',
+  'Feather Firm', 'Feather Soft', 'No Snore Pillow', 'Mediflow Water Base Pillow', 'Gel and Memory Foam Pillow',
+];
+
 // Target category sorting order inside Frequent tab
 const FREQUENT_CATEGORY_ORDER = [
   "BITES",
@@ -226,7 +237,7 @@ export default function CoordinatorLog() {
   const [villaSearch, setVillaSearch] = useState('');
   
   const [mbItemSearch, setMbItemSearch] = useState('');
-  const [otherItemSearch, setOtherItemSearch] = useState('');
+  const [, setOtherItemSearch] = useState('');
   const [villaNumber, setVillaNumber] = useState('');
   const [guestOptions, setGuestOptions] = useState<GuestOption[]>([]);
   const [guestRole, setGuestRole] = useState('');
@@ -241,7 +252,7 @@ export default function CoordinatorLog() {
   // isBank (coordinator only): banked straight away — not sent, not on the request, nobody else sees it.
   const [mbCart, setMbCart] = useState<{name: string, qty: number, isRefill?: boolean, isBank?: boolean}[]>([]);
   const [mbCategory, setMbCategory] = useState('Frequent');
-  const [otherMode, setOtherMode] = useState<'Catalog' | 'Note'>('Catalog');
+  const [otherMode, setOtherMode] = useState<'Form' | 'Pillow' | 'Note'>('Form');
   const [otherCategory, setOtherCategory] = useState('General');
   const [otherCart, setOtherCart] = useState<{name: string, qty: number}[]>([]);
   const [customNote, setCustomNote] = useState('');
@@ -517,7 +528,7 @@ export default function CoordinatorLog() {
     setMbCategory('Frequent');
     
     if (type === 'Minibar') setIsMinibarOpen(true);
-    else { setOtherModalType(type); setOtherMode(type === 'GEM' ? 'Note' : 'Catalog'); setIsOtherOpen(true); }
+    else { setOtherModalType(type); setOtherMode('Form'); setIsOtherOpen(true); }
   };
 
   const handleEditRecord = (record: RequestRecord) => {
@@ -635,9 +646,11 @@ export default function CoordinatorLog() {
         details = sendItems.map(i => `${i.qty}x ${i.name}${i.isRefill ? ' (Refill)' : ''}`).join('\n');
         reqType = 'Minibar';
     } else {
-        details = otherMode === 'Catalog' ? otherCart.map(i => `${i.qty}x ${i.name}`).join('\n') : customNote;
-        if (!details.trim()) { toast.error("Enter request details or select items"); return; }
-        reqType = otherModalType === 'GEM' ? 'GEM Request' : otherCategory; 
+        // Picked items (Request Form / Pillows) plus any typed note.
+        details = [...otherCart.map(i => `${i.qty}x ${i.name}`), customNote.trim()].filter(Boolean).join('\n');
+        if (!details.trim()) { toast.error("Pick items or write the request"); return; }
+        const onlyPillows = otherCart.length > 0 && !customNote.trim() && otherCart.every(i => PILLOW_ITEMS.includes(i.name));
+        reqType = otherModalType === 'GEM' ? 'GEM Request' : onlyPillows ? 'Pillow Request' : otherCategory; 
     }
 
     const dateStr = getDhakaDateStr(selectedDate);
@@ -2081,80 +2094,52 @@ export default function CoordinatorLog() {
                   
                   {renderGuestCard(true)}
                   
-                  <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
-                     <button 
-                       onClick={() => setOtherMode('Catalog')} 
-                       className={`py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
-                         otherMode === 'Catalog' ? 'bg-white shadow-xs text-[#6D2158]' : 'text-slate-500'
-                       }`}
-                     >
-                       Visual Catalog ({otherCart.reduce((s, i) => s + i.qty, 0)})
-                     </button>
-                     <button 
-                       onClick={() => setOtherMode('Note')} 
-                       className={`py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
-                         otherMode === 'Note' ? 'bg-white shadow-xs text-[#6D2158]' : 'text-slate-500'
-                       }`}
-                     >
-                       Custom Text / AI Note
-                     </button>
+                  {/* Picked so far (from either list) */}
+                  {otherCart.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 p-3 bg-purple-50/60 rounded-2xl border border-purple-100">
+                      {otherCart.map(item => (
+                        <span key={item.name} className="px-2.5 py-1 bg-[#6D2158] text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
+                          {item.qty}x {item.name}
+                          <button onClick={() => updateCartQty(item.name, -item.qty, 'Other')} className="hover:text-rose-200 cursor-pointer" aria-label={`Remove ${item.name}`}>
+                            <X size={13}/>
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1.5 rounded-2xl">
+                     {([['Form', 'Request Form', REQUEST_FORM_ITEMS], ['Pillow', 'Pillow Request', PILLOW_ITEMS], ['Note', 'Note', null]] as const).map(([k, label, list]) => {
+                       const n = list ? otherCart.filter(c => (list as readonly string[]).includes(c.name)).reduce((s2, c) => s2 + c.qty, 0) : (customNote.trim() ? 1 : 0);
+                       return (
+                         <button key={k} onClick={() => setOtherMode(k)}
+                           className={`py-2.5 rounded-xl text-[11px] sm:text-xs font-black uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1 ${otherMode === k ? 'bg-white shadow-xs text-[#6D2158]' : 'text-slate-500'}`}>
+                           {label}{n > 0 && <span className="px-1.5 rounded-md bg-[#6D2158] text-white text-[10px]">{list ? n : '✓'}</span>}
+                         </button>
+                       );
+                     })}
                   </div>
                   
-                  {otherMode === 'Catalog' ? (
-                     <div className="space-y-3">
-                        {otherCart.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 p-3 bg-purple-50/60 rounded-2xl border border-purple-100">
-                            {otherCart.map(item => (
-                              <span key={item.name} className="px-2.5 py-1 bg-[#6D2158] text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
-                                {item.qty}x {item.name}
-                                <button onClick={() => updateCartQty(item.name, -item.qty, 'Other')} className="hover:text-rose-200 cursor-pointer">
-                                  <X size={13}/>
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        <div className="relative">
-                          <Search size={15} className="absolute left-3.5 top-3 text-slate-400"/>
-                          <input 
-                            type="text" 
-                            placeholder="Search general amenities (Towels, Hangers, Iron, Pillow)..." 
-                            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold outline-none focus:border-[#6D2158]" 
-                            value={otherItemSearch}
-                            onChange={e => setOtherItemSearch(e.target.value)}
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2.5">
-                          {masterCatalog
-                            .filter(i => !i.is_minibar_item && ((i.article_name || '').toLowerCase().includes(otherItemSearch.toLowerCase()) || (i.generic_name || '').toLowerCase().includes(otherItemSearch.toLowerCase())))
-                            .map(item => {
-                             const itemName = item.generic_name || item.article_name;
-                             const inCart = otherCart.find(c => c.name === itemName);
-                             return (
-                                 <button 
-                                   key={item.article_number} 
-                                   onClick={() => addToCart(itemName, 'Other')} 
-                                   className={`bg-white p-2.5 rounded-2xl flex flex-col items-center justify-between gap-2 active:scale-95 transition-all group relative border-2 cursor-pointer ${
-                                     inCart ? 'border-[#6D2158] shadow-sm ring-2 ring-[#6D2158]/10' : 'border-slate-200/70 hover:border-slate-300'
-                                   }`}
-                                 >
-                                    {inCart && (
-                                      <div className="absolute top-1.5 right-1.5 bg-[#6D2158] text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center">
-                                        {inCart.qty}
-                                      </div>
-                                    )}
-                                    <div className="w-full h-16 bg-slate-50 rounded-xl flex items-center justify-center overflow-hidden p-1.5">
-                                      <img src={item.image_url || '/placeholder.png'} alt="" className="w-full h-full object-contain group-hover:scale-110 transition-all"/>
-                                    </div>
-                                    <span className="text-[10px] font-bold text-slate-700 text-center leading-tight line-clamp-2 h-7 flex items-center">
-                                      {itemName}
-                                    </span>
-                                 </button>
-                             );
-                          })}
-                        </div>
+                  {otherMode !== 'Note' ? (
+                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {(otherMode === 'Pillow' ? PILLOW_ITEMS : REQUEST_FORM_ITEMS).map((name, idx) => {
+                          const inCart = otherCart.find(c => c.name === name);
+                          return (
+                            <div key={name} className={`flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-xl border transition-colors ${inCart ? 'bg-[#6D2158]/[0.05] border-[#6D2158]/30' : 'bg-white border-slate-200'}`}>
+                              {otherMode === 'Pillow' && <span className="w-5 text-[10px] font-black text-slate-300 shrink-0">{idx + 1}</span>}
+                              <button onClick={() => addToCart(name, 'Other')} className="flex-1 min-w-0 text-left py-1 text-sm font-bold text-slate-700 truncate cursor-pointer">{name}</button>
+                              {inCart ? (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button onClick={() => updateCartQty(name, -1, 'Other')} className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 cursor-pointer" aria-label="Less"><Minus size={13}/></button>
+                                  <span className="w-6 text-center font-mono font-black text-sm text-[#6D2158]">{inCart.qty}</span>
+                                  <button onClick={() => updateCartQty(name, 1, 'Other')} className="w-8 h-8 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 cursor-pointer" aria-label="More"><Plus size={13}/></button>
+                                </div>
+                              ) : (
+                                <button onClick={() => addToCart(name, 'Other')} className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-[#6D2158] hover:text-white flex items-center justify-center text-slate-500 shrink-0 cursor-pointer" aria-label={`Add ${name}`}><Plus size={14}/></button>
+                              )}
+                            </div>
+                          );
+                        })}
                      </div>
                   ) : (
                      <div className="flex flex-col gap-3">

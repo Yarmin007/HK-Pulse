@@ -6,6 +6,8 @@ import {
 import { format, parseISO, isAfter, isToday, isTomorrow, addDays, startOfToday } from 'date-fns';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
+import { hasFullControl } from '@/lib/fullControl';
+import { parseMealPlan, mealPlanFromProducts } from '@/lib/guestImport';
 
 type FutureArrival = {
   villa: string;
@@ -44,6 +46,18 @@ const extractTime = (val: string) => {
   return match ? match[1].replace('.', ':') : "";
 };
 
+// "Today (16 Nov)" / "Tomorrow (17 Nov)" / "Wednesday, 18 Nov 2026" — worked out when shown, never saved,
+// so yesterday's "Today" doesn't stick.
+const dayLabel = (dateStr: string) => {
+  const d = parseISO(dateStr);
+  if (isToday(d)) return `Today (${format(d, 'dd MMM')})`;
+  if (isTomorrow(d)) return `Tomorrow (${format(d, 'dd MMM')})`;
+  return format(d, 'EEEE, dd MMM yyyy');
+};
+
+// Opera reservations that will not arrive.
+const NOT_ARRIVING = ['CXL', 'CANCEL', 'CANCELLED', 'NS', 'NOSHOW', 'NO SHOW', 'WL', 'WAITLIST'];
+
 // Map Villa Numbers to their Jetty/Beach Location
 const getJettyLocation = (villaNumStr: string) => {
   const v = parseInt(villaNumStr, 10);
@@ -63,23 +77,8 @@ export default function ArrivalsForecastPage() {
   const [graphView, setGraphView] = useState<'daily' | 'weekly'>('daily');
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Check user role on load (UPDATED TO USE YOUR LOCALSTORAGE AUTH)
-  useEffect(() => {
-    const checkUserRole = () => {
-        const sessionData = localStorage.getItem('hk_pulse_session');
-        const adminAuth = localStorage.getItem('hk_pulse_admin_auth');
-        
-        let adminFlag = false;
-        if (sessionData) {
-            const parsed = JSON.parse(sessionData);
-            adminFlag = parsed.system_role === 'admin' || adminAuth === 'true';
-        } else if (adminAuth === 'true') {
-            adminFlag = true;
-        }
-        setIsAdmin(adminFlag);
-    };
-    checkUserRole();
-  }, []);
+  // Only admins upload / publish. "Viewing as" a staff member shows the staff view.
+  useEffect(() => { setIsAdmin(hasFullControl()); }, []);
 
   // Fetch the last saved forecast on load
   useEffect(() => {
@@ -91,7 +90,11 @@ export default function ArrivalsForecastPage() {
         }
         if (data.label) {
           try {
-            setForecastData(JSON.parse(data.label));
+            const saved: DailySummary[] = JSON.parse(data.label);
+            setForecastData(saved);
+            const todayIso = format(startOfToday(), 'yyyy-MM-dd');
+            const next = saved.filter(d => d.date >= todayIso).slice(0, 2);
+            setExpandedDays(Object.fromEntries(next.map(d => [d.date, true])));
           } catch (e) {
             console.error("Error parsing saved forecast data", e);
           }
@@ -154,15 +157,14 @@ export default function ArrivalsForecastPage() {
       // Only care about Today and Future dates
       if (parsedDate < today) return;
 
+      const status = (getText(res, 'SHORT_RESV_STATUS') || getText(res, 'RESV_STATUS')).toUpperCase().trim();
+      if (NOT_ARRIVING.includes(status)) return;
+
       const villa = getText(res, 'DISP_ROOM_NO').replace(/\D/g, '');
       if (!villa) return;
 
-      let mealPlan = 'RO';
-      const rateCode = (getText(res, 'RATE_CODE') || '').toUpperCase();
-      const products = (getText(res, 'PRODUCTS') || '').toUpperCase();
-      if (products.includes('LUN') || rateCode.includes('FB')) mealPlan = 'FB';
-      else if ((products.includes('DIN') || rateCode.includes('HB')) && mealPlan !== 'FB') mealPlan = 'HB';
-      else if ((products.includes('BFS') || rateCode.includes('BB') || rateCode.includes('PR')) && mealPlan === 'RO') mealPlan = 'BB';
+      // Same reading as the Guest List import (meal plan column if there is one, else the products).
+      const mealPlan = parseMealPlan(getText(res, 'MEAL_PLAN')) || mealPlanFromProducts(getText(res, 'PRODUCTS')) || 'RO';
 
       const rawName = getText(res, 'FULL_NAME_NO_SHR_IND') || getText(res, 'FULL_NAME') || '';
       const adults = parseInt(getText(res, 'ADULTS') || '0', 10);
@@ -173,7 +175,7 @@ export default function ArrivalsForecastPage() {
 
       const newArrival: FutureArrival = {
         villa,
-        names: rawName.replace(/[^a-zA-Z\s\-,]/g, "").trim(),
+        names: rawName.replace(/[^\p{L}\s\-,'.]/gu, "").replace(/\s+/g, " ").trim(),
         adults,
         kids,
         arrivalDate: isoDate,
@@ -216,10 +218,7 @@ export default function ArrivalsForecastPage() {
         else if (arr.jetty === 'Beach') jettyCounts.beach++;
       });
 
-      const parsedDate = parseISO(dateStr);
-      let dateLabel = format(parsedDate, 'EEEE, dd MMM yyyy');
-      if (isToday(parsedDate)) dateLabel = `Today (${format(parsedDate, 'dd MMM')})`;
-      else if (isTomorrow(parsedDate)) dateLabel = `Tomorrow (${format(parsedDate, 'dd MMM')})`;
+      const dateLabel = dayLabel(dateStr);
 
       return {
         date: dateStr,
@@ -276,9 +275,13 @@ export default function ArrivalsForecastPage() {
     setExpandedDays(prev => ({ ...prev, [dateStr]: !prev[dateStr] }));
   };
 
+  // Only today and later; labels refreshed for today's date.
+  const todayIso = format(startOfToday(), 'yyyy-MM-dd');
+  const upcoming = forecastData.filter(d => d.date >= todayIso).map(d => ({ ...d, dateLabel: dayLabel(d.date) }));
+
   // --- Calculations for Visualizations ---
   let maxDate = startOfToday();
-  forecastData.forEach(d => {
+  upcoming.forEach(d => {
     const dDate = parseISO(d.date);
     if (isAfter(dDate, maxDate)) maxDate = dDate;
     d.arrivals.forEach(a => {
@@ -303,12 +306,12 @@ export default function ArrivalsForecastPage() {
     timelineDates.push(...Array.from({ length: 14 }).map((_, i) => format(addDays(startOfToday(), i), 'yyyy-MM-dd')));
   }
 
-  const allVillas = Array.from(new Set(forecastData.flatMap(d => d.arrivals.map(a => a.villa)))).sort((a,b) => parseInt(a) - parseInt(b));
+  const allVillas = Array.from(new Set(upcoming.flatMap(d => d.arrivals.map(a => a.villa)))).sort((a,b) => parseInt(a) - parseInt(b));
 
   let chartData: any[] = [];
   if (graphView === 'daily') {
     // Map daily data to uniform format for the chart
-    chartData = forecastData.slice(0, 14).map(d => ({
+    chartData = upcoming.slice(0, 14).map(d => ({
       label: d.dateLabel,
       a: d.jettyCounts.a,
       b: d.jettyCounts.b,
@@ -318,7 +321,7 @@ export default function ArrivalsForecastPage() {
     }));
   } else {
     let currentWeek = { label: 'Week 1', a: 0, b: 0, c: 0, beach: 0, date: '' };
-    forecastData.forEach((d, i) => {
+    upcoming.forEach((d, i) => {
       const weekNum = Math.floor(i / 7) + 1;
       if (currentWeek.label !== `Week ${weekNum}`) {
         if (i !== 0) chartData.push(currentWeek);
@@ -329,7 +332,7 @@ export default function ArrivalsForecastPage() {
       currentWeek.c += d.jettyCounts.c;
       currentWeek.beach += d.jettyCounts.beach;
     });
-    if (forecastData.length > 0) chartData.push(currentWeek);
+    if (upcoming.length > 0) chartData.push(currentWeek);
   }
   const maxGraphVal = Math.max(...chartData.map(d => (d.a + d.b + d.c + d.beach) || 1));
 
@@ -366,7 +369,7 @@ export default function ArrivalsForecastPage() {
 
             <button
               onClick={handleSaveForecast}
-              disabled={forecastData.length === 0 || isSaving || isProcessing}
+              disabled={upcoming.length === 0 || isSaving || isProcessing}
               className="w-full sm:w-auto flex-1 md:flex-none bg-[#6D2158] text-white px-6 py-3 rounded-xl text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-[#6D2158]/20 hover:bg-[#5a1b49] transition-all disabled:opacity-50 disabled:shadow-none"
             >
               {isSaving ? <Loader2 size={18} className="animate-spin"/> : <Save size={18}/>}
@@ -376,7 +379,7 @@ export default function ArrivalsForecastPage() {
         )}
       </div>
 
-      {forecastData.length === 0 ? (
+      {upcoming.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 bg-white rounded-3xl border border-slate-200 border-dashed text-slate-400">
           <FileSpreadsheet size={64} className="mb-4 opacity-20"/>
           <p className="text-lg font-black text-slate-500">Awaiting Data File</p>
@@ -392,20 +395,20 @@ export default function ArrivalsForecastPage() {
           <div className="bg-gradient-to-r from-[#6D2158] to-[#902468] p-5 md:p-6 rounded-3xl shadow-lg text-white grid grid-cols-2 md:grid-cols-4 lg:flex lg:flex-wrap gap-6 md:gap-8 items-center">
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Forecast Scope</p>
-              <p className="text-xl md:text-2xl font-black">{forecastData.length} Days Detected</p>
+              <p className="text-xl md:text-2xl font-black">{upcoming.length} Days Detected</p>
             </div>
             <div className="w-px h-12 bg-white/20 hidden lg:block"></div>
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Incoming Villas</p>
-              <p className="text-xl md:text-2xl font-black">{forecastData.reduce((acc, curr) => acc + curr.totalVillas, 0)}</p>
+              <p className="text-xl md:text-2xl font-black">{upcoming.reduce((acc, curr) => acc + curr.totalVillas, 0)}</p>
             </div>
             <div className="w-px h-12 bg-white/20 hidden lg:block"></div>
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Incoming Pax</p>
               <p className="text-xl md:text-2xl font-black flex items-center gap-2">
-                {forecastData.reduce((acc, curr) => acc + curr.totalAdults + curr.totalKids, 0)}
+                {upcoming.reduce((acc, curr) => acc + curr.totalAdults + curr.totalKids, 0)}
                 <span className="text-[10px] font-bold bg-white/20 px-2 py-0.5 rounded-full whitespace-nowrap">
-                  {forecastData.reduce((acc, curr) => acc + curr.totalKids, 0)} Kids
+                  {upcoming.reduce((acc, curr) => acc + curr.totalKids, 0)} Kids
                 </span>
               </p>
             </div>
@@ -413,10 +416,10 @@ export default function ArrivalsForecastPage() {
             <div className="col-span-2 md:col-span-1">
               <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">Location Breakdown</p>
               <div className="flex flex-wrap gap-2 text-xs md:text-sm font-bold mt-1">
-                <span className="bg-white/20 px-2 py-0.5 rounded">A: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.a, 0)}</span>
-                <span className="bg-white/20 px-2 py-0.5 rounded">B: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.b, 0)}</span>
-                <span className="bg-white/20 px-2 py-0.5 rounded">C: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.c, 0)}</span>
-                <span className="bg-white/20 px-2 py-0.5 rounded">Beach: {forecastData.reduce((acc, curr) => acc + curr.jettyCounts.beach, 0)}</span>
+                <span className="bg-white/20 px-2 py-0.5 rounded">A: {upcoming.reduce((acc, curr) => acc + curr.jettyCounts.a, 0)}</span>
+                <span className="bg-white/20 px-2 py-0.5 rounded">B: {upcoming.reduce((acc, curr) => acc + curr.jettyCounts.b, 0)}</span>
+                <span className="bg-white/20 px-2 py-0.5 rounded">C: {upcoming.reduce((acc, curr) => acc + curr.jettyCounts.c, 0)}</span>
+                <span className="bg-white/20 px-2 py-0.5 rounded">Beach: {upcoming.reduce((acc, curr) => acc + curr.jettyCounts.beach, 0)}</span>
               </div>
             </div>
           </div>
@@ -441,7 +444,7 @@ export default function ArrivalsForecastPage() {
                   </div>
                   <div className="max-h-64 overflow-y-auto pr-2 custom-scrollbar">
                     {allVillas.map(villa => {
-                      const vArrivals = forecastData.flatMap(d => d.arrivals).filter(a => a.villa === villa);
+                      const vArrivals = upcoming.flatMap(d => d.arrivals).filter(a => a.villa === villa);
                       return (
                         <div key={villa} className="flex items-center mb-1.5 relative h-8 bg-slate-50/50 rounded hover:bg-slate-100 transition-colors">
                           <div className="w-16 shrink-0 font-black text-sm text-slate-700 pl-1">V{villa}</div>
@@ -525,7 +528,7 @@ export default function ArrivalsForecastPage() {
 
           {/* Day-by-Day List */}
           <div className="space-y-4">
-            {forecastData.map((day) => {
+            {upcoming.map((day) => {
               const isExpanded = expandedDays[day.date];
               const isTdy = isToday(parseISO(day.date));
 

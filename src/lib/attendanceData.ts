@@ -144,23 +144,49 @@ export const workedNoteWithRO = (note: string | null | undefined, roIso: string)
 /** Comment for the worked day when its RO is removed again. */
 export const workedNoteWithoutRO = (note?: string | null) => workedBase(note);
 
+// Who is paired with whom. A pair counts if either comment names the other day and that day still
+// exists — so deleting an RO puts its worked day back as pending, and the other way round.
+const roPairs = (rows: AttRow[], hostId: string, skipDate?: string) => {
+  const id = String(hostId).trim();
+  const mine = rows.filter(r => String(r.host_id).trim() === id && String(r.date).slice(0, 10) !== skipDate);
+  const worked = mine.filter(r => isWorkedLeave(r));
+  const ros = mine.filter(isRO);
+  const workedDates = new Set(worked.map(r => String(r.date).slice(0, 10)));
+  const roDates = new Set(ros.map(r => String(r.date).slice(0, 10)));
+  const pairedWorked = new Set<string>();
+  const pairedRO = new Set<string>();
+  for (const w of worked) {
+    const t = roTakenOn(w.shift_note);
+    if (t && roDates.has(t)) { pairedWorked.add(String(w.date).slice(0, 10)); pairedRO.add(t); }
+  }
+  for (const r of ros) {
+    const f = roForDay(r.shift_note);
+    if (f && workedDates.has(f)) { pairedRO.add(String(r.date).slice(0, 10)); pairedWorked.add(f); }
+  }
+  return { worked, ros, pairedWorked, pairedRO };
+};
+
 /**
- * Worked days of a host that still have no RO (oldest first). A link only counts while the RO row
- * it names still exists, so deleting an RO puts the worked day back on the list. Older RO days that
- * were entered without a link pay off the oldest worked days first. `editingRoDate` is the RO being
- * edited, so it doesn't count against the list it is choosing from.
+ * Worked days of a host that still have no RO linked (oldest first). Every one of them can be picked —
+ * an RO without a link doesn't silently use up the oldest days. `editingRoDate` is the RO being edited,
+ * so its own link is free to choose again.
  */
 export const pendingWorkedDays = (rows: AttRow[], hostId: string, editingRoDate?: string) => {
-  const id = String(hostId).trim();
-  const mine = rows.filter(r => String(r.host_id).trim() === id);
-  const roRows = mine.filter(isRO).filter(r => String(r.date).slice(0, 10) !== editingRoDate);
-  const roDates = new Set(roRows.map(r => String(r.date).slice(0, 10)));
-  const worked = mine.filter(r => isWorkedLeave(r));
-  const workedDates = new Set(worked.map(r => String(r.date).slice(0, 10)));
-  const unlinkedRO = roRows.filter(r => { const f = roForDay(r.shift_note); return !f || !workedDates.has(f); }).length;
+  const { worked, pairedWorked } = roPairs(rows, hostId, editingRoDate);
   return worked
-    .filter(r => { const t = roTakenOn(r.shift_note); return !t || !roDates.has(t); })
+    .filter(r => !pairedWorked.has(String(r.date).slice(0, 10)))
     .map(r => ({ date: String(r.date).slice(0, 10), status: String(r.status_code || ''), note: String(r.shift_note || '') }))
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(unlinkedRO);
+    .sort((a, b) => a.date.localeCompare(b.date));
+};
+
+/**
+ * RO days not linked to any worked day yet (oldest first) — RO can be given before the day is worked.
+ * `editingWorkedDate` is the worked day being edited, so its own link is free to choose again.
+ */
+export const unallocatedROs = (rows: AttRow[], hostId: string, editingWorkedDate?: string) => {
+  const { ros, pairedRO } = roPairs(rows, hostId, editingWorkedDate);
+  return ros
+    .filter(r => !pairedRO.has(String(r.date).slice(0, 10)))
+    .map(r => ({ date: String(r.date).slice(0, 10), note: String(r.shift_note || '') }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 };
