@@ -8,11 +8,25 @@ import { supabase } from "@/lib/supabase";
 import { JETTY_A, JETTY_B, JETTY_C, BEACH, parseVillas } from "@/app/allocation/lib/constants";
 import { isOffShift } from "@/app/allocation/lib/riders";
 import { projectGuestDay, villaStatusMap } from "@/lib/guestDay";
-import { ChevronLeft, ChevronRight, Phone, Search, X, RefreshCw, Users, Loader2, BookOpen } from "lucide-react";
+import { ChevronLeft, ChevronRight, Phone, Search, X, RefreshCw, Users, Loader2, BookOpen, MessageCircle } from "lucide-react";
 import VillaDirectory from "./VillaDirectory";
+import { hasFullControl } from "@/lib/fullControl";
 
-type Host = { id: string; host_id: string; full_name: string; nicknames?: string | null; mvpn?: string | null; personal_mobile?: string | null; image_url?: string | null; status?: string | null };
-type Attendant = { key: string; name: string; fullName: string; ssl: string; shift: string; villas: number[]; mvpn: string; mobile: string; photo: string; zone: Zone };
+// WhatsApp chat link for a personal number. Maldives numbers are 7 digits → +960 is added.
+const whatsappUrl = (raw: string) => {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.length === 7) d = `960${d}`;
+  return d.length >= 8 ? `https://wa.me/${d}` : "";
+};
+
+// Which number each attendant uses for WhatsApp. Default = personal; a few use their work phone.
+// hsk_constants type 'whatsapp_numbers', label = JSON { [hsk_hosts.id]: 'work' }
+const WA_TYPE = "whatsapp_numbers";
+type WaPrefs = Record<string, "work" | "personal">;
+
+type Host = { id: string; host_id: string; full_name: string; nicknames?: string | null; mvpn?: string | null; personal_mobile?: string | null; company_mobile?: string | null; image_url?: string | null; status?: string | null };
+type Attendant = { key: string; hostId: string; name: string; fullName: string; ssl: string; shift: string; villas: number[]; mvpn: string; mobile: string; work: string; photo: string; zone: Zone };
 type Zone = "Jetty A" | "Jetty B" | "Jetty C" | "Beach";
 type VillaInfo = { status: string; arr?: string; dep?: string };
 
@@ -52,7 +66,7 @@ const statusStyle = (raw: string) => {
 async function fetchFO(d: string): Promise<{ list: Attendant[]; info: Record<number, VillaInfo> }> {
     const [allocRes, hostRes, sumRes] = await Promise.all([
       supabase.from("hsk_allocations").select("host_id, area, shift, task_details").eq("report_date", d).eq("area", "villa"),
-      supabase.from("hsk_hosts").select("id, host_id, full_name, nicknames, mvpn, personal_mobile, image_url, status"),
+      supabase.from("hsk_hosts").select("id, host_id, full_name, nicknames, mvpn, personal_mobile, company_mobile, image_url, status"),
       projectGuestDay(d),
     ]);
     const hostMap = new Map<string, Host>();
@@ -72,6 +86,7 @@ async function fetchFO(d: string): Promise<{ list: Attendant[]; info: Record<num
       const nick = h.nicknames ? h.nicknames.split(",")[0].trim() : "";
       list.push({
         key: `${h.id}-${a.shift}`,
+        hostId: String(h.id),
         name: nick || h.full_name.split(" ")[0],
         fullName: h.full_name,
         ssl: String(h.host_id || "").trim(),
@@ -79,6 +94,7 @@ async function fetchFO(d: string): Promise<{ list: Attendant[]; info: Record<num
         villas,
         mvpn: String(h.mvpn || "").trim(),
         mobile: String(h.personal_mobile || "").trim(),
+        work: String(h.company_mobile || "").trim(),
         photo: /\/storage\/v1\/object\//.test(h.image_url || "") ? String(h.image_url) : "",
         zone,
       });
@@ -108,6 +124,26 @@ export default function FrontOfficeSharePage() {
   const [villaInfo, setVillaInfo] = useState<Record<number, VillaInfo>>({});
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [query, setQuery] = useState("");
+  const [waPrefs, setWaPrefs] = useState<WaPrefs>({});
+  const [admin, setAdmin] = useState(false);
+  useEffect(() => {
+    setAdmin(hasFullControl());
+    supabase.from("hsk_constants").select("label").eq("type", WA_TYPE).limit(1).maybeSingle()
+      .then(({ data }) => { try { setWaPrefs(JSON.parse(data?.label || "{}")); } catch { /* none */ } });
+  }, []);
+  const waNumber = (a: Attendant) => (waPrefs[a.hostId] === "work" && a.work ? a.work : a.mobile);
+  // Admin only: switch this attendant's WhatsApp between personal and work number
+  const toggleWa = async (a: Attendant) => {
+    const next: WaPrefs = { ...waPrefs };
+    if (next[a.hostId] === "work") delete next[a.hostId]; else next[a.hostId] = "work";
+    setWaPrefs(next);
+    const label = JSON.stringify(next);
+    const { data: row } = await supabase.from("hsk_constants").select("id").eq("type", WA_TYPE).limit(1).maybeSingle();
+    const { error } = row?.id
+      ? await supabase.from("hsk_constants").update({ label }).eq("id", row.id)
+      : await supabase.from("hsk_constants").insert([{ type: WA_TYPE, label }]);
+    if (error) setWaPrefs(waPrefs);
+  };
 
   const apply = useCallback((r: { list: Attendant[]; info: Record<number, VillaInfo> }) => {
     setAttendants(r.list);
@@ -235,6 +271,18 @@ export default function FrontOfficeSharePage() {
                               <span className="text-sm font-black flex items-center gap-1"><Phone size={13} /> {a.mobile}</span>
                             </a>
                           ) : <div className="flex items-center justify-center rounded-xl bg-slate-50 text-[11px] font-bold text-slate-400 py-2">No personal no.</div>}
+                          {whatsappUrl(waNumber(a)) && (
+                            <a href={whatsappUrl(waNumber(a))} target="_blank" rel="noopener noreferrer"
+                              className="col-span-2 flex items-center justify-center gap-1.5 rounded-xl bg-[#25D366] hover:bg-[#1ebe5a] text-white py-2 text-sm font-black active:scale-95 transition">
+                              <MessageCircle size={15} /> WhatsApp {a.name}
+                              {waPrefs[a.hostId] === "work" && a.work && <span className="text-[10px] font-bold text-white/80">(work no.)</span>}
+                            </a>
+                          )}
+                          {admin && a.work && (
+                            <button onClick={() => toggleWa(a)} className="col-span-2 -mt-1 text-[10px] font-bold text-slate-400 hover:text-[#6D2158]">
+                              WhatsApp uses {waPrefs[a.hostId] === "work" ? `work no. ${a.work}` : "personal no."} · switch to {waPrefs[a.hostId] === "work" ? "personal" : "work"}
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}

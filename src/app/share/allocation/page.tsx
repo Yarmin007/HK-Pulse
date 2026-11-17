@@ -137,14 +137,6 @@ export default function PublicDashboard() {
 
     const isPublished = allocations.filter((a: any) => a.area === 'villa' && a.task_details?.trim() !== '').length > 0;
 
-    // Helper to pad arrays with 'null' values so the grid columns are always filled perfectly
-    const padArray = (arr: any[], length: number) => {
-        const padded = [...arr];
-        while (padded.length < length) {
-            padded.push(null);
-        }
-        return padded;
-    };
 
     // Find the maximum number of villas assigned to ANY host today so we can pad all cards identically
     let globalMaxVillas = 8;
@@ -154,10 +146,11 @@ export default function PublicDashboard() {
         if (myVillas.length > globalMaxVillas) globalMaxVillas = myVillas.length;
     });
 
-    const paddedJettyA = padArray(hostGroups.jettyA, 7);
-    const paddedJettyB = padArray(hostGroups.jettyB, 3);
-    const paddedJettyC = padArray(hostGroups.jettyC, 4);
-    const paddedBeach = padArray(hostGroups.beach, 7);
+    // Only real attendants: no empty placeholder cards
+    const paddedJettyA = hostGroups.jettyA;
+    const paddedJettyB = hostGroups.jettyB;
+    const paddedJettyC = hostGroups.jettyC;
+    const paddedBeach = hostGroups.beach;
 
     const renderDashboardCard = (host: any, key: string, themeColor: string, themeBg: string, themeText: string) => {
         // RENDERING EMPTY PLACEHOLDER CARD
@@ -205,11 +198,11 @@ export default function PublicDashboard() {
         const avatarFallbackColor = getAvatarColor(nickname);
         const hasHighlightedVilla = searchQuery && myVillas.some((v: string) => v === searchQuery.trim());
 
-        // Pad the villas array to match the global max length exactly
-        const paddedVillas = Array.from({ length: globalMaxVillas }).map((_, i) => myVillas[i] || '');
+        // Only this attendant's villas (no blank rows)
+        const paddedVillas = myVillas;
 
         return (
-            <div key={key} className={`flex flex-col w-full h-full bg-white rounded-2xl overflow-hidden shadow-sm border transition-all duration-300 ${hasHighlightedVilla ? 'border-amber-400 ring-4 ring-amber-400/20 scale-[1.02] z-10 highlighted-villa-card' : `border-slate-200 hover:shadow-md hover:border-${themeColor}`}`}>
+            <div key={key} className={`flex flex-col w-full self-start bg-white rounded-2xl overflow-hidden shadow-sm border transition-all duration-300 ${hasHighlightedVilla ? 'border-amber-400 ring-4 ring-amber-400/20 scale-[1.02] z-10 highlighted-villa-card' : `border-slate-200 hover:shadow-md hover:border-${themeColor}`}`}>
                 
                 {/* Host Header - UPDATED LAYOUT */}
                 <div className={`p-3 border-b border-slate-100 flex flex-col gap-2 bg-gradient-to-br from-white to-slate-50`}>
@@ -273,7 +266,7 @@ export default function PublicDashboard() {
                         const wasChanged = yesterdayVillaMap[v] && yesterdayVillaMap[v] !== String(host.id);
                         
                         return (
-                            <div id={`villa-row-${v}`} key={i} className={`grid grid-cols-5 items-center px-3 py-2 rounded-xl transition-all duration-500 ${isHighlighted ? 'bg-amber-100 text-amber-900 border border-amber-200' : 'bg-white border border-slate-100 min-h-[34px]'}`}>
+                            <div id={`villa-row-${v}`} key={i} className={`grid grid-cols-5 items-center px-3 py-1 rounded-lg transition-all duration-500 ${isHighlighted ? 'bg-amber-100 text-amber-900 border border-amber-200' : 'bg-white border border-slate-100 min-h-[28px]'}`}>
                                 <div className="col-span-2 flex items-center gap-1.5">
                                     <span className={`font-black text-sm ${isHighlighted ? 'text-amber-900' : 'text-slate-700'}`}>{v}</span>
                                     {wasChanged && (
@@ -360,7 +353,7 @@ export default function PublicDashboard() {
             </div>
 
             {/* MAIN DASHBOARD CONTENT */}
-            <div className="px-8 mt-8 min-w-[1400px]">
+            <div className="px-8 mt-5 min-w-[1400px]">
                 
                 {isLoading ? (
                     <div className="flex flex-col items-center justify-center py-32 gap-4">
@@ -383,7 +376,7 @@ export default function PublicDashboard() {
                     </div>
                 ) : (
                     // DASHBOARD STRICT 7-COLUMN GRID
-                    <div className="flex flex-col gap-10 w-full">
+                    <div className="flex flex-col gap-6 w-full">
                         
                         {/* Jetty A Section (Row 1 - Full 7 Columns) */}
                         <section className="w-full">
