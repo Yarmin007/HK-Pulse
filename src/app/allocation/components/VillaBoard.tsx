@@ -8,7 +8,8 @@ import {
     Calendar, Plane, UserCheck, Settings2, Wand2, Minus 
 } from "lucide-react";
 import { isServiceDay } from '@/lib/specialVillas';
-import { villaStatusMap, deriveHKStatus, rowsByVilla, HK_STATUS_KEY, movementTime } from '@/lib/guestDay';
+import { villaStatusMap, deriveHKStatus, rowsByVilla, HK_STATUS_KEY, movementTime, sheetColours } from '@/lib/guestDay';
+import { modCheckoutOf } from '@/lib/specialVillas';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { TOTAL_VILLAS, parseVillas, getDefaultArea } from '../lib/constants';
@@ -72,7 +73,7 @@ type PickerSection = { value: string; name: string; villas: number[]; owner?: st
 const SectionPicker = ({ value, groups, villaLook, onPick }: {
     value: string;
     groups: { label: string; sections: PickerSection[] }[];
-    villaLook: (v: number) => { cls: string; title: string } | null;
+    villaLook: (v: number) => { style: React.CSSProperties; title: string } | null;
     onPick: (value: string) => void;
 }) => {
     const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -121,7 +122,7 @@ const SectionPicker = ({ value, groups, villaLook, onPick }: {
                                         <span className="flex-1 min-w-0">
                                             {sec.villas.length ? (
                                                 <span className="flex flex-wrap gap-0.5">
-                                                    {sec.villas.map(v => { const l = villaLook(v); return <span key={v} title={l?.title} className={`px-1 rounded text-[10px] font-black ${l?.cls || 'bg-slate-100 text-slate-600'}`}>{v}</span>; })}
+                                                    {sec.villas.map(v => { const l = villaLook(v); return <span key={v} title={l?.title} style={l?.style} className={`px-1 rounded text-[10px] font-black ${l ? 'ring-1 ring-inset ring-slate-300' : 'bg-slate-100 text-slate-600'}`}>{v}</span>; })}
                                                 </span>
                                             ) : <span className="text-[10px] font-semibold text-slate-400">No preset villas</span>}
                                             {sec.owner && <span className="block text-[9px] font-bold text-amber-700 mt-0.5">With {sec.owner}</span>}
@@ -422,8 +423,13 @@ export default function VillaBoard({
         const info = statusByVilla[vNum];
         const hk = deriveHKStatus(todayRows[vNum], prevRows[vNum], selectedDate);
         // House use: show when today is one of its service days
-        const timeStr = hk.code === 'H/U' ? (isServiceDay(todayRows[vNum]?.remarks) ? 'Service day' : '') : movementTime(hk, info, prevStatusByVilla[vNum]);
-        return { status: hk.label, colorClass: hk.cls, timeStr, title: hk.title };
+        const co = modCheckoutOf(todayRows[vNum]?.remarks);
+        const timeStr = hk.code === 'H/U' ? (isServiceDay(todayRows[vNum]?.remarks) ? 'Service day' : '')
+            : hk.code === 'MOD' ? (co ? `C/O ${co.slice(8, 10)}/${co.slice(5, 7)}` : '')
+            : movementTime(hk, info, prevStatusByVilla[vNum]);
+        // Same colours as the printed allocation sheet
+        const c = sheetColours(hk);
+        return { status: hk.label, style: { backgroundColor: c.bg, color: c.text } as React.CSSProperties, timeStr, title: hk.title };
     };
 
     const allocatedVillaOwner = (v: number, exceptHost?: string) =>
@@ -492,7 +498,7 @@ export default function VillaBoard({
         setIsDirty(true);
     };
 
-    const villaLook = (v: number) => { const d = getVillaData(v); return d ? { cls: d.colorClass, title: d.title } : null; };
+    const villaLook = (v: number) => { const d = getVillaData(v); return d ? { style: d.style, title: d.title } : null; };
     const pickerGroups = (hostId: string) => ZONES.map(z => ({
         label: z.label,
         sections: (layout[z.key] || []).map((sec, i) => {
@@ -715,7 +721,7 @@ export default function VillaBoard({
                             return (
                                 <div key={`empty-${i}`} className="grid grid-cols-2 border-b border-slate-400 min-h-[24px] bg-white">
                                     <div className="border-r border-slate-400 flex items-center justify-center text-[11px] font-bold text-slate-300">{pv || ''}</div>
-                                    <div className={`flex items-center justify-center text-[9px] font-bold ${d ? d.colorClass + ' opacity-40' : ''}`}>{d?.status || ''}</div>
+                                    <div style={d ? d.style : undefined} className={`flex items-center justify-center text-[9px] font-bold ${d ? 'opacity-40' : ''}`}>{d?.status || ''}</div>
                                 </div>
                             );
                         })}
@@ -797,11 +803,12 @@ export default function VillaBoard({
                                 </div>
                                 <div 
                                     title={data?.title}
-                                    className={`text-center flex flex-col items-center justify-center text-[10px] font-bold leading-tight px-0.5 ${data?.colorClass || 'bg-slate-50 text-slate-400'}`}
+                                    style={data?.style}
+                                    className={`text-center flex flex-col items-center justify-center text-[10px] font-black leading-tight px-0.5 ${data ? '' : 'bg-slate-50 text-slate-400'}`}
                                     onClick={(e) => { if(vNum) { e.stopPropagation(); handleVillaClick(vNum); } }}
                                 >
                                     <span>{data?.status || ''}</span>
-                                    {data?.timeStr && <span className="text-[7px] opacity-90 leading-none mt-0.5">@{data.timeStr}</span>}
+                                    {data?.timeStr && <span className="text-[9px] font-bold tabular-nums tracking-tight leading-none mt-0.5">{data.timeStr}</span>}
                                 </div>
                             </div>
                         );
@@ -939,7 +946,7 @@ export default function VillaBoard({
                         {unallocatedVillas.map(v => {
                             const vData = getVillaData(v);
                             return (
-                                <button key={v} title={`Villa ${v}: ${vData?.title || ''}`} onClick={() => handleVillaClick(v)} className={`w-[34px] h-[30px] rounded border border-slate-300 shadow-sm flex items-center justify-center transition-all ${vData?.colorClass || 'bg-white'} hover:scale-105 active:scale-95`}>
+                                <button key={v} title={`Villa ${v}: ${vData?.title || ''}`} onClick={() => handleVillaClick(v)} style={vData?.style} className={`w-[34px] h-[30px] rounded border border-slate-300 shadow-sm flex items-center justify-center transition-all ${vData ? '' : 'bg-white'} hover:scale-105 active:scale-95`}>
                                     <span className="text-[11px] font-black leading-none">{v}</span>
                                 </button>
                             );
@@ -951,7 +958,7 @@ export default function VillaBoard({
                     <div className="mt-2 space-y-1">
                         {HK_STATUS_KEY.map(st => (
                             <div key={st.code} className="flex items-center gap-2" title={st.title}>
-                                <span className={`shrink-0 w-[62px] text-center text-[9px] font-black rounded py-0.5 ${st.cls}`}>{st.label}</span>
+                                <span style={{ backgroundColor: sheetColours(st).bg, color: sheetColours(st).text }} className="shrink-0 w-[62px] text-center text-[9px] font-black rounded py-0.5 ring-1 ring-inset ring-slate-200">{st.label}</span>
                                 <span className="text-[9px] font-semibold text-slate-500 leading-tight">{st.title}</span>
                             </div>
                         ))}

@@ -49,6 +49,8 @@ export default function AuthGuard({ children }: { children: ReactNode }) {
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setInstallPrompt(e);
+      // Kept on window too, so an "Install app" button that appears later (e.g. the FO Link page) can use it
+      (window as Window & { __hkInstallPrompt?: Event }).__hkInstallPrompt = e;
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);

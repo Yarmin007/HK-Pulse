@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { parseMemoSummary, type ExtractedMemoData, type SpecialGuestVilla } from "@/lib/memoSummary";
-import { projectGuestDay } from "@/lib/guestDay";
+import { projectGuestDay, normalizeVilla, stayDepartureIso } from "@/lib/guestDay";
 import { followGuest } from "@/lib/followGuest";
 import { loadSinnerSaint, latestDep } from "@/lib/sinnerSaint";
 
@@ -60,6 +60,15 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   });
 
   // Multiple Sinner & Multiple Saint Villa Lists
+  // Today's guest list, kept so typing a villa can fill its departure date straight away
+  const guestRowsRef = useRef<any[]>([]);
+  const guestAt = (villa: string) => {
+    const v = normalizeVilla(villa);
+    if (!v || !/^\d+$/.test(villa.trim())) return null;
+    const row = guestRowsRef.current.find((r) => normalizeVilla(r.villa_number) === v);
+    const dep = row ? stayDepartureIso(row.stay_dates || "", selectedDate) : "";
+    return row && (dep || row.guest_name) ? { dep_date: dep, guest_name: String(row.guest_name || "") } : null;
+  };
   const [sinnerList, setSinnerList] = useState<SpecialGuestVilla[]>([{ villa: "", dep_date: "" }]);
   const [saintList, setSaintList] = useState<SpecialGuestVilla[]>([{ villa: "", dep_date: "" }]);
 
@@ -204,6 +213,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
 
       // Follow each guest on the guest list: new villa after a move, departure date from their stay
       const [{ rows: todayGuests }, { rows: prevGuests }] = await Promise.all([projectGuestDay(selectedDate), projectGuestDay(yesterday)]);
+      guestRowsRef.current = todayGuests;
 
       // Sinner / Saint: kept until the guest departs, carried over from the last saved day
       const { sinners, saints } = await loadSinnerSaint(selectedDate, { today: todayGuests, prev: prevGuests });
@@ -323,6 +333,8 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   const handleSinnerChange = (index: number, field: "villa" | "dep_date", value: string) => {
     const updated = [...sinnerList];
     updated[index] = { ...updated[index], [field]: value };
+    // Typing a villa fills the departure date from the guest list
+    if (field === "villa") { const g = guestAt(value); if (g?.dep_date) updated[index].dep_date = g.dep_date; }
     setSinnerList(updated);
     setIsDirty(true);
   };
@@ -345,6 +357,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   const handleSaintChange = (index: number, field: "villa" | "dep_date", value: string) => {
     const updated = [...saintList];
     updated[index] = { ...updated[index], [field]: value };
+    if (field === "villa") { const g = guestAt(value); if (g?.dep_date) updated[index].dep_date = g.dep_date; }
     setSaintList(updated);
     setIsDirty(true);
   };
@@ -367,6 +380,11 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   const handleIceUpdate = (idx: number, field: "villa" | "time" | "dep_date", value: string) => {
     const updated = [...iceRequests];
     updated[idx] = { ...updated[idx], [field]: value };
+    // Typing a villa fills the departure date (and remembers the guest, so the ice follows them if they move)
+    if (field === "villa") {
+      const g = guestAt(value);
+      updated[idx] = { ...updated[idx], dep_date: g?.dep_date || (value.trim() ? updated[idx].dep_date : ""), guest_name: g?.guest_name || "" };
+    }
     setIceRequests(updated);
     setIsDirty(true);
   };

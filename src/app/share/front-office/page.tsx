@@ -3,6 +3,7 @@
 // and the In-Villa Directory — the documents placed in every villa (PDFs).
 // No login (the /share path is public in AuthGuard). Admins manage the documents from this page.
 import React, { useEffect, useMemo, useState, useCallback } from "react";
+import InstallAppButton from "@/components/InstallAppButton";
 import { supabase } from "@/lib/supabase";
 import { JETTY_A, JETTY_B, JETTY_C, BEACH, parseVillas } from "@/app/allocation/lib/constants";
 import { isOffShift } from "@/app/allocation/lib/riders";
@@ -145,11 +146,14 @@ export default function FrontOfficeSharePage() {
               <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/60">Housekeeping · for Front Office</p>
               <h1 className="text-lg md:text-xl font-black leading-tight truncate">{tab === "allocation" ? "Villa Attendants" : "In-Villa Directory"}</h1>
             </div>
-            {tab === "allocation" && (
-              <button onClick={() => load(date)} className="shrink-0 p-2 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95" aria-label="Refresh">
-                <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
-              </button>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              <InstallAppButton />
+              {tab === "allocation" && (
+                <button onClick={() => load(date)} className="shrink-0 p-2 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95" aria-label="Refresh">
+                  <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-1 rounded-xl bg-white/10 p-1">
