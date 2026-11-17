@@ -64,6 +64,7 @@ const TEAM_ITEMS = [
   { name: "HK Directory", icon: PhoneCall, path: "/team/contacts" }, 
   { name: "Org Chart", icon: Share2, path: "/org-chart" },
   { name: "Host Profiles", icon: Contact, path: "/hosts" },
+  { name: "Cycle Fleet", icon: Bike, path: "/team/cycles" },
   { name: "Attendance", icon: UserCheck, path: "/attendance" },
   { name: "Casual Attendance", icon: Users, path: "/attendance/casual" },
   { name: "Leave Clearance", icon: ShieldCheck, path: "/attendance/clearance" },
