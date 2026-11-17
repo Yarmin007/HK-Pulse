@@ -2,13 +2,13 @@
 // Public page for Front Office: today's villa attendant allocation (photo, villas, MVPN + personal number)
 // and the In-Villa Directory — the documents placed in every villa (PDFs).
 // No login (the /share path is public in AuthGuard). Admins manage the documents from this page.
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import InstallAppButton from "@/components/InstallAppButton";
 import { supabase } from "@/lib/supabase";
 import { JETTY_A, JETTY_B, JETTY_C, BEACH, parseVillas } from "@/app/allocation/lib/constants";
 import { isOffShift } from "@/app/allocation/lib/riders";
 import { projectGuestDay, villaStatusMap } from "@/lib/guestDay";
-import { ChevronLeft, ChevronRight, Phone, Search, X, RefreshCw, Users, Loader2, BookOpen, MessageCircle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Phone, Search, X, RefreshCw, Users, Loader2, BookOpen, MessageCircle, CalendarDays } from "lucide-react";
 import VillaDirectory from "./VillaDirectory";
 import { hasFullControl } from "@/lib/fullControl";
 
@@ -124,6 +124,15 @@ export default function FrontOfficeSharePage() {
   const [villaInfo, setVillaInfo] = useState<Record<number, VillaInfo>>({});
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [query, setQuery] = useState("");
+  const dateInput = useRef<HTMLInputElement>(null);
+  // Open the browser's calendar. showPicker() works on Chrome, Edge, Safari 16+ and Android;
+  // older browsers fall back to focusing / clicking the (hidden) date field.
+  const openPicker = () => {
+    const el = dateInput.current;
+    if (!el) return;
+    try { if (typeof el.showPicker === "function") { el.showPicker(); return; } } catch { /* fall through */ }
+    el.focus(); el.click();
+  };
   const [waPrefs, setWaPrefs] = useState<WaPrefs>({});
   const [admin, setAdmin] = useState(false);
   useEffect(() => {
@@ -201,9 +210,16 @@ export default function FrontOfficeSharePage() {
             <>
               <div className="mt-3 flex items-center gap-2">
                 <button onClick={() => goTo(shiftDate(date, -1))} className="p-2 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95" aria-label="Previous day"><ChevronLeft size={18} /></button>
-                <div className="flex-1 text-center">
-                  <p className="text-sm font-black">{prettyDate(date)}</p>
-                  <p className="text-[10px] font-bold text-white/60">{isToday ? "Today" : <button onClick={() => goTo(localToday())} className="underline">Back to today</button>}{updatedAt && ` · updated ${updatedAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`}</p>
+                {/* Tap the date to pick any day from a calendar (arrows still step one day) */}
+                <div className="relative flex-1 text-center">
+                  <button type="button" onClick={openPicker} aria-label="Pick a date"
+                    className="mx-auto flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1 bg-white/10 hover:bg-white/20 active:scale-95 text-sm font-black">
+                    <CalendarDays size={14} className="opacity-80" />{prettyDate(date)}
+                  </button>
+                  {/* Real date field behind the button (tiny, not display:none, so the picker can open from it) */}
+                  <input ref={dateInput} type="date" value={date} onChange={e => e.target.value && goTo(e.target.value)} tabIndex={-1} aria-hidden="true"
+                    className="absolute left-1/2 bottom-0 w-px h-px opacity-0 pointer-events-none" />
+                  <p className="text-[10px] font-bold text-white/60 mt-0.5">{isToday ? "Today" : <button onClick={() => goTo(localToday())} className="underline">Back to today</button>}{updatedAt && ` · updated ${updatedAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`}</p>
                 </div>
                 <button onClick={() => goTo(shiftDate(date, 1))} className="p-2 rounded-xl bg-white/10 hover:bg-white/20 active:scale-95" aria-label="Next day"><ChevronRight size={18} /></button>
               </div>

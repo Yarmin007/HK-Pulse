@@ -159,11 +159,10 @@ export default function VillaDirectory() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-3xl bg-gradient-to-br from-[#6D2158] to-[#3b0f2f] text-white p-5 flex items-start gap-3 shadow-lg shadow-[#6D2158]/20">
+      <div className="rounded-3xl bg-gradient-to-br from-[#6D2158] to-[#3b0f2f] text-white p-5 flex items-center gap-3 shadow-lg shadow-[#6D2158]/20">
         <div className="w-11 h-11 rounded-2xl bg-white/15 flex items-center justify-center shrink-0"><BookOpen size={22} /></div>
         <div className="min-w-0 flex-1">
           <p className="text-base font-black">In-Villa Directory</p>
-          <p className="text-xs font-semibold text-white/75">Everything the guest finds in the villa — open a menu to answer their question.</p>
         </div>
         {admin && (
           <button onClick={() => openForm()} className="shrink-0 px-3 py-2 rounded-xl bg-white text-[#6D2158] text-xs font-black flex items-center gap-1.5"><Plus size={14} /> Add PDF</button>
