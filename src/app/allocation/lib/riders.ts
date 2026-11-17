@@ -10,6 +10,18 @@ export const RIDER_SHIFTS = [
   { key: 'Afternoon', label: 'Afternoon', time: '14:30 – 23:00' },
 ] as const;
 
+// Step is a morning-only duty; Runner and Luggage use all three shifts.
+export const shiftsForDuty = (duty: RiderDuty) => (duty === 'Step' ? RIDER_SHIFTS.filter(s => s.key === 'Morning') : RIDER_SHIFTS);
+
+// Runner label on the printed sheet: AM / PM, or Split when one runner covers the whole day.
+export const runnerShiftLabel = (shift: string | null | undefined, runnerCount: number) => {
+  if (runnerCount <= 1) return 'Split';
+  const s = String(shift || '').toLowerCase();
+  if (s.includes('split')) return 'Split';
+  if (s.includes('afternoon') || s.includes('14:30') || s.includes('pm')) return 'PM';
+  return 'AM';
+};
+
 type HostLike = { role?: string | null; sub_department?: string | null } | null | undefined;
 
 // What a host normally does, from their designation.

@@ -39,6 +39,9 @@ const formatSyncDateTime = (dateInput: Date | string | number) => {
 export const MEAL_PLANS = MEAL_PLAN_CODES;
 
 const ACTIVE_STATUSES = ['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'];
+// Times only matter on the day itself: ETA on the arrival day, ETD on the departure day. An in-house (OCC) guest shows neither.
+const etaOf = (r: { status?: string; arrival_time?: string }) => (/ARR/.test(r.status || '') ? r.arrival_time || '' : '');
+const etdOf = (r: { status?: string; departure_time?: string }) => (/^(VM\/)?DEP$/.test(r.status || '') ? r.departure_time || '' : '');
 
 // Connected villas: 57 can extend into 56 / 58, 87 into 88. No other villa has link options.
 const LINKABLE_VILLAS: Record<string, string[]> = { '57': ['56', '58'], '87': ['88'] };
@@ -848,7 +851,7 @@ export default function HousekeepingSummaryPage() {
           if (st === 'VAC' || (st.includes('DEP') && !st.includes('ARR'))) return;
           if (st === 'VM/VAC') return;
           if (st.includes('TMA')) return;
-          if (st === 'SHOW VILLA' || st === 'FUMIGATION') return;
+          if (st === 'SHOW VILLA' || st === 'FUMIGATION' || st === 'STANDBY' || st === 'MOD CHECK') return;
           // Day use = departing guest waiting for late check-out: leaving, so no sarong
           if (st === 'DAY USE' || st === 'VM/DU') return;
           
@@ -944,6 +947,8 @@ export default function HousekeepingSummaryPage() {
       if(st === 'VM/OCC') return 'text-indigo-700 bg-indigo-100 border border-indigo-200';
       if(st === 'VM/ARR') return 'text-blue-700 bg-blue-100 border border-blue-200';
       if(st === 'FUMIGATION') return 'text-teal-700 bg-teal-100 border border-teal-200';
+      if(st === 'STANDBY') return 'text-yellow-800 bg-[#FFE699] border border-yellow-300';
+      if(st === 'MOD CHECK') return 'text-[#6B4423] bg-[#E0C9A6] border border-[#C9A27E]';
       if(st === 'TMA (DAY)' || st === 'TMA DAY') return 'text-orange-700 bg-orange-100 border border-orange-200';
       if(st === 'TMA (NIGHT)' || st === 'TMA NIGHT') return 'text-purple-700 bg-purple-100 border border-purple-200';
       if(st.includes('DEP') && st.includes('ARR')) return 'text-purple-700 bg-purple-50 border border-purple-200';
@@ -1191,10 +1196,10 @@ export default function HousekeepingSummaryPage() {
                           {row.stay_dates && <span className="text-[10px] font-mono font-bold text-slate-400 border border-slate-200 px-2 py-1 rounded-md">{row.stay_dates}</span>}
                       </div>
 
-                      {(row.arrival_time || (!isDepArr && row.departure_time)) && (
+                      {(etaOf(row) || etdOf(row)) && (
                           <div className="flex gap-3 mt-2 text-[10px] font-bold font-mono">
-                              {row.arrival_time && <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">Arr: {row.arrival_time}</span>}
-                              {!isDepArr && row.departure_time && <span className="text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">Dep: {row.departure_time}</span>}
+                              {etaOf(row) && <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">Arr: {etaOf(row)}</span>}
+                              {etdOf(row) && <span className="text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-100">Dep: {etdOf(row)}</span>}
                           </div>
                       )}
 
@@ -1307,8 +1312,8 @@ export default function HousekeepingSummaryPage() {
                   <td className="py-2 px-4 text-[10px] text-slate-600 font-bold">{row.meal_plan}</td>
                   <td className="py-2 px-4 text-right text-[10px] font-mono font-bold text-slate-500">{row.stay_dates}</td>
                   <td className="py-2 px-4 text-right text-[10px] font-mono font-bold text-slate-600">
-                      {row.arrival_time && <span className="block text-emerald-600">ETA: {row.arrival_time}</span>}
-                      {!isDepArr && row.departure_time && <span className="block text-rose-600">ETD: {row.departure_time}</span>}
+                      {etaOf(row) && <span className="block text-emerald-600">ETA: {etaOf(row)}</span>}
+                      {etdOf(row) && <span className="block text-rose-600">ETD: {etdOf(row)}</span>}
                   </td>
                   <td className="py-2 px-4 text-right">
                     {isAdmin && (
@@ -1403,7 +1408,7 @@ export default function HousekeepingSummaryPage() {
                                                                   setChanges(newChanges);
                                                               }}
                                                           >
-                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA','FUMIGATION'].map(s=><option key={s} value={s}>{s}</option>)}
+                                                              {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA','FUMIGATION','STANDBY','MOD CHECK'].map(s=><option key={s} value={s}>{s}</option>)}
                                                           </select>
                                                           <select 
                                                               className="p-1 border border-blue-200 bg-blue-50/50 text-blue-800 rounded text-[10px] font-black uppercase outline-none focus:border-blue-500"
@@ -1650,7 +1655,7 @@ export default function HousekeepingSummaryPage() {
                             <div>
                                 <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Status</label>
                                 <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none" value={editingRecord.status || 'VAC'} onChange={e => setEditingRecord({...editingRecord, status: e.target.value})}>
-                                    {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA','FUMIGATION'].map(s=><option key={s} value={s}>{s}</option>)}
+                                    {['VAC','OCC','ARR','DEP','DEP/ARR','VM/VAC','VM/OCC','VM/ARR','TMA (Day)','TMA (Night)','DAY USE','HOUSE USE','SHOW VILLA','FUMIGATION','STANDBY','MOD CHECK'].map(s=><option key={s} value={s}>{s}</option>)}
                                 </select>
                             </div>
                             <div>

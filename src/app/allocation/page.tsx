@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { projectGuestDay } from '@/lib/guestDay';
 import { useConfirm } from '@/components/ConfirmProvider';
+import { isSpecialTaskRow } from '@/lib/specialTasks';
 
 // ⚡ BULLETPROOF ABSOLUTE IMPORTS
 import { AREAS } from '@/app/allocation/lib/constants';
@@ -40,6 +41,9 @@ export default function AllocationPage() {
   const [activeArea, setActiveArea] = useState('villa');
   const [isProcessing, setIsProcessing] = useState(true);
   const [isDirty, setIsDirty] = useState(false);
+  // Row ids of the day as this screen last loaded/saved it: tells us if someone else saved in between
+  const loadedIds = React.useRef<string>('');
+  const idKey = (rows: any[] | null | undefined) => (rows || []).map((r: any) => r.id).sort().join(',');
 
   // Only reload when the DATE changes. Switching tabs must keep unsaved edits from other tabs.
   useEffect(() => { fetchData(); }, [selectedDate]);
@@ -82,6 +86,7 @@ export default function AllocationPage() {
         .select('*')
         .eq('report_date', selectedDate);
       if (allocData) setAllocations(allocData); else setAllocations([]);
+      loadedIds.current = idKey(allocData);
 
       // Same guest list the Guest List page shows (including days projected from the last saved day)
       const [{ rows: guestRows }, { rows: prevRows }] = await Promise.all([projectGuestDay(selectedDate), projectGuestDay(shiftDate(selectedDate, -1))]);
@@ -107,6 +112,15 @@ export default function AllocationPage() {
       try {
           const { data: oldRows, error: readErr } = await supabase.from('hsk_allocations').select('id').eq('report_date', selectedDate);
           if (readErr) throw readErr;
+          // Saving replaces the whole day. If someone else saved this day after we opened it, ask before overwriting their work.
+          if (idKey(oldRows) !== loadedIds.current) {
+              const ok = await confirmAction({
+                  title: 'Someone else saved this day',
+                  message: 'This day was saved from another screen after you opened it (for example special tasks or another area). Saving now replaces their changes with what you see here. To keep their work, cancel, reload the page and redo your changes.',
+                  confirmText: 'Overwrite anyway', cancelText: 'Cancel', isDestructive: true,
+              });
+              if (!ok) return;
+          }
           const payload = allocations.map((a: any) => {
               // eslint-disable-next-line @typescript-eslint/no-unused-vars
               const { id, created_at, updated_at, ...rest } = a;
@@ -125,6 +139,7 @@ export default function AllocationPage() {
               if (error) throw error;
           }
           setAllocations(inserted);
+          loadedIds.current = idKey(inserted);
           setIsDirty(false);
           toast.success(payload.length ? 'Allocations saved' : 'Allocations cleared');
       } catch (err: any) {
@@ -142,9 +157,12 @@ export default function AllocationPage() {
       
       if (yesterdayAllocs && yesterdayAllocs.length > 0) {
           const newAllocs = yesterdayAllocs.map((a: any) => {
-              const { id, created_at, report_date, ...rest } = a;
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              const { id, created_at, updated_at, report_date, ...rest } = a;
               return { ...rest, report_date: selectedDate };
           });
+          // Yesterday had no special tasks → keep the ones already set for today
+          if (!newAllocs.some(isSpecialTaskRow)) newAllocs.push(...allocations.filter(isSpecialTaskRow));
           setAllocations(newAllocs);
           setIsDirty(true);
           toast.success(`Copied ${newAllocs.length} allocations! Click Save to confirm.`);

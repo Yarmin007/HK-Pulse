@@ -310,12 +310,18 @@ export default function PublicAreaBoard({
       .filter(isSpecialTaskRow)
       .map((a) => specialTaskText(a.task_details));
 
-    setSpecialTasks([
+    // Same tasks as the boxes already show (e.g. we just typed them): leave the boxes alone,
+    // otherwise a trailing space is eaten and a task typed in box #2 jumps to box #1.
+    setSpecialTasks((current) => {
+      const shown = current.map((t) => t.trim()).filter(Boolean);
+      if (shown.length === existingSpecial.length && shown.every((t, i) => t === existingSpecial[i])) return current;
+      return [
       existingSpecial[0] || "",
       existingSpecial[1] || "",
       existingSpecial[2] || "",
       existingSpecial[3] || "",
-    ]);
+      ];
+    });
   }, [allocations]);
 
   const currentPool = React.useMemo(() => {
@@ -652,9 +658,14 @@ export default function PublicAreaBoard({
         }
       }
 
-      // Commit Deep Cleaning Tasks cleanly (wipes old dashes/empty lines if none present)
+      // Deep-clean tasks from the roster replace the special tasks. A roster without any keeps the ones already typed.
       const newSpecials = ["", "", "", ""];
-      if (parsedSchedule.deepCleanTasks.length > 0) {
+      if (parsedSchedule.deepCleanTasks.length === 0) {
+        allocations.filter(isSpecialTaskRow).forEach((a, i) => {
+          if (i < 4) newSpecials[i] = specialTaskText(a.task_details);
+          newAllocs.push({ ...a, report_date: targetDate });
+        });
+      } else {
         parsedSchedule.deepCleanTasks.slice(0, 4).forEach((task, i) => {
           newSpecials[i] = task;
           newAllocs.push({

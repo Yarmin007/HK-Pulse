@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Plane, Moon, Sun, BedDouble, Key, SprayCan, ChevronLeft, ChevronRight, Loader2,
   ShieldAlert, Plus, Minus, Trash2, Pencil, X, Check, AlertTriangle, CalendarDays, Copy, LogOut, Briefcase,
+  Hourglass, ClipboardCheck,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
@@ -10,7 +11,7 @@ import {
   SpecialKind, ServicePlan, SPECIAL_STATUS, SERVICE_TAG, WEEKDAYS, HOUSE_USE_HORIZON,
   getSpecialKind, hasFumigationTag, addFumigationTag, stripFumigationTag, isOpenStay,
   formatHouseUseNotes, parseHouseUseNotes, planLabel, isPlannedService,
-  todayYMD, addDays, daysBetween, dateRange, toStayDates, prettyDate,
+  todayYMD, addDays, daysBetween, dateRange, toStayDates, prettyDate, modCheckoutRemark, modCheckoutOf,
 } from '@/lib/specialVillas';
 
 const TABLE = 'hsk_daily_summary';
@@ -28,13 +29,15 @@ type Row = {
 };
 type DayRow = { id: string; villa_number: string; status: string; guest_name: string | null };
 type Booking = { key: string; kind: SpecialKind; villa: string; name: string; start: string; end: string; open: boolean; rows: Row[] };
-type Tab = 'TMA' | 'HOUSE_USE' | 'SHOW_VILLA' | 'FUMIGATION';
+type Tab = 'TMA' | 'HOUSE_USE' | 'SHOW_VILLA' | 'FUMIGATION' | 'STANDBY' | 'MOD_CHECK';
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'TMA', label: 'TMA', icon: Plane },
   { id: 'HOUSE_USE', label: 'House Use', icon: BedDouble },
   { id: 'SHOW_VILLA', label: 'Show Villa', icon: Key },
   { id: 'FUMIGATION', label: 'Fumigation', icon: SprayCan },
+  { id: 'STANDBY', label: 'Standby', icon: Hourglass },
+  { id: 'MOD_CHECK', label: 'MOD Check', icon: ClipboardCheck },
 ];
 
 // Full class strings so Tailwind keeps them.
@@ -43,9 +46,12 @@ const THEME: Record<Tab, { solid: string; soft: string; text: string; border: st
   HOUSE_USE: { solid: 'bg-[#6D2158] text-white', soft: 'bg-fuchsia-50', text: 'text-[#6D2158]', border: 'border-fuchsia-200', ring: 'ring-[#6D2158]' },
   SHOW_VILLA: { solid: 'bg-sky-600 text-white', soft: 'bg-sky-50', text: 'text-sky-800', border: 'border-sky-200', ring: 'ring-sky-400' },
   FUMIGATION: { solid: 'bg-teal-600 text-white', soft: 'bg-teal-50', text: 'text-teal-800', border: 'border-teal-200', ring: 'ring-teal-400' },
+  STANDBY: { solid: 'bg-yellow-500 text-white', soft: 'bg-[#FFF2CC]', text: 'text-yellow-800', border: 'border-yellow-200', ring: 'ring-yellow-400' },
+  MOD_CHECK: { solid: 'bg-[#8B5E3C] text-white', soft: 'bg-[#F3EADF]', text: 'text-[#6B4423]', border: 'border-[#E0C9A6]', ring: 'ring-[#C9A27E]' },
 };
 const tabOf = (kind: SpecialKind): Tab => (kind === 'TMA_NIGHT' || kind === 'TMA_DAY' ? 'TMA' : kind);
-const DAILY_TABS: Tab[] = ['SHOW_VILLA', 'FUMIGATION']; // only for the day shown at the top
+const DAILY_TABS: Tab[] = ['SHOW_VILLA', 'FUMIGATION', 'STANDBY', 'MOD_CHECK']; // only for the day shown at the top
+const isDailyKind = (k: SpecialKind) => k === 'SHOW_VILLA' || k === 'FUMIGATION' || k === 'STANDBY' || k === 'MOD_CHECK';
 
 const parseVillas = (input: string) => {
   const valid: string[] = [];
@@ -70,10 +76,11 @@ type FormState = {
   villas: string; date: string; endDate: string; depKnown: boolean; nights: number;
   arrTime: string; depTime: string; name: string; pm: string;
   svcMode: SvcMode; svcDays: number[]; tmaMode: 'NIGHT' | 'DAY';
+  checkout: string; // MOD Check: the guest's checkout date
 };
 const blankForm = (date: string, keep?: Partial<FormState>): FormState => ({
   villas: '', date, endDate: addDays(date, 1), depKnown: false, nights: 1, arrTime: '', depTime: '',
-  name: '', pm: '', svcMode: 'DAILY', svcDays: [], tmaMode: 'NIGHT', ...keep,
+  name: '', pm: '', svcMode: 'DAILY', svcDays: [], tmaMode: 'NIGHT', checkout: addDays(date, -1), ...keep,
 });
 
 type ConfirmState = { title: string; body: string; lines?: string[]; confirmText: string; danger?: boolean; resolve: (ok: boolean) => void };
@@ -107,7 +114,7 @@ export default function SpecialVillasPage() {
     const [special, day] = await Promise.all([
       supabase.from(TABLE).select(ROW_FIELDS)
         .gte('report_date', addDays(selectedDate, -30)).lte('report_date', addDays(selectedDate, 120))
-        .or('status.ilike.*TMA*,status.ilike.*HOUSE*,status.ilike.*SHOW*,status.ilike.*FUMIG*,remarks.ilike.*FUMIG*')
+        .or('status.ilike.*TMA*,status.ilike.*HOUSE*,status.ilike.*SHOW*,status.ilike.*FUMIG*,status.ilike.*STANDBY*,status.ilike.*MOD CHECK*,remarks.ilike.*FUMIG*')
         .order('report_date'),
       supabase.from(TABLE).select('id, villa_number, status, guest_name').eq('report_date', selectedDate),
     ]);
@@ -130,7 +137,7 @@ export default function SpecialVillasPage() {
       const villa = String(r.villa_number);
       const name = String(r.guest_name || '').trim();
       // Rows of one stay share stay_dates. Daily kinds and legacy rows group by day (House Use legacy: by guest).
-      const daily = kind === 'SHOW_VILLA' || kind === 'FUMIGATION';
+      const daily = isDailyKind(kind);
       const group = !daily && r.stay_dates ? r.stay_dates : kind === 'HOUSE_USE' ? name.toUpperCase() : r.report_date;
       const key = `${kind}|${villa}|${group}`;
       const b = map.get(key);
@@ -282,8 +289,9 @@ export default function SpecialVillasPage() {
         dates = [form.date];
         stay = toStayDates(form.date, form.date);
       } else {
-        dates = [selectedDate]; // show villa: today only
+        dates = [selectedDate]; // show villa / standby / MOD check: this day only
         stay = '';
+        if (kind === 'MOD_CHECK' && !form.checkout) return toast.error('Enter the checkout date');
       }
       const first = dates[0];
       const last = dates[dates.length - 1];
@@ -307,6 +315,10 @@ export default function SpecialVillasPage() {
               departure_time: form.depKnown && d === last ? form.depTime : '',
               remarks: isPlannedService(plan, d, first) ? SERVICE_TAG : '',
             };
+          case 'STANDBY':
+            return { status, guest_name: 'STANDBY', stay_dates: '', arrival_time: '', departure_time: '', remarks: '' };
+          case 'MOD_CHECK':
+            return { status, guest_name: 'MOD CHECK', stay_dates: '', arrival_time: '', departure_time: '', remarks: modCheckoutRemark(form.checkout) };
           default:
             return { status, guest_name: 'SHOW VILLA', stay_dates: '', arrival_time: form.arrTime, departure_time: '', remarks: '' };
         }
@@ -355,6 +367,7 @@ export default function SpecialVillasPage() {
       name: b.kind === 'HOUSE_USE' ? b.name : '', pm,
       svcMode: p?.mode || 'DAILY', svcDays: p?.weekdays || [],
       tmaMode: b.kind === 'TMA_DAY' ? 'DAY' : 'NIGHT',
+      checkout: modCheckoutOf(b.rows[0]?.remarks) || addDays(b.start, -1),
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -446,7 +459,7 @@ export default function SpecialVillasPage() {
         <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">Special Villas</h1>
-            <p className="text-sm text-slate-500 mt-1">TMA, house use, show villas and fumigation. Saves straight to the Guest List.</p>
+            <p className="text-sm text-slate-500 mt-1">TMA, house use, show villas, fumigation, standby rooms and MOD checks. Saves straight to the Guest List.</p>
           </div>
           <div className="flex items-center gap-2">
             {!isToday && (
@@ -465,7 +478,7 @@ export default function SpecialVillasPage() {
         </header>
 
         {/* TABS */}
-        <nav className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
+        <nav className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2 md:gap-3">
           {TABS.map(t => {
             const active = tab === t.id;
             const th = THEME[t.id];
@@ -624,6 +637,21 @@ export default function SpecialVillasPage() {
               </>
             )}
 
+            {/* STANDBY */}
+            {tab === 'STANDBY' && (
+              <Summary>Vacant villas kept ready on {prettyDate(selectedDate)}. If Opera puts a guest in one, the guest replaces it.</Summary>
+            )}
+
+            {/* MOD CHECK */}
+            {tab === 'MOD_CHECK' && (
+              <>
+                <Field label="Checkout date" hint="When the last guest checked out. Printed on the sheet as C/O.">
+                  <input type="date" value={form.checkout} max={selectedDate} onChange={e => setForm(f => ({ ...f, checkout: e.target.value }))} className={inputCls} />
+                </Field>
+                {form.checkout && <Summary>MOD to check on {prettyDate(selectedDate)} · checked out {prettyDate(form.checkout)} ({daysBetween(form.checkout, selectedDate)} day{daysBetween(form.checkout, selectedDate) === 1 ? '' : 's'} ago)</Summary>}
+              </>
+            )}
+
             <button type="submit" disabled={saving}
               className={`w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition-all active:scale-[0.98] disabled:opacity-60 ${theme.solid}`}>
               {saving ? <Loader2 size={16} className="animate-spin" /> : editing ? <Check size={16} /> : <Plus size={16} />}
@@ -705,7 +733,7 @@ export default function SpecialVillasPage() {
 const inputCls = 'w-full h-[42px] bg-slate-50 border border-slate-200 rounded-xl px-3 text-sm font-semibold text-slate-800 outline-none focus:border-[#6D2158] focus:bg-white transition-colors';
 
 const kindLabel = (k: SpecialKind) =>
-  ({ TMA_NIGHT: 'TMA Night', TMA_DAY: 'TMA Day', HOUSE_USE: 'House Use', SHOW_VILLA: 'Show Villa', FUMIGATION: 'Fumigation' })[k];
+  ({ TMA_NIGHT: 'TMA Night', TMA_DAY: 'TMA Day', HOUSE_USE: 'House Use', SHOW_VILLA: 'Show Villa', FUMIGATION: 'Fumigation', STANDBY: 'Standby', MOD_CHECK: 'MOD Check' })[k];
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -787,7 +815,9 @@ function BookingCard({ b, date, editing, onEdit, onRemove, onCheckOut, onPatch }
           )}
           {fumigOnGuest ? (
             <p className="text-xs text-slate-500 mt-1 truncate">After {first.status}{first.guest_name ? ` · ${first.guest_name}` : ''}</p>
-          ) : !isFumig && b.kind !== 'SHOW_VILLA' && (
+          ) : b.kind === 'MOD_CHECK' ? (
+            <p className="text-xs text-slate-500 mt-1">Checked out {modCheckoutOf(first.remarks) ? prettyDate(modCheckoutOf(first.remarks)) : '— not set'}</p>
+          ) : !isFumig && !isDailyKind(b.kind) && (
             <p className="text-xs text-slate-500 mt-1">{dates}</p>
           )}
         </div>
@@ -797,7 +827,7 @@ function BookingCard({ b, date, editing, onEdit, onRemove, onCheckOut, onPatch }
         </div>
       </div>
 
-      {!isFumig && (
+      {!isFumig && b.kind !== 'STANDBY' && b.kind !== 'MOD_CHECK' && (
         <div className="px-4 pb-4 flex flex-col gap-3">
           {/* Arrival time lives on the first day's row, departure on the last day's row */}
           {b.kind === 'SHOW_VILLA' ? (

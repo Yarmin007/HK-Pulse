@@ -1,14 +1,14 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
+import { riderDutyOf, isOffShift, runnerShiftLabel } from "@/app/allocation/lib/riders";
 import { supabase } from "@/lib/supabase";
 import { Printer, Calendar, RefreshCw, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight } from "lucide-react";
 import { getDhakaDateStr } from "@/lib/dateUtils";
 import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
 import { parseVillas } from "../lib/constants";
 import { ZONES, ZoneKey, majorityZone, loadVillaLayout, slotBySections } from "../lib/villaLayout";
-import { isServiceDay } from "@/lib/specialVillas";
+import { isServiceDay, modCheckoutOf } from "@/lib/specialVillas";
 import { isSpecialTaskRow, specialTaskText } from "@/lib/specialTasks";
 import { loadSinnerSaint } from "@/lib/sinnerSaint";
 import { loadPestControl } from "@/lib/pestControl";
@@ -170,6 +170,7 @@ export default function AllocationSheetPage() {
       const luggageList: any[] = [];
       const gardenList: any[] = [];
       let gardenIncharge = { name: "", contact: "" };
+      const gardenInchargeHosts: any[] = []; // built into one line further down, once all hosts are loaded
       const laundryList: any[] = [];
       const laundrySplitList: any[] = [];
       let laundryTitle1 = "MORNING";
@@ -217,7 +218,9 @@ export default function AllocationSheetPage() {
           const villaList = vNums.map((v) => {
             const hk = deriveHKStatus(todayByVilla[v], prevByVilla[v], selectedDate);
             const c = sheetColours(hk);
-            return { number: v, status: hk.label, bg: c.bg, textColor: c.text, time: hk.code === 'H/U' ? (isServiceDay(todayByVilla[v]?.remarks) ? 'SERVICE DAY' : '') : movementTime(hk, timesByVilla[v], prevTimesByVilla[v]) };
+            return { number: v, status: hk.label, bg: c.bg, textColor: c.text, time: hk.code === 'H/U' ? (isServiceDay(todayByVilla[v]?.remarks) ? 'SERVICE DAY' : '')
+              : hk.code === 'MOD' ? (modCheckoutOf(todayByVilla[v]?.remarks) ? `C/O ${modCheckoutOf(todayByVilla[v]?.remarks).slice(8, 10)}/${modCheckoutOf(todayByVilla[v]?.remarks).slice(5, 7)}` : '')
+              : movementTime(hk, timesByVilla[v], prevTimesByVilla[v]) };
           });
 
           // Same area as on the board: the jetty holding most of their villas
@@ -266,14 +269,17 @@ export default function AllocationSheetPage() {
           housemateList.push({ name: rawName, no: mvpnOnly || contact });
         } else if (a.area === "riders") {
           const duty = riderDutyOf(a, hostObj);
-          if (duty === "Step") stepList.push({ name: rawName, duty: "Step", mvpn: mvpnOnly });
-          else if (duty === "Luggage") luggageList.push({ name: rawName, duty: "Luggage", mvpn: mvpnOnly });
-          else runnerList.push({ name: rawName, duty: "Runner", mvpn: mvpnOnly });
+          // key/shift are used below: people who are off are dropped, runners get AM / PM / Split
+          const entry = { name: rawName, mvpn: mvpnOnly, key: String(hostObj?.host_id || a.host_id || ""), shift: a.shift || "" };
+          if (duty === "Step") stepList.push({ ...entry, duty: "Step" });
+          else if (duty === "Luggage") luggageList.push({ ...entry, duty: "Luggage" });
+          else runnerList.push({ ...entry, duty: "Runner" });
         } else if (a.area === "garden" || a.area === "gardening") {
           if (a.shift?.toLowerCase().includes("incharge") || hostObj?.role?.toLowerCase().includes("supervisor")) {
-            gardenIncharge = { name: rawName, contact };
+            if (hostObj) gardenInchargeHosts.push(hostObj);
           } else {
-            gardenList.push({ name: rawName, contact, area: a.task_details || a.shift || "" });
+            // Garden hosts: personal number only (the in-charge line shows MVPNs)
+            gardenList.push({ name: rawName, contact: personalOnly, area: a.task_details || a.shift || "" });
           }
         } else if (a.area === "laundry") {
           // Personal contact ONLY for laundry
@@ -331,7 +337,7 @@ export default function AllocationSheetPage() {
           .gte("end_date", selectedDate),
         loadLeavePeriods(selectedDate),
         // No foreign key between attendance and hosts, so hosts are looked up by SSL number below
-        supabase.from("hsk_hosts").select("id, host_id, full_name, nicknames, personal_mobile, status"),
+        supabase.from("hsk_hosts").select("id, host_id, full_name, nicknames, personal_mobile, mvpn, status"),
         supabase.from("hsk_constants").select("label").eq("type", "team_viewer_config").limit(1).maybeSingle(),
       ]);
       // Display names set in Host Profiles (team_viewer_config.nicknames, keyed by SSL no)
@@ -343,6 +349,38 @@ export default function AllocationSheetPage() {
         if (h.id) hostMap.set(String(h.id), h);
         if (h.host_id) hostMap.set(String(h.host_id), h);
       });
+
+      // Garden in-charge: one line for everyone in charge, "Adam & Allu", with each person's MVPN ("2731 / 2915").
+      // A nickname like "Adam & Allu" names a second person: they are looked up by nickname so their MVPN is shown too.
+      {
+        const people: { id: string; name: string; mvpn: string }[] = [];
+        const add = (h: any, name: string) => {
+          if (!h || people.some((p) => p.id === h.id)) return;
+          people.push({ id: h.id, name, mvpn: String(h.mvpn || "").trim() });
+        };
+        const activeHosts = (allHostsList || []).filter((h: any) => !h.status || h.status.toLowerCase() === "active");
+        const byNickname = (n: string) => {
+          const key = n.trim().toLowerCase();
+          return activeHosts.find((h: any) => String(h.nicknames || "").split(",").some((x: string) => x.trim().toLowerCase() === key))
+            || activeHosts.find((h: any) => String(h.full_name || "").trim().toLowerCase() === key);
+        };
+        gardenInchargeHosts.forEach((h) => {
+          const nick = String(h.nicknames || "").split(",")[0].trim();
+          const parts = nick.includes("&") ? nick.split("&").map((x) => x.trim()).filter(Boolean) : [];
+          if (parts.length > 1) {
+            add(h, parts[0]);
+            parts.slice(1).forEach((p) => { const other = byNickname(p); if (other) add(other, p); else people.push({ id: p, name: p, mvpn: "" }); });
+          } else {
+            add(h, shortHostName(h, h.full_name || "", displayNames));
+          }
+        });
+        if (people.length) {
+          gardenIncharge = {
+            name: people.map((p) => p.name).join(" & "),
+            contact: people.map((p) => p.mvpn).filter(Boolean).join(" / "),
+          };
+        }
+      }
 
       type Away = { key: string; name: string; contact: string; category: LeaveCategory; from: string; to: string };
       const RANK: Record<LeaveCategory, number> = { AL: 3, SICK: 2, OFF: 1 };
@@ -381,6 +419,14 @@ export default function AllocationSheetPage() {
       const slList = all.filter((a) => a.category === "SICK").map(toRow);
       const offList = all.filter((a) => a.category === "OFF").map(toRow);
 
+      // Runners / step / luggage who are off or on leave today are not on duty, even if the board still has them
+      const onDuty = (r: any) => !away.has(r.key) && !away.has(String(hostMap.get(r.key)?.host_id || ""));
+      const shiftRank = (sh: string) => (/afternoon|14:30|pm/i.test(sh) ? 2 : /split/i.test(sh) ? 1 : 0);
+      const runners = runnerList.filter(onDuty).sort((a, b) => shiftRank(a.shift) - shiftRank(b.shift));
+      const runnersOut = runners.map((r) => ({ name: r.name, mvpn: r.mvpn, duty: runnerShiftLabel(r.shift, runners.length) }));
+      const stepsOut = stepList.filter(onDuty).map(({ name, mvpn, duty }) => ({ name, mvpn, duty }));
+      const luggageOut = luggageList.filter(onDuty).map(({ name, mvpn, duty }) => ({ name, mvpn, duty }));
+
       setSheetData({
         summary: finalSummary,
         iceRequests: formattedIce,
@@ -405,9 +451,9 @@ export default function AllocationSheetPage() {
         tailor: tailorList,
         housemate: housemateList,
         runnerStepLuggage: {
-          runner: runnerList,
-          step: stepList,
-          luggage: luggageList,
+          runner: runnersOut,
+          step: stepsOut,
+          luggage: luggageOut,
         },
         garden: {
           incharge: gardenIncharge,

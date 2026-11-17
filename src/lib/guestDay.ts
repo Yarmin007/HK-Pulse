@@ -111,6 +111,7 @@ export const projectGuestDay = async (date: string): Promise<{ rows: any[]; isPr
         .select('report_date')
         .lt('report_date', date)
         .not('status', 'ilike', '%HOUSE%').not('status', 'ilike', '%TMA%').not('status', 'ilike', '%SHOW%').not('status', 'ilike', '%FUMIG%')
+        .not('status', 'ilike', '%STANDBY%').not('status', 'ilike', '%MOD CHECK%')
         .not('villa_number', 'in', '("0")')
         .order('report_date', { ascending: false })
         .limit(1);
@@ -204,6 +205,8 @@ export const HK_STATUS_KEY: HKStatus[] = [
     look('VM/VAC', 'Villa move: guest moved out, villa vacant', 'bg-slate-300 text-slate-700', '#cbd5e1', '#334155'),
     look('VM/OCC', 'Villa move: guest moved in (stay-over)', 'bg-lime-600 text-white', '#65a30d'),
     look('VM/ARR', 'Villa move: guest moved out and an arrival comes in', 'bg-sky-500 text-white', '#0ea5e9'),
+    look('STBY', 'Standby villa (kept ready)', 'bg-[#FFE699] text-black', '#FFE699', '#000000'),
+    look('MOD', 'MOD check (vacant, checked out)', 'bg-[#E0C9A6] text-black', '#E0C9A6', '#000000'),
 ];
 const BY_CODE = Object.fromEntries(HK_STATUS_KEY.map(s => [s.code, s]));
 
@@ -227,6 +230,8 @@ export const deriveHKStatus = (today: any | undefined, prev: any | undefined, da
     if (st.includes('DEP')) return pick('DEP');
     if (st.includes('HOUSE')) return pick('H/U');
     if (st.includes('SHOW')) return pick('SHOW');
+    if (st.includes('STANDBY') || st.includes('STAND BY')) return pick('STBY');
+    if (/\bMOD\b/.test(st)) return pick('MOD');
     if (st.includes('OCC')) return pick('OCC');
     if (prevTmaNight) return pick('TMA DEP');
     return pick('VAC');
@@ -250,12 +255,25 @@ export const movementTime = (hk: HKStatus, info?: VillaStatus, prev?: VillaStatu
 
 /** Printed allocation sheet: every TMA status is one orange, except TMA leaving + guest arriving (TMA/ARR). */
 export const SHEET_TMA_BG = '#fb923c';
-// Also on the sheet: a moved-out villa (VM/VAC) looks vacant, and DEP/FUM is the same red as DEP.
-const SHEET_SAME_AS: Record<string, string> = { 'VM/VAC': 'VAC', 'DEP/FUM': 'DEP' };
+// Printed sheet palette (spreadsheet-style colours). Statuses not listed keep their board colour.
+const SHEET_PALETTE: Record<string, { bg: string; text: string }> = {
+    VAC: { bg: '#00B0F0', text: '#000000' },        // vacant: light blue
+    'VM/VAC': { bg: '#00B0F0', text: '#000000' },   // moved out → vacant
+    OCC: { bg: '#ffffff', text: '#000000' },        // occupied (stay-over): white, black text
+    'VM/OCC': { bg: '#ffffff', text: '#000000' },   // moved in, staying over
+    ARR: { bg: '#92D050', text: '#000000' },        // arrival to a vacant villa
+    'VM/ARR': { bg: '#92D050', text: '#000000' },
+    JOIN: { bg: '#CCCCFF', text: '#000000' },       // arrival to an occupied villa
+    DEP: { bg: '#FF0000', text: '#ffffff' },        // departure: red, white text
+    'DEP/FUM': { bg: '#FF0000', text: '#ffffff' },
+    'H/U': { bg: '#FFCCFF', text: '#000000' },      // house use
+    SHOW: { bg: '#2F75B5', text: '#ffffff' },       // show villa
+    STBY: { bg: '#FFE699', text: '#000000' },       // standby: Accent 4, lighter 60%
+    MOD: { bg: '#E0C9A6', text: '#000000' },        // MOD check: light brown
+};
 export const sheetColours = (hk: HKStatus) => {
     if (hk.code.includes('TMA') && hk.code !== 'TMA/ARR') return { bg: SHEET_TMA_BG, text: '#ffffff' };
-    const base = BY_CODE[SHEET_SAME_AS[hk.code]] || hk;
-    return { bg: base.bg, text: base.text };
+    return SHEET_PALETTE[hk.code] || { bg: hk.bg, text: hk.text };
 };
 
 /** villa number → raw guest-list row */

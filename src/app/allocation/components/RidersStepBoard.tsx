@@ -21,7 +21,8 @@ import {
   X
 } from "lucide-react";
 import toast from "react-hot-toast";
-import { RIDER_DUTIES, RIDER_SHIFTS, defaultDutyForHost, riderDutyOf, isOffShift, isRiderPoolHost, type RiderDuty } from "@/app/allocation/lib/riders";
+import { isAway } from "@/lib/leavePeriods";
+import { RIDER_DUTIES, RIDER_SHIFTS, shiftsForDuty, defaultDutyForHost, riderDutyOf, isOffShift, isRiderPoolHost, type RiderDuty } from "@/app/allocation/lib/riders";
 
 interface Host {
   id: string;
@@ -82,6 +83,8 @@ export default function RidersStepBoard({
   selectedDate,
 }: RidersStepBoardProps) {
   const [activeLeaveRecords, setActiveLeaveRecords] = useState<ActiveLeaveRecord[]>([]);
+  // Off / leave codes in the main attendance for this day, by SSL no (e.g. "SSL 1232" → "O")
+  const [attendanceOff, setAttendanceOff] = useState<Record<string, string>>({});
 
   // Host Leave Modal
   const [selectedHostForLeave, setSelectedHostForLeave] = useState<Host | null>(null);
@@ -111,6 +114,14 @@ export default function RidersStepBoard({
 
   const fetchActiveLeaves = async () => {
     try {
+      const { data: att } = await supabase
+        .from("hsk_attendance")
+        .select("host_id, date, status_code, shift_note")
+        .eq("date", selectedDate);
+      const off: Record<string, string> = {};
+      (att || []).forEach((r: any) => { if (isAway(r)) off[String(r.host_id).trim()] = String(r.status_code).trim().toUpperCase(); });
+      setAttendanceOff(off);
+
       const { data, error } = await supabase
         .from("hsk_leave_requests")
         .select("*")
@@ -139,9 +150,21 @@ export default function RidersStepBoard({
     );
   };
 
+  // Why a host can't work today (leave set on the board, or an off/leave code in the attendance), else null
+  const offReason = (hostId: string): string | null => {
+    const leave = getHostLeaveRecord(hostId);
+    if (leave) return `${leave.leave_type} (till ${leave.end_date})`;
+    const ssl = hosts.find((h) => h.id === hostId)?.host_id;
+    const code = ssl ? attendanceOff[String(ssl).trim()] : undefined;
+    return code ? `${code} in attendance` : null;
+  };
+
   const getLeaveBadge = (hostId: string) => {
     const rec = getHostLeaveRecord(hostId);
-    if (!rec) return null;
+    if (!rec) {
+      const why = offReason(hostId);
+      return why ? <span className="text-[9px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-black">{why}</span> : null;
+    }
 
     if (rec.leave_type === "AL") {
       return (
@@ -201,6 +224,13 @@ export default function RidersStepBoard({
         throw new Error(error.message || error.details || "Database constraint error");
       }
 
+      // Off / on leave today → can't stay on duty today
+      const coversToday = leaveForm.start_date <= selectedDate && leaveForm.end_date >= selectedDate;
+      const hadDuty = allocations.some((a) => a.host_id === selectedHostForLeave.id && a.area === "riders" && !isOffShift(a.shift));
+      if (coversToday && hadDuty) {
+        setAllocations(allocations.filter((a) => !(a.host_id === selectedHostForLeave.id && a.area === "riders" && !isOffShift(a.shift))));
+        toast(`${getHostLabel(selectedHostForLeave)} taken off today's duty — save the board`, { icon: "ℹ️" });
+      }
       toast.success(`${getHostLabel(selectedHostForLeave)} set to ${leaveForm.leave_type} until ${leaveForm.end_date}!`);
       setSelectedHostForLeave(null);
       fetchActiveLeaves();
@@ -269,19 +299,17 @@ export default function RidersStepBoard({
   const shiftKeyOf = (shift: string) => RIDER_SHIFTS.find((s) => shift.toLowerCase().includes(s.key.toLowerCase()))?.key || shift;
 
   const requestAssignDuty = (host: Host, shift: string, duty: RiderDuty) => {
-    const leave = getHostLeaveRecord(host.id);
+    // Someone who is off or on leave today can't be put on duty
+    const off = offReason(host.id);
+    if (off) {
+      toast.error(`${getHostLabel(host)} is off today (${off}). Clear the leave / attendance first.`);
+      return;
+    }
     const existingOtherAllocs = allocations.filter((a) => a.host_id === host.id && a.area !== "riders" && !isOffShift(a.shift));
 
-    if (leave || existingOtherAllocs.length > 0) {
+    if (existingOtherAllocs.length > 0) {
       const existingAreas = Array.from(new Set(existingOtherAllocs.map((a) => a.area.toUpperCase())));
-      setConflictModal({
-        host,
-        targetArea: "riders",
-        targetShift: shift,
-        targetTask: duty,
-        existingAreas,
-        leaveWarning: leave ? `${leave.leave_type} (till ${leave.end_date})` : undefined,
-      });
+      setConflictModal({ host, targetArea: "riders", targetShift: shift, targetTask: duty, existingAreas });
       return;
     }
 
@@ -326,8 +354,9 @@ export default function RidersStepBoard({
         </div>
 
         <div className="p-3 space-y-3">
-          {RIDER_SHIFTS.map((sh) => {
-            const assigned = dutyAllocs.filter((a) => dutyOfAlloc(a) === duty && shiftKeyOf(a.shift || "") === sh.key);
+          {shiftsForDuty(duty).map((sh) => {
+            // Step is morning-only: any older Step row on another shift is shown here too
+            const assigned = dutyAllocs.filter((a) => dutyOfAlloc(a) === duty && (duty === "Step" || shiftKeyOf(a.shift || "") === sh.key));
             const busyThisShift = new Set(dutyAllocs.filter((a) => shiftKeyOf(a.shift || "") === sh.key).map((a) => a.host_id));
             // People who normally do this duty first
             const candidates = currentPool
@@ -347,12 +376,15 @@ export default function RidersStepBoard({
                   {assigned.map((a) => {
                     const h = hostById(a.host_id);
                     const contact = h?.mvpn || h?.company_mobile || "";
+                    const off = offReason(a.host_id);
                     return (
-                      <div key={`${a.host_id}-${a.shift}`} className="flex items-center gap-2 bg-white rounded-lg border border-slate-200 px-2 py-1.5">
+                      <div key={`${a.host_id}-${a.shift}`} className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 ${off ? "bg-rose-50 border-rose-300" : "bg-white border-slate-200"}`}
+                        title={off ? "Off today: remove from duty. Not printed on the sheet." : undefined}>
                         <span className="w-6 h-6 rounded-md bg-slate-800 text-white flex items-center justify-center text-[10px] font-black shrink-0">{(h ? getHostLabel(h) : "?").charAt(0)}</span>
                         <div className="min-w-0 flex-1">
                           <p className="text-xs font-black text-slate-800 truncate">{h ? getHostLabel(h) : "Unknown host"}</p>
                           <div className="flex items-center gap-1.5">{contact && <span className="text-[9px] font-bold text-slate-400">{contact}</span>}{getLeaveBadge(a.host_id)}</div>
+                          {off && <p className="text-[9px] font-black text-rose-700 flex items-center gap-1"><AlertTriangle size={9} /> Off today: remove from duty</p>}
                         </div>
                         <button onClick={() => handleRemoveAllocation(a)} className="p-1 text-slate-300 hover:text-rose-600" title="Remove"><X size={14} /></button>
                       </div>
@@ -363,14 +395,15 @@ export default function RidersStepBoard({
                 {candidates.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {candidates.map((h) => {
+                      const off = offReason(h.id);
                       const leave = getHostLeaveRecord(h.id);
                       const usual = defaultDutyForHost(h) === duty;
                       return (
-                        <button key={h.id} onClick={() => requestAssignDuty(h, sh.key, duty)}
+                        <button key={h.id} onClick={() => requestAssignDuty(h, sh.key, duty)} title={off ? `Off today: ${off}` : undefined}
                           className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-0.5 transition-colors ${
-                            leave ? "bg-rose-50 border-rose-200 text-rose-700" : usual ? "bg-white border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white" : "bg-transparent border-dashed border-slate-300 text-slate-400 hover:text-slate-700 hover:border-slate-400"
+                            off ? "bg-rose-50 border-rose-200 text-rose-400 line-through cursor-not-allowed" : usual ? "bg-white border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white" : "bg-transparent border-dashed border-slate-300 text-slate-400 hover:text-slate-700 hover:border-slate-400"
                           }`}>
-                          <Plus size={9} /> {getHostLabel(h)}{leave && <span className="text-[8px] font-black ml-0.5">{leave.leave_type}</span>}
+                          <Plus size={9} /> {getHostLabel(h)}{(leave || off) && <span className="text-[8px] font-black ml-0.5 no-underline">{leave?.leave_type || off?.split(" ")[0]}</span>}
                         </button>
                       );
                     })}
@@ -733,7 +766,7 @@ export default function RidersStepBoard({
                   }
                   className="w-full bg-[#ea580c] hover:bg-[#c2410c] text-white py-2 rounded-xl text-xs font-black transition-all shadow-sm"
                 >
-                  Assign Anyway (Override Leave)
+                  Assign
                 </button>
               )}
 

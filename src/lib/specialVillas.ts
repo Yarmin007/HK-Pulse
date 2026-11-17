@@ -1,7 +1,7 @@
-// Shared definitions for "special" villa statuses (TMA, House Use, Show Villa, Fumigation).
+// Shared definitions for "special" villa statuses (TMA, House Use, Show Villa, Fumigation, Standby, MOD Check).
 // These are written into hsk_daily_summary by /allocation/special and read by the Guest List and boards.
 
-export type SpecialKind = 'TMA_NIGHT' | 'TMA_DAY' | 'HOUSE_USE' | 'SHOW_VILLA' | 'FUMIGATION';
+export type SpecialKind = 'TMA_NIGHT' | 'TMA_DAY' | 'HOUSE_USE' | 'SHOW_VILLA' | 'FUMIGATION' | 'STANDBY' | 'MOD_CHECK';
 
 // Canonical status strings (match the Guest List status dropdown).
 export const SPECIAL_STATUS: Record<SpecialKind, string> = {
@@ -10,6 +10,8 @@ export const SPECIAL_STATUS: Record<SpecialKind, string> = {
   HOUSE_USE: 'HOUSE USE',
   SHOW_VILLA: 'SHOW VILLA',
   FUMIGATION: 'FUMIGATION',
+  STANDBY: 'STANDBY',       // vacant villa kept ready (stand-by room)
+  MOD_CHECK: 'MOD CHECK',   // vacant villa the MOD must check; checkout date kept in remarks ("CHECKOUT 2026-11-14")
 };
 
 // Also understands legacy spellings such as "TMA NIGHT" / "TMA DAY".
@@ -19,8 +21,14 @@ export const getSpecialKind = (status?: string | null): SpecialKind | null => {
   if (st.includes('HOUSE')) return 'HOUSE_USE';
   if (st.includes('SHOW')) return 'SHOW_VILLA';
   if (st.includes('FUMIG')) return 'FUMIGATION';
+  if (st.includes('STANDBY') || st.includes('STAND BY')) return 'STANDBY';
+  if (/\bMOD\b/.test(st)) return 'MOD_CHECK';
   return null;
 };
+
+// MOD Check: the guest's checkout date, stored in remarks as "CHECKOUT YYYY-MM-DD"
+export const modCheckoutRemark = (ymd: string) => (ymd ? `CHECKOUT ${ymd}` : '');
+export const modCheckoutOf = (remarks?: string | null) => String(remarks || '').match(/CHECKOUT\s+(\d{4}-\d{2}-\d{2})/i)?.[1] || '';
 
 export const SERVICE_TAG = 'SERVICE DAY';
 export const isServiceDay = (remarks?: string | null) => String(remarks || '').toUpperCase().includes(SERVICE_TAG);

@@ -1,0 +1,14 @@
+{
+  "id": "/share/front-office",
+  "name": "Front Office · HK Pulse",
+  "short_name": "FO Link",
+  "start_url": "/share/front-office",
+  "scope": "/share/front-office",
+  "display": "standalone",
+  "background_color": "#FDFBFD",
+  "theme_color": "#6D2158",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -67,7 +67,9 @@ export const shortHostName = (
   displayNames?: Record<string, string>,
 ): string => {
   const display = h?.host_id ? String(displayNames?.[h.host_id] || '').trim() : '';
-  if (display && !/\d/.test(display)) return display;
+  // A display name that is just the full name again (e.g. "MOHAMED ILHAM") isn't a short name: fall through to the nickname
+  const letters = (s: string) => s.toLowerCase().replace(/[^\p{L}]/gu, '');
+  if (display && !/\d/.test(display) && letters(display) !== letters(String(h?.full_name || ''))) return display;
   // Skip entries that are really phone numbers or codes typed into the nickname box
   const nick = String(h?.nicknames || '').split(',').map(n => n.trim()).find(n => /\p{L}/u.test(n) && !/\d/.test(n)) || '';
   if (nick) return nick;

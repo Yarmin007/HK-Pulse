@@ -57,6 +57,9 @@ type RequestRecord = {
 type MbHistory = { id: string; villa_number: string; guest_name?: string; item_details: string; request_time: string; is_posted: boolean; chk_number?: string | null; is_private?: boolean };
 type BankedRow = { id: string; request_id: string | null; villa_number: string; guest_name: string | null; item_name: string; qty: number; banked_at: string; banked_by: string | null; note: string | null; month_period: string };
 
+// Ledger lines with note "withdrawn" (or "withdrawn: reason") take items OUT of the bank; every other line puts them in.
+const isWithdrawal = (b: { note: string | null }) => /^withdrawn/.test(b.note || '');
+const withdrawReason = (b: { note: string | null }) => (b.note || '').replace(/^withdrawn:?\s*/, '');
 const fmtDay = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', day: 'numeric', month: 'short' });
 
 // Hard-liquor lines of earlier requests by the same guest since they arrived (room moves included).
@@ -215,6 +218,8 @@ export default function CoordinatorLog() {
   const [bankOpen, setBankOpen] = useState(false);
   const [bankMonth, setBankMonth] = useState(() => getDhakaDateStr().slice(0, 7));
   const [bankRows, setBankRows] = useState<BankedRow[]>([]);
+  const [withdraw, setWithdraw] = useState<{ item: string; left: number; qty: number; villa: string; reason: string } | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
   const [handOverFor, setHandOverFor] = useState<RequestRecord | null>(null);
   
   const [currentTime, setCurrentTime] = useState(getDhakaTime());
@@ -658,6 +663,20 @@ export default function CoordinatorLog() {
 
     const dateStr = getDhakaDateStr(selectedDate);
     const dbTimeStr = `${dateStr}T${manualTime}:00+06:00`; 
+
+    // Back-dated request: allowed, but ask first so a wrong date on the page isn't saved by mistake.
+    // (Editing a request that already sits on that past day doesn't ask again.)
+    const todayStr = getDhakaDateStr();
+    const editingSameDay = isEditing && records.some(r => r.id === editingId && getDhakaDateStr(new Date(r.request_time)) === dateStr);
+    if (dateStr < todayStr && !editingSameDay) {
+        const nice = (d: string) => new Date(`${d}T12:00:00+06:00`).toLocaleDateString('en-GB', { timeZone: 'Asia/Dhaka', weekday: 'short', day: 'numeric', month: 'short' });
+        const ok = await confirmAction({
+            title: 'Save to a past date?',
+            message: `This request will be saved on ${nice(dateStr)} at ${manualTime}, not today (${nice(todayStr)}). Continue only if it really belongs to that day.`,
+            confirmText: `Save on ${nice(dateStr)}`,
+        });
+        if (!ok) return;
+    }
     
     let attendantName = requesterSearch;
     if (!attendantName) {
@@ -743,12 +762,11 @@ export default function CoordinatorLog() {
       setPostIsSinner(sinner);
       if (coord && r.request_type === 'Minibar') {
           const rows = bankedByReq[r.id] || [];
-          const banked = rows.filter(b => !b.note); // Sinner: whole line banked instead of billed
-          const held = rows.filter(b => b.note === 'held'); // posted but not sent
+          // Banked = posted on the bill but not sent to the villa. Older "whole line banked" rows (no note) count the same.
+          const held = rows.filter(b => b.note !== 'direct');
           setPostItems((r.item_details || '').split('\n').map(l => parseItemLine(l)).filter(i => i.name && !i.refill)
               .map(i => ({
-                  name: i.name, qty: i.qty,
-                  bank: sinner && banked.some(b => b.item_name === i.name),
+                  name: i.name, qty: i.qty, bank: false,
                   hold: Math.min(i.qty, held.filter(b => b.item_name === i.name).reduce((n, b) => n + b.qty, 0)),
               })));
       } else setPostItems([]);
@@ -764,14 +782,13 @@ export default function CoordinatorLog() {
   };
 
   const confirmPost = async () => {
-      const toBank = postIsSinner ? postItems.filter(i => i.bank) : [];
-      const allBanked = postIsSinner && postItems.length > 0 && toBank.length === postItems.length;
-      if (!postModal.chk && !allBanked) return toast.error("Enter CHK number");
-      const chk = allBanked ? null : postModal.chk;
-
-      // Coordinator only: banked items go to the ledger instead of a bill; held items are billed in full
-      // but only part is sent, the rest goes to the ledger. Nobody else sees either.
-      const toHold = coord ? postItems.filter(i => !i.bank && i.hold > 0) : [];
+      // Everything is posted on the bill. Coordinator only: what is posted but NOT sent to the villa goes to the
+      // Banked ledger (it stays with us physically). Nobody else sees it.
+      if (!postModal.chk) return toast.error("Enter CHK number");
+      const chk = postModal.chk;
+      const toBank: typeof postItems = [];
+      const allBanked = false;
+      const toHold = coord ? postItems.filter(i => i.hold > 0) : [];
       if (coord && postItems.length > 0) {
           const r = records.find(x => x.id === postModal.id);
           const del = await supabase.from('hsk_minibar_banked').delete().eq('request_id', postModal.id).or('note.is.null,note.neq.direct');
@@ -813,8 +830,31 @@ export default function CoordinatorLog() {
   };
   useEffect(() => { if (bankOpen && coord) loadBanked(bankMonth); }, [bankOpen, bankMonth, coord]);
 
+  // Take items out of the bank: saved as its own "withdrawn" line (history kept, balance goes down)
+  const saveWithdraw = async () => {
+      if (!withdraw) return;
+      const qty = Math.floor(withdraw.qty);
+      if (!(qty > 0)) return toast.error('Enter how many to withdraw');
+      if (qty > withdraw.left) return toast.error(`Only ${withdraw.left} ${withdraw.item} in the bank`);
+      const villa = withdraw.villa.trim() ? normalizeVillaNumber(withdraw.villa) : '';
+      setWithdrawing(true);
+      const { data, error } = await supabase.from('hsk_minibar_banked').insert([{
+          request_id: null, villa_number: villa, guest_name: null, item_name: withdraw.item, qty,
+          banked_at: new Date().toISOString(), banked_by: myName(),
+          note: withdraw.reason.trim() ? `withdrawn: ${withdraw.reason.trim()}` : 'withdrawn',
+          month_period: bankMonth,
+      }]).select();
+      setWithdrawing(false);
+      if (error) return toast.error('Withdrawal not saved');
+      setBankRows(prev => [...((data || []) as BankedRow[]), ...prev]);
+      toast.success(`Withdrew ${qty}x ${withdraw.item} · ${withdraw.left - qty} left`);
+      setWithdraw(null);
+  };
+
   const deleteBanked = async (row: BankedRow) => {
-      const ok = await confirmAction({ title: 'Remove banked item?', message: `${row.qty}x ${row.item_name} · V${row.villa_number} will no longer count as banked. The request stays posted.`, confirmText: 'Remove', isDestructive: true });
+      const ok = isWithdrawal(row)
+        ? await confirmAction({ title: 'Undo withdrawal?', message: `${row.qty}x ${row.item_name} goes back into the bank.`, confirmText: 'Undo', isDestructive: true })
+        : await confirmAction({ title: 'Delete banked item?', message: `${row.qty}x ${row.item_name} · V${row.villa_number} will be deleted as if it was never banked. To take items out of the bank, use Withdraw instead. The request stays posted.`, confirmText: 'Delete', isDestructive: true });
       if (!ok) return;
       const { error } = await supabase.from('hsk_minibar_banked').delete().eq('id', row.id);
       if (error) return toast.error('Not removed');
@@ -1714,31 +1754,22 @@ export default function CoordinatorLog() {
 
       {/* POST BILL MODAL */}
       {postModal.isOpen && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4">
+              {/* Long bills scroll inside the box; the CHK field and buttons stay visible at the bottom */}
+              <div className="bg-white rounded-t-3xl sm:rounded-3xl max-w-sm w-full max-h-[92dvh] flex flex-col shadow-2xl border border-slate-200 animate-in zoom-in-95 overflow-hidden">
+                  <div className="px-6 pt-6 shrink-0">
                   <h3 className="text-xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight flex items-center justify-center gap-2">Post Minibar Bill {postIsSinner && <PackageTag pkg="Sinner" />}</h3>
-                  <p className="text-[11px] font-bold text-slate-400 text-center mb-5 uppercase tracking-widest">{postIsSinner ? 'Post to the bill or bank each item' : 'Confirm POS Check (CHK) Number'}</p>
+                  <p className="text-[11px] font-bold text-slate-400 text-center mb-4 uppercase tracking-widest">{coord && postItems.length > 0 ? 'All posted · lower "Sent" to bank what stays with us' : 'Confirm POS Check (CHK) Number'}</p>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6">
                   {coord && postItems.length > 0 && (
                     <div className="mb-4 space-y-1.5">
                       {postItems.map((it, i) => (
                         <div key={i} className="p-2 rounded-xl bg-slate-50 border border-slate-200">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-xs font-bold text-slate-800 truncate">{it.qty}x {it.name}</span>
-                          {postIsSinner && (
-                          <div className="flex bg-white border border-slate-200 rounded-lg p-0.5 shrink-0">
-                            {(['Post', 'Bank'] as const).map(opt => {
-                              const on = (opt === 'Bank') === it.bank;
-                              return (
-                                <button key={opt} type="button" onClick={() => setPostItems(prev => prev.map((x, j) => j === i ? { ...x, bank: opt === 'Bank' } : x))}
-                                  className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase cursor-pointer ${on ? (opt === 'Bank' ? 'bg-violet-600 text-white' : 'bg-emerald-600 text-white') : 'text-slate-400'}`}>
-                                  {opt}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          )}
                         </div>
-                        {!it.bank && (
+                        {(
                           <div className="flex items-center justify-between gap-2 mt-1.5">
                             <span className="text-[10px] font-bold text-slate-500">Sent</span>
                             <div className="flex items-center gap-1.5">
@@ -1755,14 +1786,16 @@ export default function CoordinatorLog() {
                         </div>
                       ))}
                       <p className="text-[10px] font-semibold text-slate-400 text-center pt-1">
-                        {postIsSinner ? 'Banked items: no bill. ' : ''}Lower "Sent" to bill the full amount but bank the rest. Only you see this — everyone else sees the full quantity posted and sent.
+                        Everything is billed. Lower "Sent" for what stays with us: that part goes to the bank. Only you see this — everyone else sees the full quantity posted and sent.
                       </p>
                     </div>
                   )}
-                  {!(postIsSinner && postItems.length > 0 && postItems.every(i => i.bank)) && (
+                  </div>
+                  <div className="px-6 pt-3 pb-6 shrink-0 border-t border-slate-100">
+                  {(
                   <input 
                       type="number" 
-                      className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl font-mono font-black text-center text-3xl text-slate-800 outline-none focus:border-[#6D2158] mb-5"
+                      className="w-full p-3 bg-slate-50 border-2 border-slate-200 rounded-2xl font-mono font-black text-center text-2xl text-slate-800 outline-none focus:border-[#6D2158] mb-3"
                       value={postModal.chk}
                       onChange={e => setPostModal({...postModal, chk: e.target.value})}
                       autoFocus
@@ -1774,12 +1807,13 @@ export default function CoordinatorLog() {
                         Cancel
                       </button>
                       <button onClick={confirmPost} className="flex-1 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black uppercase text-xs shadow-md cursor-pointer">
-                        {postIsSinner && postItems.length > 0 && postItems.every(i => i.bank) ? 'Bank all' : 'Link & Post'}
+                        Link & Post
                       </button>
                   </div>
                   {records.find(r => r.id === postModal.id)?.is_posted && (
                     <button onClick={unpost} className="w-full mt-2.5 py-2 text-[11px] font-bold text-rose-500 hover:underline cursor-pointer">Mark as not posted</button>
                   )}
+                  </div>
               </div>
           </div>
       )}
@@ -2284,9 +2318,15 @@ export default function CoordinatorLog() {
 
       {/* BANKED LEDGER — coordinator only */}
       {bankOpen && coord && (() => {
-          const totals = new Map<string, number>();
-          for (const b of bankRows) totals.set(b.item_name, (totals.get(b.item_name) || 0) + b.qty);
-          const sorted = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+          // Per item: banked in, withdrawn out, left in the bank
+          const totals = new Map<string, { inQ: number; outQ: number }>();
+          for (const b of bankRows) {
+              const t = totals.get(b.item_name) || { inQ: 0, outQ: 0 };
+              if (isWithdrawal(b)) t.outQ += b.qty; else t.inQ += b.qty;
+              totals.set(b.item_name, t);
+          }
+          const sorted = [...totals.entries()].map(([name, t]) => ({ name, ...t, left: t.inQ - t.outQ }))
+              .sort((a, b) => b.left - a.left || a.name.localeCompare(b.name));
           return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setBankOpen(false)}>
               <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-2xl max-h-[90dvh] flex flex-col shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -2305,22 +2345,40 @@ export default function CoordinatorLog() {
                       ) : (
                         <>
                           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                              {sorted.map(([name, qty]) => (
-                                  <div key={name} className="p-3 rounded-xl bg-violet-50 border border-violet-100">
-                                      <p className="text-2xl font-black text-violet-700 leading-none">{qty}</p>
-                                      <p className="text-[11px] font-bold text-slate-600 mt-1 truncate">{name}</p>
+                              {sorted.map(t => (
+                                  <div key={t.name} className={`p-3 rounded-xl border ${t.left > 0 ? 'bg-violet-50 border-violet-100' : 'bg-slate-50 border-slate-200'}`}>
+                                      <div className="flex items-start justify-between gap-2">
+                                          <p className={`text-2xl font-black leading-none ${t.left > 0 ? 'text-violet-700' : 'text-slate-400'}`}>{t.left}</p>
+                                          {t.left > 0 && (
+                                              <button onClick={() => setWithdraw({ item: t.name, left: t.left, qty: 1, villa: '', reason: '' })}
+                                                  className="px-2 py-1 rounded-lg bg-white border border-violet-200 text-[10px] font-black uppercase text-violet-700 hover:bg-violet-100 cursor-pointer flex items-center gap-1">
+                                                  <Minus size={11}/> Withdraw
+                                              </button>
+                                          )}
+                                      </div>
+                                      <p className="text-[11px] font-bold text-slate-600 mt-1 truncate">{t.name}</p>
+                                      {t.outQ > 0 && <p className="text-[10px] font-semibold text-slate-400">{t.inQ} banked · {t.outQ} withdrawn</p>}
                                   </div>
                               ))}
                           </div>
                           <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">
-                              {bankRows.map(b => (
+                              {bankRows.map(b => isWithdrawal(b) ? (
+                                  <div key={b.id} className="px-3 py-2.5 flex items-center gap-3 text-xs bg-rose-50/40">
+                                      <span className="font-mono font-black text-rose-600 w-10 shrink-0">{b.villa_number ? `V${b.villa_number}` : 'OUT'}</span>
+                                      <div className="min-w-0 flex-1">
+                                          <p className="font-bold text-rose-700 truncate">−{b.qty}x {b.item_name}<span className="ml-1.5 text-[9px] font-black uppercase text-rose-500">withdrawn</span></p>
+                                          <p className="text-[10px] font-semibold text-slate-400 truncate">{fmtDay(b.banked_at)}{withdrawReason(b) ? ` · ${withdrawReason(b)}` : ''}{b.banked_by ? ` · by ${b.banked_by}` : ''}</p>
+                                      </div>
+                                      <button onClick={() => deleteBanked(b)} className="p-1.5 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 cursor-pointer" title="Undo withdrawal"><X size={14}/></button>
+                                  </div>
+                              ) : (
                                   <div key={b.id} className="px-3 py-2.5 flex items-center gap-3 text-xs">
                                       <span className="font-mono font-black text-slate-800 w-10 shrink-0">V{b.villa_number}</span>
                                       <div className="min-w-0 flex-1">
                                           <p className="font-bold text-slate-800 truncate">{b.qty}x {b.item_name}{b.note === 'held' && <span className="ml-1.5 text-[9px] font-black uppercase text-violet-600">held back · billed</span>}</p>
                                           <p className="text-[10px] font-semibold text-slate-400 truncate">{fmtDay(b.banked_at)} · {b.guest_name || 'Guest'}{b.banked_by ? ` · by ${b.banked_by}` : ''}</p>
                                       </div>
-                                      <button onClick={() => deleteBanked(b)} className="p-1.5 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 cursor-pointer" title="Remove"><Trash2 size={14}/></button>
+                                      <button onClick={() => deleteBanked(b)} className="p-1.5 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 cursor-pointer" title="Delete (mistake)"><Trash2 size={14}/></button>
                                   </div>
                               ))}
                           </div>
@@ -2331,6 +2389,47 @@ export default function CoordinatorLog() {
           </div>
           );
       })()}
+
+      {/* WITHDRAW FROM BANK */}
+      {withdraw && coord && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[10000] flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => !withdrawing && setWithdraw(null)}>
+              <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-6 pb-8 sm:pb-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-lg font-black text-slate-800 leading-tight">Withdraw {withdraw.item}</h3>
+                  <p className="text-[11px] font-bold text-slate-400 mb-5">{withdraw.left} in the bank for {bankMonth}</p>
+
+                  <label className="block text-[10px] font-black text-slate-400 uppercase mb-1.5">How many</label>
+                  <div className="flex items-center gap-2 mb-4">
+                      <button onClick={() => setWithdraw({ ...withdraw, qty: Math.max(1, withdraw.qty - 1) })} className="w-11 h-11 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center cursor-pointer"><Minus size={16}/></button>
+                      <input type="number" inputMode="numeric" min={1} max={withdraw.left} value={withdraw.qty || ''}
+                          onChange={e => setWithdraw({ ...withdraw, qty: Number(e.target.value) })}
+                          className="flex-1 h-11 text-center text-lg font-black bg-slate-50 border border-slate-200 rounded-xl outline-none" />
+                      <button onClick={() => setWithdraw({ ...withdraw, qty: Math.min(withdraw.left, withdraw.qty + 1) })} className="w-11 h-11 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center cursor-pointer"><Plus size={16}/></button>
+                      <button onClick={() => setWithdraw({ ...withdraw, qty: withdraw.left })} className="h-11 px-3 rounded-xl bg-violet-50 text-violet-700 text-[10px] font-black uppercase cursor-pointer">All</button>
+                  </div>
+
+                  <label className="block text-[10px] font-black text-slate-400 uppercase mb-1.5">Villa (optional)</label>
+                  <input value={withdraw.villa} onChange={e => setWithdraw({ ...withdraw, villa: e.target.value })} inputMode="numeric" placeholder="e.g. 57"
+                      className="w-full mb-4 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold outline-none" />
+
+                  <label className="block text-[10px] font-black text-slate-400 uppercase mb-1.5">Reason (optional)</label>
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                      {['Covered variance', 'Given to villa', 'Damaged / expired'].map(r => (
+                          <button key={r} onClick={() => setWithdraw({ ...withdraw, reason: r })}
+                              className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border cursor-pointer ${withdraw.reason === r ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-200'}`}>{r}</button>
+                      ))}
+                  </div>
+                  <input value={withdraw.reason} onChange={e => setWithdraw({ ...withdraw, reason: e.target.value })} placeholder="Or type a reason"
+                      className="w-full mb-6 px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold outline-none" />
+
+                  <div className="flex gap-2">
+                      <button onClick={() => setWithdraw(null)} disabled={withdrawing} className="flex-1 py-3 text-slate-500 bg-slate-100 rounded-xl font-bold text-xs uppercase hover:bg-slate-200 cursor-pointer">Cancel</button>
+                      <button onClick={saveWithdraw} disabled={withdrawing} className="flex-1 py-3 text-xs font-black uppercase bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white rounded-xl shadow-md cursor-pointer flex items-center justify-center gap-1.5">
+                          {withdrawing ? <Loader2 size={14} className="animate-spin"/> : <Minus size={14}/>} Withdraw
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
 
       {/* PARTIAL DISPATCH MODAL */}
       {isPartialOpen && partialTarget && (

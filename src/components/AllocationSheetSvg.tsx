@@ -237,11 +237,16 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
       <defs>
         <style>{`
           .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11, .cls-contact, .cls-duty-val {
-            font-family: BookAntiqua-Bold, 'Book Antiqua';
+            /* Book Antiqua is a Palatino design: fall back to Palatino (Mac) / Palatino Linotype (Windows), not a blurry default serif */
+            font-family: BookAntiqua-Bold, 'Book Antiqua', 'Palatino Linotype', Palatino, 'URW Palladio L', serif;
             font-weight: 700;
+            text-rendering: geometricPrecision;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            font-kerning: normal;
           }
           .cls-1, .cls-4, .cls-9, .cls-duty-val {
-            fill: #231f20;
+            fill: #000000;
           }
           .cls-1, .cls-5 {
             font-size: 5px;
@@ -270,12 +275,13 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           .cls-12, .cls-13, .cls-14 {
             stroke: #231f20;
             stroke-miterlimit: 10;
+            shape-rendering: geometricPrecision;
           }
           .cls-12, .cls-14 {
             fill: none;
           }
           .cls-13 {
-            fill: #691c56;
+            fill: #8a3d78; /* same plum, lighter than the old #691c56 */
           }
           .cls-13, .cls-14 {
             stroke-width: .75px;
@@ -304,6 +310,75 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           }
         `}</style>
       </defs>
+
+      {/* 1. STATUS BOX FILLS: drawn first so the grid lines stay on top at full width */}
+      <g id="STATUS_BOX_FILLS">
+        {t1.map((col, cIdx) => (
+          col.villas?.map((v, rIdx) => {
+            if (!v || !v.status) return null;
+            const theme = getStatusTheme(v);
+            if (theme.bg === "#ffffff") return null;
+            const x = 36.53 + cIdx * 82.5;
+            const y = 118.71 + rIdx * 15.88;
+            return (
+              <rect
+                key={`t1-fill-${cIdx}-${rIdx}`}
+                x={x}
+                y={y}
+                width="54.97"
+                height="15.88"
+                fill={theme.bg}
+                stroke="#231f20"
+                strokeWidth="0.2"
+              />
+            );
+          })
+        ))}
+
+        {t2.map((col, cIdx) => (
+          col.villas?.map((v, rIdx) => {
+            if (!v || !v.status) return null;
+            const theme = getStatusTheme(v);
+            if (theme.bg === "#ffffff") return null;
+            const x = 36.53 + cIdx * 82.5;
+            const y = 294.47 + rIdx * 15.88;
+            return (
+              <rect
+                key={`t2-fill-${cIdx}-${rIdx}`}
+                x={x}
+                y={y}
+                width="54.97"
+                height="15.88"
+                fill={theme.bg}
+                stroke="#231f20"
+                strokeWidth="0.2"
+              />
+            );
+          })
+        ))}
+
+        {t3.map((col, cIdx) => (
+          col.villas?.map((v, rIdx) => {
+            if (!v || !v.status) return null;
+            const theme = getStatusTheme(v);
+            if (theme.bg === "#ffffff") return null;
+            const x = 36.53 + cIdx * 82.5;
+            const y = 454.35 + rIdx * 15.88;
+            return (
+              <rect
+                key={`t3-fill-${cIdx}-${rIdx}`}
+                x={x}
+                y={y}
+                width="54.97"
+                height="15.88"
+                fill={theme.bg}
+                stroke="#231f20"
+                strokeWidth="0.2"
+              />
+            );
+          })
+        ))}
+      </g>
 
       {/* 1. STRUCTURE */}
       <g id="STRUCTURE">
@@ -705,11 +780,12 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-13" x="201.45" y="665.53" width="54.99" height="8.47"/>
         <rect className="cls-13" x="9.02" y="665.53" width="54.97" height="8.47"/>
         <rect className="cls-13" x="9.02" y="674" width="54.97" height="8.47"/>
-        <rect className="cls-13" x="64" y="665.53" width="55.02" height="8.47"/>
+        <rect className="cls-13" x="64" y="665.53" width="39" height="8.47"/>
         <rect className="cls-13" x="8.95" y="758.71" width="137.59" height="8.47"/>
         <rect className="cls-13" x="8.95" y="801.06" width="137.59" height="8.47"/>
         <rect className="cls-13" x="64" y="674" width="27.49" height="8.47"/>
-        <rect className="cls-13" x="119.02" y="665.53" width="27.49" height="8.47"/>
+        {/* In-charge contact cell widened (divider moved left from 119) so two MVPNs fit */}
+        <rect className="cls-13" x="103" y="665.53" width="43.51" height="8.47"/>
         <rect className="cls-13" x="91.48" y="674" width="55.04" height="8.47"/>
         <rect className="cls-13" x="64" y="623.18" width="55.04" height="8.47"/>
         <rect className="cls-13" x="119.03" y="623.18" width="54.97" height="8.47"/>
@@ -1176,74 +1252,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="9" y="65.06" width="75.88" height="10.41"/>
       </g>
 
-      {/* 2. DYNAMIC STATUS BOX OVERLAYS */}
-      <g id="STATUS_BOX_FILLS">
-        {t1.map((col, cIdx) => (
-          col.villas?.map((v, rIdx) => {
-            if (!v || !v.status) return null;
-            const theme = getStatusTheme(v);
-            if (theme.bg === "#ffffff") return null;
-            const x = 36.53 + cIdx * 82.5;
-            const y = 118.71 + rIdx * 15.88;
-            return (
-              <rect
-                key={`t1-fill-${cIdx}-${rIdx}`}
-                x={x}
-                y={y}
-                width="54.97"
-                height="15.88"
-                fill={theme.bg}
-                stroke="#231f20"
-                strokeWidth="0.2"
-              />
-            );
-          })
-        ))}
-
-        {t2.map((col, cIdx) => (
-          col.villas?.map((v, rIdx) => {
-            if (!v || !v.status) return null;
-            const theme = getStatusTheme(v);
-            if (theme.bg === "#ffffff") return null;
-            const x = 36.53 + cIdx * 82.5;
-            const y = 294.47 + rIdx * 15.88;
-            return (
-              <rect
-                key={`t2-fill-${cIdx}-${rIdx}`}
-                x={x}
-                y={y}
-                width="54.97"
-                height="15.88"
-                fill={theme.bg}
-                stroke="#231f20"
-                strokeWidth="0.2"
-              />
-            );
-          })
-        ))}
-
-        {t3.map((col, cIdx) => (
-          col.villas?.map((v, rIdx) => {
-            if (!v || !v.status) return null;
-            const theme = getStatusTheme(v);
-            if (theme.bg === "#ffffff") return null;
-            const x = 36.53 + cIdx * 82.5;
-            const y = 454.35 + rIdx * 15.88;
-            return (
-              <rect
-                key={`t3-fill-${cIdx}-${rIdx}`}
-                x={x}
-                y={y}
-                width="54.97"
-                height="15.88"
-                fill={theme.bg}
-                stroke="#231f20"
-                strokeWidth="0.2"
-              />
-            );
-          })
-        ))}
-      </g>
 
       {/* 3. STATIC LABELS + DYNAMIC HEADERS */}
       <g id="static">
@@ -1382,7 +1390,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-2" transform="translate(54.35 662.8)"><tspan x="0" y="0">GARDEN DUTY</tspan></text>
         <text className="cls-5" transform="translate(12.98 671.5)"><tspan x="0" y="0">DUTY INCHARGE</tspan></text>
         <text className="cls-5" transform="translate(66.22 671.5)"><tspan x="0" y="0">{toNaturalCase(d.garden?.incharge?.name)}</tspan></text>
-        <text className="cls-5" transform="translate(123.87 671.59)"><tspan x="0" y="0">{d.garden?.incharge?.contact || ""}</tspan></text>
+        <text className="cls-5" textAnchor="middle" transform="translate(124.75 671.59)"><tspan x="0" y="0">{d.garden?.incharge?.contact || ""}</tspan></text>
         <text className="cls-5" textAnchor="middle" transform="translate(36.5 680.5)"><tspan x="0" y="0">NAME</tspan></text>
         <text className="cls-5" textAnchor="middle" transform="translate(77.75 680.5)"><tspan x="0" y="0">NO</tspan></text>
         <text className="cls-5" textAnchor="middle" transform="translate(119 680.5)"><tspan x="0" y="0">DUTY AREA</tspan></text>

@@ -26,7 +26,8 @@ const addDays = (iso: string, n: number) => {
   return d.toISOString().slice(0, 10);
 };
 
-const isAway = (r?: Row) => !!r && AWAY.includes(String(r.status_code || '').trim().toUpperCase()) && !isWorkedLeave(r);
+/** True when this attendance row means the person is not working that day (worked offs don't count). */
+export const isAway = (r?: Row) => !!r && AWAY.includes(String(r.status_code || '').trim().toUpperCase()) && !isWorkedLeave(r);
 
 /** Pure: periods covering `date`, from rows of any hosts (rows outside the window are ignored). */
 export const buildLeavePeriods = (rows: Row[], date: string): LeavePeriod[] => {

@@ -128,6 +128,19 @@ export default function Sidebar() {
   // Sub-menu state for switching hosts inside Team Hub
   const [isSimulateOpen, setIsSimulateOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  // On-screen keyboard open: the page resizes to the space above the keyboard, so a fixed bottom bar
+  // would float up over the form. Hide it while typing.
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  useEffect(() => {
+    const isTyping = (el: Element | null) =>
+      !!el && (el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable ||
+        (el.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'file', 'range', 'color'].includes((el as HTMLInputElement).type)));
+    const update = () => setKeyboardOpen(isTyping(document.activeElement));
+    const onOut = () => setTimeout(update, 50); // focus may move to another field
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', onOut);
+    return () => { document.removeEventListener('focusin', update); document.removeEventListener('focusout', onOut); };
+  }, []);
   const [mobileSearch, setMobileSearch] = useState('');
   const [deskSearch, setDeskSearch] = useState('');
 
@@ -481,7 +494,7 @@ export default function Sidebar() {
       </aside>
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      <nav className="print:hidden md:hidden fixed bottom-0 inset-x-0 z-[999] bg-white/95 backdrop-blur-xl border-t border-slate-200/70 shadow-[0_-8px_30px_rgba(0,0,0,0.05)]" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <nav className={`print:hidden md:hidden fixed bottom-0 inset-x-0 z-[999] bg-white/95 backdrop-blur-xl border-t border-slate-200/70 shadow-[0_-8px_30px_rgba(0,0,0,0.05)] ${keyboardOpen ? 'hidden' : ''}`} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="grid h-16" style={{ gridTemplateColumns: `repeat(${BOTTOM_TABS.length + 1}, minmax(0, 1fr))` }}>
           {BOTTOM_TABS.map((tab) => {
             const on = isActivePath(tab.path) && !isMobileMenuOpen;
