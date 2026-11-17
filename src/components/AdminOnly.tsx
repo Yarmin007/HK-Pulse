@@ -5,9 +5,9 @@ import { ShieldAlert } from 'lucide-react';
 import { hasFullControl } from '@/lib/fullControl';
 
 // Wraps admin-only pages so a direct link doesn't open them for staff.
-export default function AdminOnly({ children, what }: { children: React.ReactNode; what: string }) {
+export default function AdminOnly({ children, what, allow, audience = 'admins' }: { children: React.ReactNode; what: string; allow?: () => boolean; audience?: string }) {
   const [allowed, setAllowed] = useState<boolean | null>(null);
-  useEffect(() => { setAllowed(hasFullControl()); }, []);
+  useEffect(() => { setAllowed(allow ? allow() : hasFullControl()); }, [allow]);
 
   if (allowed === null) {
     return (
@@ -22,7 +22,7 @@ export default function AdminOnly({ children, what }: { children: React.ReactNod
         <div className="bg-white border border-slate-200 rounded-3xl shadow-sm p-8 max-w-sm w-full text-center">
           <div className="w-12 h-12 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mb-4"><ShieldAlert size={22} /></div>
           <h1 className="text-lg font-black text-slate-800">No access</h1>
-          <p className="text-xs font-semibold text-slate-500 mt-1.5">{what} is only available to admins.</p>
+          <p className="text-xs font-semibold text-slate-500 mt-1.5">{what} is only available to {audience}.</p>
           <Link href="/" className="inline-block mt-5 px-4 py-2.5 bg-[#6D2158] hover:bg-[#5a1b49] text-white rounded-xl text-xs font-bold">Back to dashboard</Link>
         </div>
       </div>

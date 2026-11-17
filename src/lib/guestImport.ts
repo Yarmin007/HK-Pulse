@@ -989,8 +989,9 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
         notes.set(v, movedTo ? `${who} now arrives in V${movedTo.villa} (revised memo)` : `${who} is no longer in the memo arrivals: cancelled? Discard this line if they are still coming`);
     });
     const memoDep = new Set(memo.departures.map(d => d.villa));
+    const movingOut = new Set(memo.moves.map(m => m.from)); // explained by the room move below
     if (memo.departures.length) after.forEach((row, v) => {
-        if (memoDep.has(v) || isProtected(row.status) || !row.guest_name) return;
+        if (memoDep.has(v) || movingOut.has(v) || isProtected(row.status) || !row.guest_name) return;
         if (row.status === 'DEP' || (row.status === 'DEP/ARR' && row.dep_guest_name)) {
             groups.set(v, AMENDED);
             notes.set(v, `${row.status === 'DEP' ? row.guest_name : row.dep_guest_name} is no longer in the memo departures: extended? Fix the dates in the list`);
@@ -1001,18 +1002,44 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
         const from = after.get(m.from), to = after.get(m.to);
         if (!from || !to) return;
         groups.set(m.from, 'Villa moves'); groups.set(m.to, 'Villa moves');
-        if (from.guest_name && !to.guest_name) {
-            // Not moved in our list yet: carry the whole stay (same stay_id) to the new villa
-            const keep = { status: to.status };
-            Object.assign(to, { ...from, villa_number: m.to, id: to.id, report_date: to.report_date }, keep);
-            Object.assign(from, EMPTY_STAY);
-        } else if (from.guest_name && isSameGuest(to.guest_name, from.guest_name)) {
+        const moveNote = [`Room move from V${m.from}${m.time ? ` at ${m.time}` : ''}`];
+
+        if (from.guest_name && isSameGuest(to.guest_name, from.guest_name)) {
             // OCC already has them in the new villa: just clear the old one
             Object.assign(from, EMPTY_STAY);
+        } else if (from.guest_name) {
+            // The moving guest's stay. A booking that ends on the move day is common when the move is
+            // re-booked: they are NOT leaving, the stay continues in the new villa with a new departure date.
+            const moved = { ...from };
+            const fs = rowStay(from, D);
+            if (from.status === 'DEP' || (fs.dep && fs.dep <= D)) {
+                moved.stay_dates = stayDatesOf(fs.arr, '');
+                moveNote.push('new booking after the move: set the new departure date');
+            }
+            const stayFields = {
+                guest_name: moved.guest_name, pax_adults: moved.pax_adults, pax_kids: moved.pax_kids, meal_plan: moved.meal_plan,
+                gem_name: moved.gem_name, stay_dates: moved.stay_dates, preferences: moved.preferences, stay_id: moved.stay_id,
+            };
+
+            if (!to.guest_name) {
+                Object.assign(to, stayFields, { arrival_time: m.time || moved.arrival_time || '', departure_time: '' });
+                to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
+            } else if (to.status === 'DEP' || departsToday(to, D)) {
+                // The new villa's guest checks out today, then the moving guest comes in: back-to-back
+                Object.assign(to, {
+                    dep_guest_name: to.guest_name, dep_stay_dates: to.stay_dates, departure_time: to.departure_time,
+                }, stayFields, { status: 'DEP/ARR', arrival_time: m.time || '' });
+                moveNote.push(`after ${to.dep_guest_name} checks out`);
+            } else {
+                notes.set(m.to, `Room move from V${m.from}, but ${to.guest_name} is in house here: check the move`);
+                return;
+            }
+            Object.assign(from, EMPTY_STAY);
+        } else if (to.guest_name && !['DEP/ARR', 'DEP'].includes(to.status)) {
+            to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
         }
-        to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
         if (!from.guest_name) from.status = 'VM/VAC';
-        notes.set(m.to, `Room move from V${m.from}${m.time ? ` at ${m.time}` : ''}`);
+        notes.set(m.to, moveNote.join(' — '));
     });
 
     // GEM table covers every villa in house. On a DEP/ARR villa it is the ARRIVING guest's GEM (the row's gem_name).

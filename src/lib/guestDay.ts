@@ -121,13 +121,15 @@ export const projectGuestDay = async (date: string): Promise<{ rows: any[]; isPr
     const projected = sourceData.map(r => {
         const statusStr = String(r.status || 'VAC').trim().toUpperCase();
         if (['OCC', 'ARR', 'DEP/ARR', 'VM/OCC', 'VM/ARR'].includes(statusStr)) {
-            const check = checkStayStatusForDate(r.stay_dates || '', date);
+            // Open stay ("16/11 - "): new booking after a room move, departure not known yet → still in house
+            const check = isOpenStay(r.stay_dates) ? { isActive: true, isDepartingToday: false } : checkStayStatusForDate(r.stay_dates || '', date);
             if (check.isActive) {
                 const { cleanRemarks } = extractDepInfo(r.remarks);
                 return {
                     ...r,
                     report_date: date,
-                    status: check.isDepartingToday ? 'DEP' : (statusStr.includes('VM') ? statusStr : 'OCC'),
+                    // A villa move (VM/OCC, VM/ARR) is only on the day of the move: next day they are simply in house
+                    status: check.isDepartingToday ? 'DEP' : 'OCC',
                     arrival_time: check.isDepartingToday ? '' : (r.arrival_time || ''),
                     departure_time: check.isDepartingToday ? (r.departure_time || '') : '',
                     remarks: cleanRemarks,

@@ -8,11 +8,12 @@ import {
   ShoppingCart, ListChecks, Droplets,
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
   Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Key, Plane, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
-  Eye, ArrowLeft, UserCog, Search, Bike, WashingMachine
+  Eye, ArrowLeft, UserCog, Search, Bike, WashingMachine, Bug
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getDhakaDateStr } from "@/lib/dateUtils";
 import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
+import { canUsePestControl, isPestAccount } from "@/lib/pestControl";
 
 type Tone = 'brand' | 'emerald' | 'purple' | 'sky' | 'rose' | 'blue' | 'amber';
 const TONES: Record<Tone, { text: string; soft: string; chip: string; hover: string }> = {
@@ -255,6 +256,9 @@ export default function Sidebar() {
   const canAccessWater = isAdmin || isPoolAttendant || canAccess("water");
   const canAccessMinibar = isAdmin || canAccess("minibar");
   const canAccessInventory = isAdmin; // inventory sheets are admin-only
+  // Pest Control: admins, the shared Pest Control login and the garden team
+  const canAccessPest = isAdmin || canUsePestControl(currentUser);
+  const isPestLogin = isPestAccount(currentUser);
 
   const activeStaffTabs = useMemo(() => {
       const base = !isPoolAttendant ? STAFF_CORE_BASE : [
@@ -275,7 +279,11 @@ export default function Sidebar() {
       { name: "Tasks", icon: CheckSquare, path: "/tasks" },
   ];
 
-  const STAFF_BOTTOM_TABS = isLaundryToday && !isRunnerToday ? [
+  const STAFF_BOTTOM_TABS = isPestLogin ? [
+      { name: "Dashboard", icon: LayoutDashboard, path: "/" },
+      { name: "Pest Control", icon: Bug, path: "/pest-control" },
+      { name: "Profile", icon: Contact, path: "/profile" }
+  ] : isLaundryToday && !isRunnerToday ? [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },
       { name: "Production", icon: WashingMachine, path: "/laundry/production" },
       { name: "My Tasks", icon: ClipboardList, path: "/my-tasks" }
@@ -312,6 +320,7 @@ export default function Sidebar() {
   if (canAccessInventory) sections.push({ key: 'inventory', group: 'Departments', title: 'Inventory Hub', icon: Warehouse, tone: 'emerald', items: INVENTORY_ITEMS, collapsible: true, open: isInventoryOpen, toggle: () => setIsInventoryOpen(o => !o) });
   if (laundryItems.length) sections.push({ key: 'laundry', group: 'Departments', title: 'Laundry Hub', icon: Droplets, tone: 'purple', items: laundryItems, collapsible: true, open: isLaundryOpen, toggle: () => setIsLaundryOpen(o => !o) });
   if (canAccessWater) sections.push({ key: 'water', group: 'Departments', title: 'Water Production', icon: Droplets, tone: 'sky', items: [{ name: 'Water Production', icon: Droplets, path: '/water' }], collapsible: false });
+  if (canAccessPest) sections.push({ key: 'pest', group: 'Departments', title: 'Pest Control', icon: Bug, tone: 'amber', items: [{ name: 'Pest Control', icon: Bug, path: '/pest-control' }], collapsible: false });
   if (canAccessMinibar) sections.push({ key: 'minibar', group: 'Departments', title: 'Minibar', icon: Wine, tone: 'rose', items: MINIBAR_ITEMS, collapsible: true, open: isMinibarOpen, toggle: () => setIsMinibarOpen(o => !o) });
   if (isAdmin || isSuperAdmin) sections.push({ key: 'team', group: 'Departments', title: 'Team Hub', icon: Briefcase, tone: 'blue', items: TEAM_ITEMS, collapsible: true, open: isTeamOpen, toggle: () => setIsTeamOpen(o => !o) });
   if (isAdmin) sections.push({ key: 'ops', group: 'Operations', title: 'Operations', icon: Settings, tone: 'brand', items: OPERATIONS_ITEMS, collapsible: false });

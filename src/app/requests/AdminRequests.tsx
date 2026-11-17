@@ -209,7 +209,8 @@ export default function CoordinatorLog() {
   const [bankedByReq, setBankedByReq] = useState<Record<string, BankedRow[]>>({});
   const [stayStart, setStayStart] = useState('');
   const [stayHistory, setStayHistory] = useState<MbHistory[]>([]);
-  const [postItems, setPostItems] = useState<{ name: string; qty: number; bank: boolean }[]>([]);
+  // hold (coordinator only): posted on the bill but not sent; the difference goes to the Banked ledger as "held".
+  const [postItems, setPostItems] = useState<{ name: string; qty: number; bank: boolean; hold: number }[]>([]);
   const [postIsSinner, setPostIsSinner] = useState(false);
   const [bankOpen, setBankOpen] = useState(false);
   const [bankMonth, setBankMonth] = useState(() => getDhakaDateStr().slice(0, 7));
@@ -740,10 +741,16 @@ export default function CoordinatorLog() {
       const g = t.kind === 'villa' ? (dailyGuests[t.base] || dailyGuests[r.villa_number]) : null;
       const sinner = coord && (packageOf(r.package_tag) === 'Sinner' || (!r.package_tag && packageOf(g?.meal_plan) === 'Sinner'));
       setPostIsSinner(sinner);
-      if (sinner) {
-          const banked = (bankedByReq[r.id] || []).filter(b => b.note !== 'direct');
+      if (coord && r.request_type === 'Minibar') {
+          const rows = bankedByReq[r.id] || [];
+          const banked = rows.filter(b => !b.note); // Sinner: whole line banked instead of billed
+          const held = rows.filter(b => b.note === 'held'); // posted but not sent
           setPostItems((r.item_details || '').split('\n').map(l => parseItemLine(l)).filter(i => i.name && !i.refill)
-              .map(i => ({ name: i.name, qty: i.qty, bank: banked.some(b => b.item_name === i.name) })));
+              .map(i => ({
+                  name: i.name, qty: i.qty,
+                  bank: sinner && banked.some(b => b.item_name === i.name),
+                  hold: Math.min(i.qty, held.filter(b => b.item_name === i.name).reduce((n, b) => n + b.qty, 0)),
+              })));
       } else setPostItems([]);
       if (r.is_posted && !r.chk_number) {
           setPostModal({ isOpen: true, id: r.id, chk: '' });
@@ -762,17 +769,20 @@ export default function CoordinatorLog() {
       if (!postModal.chk && !allBanked) return toast.error("Enter CHK number");
       const chk = allBanked ? null : postModal.chk;
 
-      // Banked items go to the coordinator's ledger instead of a bill.
-      if (postIsSinner) {
+      // Coordinator only: banked items go to the ledger instead of a bill; held items are billed in full
+      // but only part is sent, the rest goes to the ledger. Nobody else sees either.
+      const toHold = coord ? postItems.filter(i => !i.bank && i.hold > 0) : [];
+      if (coord && postItems.length > 0) {
           const r = records.find(x => x.id === postModal.id);
           const del = await supabase.from('hsk_minibar_banked').delete().eq('request_id', postModal.id).or('note.is.null,note.neq.direct');
-          if (del.error && toBank.length) { toast.error('Banking table missing — run the SQL from the update notes.'); return; }
-          if (toBank.length && r) {
+          if (del.error && (toBank.length || toHold.length)) { toast.error('Banking table missing — run the SQL from the update notes.'); return; }
+          if ((toBank.length || toHold.length) && r) {
               const now = new Date().toISOString();
-              const rows = toBank.map(i => ({
-                  request_id: r.id, villa_number: normalizeVillaNumber(r.villa_number), guest_name: r.guest_name || null,
-                  item_name: i.name, qty: i.qty, banked_at: now, banked_by: myName(), month_period: getDhakaDateStr(new Date(r.request_time)).slice(0, 7),
-              }));
+              const base = { request_id: r.id, villa_number: normalizeVillaNumber(r.villa_number), guest_name: r.guest_name || null, banked_at: now, banked_by: myName(), month_period: getDhakaDateStr(new Date(r.request_time)).slice(0, 7) };
+              const rows = [
+                  ...toBank.map(i => ({ ...base, item_name: i.name, qty: i.qty })),
+                  ...toHold.map(i => ({ ...base, item_name: i.name, qty: i.hold, note: 'held' })),
+              ];
               const { data, error } = await supabase.from('hsk_minibar_banked').insert(rows).select();
               if (error) { toast.error('Could not save the banked items.'); return; }
               setBankedByReq(prev => ({ ...prev, [r.id]: [...(prev[r.id] || []).filter(b => b.note === 'direct'), ...((data || []) as BankedRow[])] }));
@@ -782,7 +792,8 @@ export default function CoordinatorLog() {
       await supabase.from('hsk_daily_requests').update({ is_posted: true, chk_number: chk }).eq('id', postModal.id);
       setRecords(records.map(r => r.id === postModal.id ? { ...r, is_posted: true, chk_number: chk || undefined } : r));
       setPostModal({ isOpen: false, id: '', chk: '' });
-      toast.success(allBanked ? 'Banked — no bill' : toBank.length ? `Posted · ${toBank.length} item(s) banked` : 'Bill successfully linked');
+      const heldMsg = toHold.length ? ` · held back ${toHold.map(i => `${i.hold}x ${i.name}`).join(', ')}` : '';
+      toast.success((allBanked ? 'Banked — no bill' : toBank.length ? `Posted · ${toBank.length} item(s) banked` : 'Bill successfully linked') + heldMsg);
   };
 
   const unpost = async () => {
@@ -1660,7 +1671,7 @@ export default function CoordinatorLog() {
 
                           {r.chk_number && <div className="text-[10px] text-emerald-700 font-mono font-black mt-1">CHK #{r.chk_number}</div>}
                           {coord && banked.length > 0 && (
-                            <div className="text-[10px] text-violet-700 font-black mt-1 flex items-center gap-1"><PiggyBank size={11}/> Banked {banked.map(b => `${b.qty}x ${b.item_name}`).join(', ')}</div>
+                            <div className="text-[10px] text-violet-700 font-black mt-1 flex items-center gap-1"><PiggyBank size={11}/> Banked {banked.map(b => `${b.qty}x ${b.item_name}${b.note === 'held' ? ' (held back)' : ''}`).join(', ')}</div>
                           )}
                           {r.logged_by && <div className="text-[9px] text-slate-400 font-semibold mt-0.5">By: {r.logged_by}</div>}
                        </div>
@@ -1707,11 +1718,13 @@ export default function CoordinatorLog() {
               <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 animate-in zoom-in-95">
                   <h3 className="text-xl font-black text-[#6D2158] text-center mb-1 uppercase tracking-tight flex items-center justify-center gap-2">Post Minibar Bill {postIsSinner && <PackageTag pkg="Sinner" />}</h3>
                   <p className="text-[11px] font-bold text-slate-400 text-center mb-5 uppercase tracking-widest">{postIsSinner ? 'Post to the bill or bank each item' : 'Confirm POS Check (CHK) Number'}</p>
-                  {postIsSinner && postItems.length > 0 && (
+                  {coord && postItems.length > 0 && (
                     <div className="mb-4 space-y-1.5">
                       {postItems.map((it, i) => (
-                        <div key={i} className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-50 border border-slate-200">
+                        <div key={i} className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+                        <div className="flex items-center justify-between gap-2">
                           <span className="text-xs font-bold text-slate-800 truncate">{it.qty}x {it.name}</span>
+                          {postIsSinner && (
                           <div className="flex bg-white border border-slate-200 rounded-lg p-0.5 shrink-0">
                             {(['Post', 'Bank'] as const).map(opt => {
                               const on = (opt === 'Bank') === it.bank;
@@ -1723,9 +1736,27 @@ export default function CoordinatorLog() {
                               );
                             })}
                           </div>
+                          )}
+                        </div>
+                        {!it.bank && (
+                          <div className="flex items-center justify-between gap-2 mt-1.5">
+                            <span className="text-[10px] font-bold text-slate-500">Sent</span>
+                            <div className="flex items-center gap-1.5">
+                              <button type="button" onClick={() => setPostItems(prev => prev.map((x, j) => j === i ? { ...x, hold: Math.min(x.qty, x.hold + 1) } : x))}
+                                className="w-6 h-6 rounded-md bg-white border border-slate-200 text-slate-600 font-black text-xs cursor-pointer">−</button>
+                              <span className="w-6 text-center text-xs font-black text-slate-800">{it.qty - it.hold}</span>
+                              <button type="button" onClick={() => setPostItems(prev => prev.map((x, j) => j === i ? { ...x, hold: Math.max(0, x.hold - 1) } : x))}
+                                className="w-6 h-6 rounded-md bg-white border border-slate-200 text-slate-600 font-black text-xs cursor-pointer">+</button>
+                              <span className="text-[10px] font-bold text-slate-400">of {it.qty}</span>
+                              {it.hold > 0 && <span className="text-[10px] font-black text-violet-700 bg-violet-50 border border-violet-200 rounded px-1.5 py-0.5">{it.hold} banked</span>}
+                            </div>
+                          </div>
+                        )}
                         </div>
                       ))}
-                      <p className="text-[10px] font-semibold text-slate-400 text-center pt-1">Banked items are kept in your Banked ledger only — no bill.</p>
+                      <p className="text-[10px] font-semibold text-slate-400 text-center pt-1">
+                        {postIsSinner ? 'Banked items: no bill. ' : ''}Lower "Sent" to bill the full amount but bank the rest. Only you see this — everyone else sees the full quantity posted and sent.
+                      </p>
                     </div>
                   )}
                   {!(postIsSinner && postItems.length > 0 && postItems.every(i => i.bank)) && (
@@ -2286,7 +2317,7 @@ export default function CoordinatorLog() {
                                   <div key={b.id} className="px-3 py-2.5 flex items-center gap-3 text-xs">
                                       <span className="font-mono font-black text-slate-800 w-10 shrink-0">V{b.villa_number}</span>
                                       <div className="min-w-0 flex-1">
-                                          <p className="font-bold text-slate-800 truncate">{b.qty}x {b.item_name}</p>
+                                          <p className="font-bold text-slate-800 truncate">{b.qty}x {b.item_name}{b.note === 'held' && <span className="ml-1.5 text-[9px] font-black uppercase text-violet-600">held back · billed</span>}</p>
                                           <p className="text-[10px] font-semibold text-slate-400 truncate">{fmtDay(b.banked_at)} · {b.guest_name || 'Guest'}{b.banked_by ? ` · by ${b.banked_by}` : ''}</p>
                                       </div>
                                       <button onClick={() => deleteBanked(b)} className="p-1.5 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 cursor-pointer" title="Remove"><Trash2 size={14}/></button>

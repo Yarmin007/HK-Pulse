@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight, Phone, Search, X, RefreshCw, Users, Loader2,
 import VillaDirectory from "./VillaDirectory";
 
 type Host = { id: string; host_id: string; full_name: string; nicknames?: string | null; mvpn?: string | null; personal_mobile?: string | null; image_url?: string | null; status?: string | null };
-type Attendant = { key: string; name: string; fullName: string; shift: string; villas: number[]; mvpn: string; mobile: string; photo: string; zone: Zone };
+type Attendant = { key: string; name: string; fullName: string; ssl: string; shift: string; villas: number[]; mvpn: string; mobile: string; photo: string; zone: Zone };
 type Zone = "Jetty A" | "Jetty B" | "Jetty C" | "Beach";
 type VillaInfo = { status: string; arr?: string; dep?: string };
 
@@ -73,6 +73,7 @@ async function fetchFO(d: string): Promise<{ list: Attendant[]; info: Record<num
         key: `${h.id}-${a.shift}`,
         name: nick || h.full_name.split(" ")[0],
         fullName: h.full_name,
+        ssl: String(h.host_id || "").trim(),
         shift: a.shift || "",
         villas,
         mvpn: String(h.mvpn || "").trim(),
@@ -129,7 +130,7 @@ export default function FrontOfficeSharePage() {
   const villaHit = /^\d{1,3}$/.test(q) ? parseInt(q, 10) : null;
   const shown = useMemo(() => (
     villaHit !== null ? attendants.filter(a => a.villas.includes(villaHit))
-      : q ? attendants.filter(a => a.name.toLowerCase().includes(q) || a.fullName.toLowerCase().includes(q))
+      : q ? attendants.filter(a => a.name.toLowerCase().includes(q) || a.fullName.toLowerCase().includes(q) || a.ssl.toLowerCase().includes(q))
       : attendants
   ), [attendants, q, villaHit]);
 
@@ -168,7 +169,7 @@ export default function FrontOfficeSharePage() {
               </div>
               <div className="relative mt-3">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input value={query} onChange={e => setQuery(e.target.value)} inputMode="search" placeholder="Villa number or name"
+                <input value={query} onChange={e => setQuery(e.target.value)} inputMode="search" placeholder="Villa no., name or SSL"
                   className="w-full rounded-xl bg-white text-slate-800 pl-9 pr-9 py-2.5 text-sm font-bold outline-none placeholder:text-slate-400 placeholder:font-semibold" />
                 {query && <button onClick={() => setQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400" aria-label="Clear"><X size={16} /></button>}
               </div>
@@ -203,6 +204,7 @@ export default function FrontOfficeSharePage() {
                               <div className="min-w-0">
                                 <p className="text-lg font-black text-slate-800 leading-tight truncate">{a.name}</p>
                                 <p className="text-[11px] font-bold text-slate-400 truncate">{a.fullName}</p>
+                                {a.ssl && <p className="mt-0.5 text-[10px] font-black text-slate-500 font-mono tracking-wide">SSL {a.ssl}</p>}
                               </div>
                               {a.shift && <span className="shrink-0 text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">{a.shift}</span>}
                             </div>
