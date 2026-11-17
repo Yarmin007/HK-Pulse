@@ -5,7 +5,6 @@ import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
 import { supabase } from "@/lib/supabase";
 import { Printer, Calendar, RefreshCw, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight } from "lucide-react";
 import { getDhakaDateStr } from "@/lib/dateUtils";
-import { isWorkedLeave } from "@/lib/attendanceData";
 import AllocationSheetSvg, { AllocationSheetData } from "@/components/AllocationSheetSvg";
 import { parseVillas } from "../lib/constants";
 import { ZONES, ZoneKey, majorityZone, loadVillaLayout, slotBySections } from "../lib/villaLayout";
@@ -13,7 +12,20 @@ import { isServiceDay } from "@/lib/specialVillas";
 import { isSpecialTaskRow, specialTaskText } from "@/lib/specialTasks";
 import { loadSinnerSaint } from "@/lib/sinnerSaint";
 import { loadPestControl } from "@/lib/pestControl";
+import { loadLeavePeriods, LeaveCategory } from "@/lib/leavePeriods";
+import { shortHostName } from "@/lib/hostProfile";
 import { projectGuestDay, rowsByVilla, deriveHKStatus, villaStatusMap, movementTime, sheetColours } from "@/lib/guestDay";
+
+const ordinal = (n: number) => {
+  const v = n % 100;
+  return n + (v >= 11 && v <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+};
+// "2026-11-17" → "Housekeeping Allocation - 17th November 2026"
+const allocationPdfName = (iso: string) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  const month = new Date(Date.UTC(y, m - 1, 1)).toLocaleString("en-GB", { month: "long", timeZone: "UTC" });
+  return `Housekeeping Allocation - ${ordinal(d)} ${month} ${y}`;
+};
 
 export default function AllocationSheetPage() {
   const [selectedDate, setSelectedDate] = useState<string>(getDhakaDateStr());
@@ -49,6 +61,17 @@ export default function AllocationSheetPage() {
 
   useEffect(() => {
     fetchSheetData();
+  }, [selectedDate]);
+
+  // Browsers name a "Save as PDF" file after the page title, e.g. "Housekeeping Allocation - 17th November 2026".
+  // Set it for the duration of the print (button or Cmd/Ctrl+P), then put the normal title back.
+  useEffect(() => {
+    let previous = "";
+    const before = () => { previous = document.title; document.title = allocationPdfName(selectedDate); };
+    const after = () => { if (previous) document.title = previous; previous = ""; };
+    window.addEventListener("beforeprint", before);
+    window.addEventListener("afterprint", after);
+    return () => { window.removeEventListener("beforeprint", before); window.removeEventListener("afterprint", after); };
   }, [selectedDate]);
 
   const fetchSheetData = async () => {
@@ -296,23 +319,24 @@ export default function AllocationSheetPage() {
       const finalJC = expandAttendants(ordered.jettyC, 8, 4);
       const finalBeach = expandAttendants(ordered.beach, 7, 7);
 
-      // 5. Fetch Attendance (Leaves & Off Days)
-      const { data: leaveReqs } = await supabase
-        .from("hsk_leave_requests")
-        .select("host_id, host_name, leave_type, start_date, end_date")
-        .eq("status", "Approved")
-        .lte("start_date", selectedDate)
-        .gte("end_date", selectedDate);
-
-      const { data: attList } = await supabase
-        .from("hsk_attendance")
+      // 5. Leaves & Off Days — From → To worked out from the main attendance sheet (see lib/leavePeriods):
+      //    O/RO/PH = off (O with a "working day" comment doesn't count), a run with any AL is Annual Leave,
+      //    otherwise SL/EL is Sick/Emergency. Approved leave requests are merged in (widest dates win).
+      const [{ data: leaveReqs }, periods, { data: allHostsList }, { data: teamCfg }] = await Promise.all([
+        supabase
+          .from("hsk_leave_requests")
+          .select("host_id, host_name, leave_type, start_date, end_date")
+          .eq("status", "Approved")
+          .lte("start_date", selectedDate)
+          .gte("end_date", selectedDate),
+        loadLeavePeriods(selectedDate),
         // No foreign key between attendance and hosts, so hosts are looked up by SSL number below
-        .select("host_id, status_code, shift_note")
-        .eq("date", selectedDate);
-
-      const { data: allHostsList } = await supabase
-        .from("hsk_hosts")
-        .select("id, host_id, full_name, nicknames, personal_mobile, status");
+        supabase.from("hsk_hosts").select("id, host_id, full_name, nicknames, personal_mobile, status"),
+        supabase.from("hsk_constants").select("label").eq("type", "team_viewer_config").limit(1).maybeSingle(),
+      ]);
+      // Display names set in Host Profiles (team_viewer_config.nicknames, keyed by SSL no)
+      let displayNames: Record<string, string> = {};
+      try { displayNames = JSON.parse(teamCfg?.label || "{}").nicknames || {}; } catch { /* none */ }
 
       const hostMap = new Map();
       (allHostsList || []).forEach((h: any) => {
@@ -320,67 +344,42 @@ export default function AllocationSheetPage() {
         if (h.host_id) hostMap.set(String(h.host_id), h);
       });
 
-      const alList: any[] = [];
-      const slList: any[] = [];
-      const offMap = new Map<string, any>();
+      type Away = { key: string; name: string; contact: string; category: LeaveCategory; from: string; to: string };
+      const RANK: Record<LeaveCategory, number> = { AL: 3, SICK: 2, OFF: 1 };
+      const away = new Map<string, Away>();
+      // One entry per person: the stronger category wins (AL > Sick > Off) and the dates are widened to cover both
+      const addAway = (rawId: string, fallbackName: string, category: LeaveCategory, from: string, to: string) => {
+        const h = hostMap.get(String(rawId).trim());
+        if (h?.status && h.status.toLowerCase() !== "active") return;
+        const key = String(h?.host_id || rawId).trim();
+        const name = shortHostName(h, fallbackName || "Unknown", displayNames);
+        const prev = away.get(key);
+        if (!prev) { away.set(key, { key, name, contact: h?.personal_mobile || "", category, from, to }); return; }
+        prev.category = RANK[category] > RANK[prev.category] ? category : prev.category;
+        if (from < prev.from) prev.from = from;
+        if (to > prev.to) prev.to = to;
+      };
+
+      periods.forEach((p) => addAway(p.host_id, p.host_id, p.category, p.from, p.to));
 
       (leaveReqs || []).forEach((lr: any) => {
-        const h = hostMap.get(String(lr.host_id));
-        if (h?.status && h.status.toLowerCase() !== "active") return;
-
-        const displayName = h?.nicknames ? h.nicknames.split(",")[0].trim() : h?.full_name || lr.host_name || "Unknown";
-        const personalNo = h?.personal_mobile || "";
         const lt = (lr.leave_type || "").toUpperCase();
-
-        const fromDate = lr.start_date || selectedDate;
-        const toDate = lr.end_date || fromDate; // single day off: from = to
-
-        if (lt === "OFF" || lt === "PH" || lt === "O") {
-          offMap.set(String(lr.host_id), {
-            name: displayName,
-            contact: personalNo,
-            from: fromDate,
-            to: toDate,
-            duration: "01",
-          });
-        } else if (lt === "AL" || lt === "VAC") {
-          alList.push({ name: displayName, from: fromDate, to: lr.end_date || selectedDate, duration: "01" });
-        } else if (lt === "SL" || lt === "EL") {
-          slList.push({ name: displayName, from: fromDate, to: lr.end_date || selectedDate, duration: "01" });
-        }
+        const cat: LeaveCategory | null = ["OFF", "O", "PH", "RO"].includes(lt) ? "OFF" : ["AL", "VAC"].includes(lt) ? "AL" : ["SL", "EL"].includes(lt) ? "SICK" : null;
+        if (!cat) return;
+        addAway(lr.host_id, lr.host_name, cat, lr.start_date || selectedDate, lr.end_date || lr.start_date || selectedDate);
       });
 
-      (attList || []).forEach((att: any) => {
-        const hObj = hostMap.get(String(att.host_id).trim());
-        if (isWorkedLeave(att)) return; // "working day" comment: they are on duty
-        if (hObj?.status && hObj.status.toLowerCase() !== "active") return;
-
-        const displayName = hObj?.nicknames ? hObj.nicknames.split(",")[0].trim() : hObj?.full_name || att.host_id;
-        const personalNo = hObj?.personal_mobile || "";
-        const sc = (att.status_code || "").toUpperCase();
-
-        if (["O", "OFF", "PH", "RO"].includes(sc)) {
-          if (!offMap.has(String(att.host_id))) {
-            offMap.set(String(att.host_id), {
-              name: displayName,
-              contact: personalNo,
-              from: selectedDate,
-              to: selectedDate,
-              duration: "01",
-            });
-          }
-        } else if (sc === "AL" || sc === "VAC") {
-          if (!alList.some((x) => x.name === displayName)) {
-            alList.push({ name: displayName, from: selectedDate, to: selectedDate, duration: "01" });
-          }
-        } else if (sc === "SL" || sc === "EL") {
-          if (!slList.some((x) => x.name === displayName)) {
-            slList.push({ name: displayName, from: selectedDate, to: selectedDate, duration: "01" });
-          }
-        }
-      });
-
-      const offList = Array.from(offMap.values());
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000) + 1;
+      const all = Array.from(away.values()).sort((a, b) => a.from.localeCompare(b.from) || a.name.localeCompare(b.name));
+      // Two people with the same short name (e.g. two "Niyaz") → print their full names so they can be told apart
+      const nameCount = new Map<string, number>();
+      all.forEach((a) => nameCount.set(a.name.toLowerCase(), (nameCount.get(a.name.toLowerCase()) || 0) + 1));
+      const label = (a: Away) => ((nameCount.get(a.name.toLowerCase()) || 0) > 1 ? hostMap.get(a.key)?.full_name || a.name : a.name);
+      const toRow = (a: Away) => ({ name: label(a), contact: a.contact, from: a.from, to: a.to, duration: pad(daysBetween(a.from, a.to)) });
+      const alList = all.filter((a) => a.category === "AL").map(toRow);
+      const slList = all.filter((a) => a.category === "SICK").map(toRow);
+      const offList = all.filter((a) => a.category === "OFF").map(toRow);
 
       setSheetData({
         summary: finalSummary,

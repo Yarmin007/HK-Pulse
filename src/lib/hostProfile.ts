@@ -55,3 +55,22 @@ export const renameHostKey = (cfg: TeamConfig, oldId: string, newId: string): Te
   }
   return next;
 };
+
+/**
+ * One short name for printed sheets: the Display name from Host Profiles, then the first nickname,
+ * otherwise one name from the full name — the last one, because first names repeat a lot
+ * ("Ahmed Niyaz" → "Niyaz", "Hussain Asif" → "Asif").
+ */
+export const shortHostName = (
+  h?: { host_id?: string | null; nicknames?: string | null; full_name?: string | null } | null,
+  fallback = '',
+  displayNames?: Record<string, string>,
+): string => {
+  const display = h?.host_id ? String(displayNames?.[h.host_id] || '').trim() : '';
+  if (display && !/\d/.test(display)) return display;
+  // Skip entries that are really phone numbers or codes typed into the nickname box
+  const nick = String(h?.nicknames || '').split(',').map(n => n.trim()).find(n => /\p{L}/u.test(n) && !/\d/.test(n)) || '';
+  if (nick) return nick;
+  const parts = String(h?.full_name || '').replace(/[^\p{L}\s'-]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : fallback;
+};
