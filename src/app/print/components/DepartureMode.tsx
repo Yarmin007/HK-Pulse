@@ -100,17 +100,19 @@ export default function DepartureMode() {
   // How to print: the Canon MF460 can't do double-sided A5, so print onto A4 and cut in half
   // The Canon MF460 can't print A5 double-sided, so by default: all letters first, then all laundry lists on the back
   const [printLayout, setPrintLayout] = useState<'manual' | 'a5'>('manual');
-  const [reverseBacks, setReverseBacks] = useState(false);
+  // Second pass (laundry lists) prints last-to-first: the printed letter stack goes back into the tray with
+  // the last letter fed first, so reversed lists land on the right villa's letter. Can be switched off.
+  const [reverseBacks, setReverseBacks] = useState(true);
   const [manualParts, setManualParts] = useState<{ letters: string; lists: string } | null>(null);
   const [manualStep, setManualStep] = useState<'letters' | 'lists'>('letters');
   useEffect(() => {
       try {
           const v = localStorage.getItem('dep_letter_layout');
           if (v === 'a5') setPrintLayout(v);
-          setReverseBacks(localStorage.getItem('dep_letter_reverse') === '1');
+          setReverseBacks(localStorage.getItem('dep_letter_lists_order') !== 'same');
       } catch {}
   }, []);
-  useEffect(() => { try { localStorage.setItem('dep_letter_layout', printLayout); localStorage.setItem('dep_letter_reverse', reverseBacks ? '1' : ''); } catch {} }, [printLayout, reverseBacks]);
+  useEffect(() => { try { localStorage.setItem('dep_letter_layout', printLayout); localStorage.setItem('dep_letter_lists_order', reverseBacks ? 'reverse' : 'same'); } catch {} }, [printLayout, reverseBacks]);
   const [templateBytes, setTemplateBytes] = useState<ArrayBuffer | null>(null);
   // Who signs the letter: picked from Hosts, designation = their role
   const [execs, setExecs] = useState<{ id: string; name: string; role: string }[]>([]);
@@ -695,7 +697,7 @@ export default function DepartureMode() {
                 {printLayout === 'manual' && (
                     <label className="mt-2 flex items-center gap-2 text-[10px] font-semibold text-slate-500 cursor-pointer">
                         <input type="checkbox" className="accent-[#6D2158]" checked={reverseBacks} onChange={(e) => { setReverseBacks(e.target.checked); setPreviewUrl(null); setManualParts(null); }}/>
-                        Laundry lists land on the wrong villa's letter: print them in reverse order
+                        Print the laundry lists last-to-first (matches the letters when the stack goes back in the tray)
                     </label>
                 )}
                 <p className="mt-2 text-[10px] text-slate-400">In the print window choose A5, Portrait, Actual size (100%).</p>
@@ -716,7 +718,7 @@ export default function DepartureMode() {
         <div className="w-full md:w-[55%] h-[500px] md:h-auto md:flex-1 bg-slate-200 rounded-2xl border border-slate-300 shadow-inner flex flex-col overflow-hidden relative shrink-0">
             {previewUrl && manualParts && (
                 <div className="flex gap-2 p-2 bg-white border-b border-slate-200 shrink-0">
-                    {([['letters', '1. Print letters'], ['lists', '2. Then laundry lists']] as const).map(([k, label]) => (
+                    {([['letters', '1. Print letters'], ['lists', reverseBacks ? '2. Then laundry lists (last → first)' : '2. Then laundry lists']] as const).map(([k, label]) => (
                         <button key={k} onClick={() => { setManualStep(k); setPreviewUrl(manualParts[k]); }}
                             className={`flex-1 py-2 rounded-lg text-xs font-bold transition-colors ${manualStep === k ? 'bg-[#6D2158] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                             {label}

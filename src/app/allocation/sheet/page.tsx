@@ -14,6 +14,7 @@ import { loadSinnerSaint } from "@/lib/sinnerSaint";
 import { loadPestControl } from "@/lib/pestControl";
 import { loadLeavePeriods, LeaveCategory } from "@/lib/leavePeriods";
 import { shortHostName } from "@/lib/hostProfile";
+import { TASK_FORCE_AREA, unpackTaskForce } from "@/app/allocation/components/TaskForceBoard";
 import { projectGuestDay, rowsByVilla, deriveHKStatus, villaStatusMap, movementTime, sheetColours } from "@/lib/guestDay";
 
 const ordinal = (n: number) => {
@@ -144,7 +145,7 @@ export default function AllocationSheetPage() {
       // Pre-scan host IDs that are actively allocated to operational areas
       const operationalHostIds = new Set<string>();
       (allocs || []).forEach((a: any) => {
-        if (a.area && a.area !== "admin" && a.host_id) {
+        if (a.area && a.area !== "admin" && a.area !== TASK_FORCE_AREA && a.host_id) {
           operationalHostIds.add(String(a.host_id));
         }
       });
@@ -166,6 +167,7 @@ export default function AllocationSheetPage() {
       const tailorList: any[] = [];
       const housemateList: any[] = [];
       const runnerList: any[] = [];
+      const taskForceList: { name: string; task: string; villa: string }[] = [];
       const stepList: any[] = [];
       const luggageList: any[] = [];
       const gardenList: any[] = [];
@@ -267,6 +269,9 @@ export default function AllocationSheetPage() {
           tailorList.push({ name: rawName, no: personalOnly || contact }); // tailors: personal number
         } else if (a.area === "housemate") {
           housemateList.push({ name: rawName, no: mvpnOnly || contact });
+        } else if (a.area === TASK_FORCE_AREA) {
+          const tf = unpackTaskForce(a.task_details);
+          if (hostObj || tf.task || tf.villa) taskForceList.push({ name: hostObj ? rawName : "", task: tf.task, villa: tf.villa });
         } else if (a.area === "riders") {
           const duty = riderDutyOf(a, hostObj);
           // key/shift are used below: people who are off are dropped, runners get AM / PM / Split
@@ -475,6 +480,7 @@ export default function AllocationSheetPage() {
         },
         annualLeave: alList,
         sickLeave: slList,
+        taskForce: taskForceList,
         dayOff: offList,
       });
     } catch (err) {

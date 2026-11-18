@@ -17,6 +17,7 @@ import LaundryTailorBoard from '@/app/allocation/components/LaundryTailorBoard';
 import GardeningBoard from '@/app/allocation/components/GardeningBoard';
 import RidersStepBoard from '@/app/allocation/components/RidersStepBoard';
 import AdminOfficeBoard from '@/app/allocation/components/AdminOfficeBoard';
+import TaskForceBoard from '@/app/allocation/components/TaskForceBoard';
 
 // Local-date arithmetic on YYYY-MM-DD (no UTC conversion, so no off-by-one days).
 const shiftDate = (ymd: string, days: number) => {
@@ -280,6 +281,14 @@ export default function AllocationPage() {
               setAllocations={setAllocations} 
               setIsDirty={setIsDirty} 
               selectedDate={selectedDate} 
+          />
+      ) : areaKey === 'taskforce' ? (
+          <TaskForceBoard
+              hosts={hosts}
+              allocations={allocations}
+              setAllocations={setAllocations}
+              setIsDirty={setIsDirty}
+              selectedDate={selectedDate}
           />
       ) : (areaKey.includes('admin') || areaKey.includes('office')) ? (
           <AdminOfficeBoard 

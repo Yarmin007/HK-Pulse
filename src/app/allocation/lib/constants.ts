@@ -7,6 +7,7 @@ import {
   MapPin,
   Shirt,
   BarChart3,
+  ShieldCheck,
 } from "lucide-react";
 
 export const AREAS = [
@@ -18,6 +19,7 @@ export const AREAS = [
   { id: "garden", label: "Garden", icon: Leaf },
   { id: "riders", label: "Riders & Step", icon: Truck },
   { id: "admin", label: "Admin & Office", icon: Settings },
+  { id: "taskforce", label: "Special Task Force", icon: ShieldCheck },
 ];
 
 export const TOTAL_VILLAS = 97;
