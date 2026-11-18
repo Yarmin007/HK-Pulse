@@ -2,7 +2,6 @@ import {
   Users,
   Droplets,
   Leaf,
-  Truck,
   Settings,
   MapPin,
   Shirt,
@@ -13,11 +12,10 @@ import {
 export const AREAS = [
   { id: "summary", label: "Daily Stats & Summary", icon: BarChart3 },
   { id: "villa", label: "Villa Attendant", icon: Users },
-  { id: "public", label: "Public Area & Housemate", icon: MapPin },
+  { id: "public", label: "Public Area, Riders & Step", icon: MapPin },
   { id: "water", label: "Water Room (Pool)", icon: Droplets },
   { id: "laundry_tailor", label: "Laundry & Tailor", icon: Shirt },
   { id: "garden", label: "Garden", icon: Leaf },
-  { id: "riders", label: "Riders & Step", icon: Truck },
   { id: "admin", label: "Admin & Office", icon: Settings },
   { id: "taskforce", label: "Special Task Force", icon: ShieldCheck },
 ];

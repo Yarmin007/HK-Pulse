@@ -2,7 +2,10 @@
 // Special Task Force: who does which special task in which villa today. Printed on the allocation
 // sheet (bottom left, "SPECIAL TASK FORCE": host | task — 3 rows). Put the villa in the task text.
 // Stored as hsk_allocations rows: area 'taskforce', host_id = the host, task_details = "villa::task".
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import toast from "react-hot-toast";
+import { supabase } from "@/lib/supabase";
+import { isAway } from "@/lib/leavePeriods";
 import { Plus, Trash2, Search, ShieldCheck, X } from "lucide-react";
 import { useConfirm } from "@/components/ConfirmProvider";
 import { AREAS } from "@/app/allocation/lib/constants";
@@ -76,8 +79,33 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
   const areaName = (area: string) => AREAS.find((x) => x.id === area || (area === "gardening" && x.id === "garden") || (area === "tailor" && x.id === "laundry_tailor") || (area === "laundry" && x.id === "laundry_tailor"))?.label || area;
 
   // Picking a host who already has a duty today: ask whether to take them off it, or keep both
+  // Who is off today: leave set on the boards, or an off / leave code in the main attendance
+  const [offToday, setOffToday] = useState<Record<string, string>>({});
+  useEffect(() => {
+    Promise.all([
+      supabase.from("hsk_attendance").select("host_id, date, status_code, shift_note").eq("date", selectedDate),
+      supabase.from("hsk_leave_requests").select("host_id, leave_type").eq("status", "Approved").lte("start_date", selectedDate).gte("end_date", selectedDate),
+    ]).then(([att, lv]) => {
+      const m: Record<string, string> = {};
+      (att.data || []).forEach((r: any) => { if (isAway(r)) m[String(r.host_id).trim()] = String(r.status_code).toUpperCase(); });
+      (lv.data || []).forEach((r: any) => { m[String(r.host_id).trim()] = String(r.leave_type || "Leave").toUpperCase(); });
+      setOffToday(m);
+    });
+  }, [selectedDate]);
+  const offOf = (hostId: string | null) => {
+    if (!hostId) return "";
+    const h = hosts.find((x) => x.id === hostId) as (Host & { host_id?: string }) | undefined;
+    return offToday[hostId] || (h?.host_id ? offToday[String(h.host_id).trim()] : "") || "";
+  };
+
   const pickHost = async (i: number, hostId: string | null) => {
     if (!hostId) return update(i, { host_id: null });
+    const off = offOf(hostId);
+    if (off) {
+      const h = hosts.find((x) => x.id === hostId);
+      toast.error(`${label(h)} is off today (${off}). Clear the leave / attendance first.`);
+      return;
+    }
     const duties = others.filter((a) => String(a.host_id) === String(hostId) && !isOffShift(a.shift));
     if (duties.length === 0) return update(i, { host_id: hostId });
     const h = hosts.find((x) => x.id === hostId);
@@ -132,7 +160,10 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
               const task = [tf.task, tf.villa && `V${tf.villa.replace(/^v/i, "")}`].filter(Boolean).join(" ");
               return (
                 <div key={i} className={`grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_2fr_auto] gap-2 px-4 py-2.5 items-center ${i >= SHEET_TASK_FORCE_ROWS ? "bg-amber-50/50" : ""}`}>
-                  <div className="col-span-1"><HostPicker hosts={hosts} value={r.host_id} onPick={(id) => pickHost(i, id)} /></div>
+                  <div className="col-span-1">
+                    <HostPicker hosts={hosts} value={r.host_id} onPick={(id) => pickHost(i, id)} />
+                    {offOf(r.host_id) && <p className="mt-0.5 text-[10px] font-black text-rose-600">Off today ({offOf(r.host_id)}): not printed on the sheet</p>}
+                  </div>
                   <button onClick={() => remove(i)} className="sm:order-last p-2 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 justify-self-end" title="Remove"><Trash2 size={15} /></button>
                   <input value={task} onChange={(e) => update(i, { task: e.target.value, villa: "" })} placeholder="Task, e.g. Deep clean V12"
                     className="col-span-2 sm:col-span-1 h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-semibold outline-none focus:border-[#6D2158] focus:bg-white" />

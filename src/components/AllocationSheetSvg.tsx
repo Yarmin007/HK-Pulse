@@ -66,6 +66,7 @@ export interface AllocationSheetData {
     morningBoh: string[];
     afternoonFoh: string[];
     afternoonBoh: string[];
+    luggage?: string[]; // names also on Luggage → extension 2844
     specialTasks: string[];
   };
   admin: Array<{ name: string; contact: string }>;
@@ -1653,7 +1654,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
               <rect className="cls-12" x={X0} y={rowY(n)} width={MID - X0} height={R} />
               <rect className="cls-12" x={MID} y={rowY(n)} width={X1 - MID} height={R} />
               <text className="cls-duty-val" transform={`translate(${X0 + 1.85} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{toNaturalCase(name)}</tspan></text>
-              <text className="cls-duty-val" textAnchor="middle" transform={`translate(${(MID + X1) / 2} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{name ? ext : ""}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(${(MID + X1) / 2} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{name ? (pa.luggage?.includes(name) ? "2844" : ext) : ""}</tspan></text>
             </React.Fragment>
           );
           return (

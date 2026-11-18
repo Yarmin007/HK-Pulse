@@ -122,7 +122,8 @@ export default function AllocationPage() {
               });
               if (!ok) return;
           }
-          const payload = allocations.map((a: any) => {
+          // Empty Special Task Force rows (no host, no task) are not saved
+          const payload = allocations.filter((a: any) => !(a.area === 'taskforce' && !a.host_id && !String(a.task_details || '').replace(/:/g, '').trim())).map((a: any) => {
               // eslint-disable-next-line @typescript-eslint/no-unused-vars
               const { id, created_at, updated_at, ...rest } = a;
               const cleaned = rest.task_details ? String(rest.task_details).split(',').filter((s: string) => s.trim() !== '').join(',') : '';
@@ -238,15 +239,27 @@ export default function AllocationPage() {
               selectedDate={selectedDate} 
               activeArea={activeArea} 
           />
-      ) : (areaKey.includes('public') || areaKey.includes('housemate') || areaKey === 'pa') ? (
-          <PublicAreaBoard 
-              hosts={hosts} 
-              setHosts={setHosts} 
-              allocations={allocations} 
-              setAllocations={setAllocations} 
-              setIsDirty={setIsDirty} 
-              selectedDate={selectedDate} 
-          />
+      ) : (areaKey.includes('public') || areaKey.includes('housemate') || areaKey === 'pa' || areaKey.includes('rider') || areaKey.includes('step')) ? (
+          // One tab: Public Area & Housemate on top, then Runner / Luggage / Step (each its own column).
+          // Luggage can be joined with Public Area (set on the Luggage column).
+          <div className="flex flex-col gap-6">
+              <PublicAreaBoard 
+                  hosts={hosts} 
+                  setHosts={setHosts} 
+                  allocations={allocations} 
+                  setAllocations={setAllocations} 
+                  setIsDirty={setIsDirty} 
+                  selectedDate={selectedDate} 
+              />
+              <RidersStepBoard 
+                  hosts={hosts} 
+                  setHosts={setHosts} 
+                  allocations={allocations} 
+                  setAllocations={setAllocations} 
+                  setIsDirty={setIsDirty} 
+                  selectedDate={selectedDate} 
+              />
+          </div>
       ) : (areaKey.includes('water') || areaKey.includes('pool')) ? (
           <WaterRoomBoard 
               hosts={hosts} 

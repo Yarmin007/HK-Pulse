@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { isAway } from "@/lib/leavePeriods";
+import { isSpecialTaskRow } from "@/lib/specialTasks";
 import { RIDER_DUTIES, RIDER_SHIFTS, shiftsForDuty, defaultDutyForHost, riderDutyOf, isOffShift, isRiderPoolHost, type RiderDuty } from "@/app/allocation/lib/riders";
 
 interface Host {
@@ -292,6 +293,29 @@ export default function RidersStepBoard({
     toast.success("Host removed from pool");
   };
 
+  // Luggage joined with Public Area: morning luggage = a Public Area Morning BOH host, afternoon luggage =
+  // a Public Area afternoon host (they keep their PA duty). Saved once for everyone (hsk_constants).
+  const JOIN_TYPE = "luggage_join_pa";
+  const [joinLuggage, setJoinLuggage] = useState(false);
+  useEffect(() => {
+    supabase.from("hsk_constants").select("label").eq("type", JOIN_TYPE).limit(1).maybeSingle()
+      .then(({ data }) => setJoinLuggage(data?.label === "true"));
+  }, []);
+  const toggleJoin = async () => {
+    const next = !joinLuggage;
+    setJoinLuggage(next);
+    const { data: row } = await supabase.from("hsk_constants").select("id").eq("type", JOIN_TYPE).limit(1).maybeSingle();
+    const { error } = row?.id
+      ? await supabase.from("hsk_constants").update({ label: String(next) }).eq("id", row.id)
+      : await supabase.from("hsk_constants").insert([{ type: JOIN_TYPE, label: String(next) }]);
+    if (error) { setJoinLuggage(!next); toast.error("Could not save the setting"); }
+    else toast.success(next ? "Luggage joined with Public Area" : "Luggage kept separate");
+  };
+  const paRows = allocations.filter((a) => a.area === "public" && a.host_id && !isSpecialTaskRow(a as any) && !isOffShift(a.shift));
+  const paMorningBoh = paRows.filter((a) => /morning|06:30/i.test(a.shift || "") && /boh/i.test(`${a.shift} ${a.task_details}`));
+  const paAfternoon = paRows.filter((a) => /afternoon|14:30/i.test(a.shift || ""));
+  const hostsOf = (rows: Allocation[]) => [...new Set(rows.map((r) => r.host_id))].map((id) => hosts.find((h) => h.id === id)).filter(Boolean) as Host[];
+
   // Duty rows on this tab (ignores Off / leave rows)
   const dutyAllocs = allocations.filter((a) => a.area === "riders" && !isOffShift(a.shift));
   const hostById = (id: string) => hosts.find((h) => h.id === id);
@@ -354,14 +378,26 @@ export default function RidersStepBoard({
         </div>
 
         <div className="p-3 space-y-3">
-          {shiftsForDuty(duty).map((sh) => {
+          {duty === "Luggage" && (
+            <label className="flex items-start gap-2 rounded-xl border border-sky-200 bg-sky-50/60 px-2.5 py-2 cursor-pointer select-none">
+              <input type="checkbox" checked={joinLuggage} onChange={toggleJoin} className="mt-0.5 accent-sky-600" />
+              <span className="text-[11px] font-bold text-sky-900 leading-snug">
+                Join with Public Area
+                <span className="block text-[10px] font-semibold text-sky-700/80">Morning: a PA Morning BOH host · Afternoon: a PA afternoon host (they keep their PA duty)</span>
+              </span>
+            </label>
+          )}
+          {(duty === "Luggage" && joinLuggage ? RIDER_SHIFTS.filter((s) => s.key !== "Split") : shiftsForDuty(duty)).map((sh) => {
+            const joined = duty === "Luggage" && joinLuggage;
             // Step is morning-only: any older Step row on another shift is shown here too
             const assigned = dutyAllocs.filter((a) => dutyOfAlloc(a) === duty && (duty === "Step" || shiftKeyOf(a.shift || "") === sh.key));
             const busyThisShift = new Set(dutyAllocs.filter((a) => shiftKeyOf(a.shift || "") === sh.key).map((a) => a.host_id));
             // People who normally do this duty first
-            const candidates = currentPool
-              .filter((h) => !busyThisShift.has(h.id))
-              .sort((x, y) => Number(defaultDutyForHost(y) === duty) - Number(defaultDutyForHost(x) === duty));
+            const candidates = joined
+              ? hostsOf(sh.key === "Morning" ? paMorningBoh : paAfternoon).filter((h) => !assigned.some((a) => a.host_id === h.id))
+              : currentPool
+                  .filter((h) => !busyThisShift.has(h.id))
+                  .sort((x, y) => Number(defaultDutyForHost(y) === duty) - Number(defaultDutyForHost(x) === duty));
             return (
               <div key={sh.key} className="rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
                 <div className="flex items-center justify-between mb-1.5">
@@ -392,6 +428,9 @@ export default function RidersStepBoard({
                   })}
                 </div>
 
+                {joined && candidates.length === 0 && assigned.length === 0 && (
+                  <p className="mt-1.5 text-[10px] font-semibold text-slate-400">No one on Public Area {sh.key === "Morning" ? "Morning BOH" : "afternoon"} yet: allocate them above first.</p>
+                )}
                 {candidates.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {candidates.map((h) => {
@@ -399,7 +438,7 @@ export default function RidersStepBoard({
                       const leave = getHostLeaveRecord(h.id);
                       const usual = defaultDutyForHost(h) === duty;
                       return (
-                        <button key={h.id} onClick={() => requestAssignDuty(h, sh.key, duty)} title={off ? `Off today: ${off}` : undefined}
+                        <button key={h.id} onClick={() => joined ? (off ? toast.error(`${getHostLabel(h)} is off today (${off})`) : executeAssignment(h.id, sh.key, duty, false)) : requestAssignDuty(h, sh.key, duty)} title={off ? `Off today: ${off}` : joined ? "Keeps their Public Area duty" : undefined}
                           className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-0.5 transition-colors ${
                             off ? "bg-rose-50 border-rose-200 text-rose-400 line-through cursor-not-allowed" : usual ? "bg-white border-slate-300 text-slate-700 hover:bg-slate-800 hover:text-white" : "bg-transparent border-dashed border-slate-300 text-slate-400 hover:text-slate-700 hover:border-slate-400"
                           }`}>

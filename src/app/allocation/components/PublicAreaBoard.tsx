@@ -4,6 +4,11 @@ import React, { useState, useEffect, useRef } from "react";
 import { useConfirm } from '@/components/ConfirmProvider';
 import { supabase } from "@/lib/supabase";
 import { distributeSpecialTasks, isSpecialTaskRow, specialTaskText, SPECIAL_TASK_SHIFT } from "@/lib/specialTasks";
+import { TASK_FORCE_AREA, packTaskForce } from "@/app/allocation/components/TaskForceBoard";
+import { riderDutyOf } from "@/app/allocation/lib/riders";
+
+// In the PA roster, "(2844)" after a name = that person also does Luggage (2844 is the luggage phone)
+export const LUGGAGE_EXT = "2844";
 import { 
   MapPin, 
   Home, 
@@ -67,13 +72,14 @@ interface PublicAreaBoardProps {
 interface ParsedScheduleItem {
   rawName: string;
   matchedHost: Host | null;
-  sectionType: "DUTY" | "LEAVE" | "SPECIAL";
+  sectionType: "DUTY" | "LEAVE" | "SPECIAL" | "TASKFORCE";
   shift?: string;
   task?: string;
   leaveType?: string;
   endDate?: string;
   label: string;
   isManuallyChanged?: boolean;
+  luggage?: boolean; // marked "(2844)": also on Luggage duty for this shift
 }
 
 const LEAVE_TYPES = [
@@ -447,7 +453,7 @@ export default function PublicAreaBoard({
       detectedDate = `${y}-${m}-${d}`;
     }
 
-    let currentSection: "NONE" | "MORN_OW" | "MORN_BOH" | "AFT_SHIFT" | "OFF" | "DEEP_CLEAN" | "VACATION" = "NONE";
+    let currentSection: "NONE" | "MORN_OW" | "MORN_BOH" | "AFT_SHIFT" | "OFF" | "DEEP_CLEAN" | "VACATION" | "TASK_FORCE" = "NONE";
     const items: ParsedScheduleItem[] = [];
     const deepClean: string[] = [];
 
@@ -471,6 +477,11 @@ export default function PublicAreaBoard({
         currentSection = "AFT_SHIFT";
         continue;
       }
+      // Special Task Force (checked before "SPECIAL TASK", which is the deep-clean list)
+      if (upper.includes("TASK FORCE") || upper.includes("TASKFORCE")) {
+        currentSection = "TASK_FORCE";
+        continue;
+      }
       if (upper.startsWith("OFF") || upper === "OFF" || upper === "DAYS OFF") {
         currentSection = "OFF";
         continue;
@@ -486,6 +497,12 @@ export default function PublicAreaBoard({
 
       // If the line is purely decorative symbols (dashes, underscores, equals), skip it entirely
       if (!isMeaningfulTask(line)) continue;
+
+      // Any other heading ("SOMETHING:") ends the section above, so its names can't fall into e.g. OFF
+      if (/:\s*$/.test(line.trim()) && !findMatchingHost(line.replace(/[:\s]+$/, ""))) {
+        currentSection = "NONE";
+        continue;
+      }
 
       if (currentSection === "DEEP_CLEAN") {
         deepClean.push(line);
@@ -504,8 +521,10 @@ export default function PublicAreaBoard({
           let ry = retDateMatch[3].trim();
           if (ry.length === 2) ry = `20${ry}`;
           returnDate = `${ry}-${rm}-${rd}`;
-          cleanName = line.replace(/\([^)]*\)/g, "").trim();
         }
+        // Brackets after a name are notes (return date, shift time "(8:00 to 16:00)", "(2844)"), not part of the name
+        const onLuggage = new RegExp(`\\(\\s*${LUGGAGE_EXT}\\s*\\)`).test(line);
+        cleanName = line.replace(/\([^)]*\)/g, "").trim();
 
         const matched = findMatchingHost(cleanName);
 
@@ -516,7 +535,8 @@ export default function PublicAreaBoard({
             sectionType: "DUTY",
             shift: "Morning",
             task: "FOH",
-            label: "Morning FOH (OW)",
+            label: onLuggage ? "Morning FOH (OW) + Luggage" : "Morning FOH (OW)",
+            luggage: onLuggage,
           });
         } else if (currentSection === "MORN_BOH") {
           items.push({
@@ -525,7 +545,8 @@ export default function PublicAreaBoard({
             sectionType: "DUTY",
             shift: "Morning",
             task: "BOH",
-            label: "Morning BOH",
+            label: onLuggage ? "Morning BOH + Luggage" : "Morning BOH",
+            luggage: onLuggage,
           });
         } else if (currentSection === "AFT_SHIFT") {
           items.push({
@@ -534,7 +555,18 @@ export default function PublicAreaBoard({
             sectionType: "DUTY",
             shift: "Afternoon",
             task: "FOH",
-            label: "Afternoon Shift",
+            label: onLuggage ? "Afternoon Shift + Luggage" : "Afternoon Shift",
+            luggage: onLuggage,
+          });
+        } else if (currentSection === "TASK_FORCE") {
+          // "Name - task" / "Name: task" / just "Name"
+          const [who, ...what] = cleanName.split(/\s+[-–:]\s+|:\s*/);
+          items.push({
+            rawName: who.trim(),
+            matchedHost: findMatchingHost(who.trim()),
+            sectionType: "TASKFORCE",
+            task: what.join(" ").trim(),
+            label: "Special Task Force",
           });
         } else if (currentSection === "OFF") {
           items.push({
@@ -589,7 +621,12 @@ export default function PublicAreaBoard({
         return;
       }
       const targetDate = selectedDate;
-      const newAllocs: Allocation[] = [...allocations.filter((a) => a.report_date !== targetDate || a.area !== "public")];
+      const rosterHasTaskForce = parsedSchedule.items.some((it) => it.sectionType === "TASKFORCE");
+      const rosterHasLuggage = parsedSchedule.items.some((it) => it.luggage);
+      const isLuggageRow = (a: Allocation) => a.area === "riders" && riderDutyOf(a, hosts.find((h) => h.id === a.host_id)) === "Luggage";
+      const newAllocs: Allocation[] = [...allocations.filter((a) => a.report_date !== targetDate || (
+        a.area !== "public" && !(rosterHasTaskForce && a.area === TASK_FORCE_AREA) && !(rosterHasLuggage && isLuggageRow(a))
+      ))];
 
       for (const item of parsedSchedule.items) {
         if (!item.matchedHost) continue;
@@ -601,7 +638,8 @@ export default function PublicAreaBoard({
         const existingNicks = (host.nicknames || "").split(",").map((n) => n.trim().toLowerCase());
         const isDifferentName = host.full_name.toLowerCase() !== rawName.toLowerCase();
 
-        if (rawName.length >= 2 && !existingNicks.includes(rawName.toLowerCase()) && isDifferentName) {
+        // Only learn plain names (no shift times, dates or brackets)
+        if (rawName.length >= 2 && !/[\d()]/.test(rawName) && !existingNicks.includes(rawName.toLowerCase()) && isDifferentName) {
           const updatedNicks = host.nicknames ? `${host.nicknames}, ${rawName}` : rawName;
 
           await supabase
@@ -614,6 +652,24 @@ export default function PublicAreaBoard({
               prev.map((h) => (h.id === host.id ? { ...h, nicknames: updatedNicks } : h))
             );
           }
+        }
+
+        // Listed as working today: drop a one-day OFF / leave that an earlier roster import made for this day
+        // (e.g. a Task Force name that used to fall into the OFF list). Leave entered by hand is never touched.
+        if (item.sectionType === "DUTY" || item.sectionType === "TASKFORCE") {
+          await supabase.from("hsk_leave_requests").delete()
+            .eq("host_id", String(host.id)).eq("start_date", targetDate).eq("end_date", targetDate)
+            .like("reason", "Auto scheduled from roster%");
+        }
+
+        // "(2844)": also on Luggage for the same shift (they stay in Public Area too)
+        if (item.sectionType === "DUTY" && item.luggage && item.shift) {
+          newAllocs.push({ host_id: host.id, area: "riders", shift: item.shift, task_details: "Luggage", report_date: targetDate });
+        }
+
+        // Commit Special Task Force (replaces today's task force rows, see below)
+        if (item.sectionType === "TASKFORCE") {
+          newAllocs.push({ host_id: host.id, area: TASK_FORCE_AREA, shift: "Task Force", task_details: packTaskForce("", item.task || ""), report_date: targetDate });
         }
 
         // Commit Leaves (OFF, AL)

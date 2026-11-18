@@ -200,7 +200,9 @@ export default function AllocationSheetPage() {
         if (isOffShift(a.shift)) {
           return;
         }
-        if (isOffToday(a)) return;
+        // Villa attendants stay on the sheet even if marked off (hiding them would hide their villas too);
+        // the Villa board flags them instead.
+        if (a.area !== "villa" && isOffToday(a)) return;
 
         const rawName = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
         const name = rawName.toUpperCase();
@@ -442,7 +444,10 @@ export default function AllocationSheetPage() {
       const runners = runnerList.filter(onDuty).sort((a, b) => shiftRank(a.shift) - shiftRank(b.shift));
       const runnersOut = runners.map((r) => ({ name: r.name, mvpn: r.mvpn, duty: runnerShiftLabel(r.shift, runners.length) }));
       const stepsOut = stepList.filter(onDuty).map(({ name, mvpn, duty }) => ({ name, mvpn, duty }));
-      const luggageOut = luggageList.filter(onDuty).map(({ name, mvpn, duty }) => ({ name, mvpn, duty }));
+      // Luggage: AM / PM (or Split) instead of repeating "Luggage" — with Luggage joined to Public Area the
+      // morning one is a PA BOH host and the afternoon one a PA afternoon host.
+      const luggageOut = luggageList.filter(onDuty).sort((a, b) => shiftRank(a.shift) - shiftRank(b.shift))
+        .map(({ name, mvpn, shift }) => ({ name, mvpn, duty: /split/i.test(shift) ? "Split" : /afternoon|14:30|pm/i.test(shift) ? "PM" : "AM" }));
 
       setSheetData({
         summary: finalSummary,
@@ -463,6 +468,8 @@ export default function AllocationSheetPage() {
           afternoonFoh: paAfternoonFoh,
           afternoonBoh: paAfternoonBoh,
           specialTasks: paSpecialTasks,
+          // On Luggage as well (roster "(2844)" / joined Luggage): their PA extension prints as 2844
+          luggage: luggageOut.map((l: any) => l.name),
         },
         admin: adminList,
         tailor: tailorList,

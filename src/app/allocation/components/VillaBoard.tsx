@@ -8,6 +8,7 @@ import {
     Calendar, Plane, UserCheck, Settings2, Wand2, Minus 
 } from "lucide-react";
 import { isServiceDay } from '@/lib/specialVillas';
+import { isAway } from '@/lib/leavePeriods';
 import { villaStatusMap, deriveHKStatus, rowsByVilla, HK_STATUS_KEY, movementTime, sheetColours } from '@/lib/guestDay';
 import { modCheckoutOf } from '@/lib/specialVillas';
 import toast from 'react-hot-toast';
@@ -213,6 +214,8 @@ export default function VillaBoard({
 
     // Leave Tracking
     const [activeLeaveRecords, setActiveLeaveRecords] = useState<ActiveLeaveRecord[]>([]);
+    // Off / leave codes in the main attendance today, by SSL no
+    const [attendanceOff, setAttendanceOff] = useState<Record<string, string>>({});
     const [selectedHostForLeave, setSelectedHostForLeave] = useState<Host | null>(null);
     const [leaveForm, setLeaveForm] = useState({
         leave_type: "AL",
@@ -251,6 +254,10 @@ export default function VillaBoard({
 
     const fetchActiveLeaves = async () => {
         try {
+            const { data: att } = await supabase.from("hsk_attendance").select("host_id, date, status_code, shift_note").eq("date", selectedDate);
+            const off: Record<string, string> = {};
+            (att || []).forEach((r: any) => { if (isAway(r)) off[String(r.host_id).trim()] = String(r.status_code).trim().toUpperCase(); });
+            setAttendanceOff(off);
             const { data, error } = await supabase
                 .from("hsk_leave_requests")
                 .select("*")
@@ -740,6 +747,8 @@ export default function VillaBoard({
         const displayName = host.nicknames ? host.nicknames.split(',')[0] : host.full_name;
         const contactInfo = [host.mvpn ? `MVPN: ${host.mvpn}` : '', host.company_mobile ? `Duty: ${host.company_mobile}` : '', host.personal_mobile ? `Per: ${host.personal_mobile}` : ''].filter(Boolean).join(' | ') || 'No Contact Info';
         const leave = getHostLeaveRecord(host.id);
+        const attOff = host.host_id ? attendanceOff[String(host.host_id).trim()] : undefined;
+        const offLabel = leave?.leave_type || attOff;
 
         return (
             <div key={key} onClick={() => setSelectedVA(host.id)} className={`flex flex-col bg-slate-50 border w-full rounded-sm overflow-hidden shadow-sm h-full cursor-pointer transition-all ${isSelected ? 'ring-2 ring-green-500 border-green-500 z-10' : 'border-slate-400 hover:border-slate-500'}`}>
@@ -752,7 +761,7 @@ export default function VillaBoard({
                         <>
                             <div className="flex items-center gap-1 min-w-0 pr-1">
                                 <span className="text-[11px] font-bold pl-1 leading-tight truncate">{displayName}</span>
-                                {leave && <span className="text-[7px] bg-rose-200 text-rose-900 px-1 rounded font-black">{leave.leave_type}</span>}
+                                {offLabel && <span className="text-[8px] bg-rose-500 text-white px-1 rounded font-black animate-pulse" title={`Off today (${offLabel}${attOff && !leave ? ' in attendance' : ''}) but has villas: swap them or move the villas`}>OFF {offLabel}</span>}
                                 <SectionPicker value={sectionOf(host.id)} groups={pickerGroups(host.id)} villaLook={villaLook} onPick={(v) => handleSectionPick(host.id, v)} />
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
