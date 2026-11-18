@@ -12,7 +12,7 @@ import { isServiceDay, modCheckoutOf } from "@/lib/specialVillas";
 import { isSpecialTaskRow, specialTaskText } from "@/lib/specialTasks";
 import { loadSinnerSaint } from "@/lib/sinnerSaint";
 import { loadPestControl } from "@/lib/pestControl";
-import { loadLeavePeriods, LeaveCategory } from "@/lib/leavePeriods";
+import { loadLeavePeriods, LeaveCategory, isAway } from "@/lib/leavePeriods";
 import { shortHostName } from "@/lib/hostProfile";
 import { TASK_FORCE_AREA, unpackTaskForce } from "@/app/allocation/components/TaskForceBoard";
 import { projectGuestDay, rowsByVilla, deriveHKStatus, villaStatusMap, movementTime, sheetColours } from "@/lib/guestDay";
@@ -142,6 +142,17 @@ export default function AllocationSheetPage() {
         .select("*, hosts:hsk_hosts(id, host_id, full_name, nicknames, mvpn, company_mobile, personal_mobile, role, sub_department, status)")
         .eq("report_date", selectedDate);
 
+      // Who is off today (main attendance: O/RO/PH/AL/SL/EL…, not worked offs; or approved leave). They are
+      // left off every duty list even if a board still has them allocated (e.g. a housemate on sick leave).
+      const [{ data: attToday }, { data: leaveToday }] = await Promise.all([
+        supabase.from("hsk_attendance").select("host_id, date, status_code, shift_note").eq("date", selectedDate),
+        supabase.from("hsk_leave_requests").select("host_id").eq("status", "Approved").lte("start_date", selectedDate).gte("end_date", selectedDate),
+      ]);
+      const offToday = new Set<string>();
+      (attToday || []).forEach((r: any) => { if (isAway(r)) offToday.add(String(r.host_id).trim()); });
+      (leaveToday || []).forEach((r: any) => offToday.add(String(r.host_id).trim()));
+      const isOffToday = (a: any) => !!a.host_id && (offToday.has(String(a.host_id)) || offToday.has(String(a.hosts?.host_id || "").trim()));
+
       // Pre-scan host IDs that are actively allocated to operational areas
       const operationalHostIds = new Set<string>();
       (allocs || []).forEach((a: any) => {
@@ -189,6 +200,7 @@ export default function AllocationSheetPage() {
         if (isOffShift(a.shift)) {
           return;
         }
+        if (isOffToday(a)) return;
 
         const rawName = hostObj?.nicknames ? hostObj.nicknames.split(",")[0].trim() : hostObj?.full_name || "Unknown";
         const name = rawName.toUpperCase();

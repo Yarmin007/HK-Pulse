@@ -216,7 +216,8 @@ export default function AllocationPage() {
           </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-1.5 flex overflow-x-auto no-scrollbar gap-1 mb-4">
+      {/* Phones: swipe sideways. Computers / desktop app: tabs wrap onto a second line so none are hidden off-screen */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-1.5 flex overflow-x-auto no-scrollbar md:flex-wrap md:overflow-visible gap-1 mb-4">
           {AREAS.map(tab => (
               <button key={tab.id} onClick={() => setActiveArea(tab.id)} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${activeArea === tab.id ? "bg-[#6D2158]/10 text-[#6D2158]" : "text-slate-500 hover:bg-slate-50"}`}>
                   <tab.icon size={14} /> {tab.label}

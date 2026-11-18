@@ -272,7 +272,7 @@ const SHEET_PALETTE: Record<string, { bg: string; text: string }> = {
     MOD: { bg: '#E0C9A6', text: '#000000' },        // MOD check: light brown
 };
 export const sheetColours = (hk: HKStatus) => {
-    if (hk.code.includes('TMA') && hk.code !== 'TMA/ARR') return { bg: SHEET_TMA_BG, text: '#ffffff' };
+    if (hk.code.includes('TMA') && hk.code !== 'TMA/ARR') return { bg: SHEET_TMA_BG, text: '#000000' }; // orange, black text (white was hard to read)
     return SHEET_PALETTE[hk.code] || { bg: hk.bg, text: hk.text };
 };
 

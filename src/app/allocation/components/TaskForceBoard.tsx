@@ -1,6 +1,6 @@
 "use client";
 // Special Task Force: who does which special task in which villa today. Printed on the allocation
-// sheet (bottom left, "SPECIAL TASK FORCE": host | task | villa — 3 rows).
+// sheet (bottom left, "SPECIAL TASK FORCE": host | task — 3 rows). Put the villa in the task text.
 // Stored as hsk_allocations rows: area 'taskforce', host_id = the host, task_details = "villa::task".
 import React, { useMemo, useState } from "react";
 import { Plus, Trash2, Search, ShieldCheck, X } from "lucide-react";
@@ -114,7 +114,7 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
         <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-black text-slate-800 flex items-center gap-1.5"><ShieldCheck size={16} className="text-[#6D2158]" /> Special Task Force</h2>
-            <p className="text-[11px] font-semibold text-slate-400">Host, task and villa. The first {SHEET_TASK_FORCE_ROWS} print on the allocation sheet (bottom left).</p>
+            <p className="text-[11px] font-semibold text-slate-400">Host and task (add the villa in the task, e.g. "Deep clean V12"). The first {SHEET_TASK_FORCE_ROWS} print on the allocation sheet (bottom left).</p>
           </div>
           <button onClick={add} className="shrink-0 flex items-center gap-1 px-3 py-2 rounded-xl bg-[#6D2158] text-white text-xs font-black active:scale-95"><Plus size={14} /> Add</button>
         </div>
@@ -123,19 +123,19 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
           <p className="px-4 py-10 text-center text-sm font-semibold text-slate-400">No special task force today. Tap <b>Add</b>.</p>
         ) : (
           <div className="divide-y divide-slate-100">
-            <div className="hidden sm:grid grid-cols-[1.2fr_1.6fr_0.8fr_auto] gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">
-              <span>Host</span><span>Task</span><span>Villa</span><span className="w-8" />
+            <div className="hidden sm:grid grid-cols-[1fr_2fr_auto] gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">
+              <span>Host</span><span>Task</span><span className="w-8" />
             </div>
             {rows.map((r, i) => {
-              const { villa, task } = unpackTaskForce(r.task_details);
+              // Older rows had a separate villa: show it inside the task so nothing is lost
+              const tf = unpackTaskForce(r.task_details);
+              const task = [tf.task, tf.villa && `V${tf.villa.replace(/^v/i, "")}`].filter(Boolean).join(" ");
               return (
-                <div key={i} className={`grid grid-cols-[1fr_auto] sm:grid-cols-[1.2fr_1.6fr_0.8fr_auto] gap-2 px-4 py-2.5 items-center ${i >= SHEET_TASK_FORCE_ROWS ? "bg-amber-50/50" : ""}`}>
+                <div key={i} className={`grid grid-cols-[1fr_auto] sm:grid-cols-[1fr_2fr_auto] gap-2 px-4 py-2.5 items-center ${i >= SHEET_TASK_FORCE_ROWS ? "bg-amber-50/50" : ""}`}>
                   <div className="col-span-1"><HostPicker hosts={hosts} value={r.host_id} onPick={(id) => pickHost(i, id)} /></div>
                   <button onClick={() => remove(i)} className="sm:order-last p-2 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 justify-self-end" title="Remove"><Trash2 size={15} /></button>
-                  <input value={task} onChange={(e) => update(i, { task: e.target.value })} placeholder="Task, e.g. Deep clean"
+                  <input value={task} onChange={(e) => update(i, { task: e.target.value, villa: "" })} placeholder="Task, e.g. Deep clean V12"
                     className="col-span-2 sm:col-span-1 h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-semibold outline-none focus:border-[#6D2158] focus:bg-white" />
-                  <input value={villa} onChange={(e) => update(i, { villa: e.target.value })} placeholder="Villa" inputMode="numeric"
-                    className="col-span-2 sm:col-span-1 h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-black outline-none focus:border-[#6D2158] focus:bg-white" />
                 </div>
               );
             })}

@@ -733,7 +733,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-13" x="256.51" y="421.53" width="330.02" height="11.53"/>
         <rect className="cls-13" x="9" y="433.06" width="82.5" height="11.53"/>
         <rect className="cls-13" x="9" y="565.53" width="165.01" height="7.65"/>
-        <rect className="cls-13" x="174.01" y="565.53" width="109.91" height="7.65"/>
         <rect className="cls-13" x="283.92" y="565.53" width="109.85" height="7.65"/>
         <rect className="cls-13" x="393.76" y="565.53" width="82.77" height="7.65"/>
         <rect className="cls-13" x="476.54" y="565.53" width="109.99" height="7.65"/>
@@ -748,17 +747,9 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-13" x="559.02" y="623.18" width="27.51" height="8.47"/>
         <rect className="cls-13" x="449.05" y="573.18" width="27.49" height="7.65"/>
         <rect className="cls-13" x="283.92" y="573.18" width="109.85" height="7.65"/>
-        <rect className="cls-13" x="174.01" y="606.24" width="54.94" height="8.47"/>
-        <rect className="cls-13" x="228.95" y="606.24" width="54.97" height="8.47"/>
-        <rect className="cls-13" x="174.01" y="631.65" width="54.97" height="8.47"/>
-        <rect className="cls-13" x="229" y="631.65" width="27.44" height="8.47"/>
-        <rect className="cls-13" x="256.43" y="631.65" width="27.49" height="8.47"/>
-        <rect className="cls-13" x="174.01" y="573.18" width="54.94" height="7.65"/>
-        <rect className="cls-13" x="228.95" y="573.18" width="54.97" height="7.65"/>
         <rect className="cls-13" x="9" y="573.18" width="55" height="7.65"/>
         <rect className="cls-13" x="9" y="623.18" width="55" height="8.47"/>
         <rect className="cls-13" x="9.02" y="657.06" width="137.48" height="8.47"/>
-        <rect className="cls-13" x="146.5" y="657.06" width="109.93" height="8.47"/>
         <rect className="cls-13" x="326.03" y="665.53" width="31.83" height="8.47"/>
         <rect className="cls-13" x="357.8" y="665.53" width="31.83" height="8.47"/>
         <rect className="cls-13" x="389.63" y="665.53" width="31.83" height="8.47"/>
@@ -774,11 +765,7 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-13" x="256.48" y="767.18" width="164.89" height="8.47"/>
         <rect className="cls-13" x="421.46" y="657.06" width="165.07" height="8.47"/>
         <rect className="cls-13" x="421.46" y="665.53" width="69.55" height="8.47"/>
-        <rect className="cls-13" x="146.5" y="674" width="109.93" height="8.47"/>
-        <rect className="cls-13" x="146.56" y="741.76" width="109.93" height="8.47"/>
         <rect className="cls-13" x="146.56" y="784.12" width="109.93" height="8.47"/>
-        <rect className="cls-13" x="146.53" y="665.53" width="54.92" height="8.47"/>
-        <rect className="cls-13" x="201.45" y="665.53" width="54.99" height="8.47"/>
         <rect className="cls-13" x="9.02" y="665.53" width="54.97" height="8.47"/>
         <rect className="cls-13" x="9.02" y="674" width="82.46" height="8.47"/>
         <rect className="cls-13" x="64" y="665.53" width="39" height="8.47"/>
@@ -811,16 +798,12 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="9" y="792.59" width="137.51" height="8.47"/>
         <rect className="cls-12" x="9" y="809.53" width="137.51" height="8.47"/>
         <rect className="cls-12" x="9" y="818" width="137.51" height="8.47"/>
-        <rect className="cls-12" x="55" y="818" width="63" height="8.47"/>
-        <rect className="cls-12" x="55" y="809.53" width="63" height="8.47"/>
-        <rect className="cls-12" x="55" y="826.47" width="63" height="8.47"/>
+        <rect className="cls-12" x="55" y="818" width="91.51" height="8.47"/>
+        <rect className="cls-12" x="55" y="809.53" width="91.51" height="8.47"/>
+        <rect className="cls-12" x="55" y="826.47" width="91.51" height="8.47"/>
         <rect className="cls-12" x="9" y="826.47" width="137.51" height="8.47"/>
         <rect className="cls-12" x="91.48" y="682.47" width="55.04" height="8.47"/>
         <rect className="cls-12" x="91.48" y="690.94" width="55.04" height="8.47"/>
-        <rect className="cls-12" x="146.51" y="682.47" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="682.47" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.51" y="690.94" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.49" y="690.94" width="54.98" height="8.47"/>
         <rect className="cls-12" x="421.46" y="674" width="69.55" height="8.47"/>
         <rect className="cls-12" x="491" y="674" width="31.83" height="8.47"/>
         <rect className="cls-12" x="522.83" y="674.02" width="31.83" height="8.47"/>
@@ -965,19 +948,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="491" y="826.47" width="31.83" height="8.47"/>
         <rect className="cls-12" x="522.83" y="826.47" width="31.83" height="8.47"/>
         <rect className="cls-12" x="554.65" y="826.48" width="31.85" height="8.45"/>
-        <rect className="cls-12" x="146.51" y="699.41" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.49" y="699.41" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.51" y="707.88" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.49" y="707.88" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="716.35" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="716.35" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="724.82" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="724.82" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="750.25" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="750.25" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="758.71" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="758.71" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="767.17" width="54.98" height="8.47"/>
         <rect className="cls-12" x="146.52" y="792.59" width="54.98" height="8.47"/>
         <rect className="cls-12" x="201.5" y="792.59" width="54.98" height="8.47"/>
         <rect className="cls-12" x="146.52" y="801.06" width="54.98" height="8.47"/>
@@ -988,11 +958,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="201.5" y="818" width="54.98" height="8.47"/>
         <rect className="cls-12" x="146.52" y="826.47" width="54.98" height="8.47"/>
         <rect className="cls-12" x="201.5" y="826.47" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="767.17" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="775.63" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="775.63" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="146.52" y="733.29" width="54.98" height="8.47"/>
-        <rect className="cls-12" x="201.5" y="733.29" width="54.98" height="8.47"/>
         <rect className="cls-12" x="91.48" y="699.41" width="55.04" height="8.47"/>
         <rect className="cls-12" x="91.48" y="707.88" width="55.04" height="8.47"/>
         <rect className="cls-12" x="91.48" y="716.35" width="55.04" height="8.47"/>
@@ -1023,19 +988,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="64" y="614.71" width="27.52" height="8.47"/>
         <rect className="cls-12" x="91.51" y="580.82" width="82.5" height="8.47"/>
         <rect className="cls-12" x="91.51" y="589.29" width="82.5" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="580.82" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="589.29" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="597.76" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="614.71" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="623.18" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="640.12" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="174.01" y="648.59" width="54.94" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="640.12" width="54.97" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="648.59" width="54.97" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="614.71" width="54.97" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="623.18" width="54.97" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="580.82" width="54.97" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="589.29" width="54.97" height="8.47"/>
         <rect className="cls-12" x="283.98" y="580.82" width="109.78" height="8.47"/>
         <rect className="cls-12" x="283.98" y="589.29" width="109.78" height="8.47"/>
         <rect className="cls-12" x="393.76" y="580.82" width="55.29" height="8.47"/>
@@ -1083,7 +1035,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-12" x="283.98" y="631.65" width="109.78" height="8.47"/>
         <rect className="cls-12" x="283.98" y="640.12" width="109.78" height="8.47"/>
         <rect className="cls-12" x="283.98" y="648.59" width="109.78" height="8.47"/>
-        <rect className="cls-12" x="228.95" y="597.76" width="54.97" height="8.47"/>
         <rect className="cls-12" x="91.51" y="597.76" width="82.5" height="8.47"/>
         <rect className="cls-12" x="91.51" y="606.24" width="82.5" height="8.47"/>
         <rect className="cls-12" x="91.51" y="614.71" width="82.5" height="8.47"/>
@@ -1164,7 +1115,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <rect className="cls-14" x="256.43" y="674.02" width="164.93" height="160.92"/>
         <rect className="cls-14" x="8.95" y="767.23" width="137.61" height="67.71"/>
         <rect className="cls-14" x="476.54" y="580.82" width="109.99" height="76.24"/>
-        <rect className="cls-14" x="174.01" y="573.18" width="109.97" height="83.88"/>
         <rect className="cls-14" x="504.03" y="433.06" width="82.5" height="132.47"/>
         {/* Thick bottom edge under the Pest Control column, matching the tables either side */}
         <line className="cls-14" x1="146.52" y1="834.94" x2="256.48" y2="834.94"/>
@@ -1343,15 +1293,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-5" textAnchor="middle" transform="translate(91.52 629.5)"><tspan x="0" y="0">MOD</tspan></text>
         <text className="cls-5" textAnchor="middle" transform="translate(146.51 629.5)"><tspan x="0" y="0">CONTINUE</tspan></text>
 
-        {/* PUBLIC AREA DUTY TITLE & 3 SUB-HEADER BARS */}
-        <text className="cls-2" transform="translate(198.61 571.7)"><tspan x="0" y="0">PUBLIC AREA DUTY</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(201.48 579)"><tspan x="0" y="0">MORNING</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(256.43 579)"><tspan x="0" y="0">FOH</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(201.48 612.5)"><tspan x="0" y="0">MORNING</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(256.43 612.5)"><tspan x="0" y="0">BOH</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(201.49 638)"><tspan x="0" y="0">AFTERNOON</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(242.72 638)"><tspan x="0" y="0">FOH</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(270.17 638)"><tspan x="0" y="0">BOH</tspan></text>
 
         {/* ADMIN DUTY TITLE & MORNING DUTY 8 AM BAR */}
         <text className="cls-2" transform="translate(317.76 571.78)"><tspan x="0" y="0">ADMIN DUTY</tspan></text>
@@ -1385,12 +1326,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-5" textAnchor="middle" transform="translate(50.25 680.5)"><tspan x="0" y="0">NAME</tspan></text>
         <text className="cls-5" textAnchor="middle" transform="translate(119 680.5)"><tspan x="0" y="0">NO</tspan></text>
         
-        {/* LAUNDRY DUTY TITLE & SUB-HEADERS */}
-        <text className="cls-2" transform="translate(182.05 662.8)"><tspan x="0" y="0">LAUNDRY DUTY</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(173.99 671.5)"><tspan x="0" y="0">NAME</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(228.94 671.5)"><tspan x="0" y="0">NO</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(201.46 680.5)"><tspan x="0" y="0">{d.laundryDutyTitle1 || ""}</tspan></text>
-        <text className="cls-5" textAnchor="middle" transform="translate(201.52 748)"><tspan x="0" y="0">{d.laundryDutyTitle2 || ""}</tspan></text>
 
         <text className="cls-2" transform="translate(177.61 789.86)"><tspan x="0" y="0">PEST CONTROL</tspan></text>
 
@@ -1576,24 +1511,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           );
         })}
 
-        {/* Public Area Duty */}
-        {[0, 1, 2].map((i) => (
-          <text key={`pa-mf-${i}`} className="cls-duty-val" transform={`translate(176.34 ${586.77 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.publicArea?.morningFoh?.[i])}</tspan></text>
-        ))}
-        {[0, 1].map((i) => (
-          <text key={`pa-mb-${i}`} className="cls-duty-val" transform={`translate(176.34 ${620.65 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.publicArea?.morningBoh?.[i])}</tspan></text>
-        ))}
-        <text className="cls-duty-val" transform="translate(176.34 646.06)"><tspan x="0" y="0">{toNaturalCase(d.publicArea?.afternoonFoh?.[0])}</tspan></text>
-        <text className="cls-duty-val" transform="translate(176.34 654.53)"><tspan x="0" y="0">{toNaturalCase(d.publicArea?.afternoonBoh?.[0])}</tspan></text>
-
-        {/* Public Area Extensions */}
-        <text className="cls-duty-val" transform="translate(249.64 586.77)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-duty-val" transform="translate(249.64 595.24)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-duty-val" transform="translate(249.64 603.71)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-duty-val" transform="translate(249.64 620.65)"><tspan x="0" y="0">2848</tspan></text>
-        <text className="cls-duty-val" transform="translate(249.64 629.12)"><tspan x="0" y="0">2848</tspan></text>
-        <text className="cls-duty-val" transform="translate(237.67 646.06)"><tspan x="0" y="0">2842</tspan></text>
-        <text className="cls-duty-val" transform="translate(261.54 654.53)"><tspan x="0" y="0">2848</tspan></text>
 
         {/* Admin Duty */}
         {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
@@ -1643,22 +1560,6 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
           </React.Fragment>
         ))}
 
-        {/* Laundry Duty */}
-        {/* Morning: 7 rows under the first title */}
-        {[0, 1, 2, 3, 4, 5, 6].map((i) => (
-          <React.Fragment key={`lnd-${i}`}>
-            <text className="cls-duty-val" transform={`translate(148.32 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.laundry?.[i]?.name)}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(211.67 ${688.41 + i * 8.47})`}><tspan x="0" y="0">{d.laundry?.[i]?.no || ""}</tspan></text>
-          </React.Fragment>
-        ))}
-        {/* Split: 4 rows under the second title */}
-        {[0, 1, 2, 3].map((i) => (
-          <React.Fragment key={`lnd-split-${i}`}>
-            <text className="cls-duty-val" transform={`translate(148.32 ${756.19 + i * 8.47})`}><tspan x="0" y="0">{toNaturalCase(d.laundrySplit?.[i]?.name)}</tspan></text>
-            <text className="cls-duty-val" transform={`translate(211.67 ${756.19 + i * 8.47})`}><tspan x="0" y="0">{d.laundrySplit?.[i]?.no || ""}</tspan></text>
-          </React.Fragment>
-        ))}
-
         {/* Pest Control */}
         {[0, 1, 2, 3, 4].map((i) => (
           <React.Fragment key={`pest-${i}`}>
@@ -1673,15 +1574,14 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
         <text className="cls-1" transform="translate(10.93 789.61)"><tspan x="0" y="0">{d.publicArea?.specialTasks?.[2] || d.specialTasks?.task3 || ""}</tspan></text>
         <text className="cls-1" transform="translate(10.93 798.08)"><tspan x="0" y="0">{d.publicArea?.specialTasks?.[3] || d.specialTasks?.task4 || ""}</tspan></text>
 
-        {/* Special Task Force: host | task | villa (3 rows) */}
+        {/* Special Task Force: host | task (3 rows) */}
         {[0, 1, 2].map((i) => {
           const y = 815.68 + i * 8.47;
           const t = d.taskForce?.[i];
           return (
             <React.Fragment key={`tf-${i}`}>
               <text className="cls-duty-val" transform={`translate(10.93 ${y})`}><tspan x="0" y="0">{toNaturalCase(t?.name)}</tspan></text>
-              <text className="cls-duty-val" transform={`translate(57 ${y})`}><tspan x="0" y="0">{t?.task || ""}</tspan></text>
-              <text className="cls-duty-val" textAnchor="middle" transform={`translate(132.25 ${y})`}><tspan x="0" y="0">{t?.villa || ""}</tspan></text>
+              <text className="cls-duty-val" transform={`translate(57 ${y})`}><tspan x="0" y="0">{[t?.task, t?.villa && `V${t.villa.replace(/^v/i, "")}`].filter(Boolean).join(" · ")}</tspan></text>
             </React.Fragment>
           );
         })}
@@ -1731,6 +1631,81 @@ export default function AllocationSheetSvg({ data }: { data: AllocationSheetData
             </React.Fragment>
           );
         })}
+              {/* PUBLIC AREA DUTY (moved under the Laundry title column: 4 + 3 + 4 rows) */}
+        {(() => {
+          const X0 = 146.5, MID = 201.5, X1 = 256.5, R = 8.47, Y0 = 657.06;
+          const rowY = (n: number) => Y0 + n * R;
+          const pa = d.publicArea || ({} as AllocationSheetData["publicArea"]);
+          const afternoon = [
+            ...(pa.afternoonFoh || []).map((n) => ({ n, ext: "2842" })),
+            ...(pa.afternoonBoh || []).map((n) => ({ n, ext: "2848" })),
+          ];
+          const header = (n: number, left: string, right: string) => (
+            <React.Fragment key={`pa-h-${n}`}>
+              <rect className="cls-13" x={X0} y={rowY(n)} width={MID - X0} height={R} />
+              <rect className="cls-13" x={MID} y={rowY(n)} width={X1 - MID} height={R} />
+              <text className="cls-5" textAnchor="middle" transform={`translate(${(X0 + MID) / 2} ${rowY(n) + 5.97})`}><tspan x="0" y="0">{left}</tspan></text>
+              <text className="cls-5" textAnchor="middle" transform={`translate(${(MID + X1) / 2} ${rowY(n) + 5.97})`}><tspan x="0" y="0">{right}</tspan></text>
+            </React.Fragment>
+          );
+          const row = (n: number, name?: string, ext?: string) => (
+            <React.Fragment key={`pa-r-${n}`}>
+              <rect className="cls-12" x={X0} y={rowY(n)} width={MID - X0} height={R} />
+              <rect className="cls-12" x={MID} y={rowY(n)} width={X1 - MID} height={R} />
+              <text className="cls-duty-val" transform={`translate(${X0 + 1.85} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{toNaturalCase(name)}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(${(MID + X1) / 2} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{name ? ext : ""}</tspan></text>
+            </React.Fragment>
+          );
+          return (
+            <g id="PUBLIC_AREA">
+              <rect className="cls-13" x={X0} y={rowY(0)} width={X1 - X0} height={R} />
+              <text className="cls-2" textAnchor="middle" transform={`translate(${(X0 + X1) / 2} ${rowY(0) + 5.74})`}><tspan x="0" y="0">PUBLIC AREA DUTY</tspan></text>
+              {header(1, "MORNING", "FOH")}
+              {[0, 1, 2, 3].map((i) => row(2 + i, pa.morningFoh?.[i], "2842"))}
+              {header(6, "MORNING", "BOH")}
+              {[0, 1, 2].map((i) => row(7 + i, pa.morningBoh?.[i], "2848"))}
+              {header(10, "AFTERNOON", "EXT")}
+              {[0, 1, 2, 3].map((i) => row(11 + i, afternoon[i]?.n, afternoon[i]?.ext))}
+              <rect className="cls-14" x={X0} y={rowY(1)} width={X1 - X0} height={rowY(15) - rowY(1)} />
+            </g>
+          );
+        })()}
+
+        {/* LAUNDRY DUTY (moved to the old Public Area block: 5 morning + 2 split rows) */}
+        {(() => {
+          const X0 = 174.01, MID = 228.95, X1 = 283.98, R = 8.47;
+          const title1 = d.laundryDutyTitle1 || "MORNING", title2 = d.laundryDutyTitle2 || "SPLIT";
+          const rowY = (n: number) => 580.82 + n * R; // n = 0 is the first-title bar
+          const row = (n: number, r?: { name: string; no: string }) => (
+            <React.Fragment key={`ln-${n}`}>
+              <rect className="cls-12" x={X0} y={rowY(n)} width={MID - X0} height={R} />
+              <rect className="cls-12" x={MID} y={rowY(n)} width={X1 - MID} height={R} />
+              <text className="cls-duty-val" transform={`translate(${X0 + 1.85} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{toNaturalCase(r?.name)}</tspan></text>
+              <text className="cls-duty-val" textAnchor="middle" transform={`translate(${(MID + X1) / 2} ${rowY(n) + 5.94})`}><tspan x="0" y="0">{r?.no || ""}</tspan></text>
+            </React.Fragment>
+          );
+          const bar = (n: number, label: string) => (
+            <React.Fragment key={`ln-b-${n}`}>
+              <rect className="cls-13" x={X0} y={rowY(n)} width={X1 - X0} height={R} />
+              <text className="cls-5" textAnchor="middle" transform={`translate(${(X0 + X1) / 2} ${rowY(n) + 5.97})`}><tspan x="0" y="0">{label}</tspan></text>
+            </React.Fragment>
+          );
+          return (
+            <g id="LAUNDRY">
+              <rect className="cls-13" x={X0} y={565.53} width={X1 - X0} height={7.65} />
+              <text className="cls-2" textAnchor="middle" transform={`translate(${(X0 + X1) / 2} 571.7)`}><tspan x="0" y="0">LAUNDRY DUTY</tspan></text>
+              <rect className="cls-13" x={X0} y={573.18} width={MID - X0} height={7.65} />
+              <rect className="cls-13" x={MID} y={573.18} width={X1 - MID} height={7.65} />
+              <text className="cls-5" textAnchor="middle" transform={`translate(${(X0 + MID) / 2} 579)`}><tspan x="0" y="0">NAME</tspan></text>
+              <text className="cls-5" textAnchor="middle" transform={`translate(${(MID + X1) / 2} 579)`}><tspan x="0" y="0">NO</tspan></text>
+              {bar(0, title1)}
+              {[0, 1, 2, 3, 4].map((i) => row(1 + i, d.laundry?.[i]))}
+              {bar(6, title2)}
+              {[0, 1].map((i) => row(7 + i, d.laundrySplit?.[i]))}
+              <rect className="cls-14" x={X0} y={573.18} width={X1 - X0} height={83.88} />
+            </g>
+          );
+        })()}
       </g>
     </svg>
   );
