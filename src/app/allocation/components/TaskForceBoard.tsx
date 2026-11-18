@@ -4,6 +4,9 @@
 // Stored as hsk_allocations rows: area 'taskforce', host_id = the host, task_details = "villa::task".
 import React, { useMemo, useState } from "react";
 import { Plus, Trash2, Search, ShieldCheck, X } from "lucide-react";
+import { useConfirm } from "@/components/ConfirmProvider";
+import { AREAS } from "@/app/allocation/lib/constants";
+import { isOffShift } from "@/app/allocation/lib/riders";
 
 export const TASK_FORCE_AREA = "taskforce";
 export const SHEET_TASK_FORCE_ROWS = 3;
@@ -65,11 +68,32 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
   setIsDirty: (v: boolean) => void;
   selectedDate: string;
 }) {
+  const { confirmAction } = useConfirm();
   const rows = allocations.filter((a) => a.area === TASK_FORCE_AREA);
   const others = allocations.filter((a) => a.area !== TASK_FORCE_AREA);
-  const write = (next: Allocation[]) => { setAllocations([...others, ...next]); setIsDirty(true); };
+  const write = (next: Allocation[], rest: Allocation[] = others) => { setAllocations([...rest, ...next]); setIsDirty(true); };
 
-  const update = (i: number, patch: { host_id?: string | null; villa?: string; task?: string }) => {
+  const areaName = (area: string) => AREAS.find((x) => x.id === area || (area === "gardening" && x.id === "garden") || (area === "tailor" && x.id === "laundry_tailor") || (area === "laundry" && x.id === "laundry_tailor"))?.label || area;
+
+  // Picking a host who already has a duty today: ask whether to take them off it, or keep both
+  const pickHost = async (i: number, hostId: string | null) => {
+    if (!hostId) return update(i, { host_id: null });
+    const duties = others.filter((a) => String(a.host_id) === String(hostId) && !isOffShift(a.shift));
+    if (duties.length === 0) return update(i, { host_id: hostId });
+    const h = hosts.find((x) => x.id === hostId);
+    const where = [...new Set(duties.map((a) => `${areaName(a.area)}${a.shift && a.shift !== "Unassigned" ? ` (${a.shift})` : ""}${a.area === "villa" && a.task_details ? ` · villas ${a.task_details}` : ""}`))].join(", ");
+    const move = await confirmAction({
+      title: `${label(h)} already has a duty`,
+      message: `${label(h)} is allocated to ${where}. Remove them from there and move to the Special Task Force, or keep both?`,
+      confirmText: "Move to Task Force",
+      cancelText: "Keep both",
+      icon: "question",
+    });
+    const rest = move ? others.filter((a) => !(String(a.host_id) === String(hostId) && !isOffShift(a.shift))) : others;
+    update(i, { host_id: hostId }, rest);
+  };
+
+  const update = (i: number, patch: { host_id?: string | null; villa?: string; task?: string }, rest: Allocation[] = others) => {
     const next = rows.map((r, k) => {
       if (k !== i) return r;
       const cur = unpackTaskForce(r.task_details);
@@ -79,7 +103,7 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
         task_details: packTaskForce(patch.villa ?? cur.villa, patch.task ?? cur.task),
       };
     });
-    write(next);
+    write(next, rest);
   };
   const add = () => write([...rows, { host_id: null, area: TASK_FORCE_AREA, shift: "Task Force", task_details: packTaskForce("", ""), report_date: selectedDate }]);
   const remove = (i: number) => write(rows.filter((_, k) => k !== i));
@@ -106,7 +130,7 @@ export default function TaskForceBoard({ hosts, allocations, setAllocations, set
               const { villa, task } = unpackTaskForce(r.task_details);
               return (
                 <div key={i} className={`grid grid-cols-[1fr_auto] sm:grid-cols-[1.2fr_1.6fr_0.8fr_auto] gap-2 px-4 py-2.5 items-center ${i >= SHEET_TASK_FORCE_ROWS ? "bg-amber-50/50" : ""}`}>
-                  <div className="col-span-1"><HostPicker hosts={hosts} value={r.host_id} onPick={(id) => update(i, { host_id: id })} /></div>
+                  <div className="col-span-1"><HostPicker hosts={hosts} value={r.host_id} onPick={(id) => pickHost(i, id)} /></div>
                   <button onClick={() => remove(i)} className="sm:order-last p-2 rounded-lg text-slate-300 hover:text-rose-600 hover:bg-rose-50 justify-self-end" title="Remove"><Trash2 size={15} /></button>
                   <input value={task} onChange={(e) => update(i, { task: e.target.value })} placeholder="Task, e.g. Deep clean"
                     className="col-span-2 sm:col-span-1 h-10 px-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-semibold outline-none focus:border-[#6D2158] focus:bg-white" />
