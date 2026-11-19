@@ -1,17 +1,18 @@
 "use client";
-// Housekeeping Cycle Fleet — who has which tricycle / bicycle (HK-1…20, HM-1…3, PA-1…5, Pool-1…5).
+// Housekeeping Tricycle & Bicycle Tracker — who has which tricycle / bicycle (HK-1…20, HM-1…3, PA-1…5, Pool-1…5;
+// any unit can be renamed, e.g. a bicycle known by its rider's initials).
 // Join date, SSL no, name and designation come live from Host Profiles; export to Excel or PDF.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bike, Search, X, Loader2, FileSpreadsheet, FileDown, Plus, Wrench, CheckCircle2, CircleDashed,
-  UserPlus, UserMinus, History, Trash2, ChevronRight,
+  UserPlus, UserMinus, History, Trash2, ChevronRight, Building2, User, Ban, HelpCircle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminOnly from '@/components/AdminOnly';
 import { getDhakaDateStr } from '@/lib/dateUtils';
 import {
-  GROUPS, CycleGroup, CycleStatus, CycleType, CycleUnit, FleetHost,
-  loadFleet, saveFleet, loadHosts, sortFleet, suggestedGroup, buildReportRows, exportFleetExcel, exportFleetPdf,
+  GROUPS, CycleGroup, CycleStatus, CycleType, CycleUnit, FleetHost, isDown,
+  loadFleet, saveFleet, loadHosts, loadSubDepts, sortFleet, suggestedGroup, buildReportRows, exportFleetExcel, exportFleetPdf,
 } from '@/lib/cycleFleet';
 
 const errMsg = (err: unknown) => (err instanceof Error ? err.message : (err as { message?: string })?.message) || 'Unknown error';
@@ -26,6 +27,8 @@ const STATUS_STYLE: Record<CycleStatus, string> = {
   Assigned: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   Spare: 'bg-slate-100 text-slate-500 border-slate-200',
   Repair: 'bg-amber-50 text-amber-700 border-amber-200',
+  'Beyond Repair': 'bg-rose-50 text-rose-700 border-rose-200',
+  Lost: 'bg-rose-100 text-rose-800 border-rose-300',
 };
 const GROUP_STYLE: Record<CycleGroup, string> = {
   HK: 'bg-[#6D2158] text-white',
@@ -46,8 +49,11 @@ function CycleFleetPage() {
   const [statusFilter, setStatusFilter] = useState<'ALL' | CycleStatus>('ALL');
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<CycleUnit | null>(null);
+  const [origCode, setOrigCode] = useState(''); // code before any rename in the editor
   const [isNew, setIsNew] = useState(false);
   const [hostSearch, setHostSearch] = useState('');
+  const [subDepts, setSubDepts] = useState<string[]>([]);
+  const [assignMode, setAssignMode] = useState<'person' | 'dept'>('person'); // given to one person, or shared by a sub-department
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [exporting, setExporting] = useState<'' | 'xlsx' | 'pdf'>('');
 
@@ -57,8 +63,9 @@ function CycleFleetPage() {
       const [fleet, hs] = await Promise.all([loadFleet(), loadHosts()]);
       setUnits(fleet.units);
       setHosts(hs);
+      loadSubDepts(hs).then(setSubDepts).catch(() => setSubDepts([]));
     } catch (err) {
-      toast.error('Could not load fleet: ' + errMsg(err));
+      toast.error('Could not load cycles: ' + errMsg(err));
     } finally {
       setLoading(false);
     }
@@ -77,6 +84,8 @@ function CycleFleetPage() {
     assigned: units.filter(u => u.status === 'Assigned').length,
     spare: units.filter(u => u.status === 'Spare').length,
     repair: units.filter(u => u.status === 'Repair').length,
+    beyond: units.filter(u => u.status === 'Beyond Repair').length,
+    lost: units.filter(u => u.status === 'Lost').length,
   }), [units]);
 
   const q = query.trim().toLowerCase();
@@ -85,7 +94,7 @@ function CycleFleetPage() {
     if (statusFilter !== 'ALL' && u.status !== statusFilter) return false;
     if (!q) return true;
     const h = u.host_id ? hostMap.get(u.host_id) : undefined;
-    return [u.code, u.remarks, h?.full_name, h?.host_id, h?.role].some(v => String(v || '').toLowerCase().includes(q));
+    return [u.code, u.remarks, u.dept, h?.full_name, h?.host_id, h?.role].some(v => String(v || '').toLowerCase().includes(q));
   });
 
   // ---------- persistence ----------
@@ -107,19 +116,24 @@ function CycleFleetPage() {
   };
 
   const closeHistory = (u: CycleUnit, end: string): CycleUnit['history'] => {
+    if (!u.host_id && u.dept) return [{ host_id: '', name: `${u.dept} (sub-department)`, ssl: '', from: u.assigned_on, to: end }, ...u.history].slice(0, 20);
     if (!u.host_id) return u.history;
     const h = hostMap.get(u.host_id);
     return [{ host_id: u.host_id, name: h?.full_name || 'Unknown', ssl: h?.host_id || '', from: u.assigned_on, to: end }, ...u.history].slice(0, 20);
   };
 
   // ---------- editor ----------
-  const openEdit = (u: CycleUnit) => { setEditing({ ...u }); setIsNew(false); setHostSearch(''); setConfirmDelete(false); };
+  const openEdit = (u: CycleUnit) => { setEditing({ ...u }); setAssignMode(!u.host_id && u.dept ? 'dept' : 'person'); setOrigCode(u.code); setIsNew(false); setHostSearch(''); setConfirmDelete(false); };
+  const nextNo = (g: CycleGroup) => {
+    const used = units.filter(u => u.group === g).map(u => parseInt((u.code.match(/(\d+)\s*$/) || [])[1] || '', 10)).filter(n => !isNaN(n));
+    return (used.length ? Math.max(...used) : 0) + 1;
+  };
 
   const openAdd = () => {
     const g = GROUPS.find(x => x.key === (group === 'ALL' ? 'HK' : group))!;
-    const used = units.filter(u => u.group === g.key).map(u => parseInt(u.code.split('-')[1] || '0', 10));
-    const n = (used.length ? Math.max(...used) : 0) + 1;
-    setEditing({ code: `${g.prefix}-${n}`, group: g.key, type: g.type, host_id: null, assigned_on: '', status: 'Spare', remarks: '', history: [] });
+    setEditing({ code: `${g.prefix}-${nextNo(g.key)}`, group: g.key, type: g.type, host_id: null, dept: '', assigned_on: '', status: 'Spare', remarks: '', history: [] });
+    setAssignMode('person');
+    setOrigCode('');
     setIsNew(true);
     setHostSearch('');
     setConfirmDelete(false);
@@ -127,19 +141,23 @@ function CycleFleetPage() {
 
   const saveEdit = async () => {
     if (!editing) return;
-    const code = editing.code.trim();
-    if (!/^[A-Za-z]+-\d+$/.test(code)) { toast.error('Cycle number must look like HK-21'); return; }
-    if (isNew && units.some(u => u.code.toLowerCase() === code.toLowerCase())) { toast.error(`${code} already exists`); return; }
+    // Number or name: "HK-21", or initials for a bicycle ("AM"). Must be unique.
+    const code = editing.code.trim().replace(/\s+/g, ' ');
+    if (!code) { toast.error('Give the cycle a number or initials'); return; }
+    if (code.length > 14) { toast.error('Keep the number / initials short (max 14 characters)'); return; }
+    if (units.some(u => u.code !== origCode && u.code.toLowerCase() === code.toLowerCase())) { toast.error(`${code} already exists`); return; }
 
-    const original = units.find(u => u.code === editing.code);
-    let next = units.filter(u => u.code !== editing.code);
-    let unit: CycleUnit = { ...editing, code, remarks: editing.remarks.trim() };
+    const original = units.find(u => u.code === origCode);
+    let next = units.filter(u => u.code !== origCode);
+    let unit: CycleUnit = { ...editing, code, remarks: editing.remarks.trim(), dept: editing.host_id ? '' : editing.dept.trim() };
 
-    const hostChanged = (original?.host_id || null) !== (unit.host_id || null);
-    if (hostChanged && original) unit.history = closeHistory(original, today);
-    if (unit.host_id && !unit.assigned_on) unit.assigned_on = today;
-    if (!unit.host_id) { unit.assigned_on = ''; if (unit.status === 'Assigned') unit.status = 'Spare'; }
-    if (unit.host_id && unit.status === 'Spare') unit.status = 'Assigned';
+    // Holder = a person or a sub-department; a change closes the previous holder's history entry
+    const holderOf = (u?: CycleUnit) => (u?.host_id ? `h:${u.host_id}` : u?.dept ? `d:${u.dept.toLowerCase()}` : '');
+    const holder = holderOf(unit);
+    if (original && holderOf(original) !== holder) unit.history = closeHistory(original, today);
+    if (holder && !unit.assigned_on) unit.assigned_on = today;
+    if (!holder) { unit.assigned_on = ''; if (unit.status === 'Assigned') unit.status = 'Spare'; }
+    if (holder && unit.status === 'Spare') unit.status = 'Assigned';
 
     // One cycle per host: release whatever they had before
     let movedFrom = '';
@@ -147,20 +165,21 @@ function CycleFleetPage() {
       next = next.map(u => {
         if (u.host_id !== unit.host_id) return u;
         movedFrom = u.code;
-        return { ...u, history: closeHistory(u, today), host_id: null, assigned_on: '', status: u.status === 'Repair' ? 'Repair' : 'Spare' };
+        return { ...u, history: closeHistory(u, today), host_id: null, assigned_on: '', status: isDown(u.status) ? u.status : 'Spare' };
       });
     }
     unit = { ...unit };
     next = [...next, unit];
 
-    const who = unit.host_id ? hostMap.get(unit.host_id)?.full_name : '';
-    const ok = await commit(next, movedFrom ? `${who} moved from ${movedFrom} to ${unit.code}` : isNew ? `${unit.code} added` : `${unit.code} saved`);
+    const who = unit.host_id ? hostMap.get(unit.host_id)?.full_name : unit.dept;
+    const renamed = !isNew && origCode && origCode !== unit.code ? `${origCode} renamed to ${unit.code}` : '';
+    const ok = await commit(next, movedFrom ? `${who} moved from ${movedFrom} to ${unit.code}` : isNew ? `${unit.code} added` : renamed || `${unit.code} saved`);
     if (ok) setEditing(null);
   };
 
   const deleteUnit = async () => {
     if (!editing) return;
-    const ok = await commit(units.filter(u => u.code !== editing.code), `${editing.code} removed`);
+    const ok = await commit(units.filter(u => u.code !== origCode), `${origCode} removed`);
     if (ok) setEditing(null);
   };
 
@@ -196,8 +215,8 @@ function CycleFleetPage() {
       const parts = [gLabel, statusFilter !== 'ALL' ? statusFilter : '', q ? `“${query.trim()}”` : '', nice(today)].filter(Boolean);
       const title = parts.join(' · ');
       const assigned = visible.filter(u => u.status === 'Assigned').length;
-      const summary = `${visible.length} cycles · ${assigned} assigned · ${visible.filter(u => u.status === 'Spare').length} spare · ${visible.filter(u => u.status === 'Repair').length} in repair`;
-      const fileBase = `HK_Cycle_Fleet_${group === 'ALL' ? 'All' : group}_${today}`;
+      const summary = `${visible.length} cycles · ${assigned} assigned · ${visible.filter(u => u.status === 'Spare').length} spare · ${visible.filter(u => u.status === 'Repair').length} in repair · ${visible.filter(u => u.status === 'Beyond Repair').length} beyond repair · ${visible.filter(u => u.status === 'Lost').length} lost`;
+      const fileBase = `HK_Tricycle_Bicycle_Tracker_${group === 'ALL' ? 'All' : group}_${today}`;
       if (kind === 'xlsx') await exportFleetExcel(rows, title, fileBase);
       else await exportFleetPdf(rows, title, fileBase, summary);
       toast.success(kind === 'xlsx' ? 'Excel downloaded' : 'PDF downloaded');
@@ -218,7 +237,7 @@ function CycleFleetPage() {
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-[#6D2158]/10 text-[#6D2158] flex items-center justify-center shrink-0"><Bike size={20} /></div>
           <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-black text-[#6D2158] leading-tight">Cycle Fleet</h1>
+            <h1 className="text-lg font-black text-[#6D2158] leading-tight">Tricycle & Bicycle Tracker</h1>
             <p className="text-[11px] font-bold text-slate-400">Housekeeping tricycles &amp; bicycles</p>
           </div>
           <div className="flex gap-2 w-full sm:w-auto">
@@ -237,12 +256,14 @@ function CycleFleetPage() {
 
       <div className="max-w-6xl mx-auto px-4 pt-4 space-y-4">
         {/* Stats (tap to filter) */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-3 lg:grid-cols-6 gap-2">
           {([
             ['ALL', 'Total cycles', counts.total, Bike, 'text-slate-800'],
             ['Assigned', 'Assigned', counts.assigned, CheckCircle2, 'text-emerald-600'],
             ['Spare', 'Spare', counts.spare, CircleDashed, 'text-slate-500'],
             ['Repair', 'In repair', counts.repair, Wrench, 'text-amber-600'],
+            ['Beyond Repair', 'Beyond repair', counts.beyond, Ban, 'text-rose-600'],
+            ['Lost', 'Lost', counts.lost, HelpCircle, 'text-rose-700'],
           ] as const).map(([k, label, n, Icon, cls]) => (
             <button key={k} onClick={() => setStatusFilter(k)} className={`text-left rounded-2xl bg-white border p-3 transition-all ${statusFilter === k ? 'border-[#6D2158] ring-2 ring-[#6D2158]/10' : 'border-slate-200 hover:border-slate-300'}`}>
               <span className="flex items-center justify-between">
@@ -308,8 +329,10 @@ function CycleFleetPage() {
                           </td>
                           <td className="px-3 py-2.5 text-xs font-semibold text-slate-500 whitespace-nowrap">{h ? nice(h.joining_date) : ''}</td>
                           <td className="px-3 py-2.5 text-xs font-mono font-bold text-slate-600 whitespace-nowrap">{h?.host_id || ''}</td>
-                          <td className="px-3 py-2.5 font-black text-slate-800">{h?.full_name || <span className="text-xs font-bold text-slate-300">Unassigned</span>}</td>
-                          <td className="px-3 py-2.5 text-xs font-semibold text-slate-500">{h?.role || ''}</td>
+                          <td className="px-3 py-2.5 font-black text-slate-800">{h?.full_name || (u.dept
+                            ? <span className="inline-flex items-center gap-1.5"><Building2 size={14} className="text-teal-600" />{u.dept}</span>
+                            : <span className="text-xs font-bold text-slate-300">Unassigned</span>)}</td>
+                          <td className="px-3 py-2.5 text-xs font-semibold text-slate-500">{h?.role || (u.dept ? 'Shared by sub-department' : '')}</td>
                           <td className="px-3 py-2.5"><span className={`px-2 py-0.5 rounded-md border text-[10px] font-black uppercase ${STATUS_STYLE[u.status]}`}>{u.status}</span></td>
                           <td className="px-3 py-2.5 text-xs font-semibold text-slate-600 max-w-[260px] truncate" title={u.remarks}>{u.remarks}</td>
                           <td className="px-3 py-2.5 text-slate-300"><ChevronRight size={16} /></td>
@@ -333,10 +356,11 @@ function CycleFleetPage() {
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
-                        <span className={`text-sm font-black truncate ${h ? 'text-slate-800' : 'text-slate-300'}`}>{h?.full_name || 'Unassigned'}</span>
+                        <span className={`text-sm font-black truncate flex items-center gap-1 ${h || u.dept ? 'text-slate-800' : 'text-slate-300'}`}>{!h && u.dept && <Building2 size={13} className="text-teal-600 shrink-0" />}{h?.full_name || u.dept || 'Unassigned'}</span>
                         <span className={`shrink-0 px-1.5 py-0.5 rounded border text-[9px] font-black uppercase ${STATUS_STYLE[u.status]}`}>{u.status}</span>
                       </span>
                       {h && <span className="block text-[11px] font-bold text-slate-400 truncate">{h.host_id} · {h.role} · Joined {nice(h.joining_date)}</span>}
+                      {!h && u.dept && <span className="block text-[11px] font-bold text-slate-400 truncate">Shared by sub-department{u.assigned_on ? ` · since ${nice(u.assigned_on)}` : ''}</span>}
                       {u.remarks && <span className="block text-[11px] font-semibold text-amber-700 truncate mt-0.5">{u.remarks}</span>}
                     </span>
                     <ChevronRight size={18} className="text-slate-300 shrink-0" />
@@ -357,10 +381,11 @@ function CycleFleetPage() {
             <div className="px-5 pt-2 pb-3 flex items-center gap-3 border-b border-slate-100">
               <span className={`w-12 h-12 shrink-0 rounded-2xl flex items-center justify-center ${GROUP_STYLE[editing.group]}`}><Bike size={20} /></span>
               <div className="min-w-0 flex-1">
-                {isNew ? (
-                  <input value={editing.code} onChange={e => setEditing({ ...editing, code: e.target.value.toUpperCase().replace('POOL', 'Pool') })} className="w-full text-lg font-black text-slate-800 border-b border-slate-200 outline-none focus:border-[#6D2158]" />
-                ) : <h3 className="text-lg font-black text-slate-800">{editing.code}</h3>}
-                <p className="text-[11px] font-bold text-slate-400">{GROUPS.find(g => g.key === editing.group)?.label}</p>
+                {/* Number or initials — tap to change (bicycles are often known by initials) */}
+                <input value={editing.code} onChange={e => setEditing({ ...editing, code: e.target.value.toUpperCase().replace('POOL', 'Pool') })}
+                  aria-label="Cycle number or initials" placeholder="HK-21 or initials"
+                  className="w-full text-lg font-black text-slate-800 border-b border-dashed border-slate-300 outline-none focus:border-[#6D2158] bg-transparent" />
+                <p className="text-[11px] font-bold text-slate-400">{GROUPS.find(g => g.key === editing.group)?.label} · tap the number to rename (e.g. initials)</p>
               </div>
               <button onClick={() => setEditing(null)} className="w-10 h-10 rounded-2xl bg-slate-100 text-slate-500 flex items-center justify-center" aria-label="Close"><X size={18} /></button>
             </div>
@@ -372,42 +397,82 @@ function CycleFleetPage() {
                   <div className="grid grid-cols-4 gap-1.5">
                     {GROUPS.map(g => (
                       <button key={g.key} onClick={() => {
-                        const used = units.filter(u => u.group === g.key).map(u => parseInt(u.code.split('-')[1] || '0', 10));
-                        setEditing({ ...editing, group: g.key, type: g.type, code: `${g.prefix}-${(used.length ? Math.max(...used) : 0) + 1}` });
+                        setEditing({ ...editing, group: g.key, type: g.type, code: `${g.prefix}-${nextNo(g.key)}` });
                       }} className={`h-10 rounded-xl text-xs font-black border-2 ${editing.group === g.key ? 'border-[#6D2158] bg-[#6D2158]/5 text-[#6D2158]' : 'border-slate-200 text-slate-500'}`}>{g.prefix}</button>
                     ))}
                   </div>
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Type</p>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {(['Tricycle', 'Bicycle'] as CycleType[]).map(t => (
-                      <button key={t} onClick={() => setEditing({ ...editing, type: t })} className={`h-11 rounded-xl text-xs font-black border-2 ${editing.type === t ? 'border-[#6D2158] bg-[#6D2158]/5 text-[#6D2158]' : 'border-slate-200 text-slate-500'}`}>{t}</button>
-                    ))}
-                  </div>
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Type</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(['Tricycle', 'Bicycle'] as CycleType[]).map(t => (
+                    <button key={t} onClick={() => setEditing({ ...editing, type: t })} className={`h-11 rounded-xl text-xs font-black border-2 ${editing.type === t ? 'border-[#6D2158] bg-[#6D2158]/5 text-[#6D2158]' : 'border-slate-200 text-slate-500'}`}>{t}</button>
+                  ))}
                 </div>
-                <div>
-                  <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Condition</p>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {([['ok', 'Good'], ['Repair', 'Repair']] as const).map(([k, label]) => {
-                      const on = k === 'Repair' ? editing.status === 'Repair' : editing.status !== 'Repair';
-                      return (
-                        <button key={k} onClick={() => setEditing({ ...editing, status: k === 'Repair' ? 'Repair' : (editing.host_id ? 'Assigned' : 'Spare') })} className={`h-11 rounded-xl text-xs font-black border-2 flex items-center justify-center gap-1 ${on ? (k === 'Repair' ? 'border-amber-400 bg-amber-50 text-amber-700' : 'border-emerald-400 bg-emerald-50 text-emerald-700') : 'border-slate-200 text-slate-500'}`}>
-                          {k === 'Repair' && <Wrench size={12} />} {label}
-                        </button>
-                      );
-                    })}
-                  </div>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Condition</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {([
+                    ['ok', 'Good', CheckCircle2, 'border-emerald-400 bg-emerald-50 text-emerald-700'],
+                    ['Repair', 'In repair', Wrench, 'border-amber-400 bg-amber-50 text-amber-700'],
+                    ['Beyond Repair', 'Beyond repair', Ban, 'border-rose-400 bg-rose-50 text-rose-700'],
+                    ['Lost', 'Lost', HelpCircle, 'border-rose-500 bg-rose-100 text-rose-800'],
+                  ] as const).map(([k, label, Icon, onCls]) => {
+                    const on = k === 'ok' ? !isDown(editing.status) : editing.status === k;
+                    const holder = editing.host_id || (assignMode === 'dept' && editing.dept.trim());
+                    return (
+                      <button key={k} onClick={() => setEditing({ ...editing, status: k === 'ok' ? (holder ? 'Assigned' : 'Spare') : k })}
+                        className={`h-11 rounded-xl text-xs font-black border-2 flex items-center justify-center gap-1 ${on ? onCls : 'border-slate-200 text-slate-500'}`}>
+                        <Icon size={12} /> {label}
+                      </button>
+                    );
+                  })}
                 </div>
+                {(editing.status === 'Beyond Repair' || editing.status === 'Lost') && (
+                  <p className="mt-1.5 text-[11px] font-semibold text-rose-600">Out of service. Note what happened in Remarks{editing.status === 'Lost' ? ' (when and where it was last seen)' : ' (e.g. frame broken, written off)'}. The rider stays on record; picking them for another cycle moves them.</p>
+                )}
               </div>
 
               {/* Assigned host */}
               <div>
-                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Assigned to</p>
-                {editHost ? (
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Assigned to</p>
+                  <div className="flex p-0.5 rounded-xl bg-slate-100">
+                    {([['person', 'Person', User], ['dept', 'Sub-department', Building2]] as const).map(([k, label, Icon]) => (
+                      <button key={k} onClick={() => {
+                        if (k === assignMode) return;
+                        setAssignMode(k);
+                        // Switching clears the other kind of holder
+                        setEditing({ ...editing, host_id: null, dept: '', assigned_on: '', status: isDown(editing.status) ? editing.status : 'Spare' });
+                      }} className={`h-8 px-2.5 rounded-lg text-[11px] font-black flex items-center gap-1 ${assignMode === k ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500'}`}>
+                        <Icon size={12} /> {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {assignMode === 'dept' ? (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {subDepts.map(d => {
+                        const on = editing.dept.toLowerCase() === d.toLowerCase();
+                        const n = units.filter(u => u.code !== origCode && !u.host_id && u.dept.toLowerCase() === d.toLowerCase()).length;
+                        return (
+                          <button key={d} onClick={() => setEditing({ ...editing, host_id: null, dept: on ? '' : d, assigned_on: on ? '' : (editing.assigned_on || today), status: isDown(editing.status) ? editing.status : (on ? 'Spare' : 'Assigned') })}
+                            className={`h-9 px-3 rounded-xl text-xs font-black border-2 flex items-center gap-1 ${on ? 'border-teal-500 bg-teal-50 text-teal-700' : 'border-slate-200 text-slate-600'}`}>
+                            {d}{n > 0 && <span className="text-[10px] opacity-60">+{n}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input value={editing.dept} onChange={e => setEditing({ ...editing, host_id: null, dept: e.target.value, assigned_on: e.target.value.trim() ? (editing.assigned_on || today) : '', status: isDown(editing.status) ? editing.status : (e.target.value.trim() ? 'Assigned' : 'Spare') })}
+                      placeholder="Or type a sub-department / team" className="w-full h-11 px-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" />
+                    <p className="text-[11px] font-semibold text-slate-400">Shared by the whole team: not counted as anyone&apos;s personal cycle.</p>
+                  </div>
+                ) : editHost ? (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3 flex items-center gap-3">
                     {editHost.image_url ? <img src={editHost.image_url} alt="" className="w-11 h-11 rounded-xl object-cover" /> : <span className="w-11 h-11 rounded-xl bg-white flex items-center justify-center text-sm font-black text-[#6D2158]">{editHost.full_name.charAt(0)}</span>}
                     <div className="min-w-0 flex-1">
@@ -415,7 +480,7 @@ function CycleFleetPage() {
                       <p className="text-[11px] font-bold text-slate-500 truncate">{editHost.host_id} · {editHost.role}</p>
                       <p className="text-[11px] font-bold text-slate-400">Joined {nice(editHost.joining_date)}</p>
                     </div>
-                    <button onClick={() => setEditing({ ...editing, host_id: null, assigned_on: '', status: editing.status === 'Repair' ? 'Repair' : 'Spare' })} className="h-10 px-3 rounded-xl bg-white border border-slate-200 text-xs font-black text-rose-600 flex items-center gap-1"><UserMinus size={14} /> Remove</button>
+                    <button onClick={() => setEditing({ ...editing, host_id: null, assigned_on: '', status: isDown(editing.status) ? editing.status : 'Spare' })} className="h-10 px-3 rounded-xl bg-white border border-slate-200 text-xs font-black text-rose-600 flex items-center gap-1"><UserMinus size={14} /> Remove</button>
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-slate-200 overflow-hidden">
@@ -427,7 +492,7 @@ function CycleFleetPage() {
                       {pickerHosts.map(h => {
                         const has = unitByHost.get(h.id);
                         return (
-                          <button key={h.id} onClick={() => setEditing({ ...editing, host_id: h.id, assigned_on: today, status: editing.status === 'Repair' ? 'Repair' : 'Assigned' })} className="w-full px-3 py-2.5 flex items-center gap-2 text-left hover:bg-slate-50">
+                          <button key={h.id} onClick={() => setEditing({ ...editing, host_id: h.id, assigned_on: today, status: isDown(editing.status) ? editing.status : 'Assigned' })} className="w-full px-3 py-2.5 flex items-center gap-2 text-left hover:bg-slate-50">
                             <span className="min-w-0 flex-1">
                               <span className="block text-sm font-bold text-slate-700 truncate">{h.full_name}</span>
                               <span className="block text-[11px] font-semibold text-slate-400 truncate">{h.host_id} · {h.role}</span>
@@ -440,7 +505,7 @@ function CycleFleetPage() {
                     </div>
                   </div>
                 )}
-                {editing.host_id && (
+                {(editing.host_id || (assignMode === 'dept' && editing.dept.trim())) && (
                   <label className="mt-2 flex items-center gap-2 text-xs font-bold text-slate-500">
                     Since
                     <input type="date" value={editing.assigned_on} max={today} onChange={e => setEditing({ ...editing, assigned_on: e.target.value })} className="h-9 px-2 rounded-lg bg-slate-50 border border-slate-200 text-xs font-bold outline-none" />
@@ -471,12 +536,12 @@ function CycleFleetPage() {
                 <div className="flex justify-center">
                   {confirmDelete ? (
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-rose-600">Remove {editing.code} from the fleet?</span>
+                      <span className="text-xs font-bold text-rose-600">Remove {origCode} from the tracker?</span>
                       <button onClick={() => setConfirmDelete(false)} className="px-3 py-2 rounded-xl bg-slate-100 text-xs font-black text-slate-600">Cancel</button>
                       <button onClick={deleteUnit} className="px-3 py-2 rounded-xl bg-rose-600 text-xs font-black text-white">Remove</button>
                     </div>
                   ) : (
-                    <button onClick={() => setConfirmDelete(true)} className="px-3 py-2 rounded-xl text-xs font-black text-rose-500 flex items-center gap-1.5"><Trash2 size={13} /> Remove cycle from fleet</button>
+                    <button onClick={() => setConfirmDelete(true)} className="px-3 py-2 rounded-xl text-xs font-black text-rose-500 flex items-center gap-1.5"><Trash2 size={13} /> Remove this cycle</button>
                   )}
                 </div>
               )}
@@ -484,7 +549,7 @@ function CycleFleetPage() {
 
             <div className="px-5 py-3 border-t border-slate-100">
               <button onClick={saveEdit} disabled={saving} className="w-full h-12 rounded-2xl bg-[#6D2158] text-white text-sm font-black flex items-center justify-center gap-2 disabled:opacity-50">
-                {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} {isNew ? 'Add to fleet' : 'Save'}
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} {isNew ? 'Add cycle' : 'Save'}
               </button>
             </div>
           </div>
@@ -496,7 +561,7 @@ function CycleFleetPage() {
 
 export default function Page() {
   return (
-    <AdminOnly what="Cycle Fleet">
+    <AdminOnly what="Tricycle & Bicycle Tracker">
       <CycleFleetPage />
     </AdminOnly>
   );
