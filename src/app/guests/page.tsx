@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 import { normalizeVilla, extractDepInfo, projectGuestDay } from '@/lib/guestDay';
 import { parseVillas } from '@/app/allocation/lib/constants';
 import { saveMemoSummary } from '@/lib/memoSummary';
+import { isExcelFile, excelFileToCsv } from '@/lib/memoExcel';
 import { isSameGuest, parseOccXml, parseArrivalsXml, parseMemo, parseDelimited, applyOcc, applyArrivals, applyMemo, MEAL_PLAN_CODES, MEMO_GROUPS, type ImportResult } from '@/lib/guestImport';
 
 const TOTAL_VILLAS = 97;
@@ -730,6 +731,15 @@ export default function HousekeepingSummaryPage() {
       if (!file) return;
       setIsProcessing(true);
 
+      // Memo straight from Front Office's Excel (.xlsm / .xlsx): converted to the same CSV text here
+      if (type === 'MEMO_CSV' && isExcelFile(file.name)) {
+          excelFileToCsv(file)
+              .then(csv => processDailyMemoCSV(csv))
+              .catch(err => { toast.error(`Could not read the Excel memo: ${err?.message || err}`); setIsProcessing(false); })
+              .finally(() => { e.target.value = ''; setFileInputKey(prev => prev + 1); });
+          return;
+      }
+
       const reader = new FileReader();
       reader.onload = (evt) => {
           try {
@@ -1063,9 +1073,9 @@ export default function HousekeepingSummaryPage() {
                       {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <UploadCloud size={16}/>} <span>Arrivals XML</span>
                    </button>
 
-                   <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".csv" onChange={(e) => handleFileProcess(e, 'MEMO_CSV')} />
+                   <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".csv,.xlsx,.xlsm,.xls" onChange={(e) => handleFileProcess(e, 'MEMO_CSV')} />
                    <button onClick={() => document.getElementById('fileMemo')?.click()} className="hidden md:flex items-center gap-2 bg-teal-50 border border-teal-200 text-teal-800 hover:bg-teal-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
-                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span>Memo CSV</span>
+                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span>Memo</span>
                    </button>
 
                    <button onClick={() => setIsPasteModalOpen(true)} className="hidden md:flex items-center gap-2 bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">

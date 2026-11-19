@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { isExcelFile, excelFileToCsv } from "@/lib/memoExcel";
 import { supabase } from "@/lib/supabase";
 import { 
   BarChart3, 
@@ -254,6 +255,15 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // The memo's Excel file works too (converted to the same CSV text)
+    if (isExcelFile(file.name)) {
+      excelFileToCsv(file)
+        .then((csv) => setExtractedPreview(parseMemoCSV(csv)))
+        .catch((err: any) => toast.error("Failed to read the Excel memo: " + (err?.message || err)));
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (event) => {
@@ -554,7 +564,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
             <div>
               <h2 className="text-sm font-bold text-slate-800">Daily Operations Stats & Special Villas</h2>
               <p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase tracking-wider">
-                Upload daily memo (.csv) or enter stats manually
+                Upload the daily memo (Excel or CSV) or enter stats manually
               </p>
             </div>
           </div>
@@ -563,7 +573,7 @@ export default function SummaryStatsBoard({ selectedDate, setIsDirty }: SummaryS
             <input
               type="file"
               ref={fileInputRef}
-              accept=".csv"
+              accept=".csv,.xlsx,.xlsm,.xls"
               className="hidden"
               onChange={handleFileUpload}
             />

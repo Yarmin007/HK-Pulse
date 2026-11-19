@@ -77,6 +77,8 @@ export default function HostsProfilePage() {
   const [roleToAdd, setRoleToAdd] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const draftAtOpen = useRef('');      // the popup's values when it opened (to spot unsaved edits)
+  const pressedBackdrop = useRef(false); // press started on the dark background
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
   // --- FETCH ---
@@ -160,16 +162,28 @@ export default function HostsProfilePage() {
   // --- OPEN MODALS ---
   const openHost = (h: Host) => {
     setOriginal(h);
-    setDraft({
+    const d: Draft = {
       host: { ...h },
       displayName: teamConfig.nicknames?.[h.host_id] || '',
       subDept: teamConfig.hostDepartments?.[h.host_id] || '',
       profileType: getProfileType(teamConfig, h.host_id),
       resignedOn: getResignedOn(teamConfig, h.host_id),
-    });
+    };
+    draftAtOpen.current = JSON.stringify(d);
+    setDraft(d);
     setAddingRole(false);
   };
-  const openCreate = () => { setOriginal(null); setDraft(emptyDraft()); setAddingRole(false); };
+  const openCreate = () => { setOriginal(null); const d = emptyDraft(); draftAtOpen.current = JSON.stringify(d); setDraft(d); setAddingRole(false); };
+
+  // The popup only closes from the dark background when the press STARTED there (selecting text or
+  // scrolling inside and letting go outside used to close it), and never silently drops unsaved edits.
+  const backdropClose = (e: React.MouseEvent) => {
+    const started = pressedBackdrop.current;
+    pressedBackdrop.current = false;
+    if (!started || e.target !== e.currentTarget || isSaving || isUploadingImage) return;
+    if (draft && JSON.stringify(draft) !== draftAtOpen.current && !confirm('Close without saving your changes?')) return;
+    closeModal();
+  };
   const closeModal = () => { setDraft(null); setOriginal(null); setAddingRole(false); setNewRoleName(''); };
 
   const patchHost = (p: Partial<Host>) => setDraft(d => (d ? { ...d, host: { ...d.host, ...p } } : d));
@@ -518,7 +532,8 @@ export default function HostsProfilePage() {
 
       {/* PROFILE MODAL (create + edit) */}
       {draft && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-end sm:items-center justify-center sm:p-4" onClick={closeModal}>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-end sm:items-center justify-center sm:p-4"
+          onPointerDown={e => { pressedBackdrop.current = e.target === e.currentTarget; }} onClick={backdropClose}>
           <div className="bg-white w-full sm:max-w-3xl rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[94dvh] sm:max-h-[90vh]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center gap-4 p-5 border-b border-slate-100">
               <button type="button" onClick={() => !isUploadingImage && fileInputRef.current?.click()}
