@@ -23,7 +23,7 @@ import {
 import toast from "react-hot-toast";
 import { isAway } from "@/lib/leavePeriods";
 import { isSpecialTaskRow } from "@/lib/specialTasks";
-import { RIDER_DUTIES, RIDER_SHIFTS, shiftsForDuty, defaultDutyForHost, riderDutyOf, isOffShift, isRiderPoolHost, type RiderDuty } from "@/app/allocation/lib/riders";
+import { RIDER_DUTIES, RIDER_SHIFTS, shiftsForDuty, shiftTimeFor, defaultDutyForHost, riderDutyOf, isOffShift, isRiderPoolHost, type RiderDuty } from "@/app/allocation/lib/riders";
 
 interface Host {
   id: string;
@@ -342,7 +342,22 @@ export default function RidersStepBoard({
 
   // One duty per host per shift: assigning again moves them to the new duty.
   const executeAssignment = (hostId: string, shift: string, task: string, removeOtherAreas: boolean) => {
+    // Runner Split = one runner for the whole day: never together with an AM / PM runner
+    if (task === "Runner") {
+      const otherRunners = allocations.filter((a) => a.area === "riders" && !isOffShift(a.shift) && a.host_id !== hostId && dutyOfAlloc(a) === "Runner");
+      const otherKeys = new Set(otherRunners.map((a) => shiftKeyOf(a.shift || "")));
+      if (shift === "Split" && otherRunners.length) {
+        toast.error("Split is one runner for the whole day. Remove the other runner(s) first.");
+        return;
+      }
+      if (shift !== "Split" && otherKeys.has("Split")) {
+        toast.error("There is a split runner today. Remove them first to use AM / PM runners.");
+        return;
+      }
+    }
     let cleanAllocs = [...allocations];
+    // Moving a runner to / from Split replaces their other runner shift
+    if (task === "Runner") cleanAllocs = cleanAllocs.filter((a) => !(a.host_id === hostId && a.area === "riders" && dutyOfAlloc(a) === "Runner" && (shift === "Split" || shiftKeyOf(a.shift || "") === "Split")));
     if (removeOtherAreas) cleanAllocs = cleanAllocs.filter((a) => a.host_id !== hostId);
     cleanAllocs = cleanAllocs.filter(
       (a) => !(a.host_id === hostId && a.area === "riders" && (isOffShift(a.shift) || shiftKeyOf(a.shift || "") === shift))
@@ -398,14 +413,20 @@ export default function RidersStepBoard({
               : currentPool
                   .filter((h) => !busyThisShift.has(h.id))
                   .sort((x, y) => Number(defaultDutyForHost(y) === duty) - Number(defaultDutyForHost(x) === duty));
+            // Runners: Split (one person, whole day) and AM / PM exclude each other
+            const runnerKeys = duty === "Runner" ? new Set(dutyAllocs.filter((a) => dutyOfAlloc(a) === "Runner").map((a) => shiftKeyOf(a.shift || ""))) : new Set<string>();
+            const runnerBlock = duty !== "Runner" ? ""
+              : sh.key === "Split" ? (runnerKeys.has("Morning") || runnerKeys.has("Afternoon") ? "Not with AM / PM runners: remove them to use one split runner." : assigned.length ? "One split runner covers the day." : "")
+              : runnerKeys.has("Split") ? "The split runner covers the day." : "";
+            const shown = runnerBlock ? [] : candidates;
             return (
-              <div key={sh.key} className="rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
+              <div key={sh.key} className={`rounded-xl border p-2.5 ${runnerBlock && !assigned.length ? "border-dashed border-slate-200 bg-white opacity-70" : "border-slate-100 bg-slate-50/60"}`}>
                 <div className="flex items-center justify-between mb-1.5">
                   <span className="text-[11px] font-black text-slate-700 flex items-center gap-1">
                     {sh.key === "Morning" ? <Sun size={12} className="text-amber-500" /> : sh.key === "Split" ? <Clock size={12} className="text-indigo-500" /> : <Sunset size={12} className="text-orange-500" />}
                     {sh.label}
                   </span>
-                  <span className="text-[10px] font-semibold text-slate-400">{sh.time}</span>
+                  <span className="text-[10px] font-semibold text-slate-400">{shiftTimeFor(duty, sh.key)}</span>
                 </div>
 
                 <div className="space-y-1">
@@ -431,9 +452,10 @@ export default function RidersStepBoard({
                 {joined && candidates.length === 0 && assigned.length === 0 && (
                   <p className="mt-1.5 text-[10px] font-semibold text-slate-400">No one on Public Area {sh.key === "Morning" ? "Morning BOH" : "afternoon"} yet: allocate them above first.</p>
                 )}
-                {candidates.length > 0 && (
+                {runnerBlock && <p className="mt-1 text-[10px] font-semibold text-slate-400">{runnerBlock}</p>}
+                {shown.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
-                    {candidates.map((h) => {
+                    {shown.map((h) => {
                       const off = offReason(h.id);
                       const leave = getHostLeaveRecord(h.id);
                       const usual = defaultDutyForHost(h) === duty;

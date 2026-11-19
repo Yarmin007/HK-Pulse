@@ -13,11 +13,22 @@ export const RIDER_SHIFTS = [
 // Step is a morning-only duty; Runner and Luggage use all three shifts.
 export const shiftsForDuty = (duty: RiderDuty) => (duty === 'Step' ? RIDER_SHIFTS.filter(s => s.key === 'Morning') : RIDER_SHIFTS);
 
-// Runner label on the printed sheet: AM / PM, or Split when one runner covers the whole day.
+// Runner hours differ from the other duties. Split = ONE runner for the whole day (two blocks),
+// so a split runner never sits with an AM / PM runner.
+const RUNNER_TIMES: Record<string, string> = {
+  Morning: '08:00 – 16:00',
+  Afternoon: '15:00 – 23:00',
+  Split: '08:00 – 14:00 · 18:00 – 21:00',
+};
+export const shiftTimeFor = (duty: RiderDuty, key: string) =>
+  (duty === 'Runner' ? RUNNER_TIMES[key] : undefined) || RIDER_SHIFTS.find(s => s.key === key)?.time || '';
+
+// Runner label on the printed sheet, from the shift they are on: AM / PM / Split.
+// (Older rows with a single runner and no split shift still print as Split.)
 export const runnerShiftLabel = (shift: string | null | undefined, runnerCount: number) => {
-  if (runnerCount <= 1) return 'Split';
   const s = String(shift || '').toLowerCase();
   if (s.includes('split')) return 'Split';
+  if (runnerCount <= 1 && !s.includes('afternoon') && !s.includes('morning')) return 'Split';
   if (s.includes('afternoon') || s.includes('14:30') || s.includes('pm')) return 'PM';
   return 'AM';
 };
