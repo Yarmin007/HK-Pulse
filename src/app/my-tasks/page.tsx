@@ -13,11 +13,13 @@ import { getDhakaTime, getDhakaDateStr } from '@/lib/dateUtils';
 // --- SUBCOMPONENTS ---
 import RoomCleaningGrid from './_components/RoomCleaningGrid';
 import ExpiryAuditGrid from './_components/ExpiryAuditGrid';
+import { ACTIVE_ROUND_TYPE, isVillaToken } from '@/lib/expiryRounds';
 import AssetInventoryGrid from './_components/AssetInventoryGrid';
 import MinibarInventoryGrid from './_components/MinibarInventoryGrid';
 import LinenInventoryGrid from './_components/LinenInventoryGrid';
 import BottleInventoryGrid from './_components/BottleInventoryGrid';
 import RequestsBanner from './_components/RequestsBanner';
+import PantryBanner from './_components/PantryBanner';
 
 export type Host = { id: string; full_name: string; host_id: string; role?: string; };
 export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; sort_order?: number; };
@@ -146,6 +148,8 @@ export default function MyTasksHub() {
   const [isExpiryMode, setIsExpiryMode] = useState(false);
   const [expiryTargets, setExpiryTargets] = useState<any[]>([]);
   const [expiryAssignedVillas, setExpiryAssignedVillas] = useState<string[]>([]);
+  // Expiry removals run in rounds (start date), not months: the live round is set on the Expiry & Refills page
+  const [expiryRound, setExpiryRound] = useState('');
   const [expiryVillaData, setExpiryVillaData] = useState<Record<string, any>>({}); 
   const [expiryCounts, setExpiryCounts] = useState<Record<string, number>>({});
   const [refillCounts, setRefillCounts] = useState<Record<string, number>>({});
@@ -378,7 +382,7 @@ export default function MyTasksHub() {
           }
       }
 
-      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas', 'expiry_inv_status', 'hidden_mb_item']);
+      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas', 'expiry_inv_status', 'hidden_mb_item', ACTIVE_ROUND_TYPE]);
       const mbStatus = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
       const mbPeriod = constData?.find(c => c.type === 'mb_active_period')?.label;
       const expiryStatus = constData?.find(c => c.type === 'expiry_inv_status')?.label || 'CLOSED';
@@ -408,25 +412,24 @@ export default function MyTasksHub() {
       }
       setUniversalTasks(taskMap);
 
-      const { data: expiryTargetData } = await supabase.from('hsk_expiry_targets').select('*').eq('month_period', currentMonth);
+      const round = String(constData?.find(c => c.type === ACTIVE_ROUND_TYPE)?.label || '').trim() || currentMonth;
+      setExpiryRound(round);
+      const { data: expiryTargetData } = await supabase.from('hsk_expiry_targets').select('*').eq('month_period', round);
       if (expiryTargetData) setExpiryTargets(expiryTargetData);
       
-      const { data: allExpAlloc } = await supabase.from('hsk_expiry_allocations').select('host_id, villas').eq('month_period', currentMonth);
-      const expiryAllocRes = allExpAlloc?.find(a => a.host_id === host.id || a.host_id === host.host_id);
-      
-      if (expiryStatus === 'OPEN' && expiryAllocRes && expiryAllocRes.villas) {
-          setExpiryAssignedVillas(parseVillas(expiryAllocRes.villas, dvList));
-      } else {
-          setExpiryAssignedVillas([]);
-      }
+      const { data: allExpAlloc } = await supabase.from('hsk_expiry_allocations').select('host_id, villas').eq('month_period', round);
+      // Same person may be listed by id and by SSL no: join both
+      const myExpAlloc = (allExpAlloc || []).filter(a => a.host_id === host.id || a.host_id === host.host_id);
+      // Real villas only (never "FOH", "Night Duty"… from a non-villa duty)
+      const myExpVillas = [...new Set(myExpAlloc.flatMap(a => parseVillas(a.villas || '', dvList)).filter(isVillaToken))];
+      setExpiryAssignedVillas(expiryStatus === 'OPEN' ? myExpVillas : []);
 
-      const { data: allExpRem } = await supabase.from('hsk_expiry_removals').select('*').eq('month_period', currentMonth);
-      const expiryRemRes = allExpRem?.filter(r => r.host_id === host.id || r.host_id === host.host_id);
-      if (expiryRemRes) {
-          const villaMap: Record<string, any> = {};
-          expiryRemRes.forEach((r: any) => { villaMap[r.villa_number] = r; });
-          setExpiryVillaData(villaMap);
-      }
+      // Every log for my villas, whoever made it: a villa moved to me keeps its real status
+      const { data: allExpRem } = await supabase.from('hsk_expiry_removals').select('*').eq('month_period', round);
+      const mine = new Set(myExpVillas);
+      const villaMap: Record<string, any> = {};
+      (allExpRem || []).forEach((r: any) => { if (mine.has(r.villa_number)) villaMap[r.villa_number] = r; });
+      setExpiryVillaData(villaMap);
       if (!silent) setIsLoading(false);
   }, []);
 
@@ -811,6 +814,8 @@ export default function MyTasksHub() {
   };
 
   const handleEditRemovals = () => {
+      // Only before the coordinator dispatches; after that the log belongs to the coordinator
+      if (expiryVillaData[selectedVilla]?.status !== 'Removed') { toast.error('Already dispatched. Ask the coordinator to change it.'); return; }
       const restoredCounts: Record<string, number> = {};
       const currentRemovals = expiryVillaData[selectedVilla]?.removal_data || [];
       currentRemovals.forEach((item: any) => { restoredCounts[item.article_number] = item.qty; });
@@ -824,8 +829,16 @@ export default function MyTasksHub() {
               const target = groupedTargets.expiry.find((t: any) => t.article_number === artNo) || groupedTargets.refill.find((t: any) => t.article_number === artNo);
               return { article_number: artNo, name: target?.article_name, qty, refilled_qty: 0 };
           });
-      const payload = { month_period: getDhakaDateStr().substring(0, 7), villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name, removal_data: statusOverride === 'All OK' ? [] : removalData, status: statusOverride, logged_at: new Date().toISOString() };
-      const { data: existing } = await supabase.from('hsk_expiry_removals').select('id').match({ villa_number: selectedVilla, month_period: getDhakaDateStr().substring(0, 7) }).maybeSingle();
+      const round = expiryRound || getDhakaDateStr().substring(0, 7);
+      const payload = { month_period: round, villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name, removal_data: statusOverride === 'All OK' ? [] : removalData, status: statusOverride, logged_at: new Date().toISOString() };
+      const { data: existing } = await supabase.from('hsk_expiry_removals').select('id, status, host_name').match({ villa_number: selectedVilla, month_period: round }).maybeSingle();
+      // Never overwrite a villa the coordinator has already dispatched / that was refilled
+      if (existing && (existing.status === 'Sent' || existing.status === 'Refilled')) {
+          setIsSaving(false);
+          toast.error(`V${selectedVilla} was already ${existing.status === 'Sent' ? 'dispatched' : 'refilled'}${existing.host_name ? ` (${existing.host_name})` : ''}. Ask the coordinator to change it.`);
+          if (currentHost) loadInitialData(currentHost, false, true);
+          return;
+      }
 
       let error;
       if (existing && existing.id) { error = (await supabase.from('hsk_expiry_removals').update(payload).eq('id', existing.id)).error; } 
@@ -844,7 +857,7 @@ export default function MyTasksHub() {
       setIsSaving(true);
       const currentData = expiryVillaData[selectedVilla]?.removal_data || [];
       const updatedRemovalData = currentData.map((item: any) => ({ ...item, refilled_qty: refillCounts[item.article_number] !== undefined ? refillCounts[item.article_number] : item.qty }));
-      const { error } = await supabase.from('hsk_expiry_removals').update({ status: 'Refilled', removal_data: updatedRemovalData, logged_at: new Date().toISOString() }).match({ villa_number: selectedVilla, month_period: getDhakaDateStr().substring(0, 7) });
+      const { error } = await supabase.from('hsk_expiry_removals').update({ status: 'Refilled', removal_data: updatedRemovalData, logged_at: new Date().toISOString() }).match({ villa_number: selectedVilla, month_period: expiryRound || getDhakaDateStr().substring(0, 7) });
 
       setIsSaving(false);
       if (error) { toast.error("Failed to confirm refill."); } 
@@ -974,6 +987,7 @@ export default function MyTasksHub() {
                 ) : (
                     <div className="space-y-6">
                         <RequestsBanner villas={myCleaningVillas} />
+                        <PantryBanner villas={myCleaningVillas} />
                         <RoomCleaningGrid 
                             displayVillas={displayVillas}
                             myCleaningVillas={myCleaningVillas}

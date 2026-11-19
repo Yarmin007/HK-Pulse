@@ -5,7 +5,7 @@ import {
   CheckCircle, Clock, X, Save, Filter, ArrowRight, AlertCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { format, differenceInDays, parseISO } from 'date-fns';
+import { format, differenceInCalendarDays, parseISO } from 'date-fns';
 
 // --- TYPES ---
 type MasterItem = {
@@ -118,7 +118,8 @@ export default function ExpiryPage() {
 
   // --- HELPERS ---
   const getDaysRemaining = (dateStr: string) => {
-    return differenceInDays(parseISO(dateStr), new Date());
+    // Whole calendar days: expiring today = 0 ("Expires today"), yesterday = -1 (expired)
+    return differenceInCalendarDays(parseISO(dateStr), new Date());
   };
 
   // Logic: < 0 is Expired, < 60 days is Warning (2 Months), > 60 is Safe
@@ -211,7 +212,7 @@ export default function ExpiryPage() {
                                           <div>
                                               <p className="text-xs font-black tracking-wide">{format(parseISO(date.expiry_date), 'dd MMM yyyy')}</p>
                                               <p className="text-[9px] uppercase font-bold opacity-80">
-                                                  {days < 0 ? `${Math.abs(days)} Days Expired` : `${days} Days Remaining`}
+                                                  {days < 0 ? `${Math.abs(days)} Days Expired` : days === 0 ? 'Expires today' : `${days} Days Remaining`}
                                               </p>
                                           </div>
                                       </div>

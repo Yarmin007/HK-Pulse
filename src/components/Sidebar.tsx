@@ -9,7 +9,7 @@ import {
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
   Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Key, Plane, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
   Eye, ArrowLeft, UserCog, Search, Bike, WashingMachine, Bug
-} from "lucide-react";
+, Package } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getDhakaDateStr } from "@/lib/dateUtils";
 import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
@@ -84,6 +84,7 @@ const MINIBAR_ITEMS = [
 const OPERATIONS_ITEMS = [
   { name: "Order Tracking", icon: ShoppingCart, path: "/orders", key: "orders" },
   { name: "Store Requests", icon: Warehouse, path: "/store-requests", key: "orders" },
+  { name: "Pantry Supply", icon: Package, path: "/pantry", key: "pantry" },
   { name: "Cost Saving", icon: TrendingUp, path: "/cost-saving", key: "cost-saving" },
   { name: "Print Hub", icon: Printer, path: "/print", key: "print" },
   { name: "Settings", icon: Settings, path: "/settings", key: "settings" },
@@ -105,6 +106,7 @@ const STAFF_PROFILE_ITEMS = [
 
 const STAFF_MENU_ITEMS = [
   { name: "Guest List", icon: Users, path: "/guests", key: "allocation" }, 
+  { name: "Pantry Request", icon: Package, path: "/pantry/request", key: "allocation" },
   { name: "My Schedule", icon: Calendar, path: "/schedule", key: "schedule" },
 ];
 
@@ -284,7 +286,9 @@ export default function Sidebar() {
       return isLaundryToday ? [withRequests[0], { name: "Laundry Production", icon: WashingMachine, path: "/laundry/production" }, ...withRequests.slice(1)] : withRequests;
   }, [isPoolAttendant, isRunnerToday, isVaToday, isLaundryToday]);
 
-  const dynamicStaffMenuItems = STAFF_MENU_ITEMS;
+  // Housemen / store / supervisors also work the Pantry Supply board
+  const canWorkPantry = /house\s*m|store|supervisor|asst|assistant|executive|manager|coordinator/.test(`${roleLower} ${deptLower}`) || canAccess("pantry");
+  const dynamicStaffMenuItems = canWorkPantry ? [...STAFF_MENU_ITEMS, { name: "Pantry Supply", icon: Package, path: "/pantry", key: "pantry" }] : STAFF_MENU_ITEMS;
 
   const ADMIN_BOTTOM_TABS = [
       { name: "Dashboard", icon: LayoutDashboard, path: "/" },

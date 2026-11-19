@@ -8,6 +8,7 @@ interface ExpiryAuditGridProps {
     step: 2 | 3;
     // Step 2 specific
     expiryAssignedVillas?: string[];
+    roundLabel?: string;
     expiryVillaData?: Record<string, any>;
     startExpiryAudit?: (v: string) => void;
     // Step 3 specific
@@ -25,7 +26,7 @@ interface ExpiryAuditGridProps {
 }
 
 export default function ExpiryAuditGrid({
-    step, expiryAssignedVillas, expiryVillaData, startExpiryAudit, selectedVilla, handleEditRemovals, 
+    step, expiryAssignedVillas, roundLabel, expiryVillaData, startExpiryAudit, selectedVilla, handleEditRemovals, 
     groupedTargets, expiryCounts, refillCounts, updateExpiryCount, updateRefillCount, masterCatalog, 
     submitExpiryRemovals, confirmExpiryRefill, isSaving
 }: ExpiryAuditGridProps) {
@@ -38,7 +39,7 @@ export default function ExpiryAuditGrid({
                 <div className="mb-4 flex justify-between items-center">
                     <div>
                         <h3 className="text-lg md:text-xl font-bold text-rose-800 mb-1 flex items-center gap-2"><AlertTriangle size={18}/> Expiry & Refills</h3>
-                        <p className="text-[10px] md:text-xs text-rose-600/70 font-medium">Check these villas for targeted items.</p>
+                        <p className="text-[10px] md:text-xs text-rose-600/70 font-medium">Check these villas for targeted items{roundLabel ? ` · round of ${roundLabel}` : ''}.</p>
                     </div>
                 </div>
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
@@ -79,9 +80,9 @@ export default function ExpiryAuditGrid({
             // --- AWAITING REFILL / REFILLED SCREEN ---
             <div className="space-y-4 pb-40 animate-in fade-in">
                 <div className={`${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-50 border-indigo-200' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'} border p-6 md:p-8 rounded-3xl text-center shadow-sm mb-6 relative`}>
-                    <button onClick={handleEditRemovals} className={`absolute top-4 right-4 p-2 bg-white rounded-full shadow-sm transition-colors ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600 hover:bg-indigo-100' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600 hover:bg-blue-100' : 'text-amber-600 hover:bg-amber-100'}`} title="Edit Removals">
+                    {expiryVillaData[selectedVilla]?.status === 'Removed' && <button onClick={handleEditRemovals} className={`absolute top-4 right-4 p-2 bg-white rounded-full shadow-sm transition-colors ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'text-indigo-600 hover:bg-indigo-100' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'text-blue-600 hover:bg-blue-100' : 'text-amber-600 hover:bg-amber-100'}`} title="Edit Removals">
                         <Edit3 size={14} />
-                    </button>
+                    </button>}
                     <div className={`w-12 h-12 md:w-16 md:h-16 rounded-full flex items-center justify-center mx-auto mb-3 ${expiryVillaData[selectedVilla]?.status === 'Sent' ? 'bg-indigo-100 text-indigo-600' : expiryVillaData[selectedVilla]?.status === 'Refilled' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
                         {expiryVillaData[selectedVilla]?.status === 'Sent' ? <CheckCircle size={24}/> : expiryVillaData[selectedVilla]?.status === 'Refilled' ? <CheckCircle2 size={24}/> : <AlertTriangle size={24}/>}
                     </div>
