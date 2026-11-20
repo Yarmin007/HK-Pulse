@@ -26,7 +26,7 @@ export const CODE_COLORS: Record<string, [string, string]> = {
 
 export const CODE_NAMES: Record<string, string> = {
   P: 'Present', O: 'Off', AL: 'Annual leave', PH: 'Public holiday', RR: 'R&R', SL: 'Sick leave',
-  NP: 'No pay', A: 'Absent', PA: 'Paternity', MA: 'Maternity', OT: 'Overtime', RO: 'Replacement off',
+  NP: 'No pay', A: 'Absent', CL: 'Circumcision leave', PA: 'Paternity', MA: 'Maternity', OT: 'Overtime', RO: 'Replacement off',
 };
 
 export const FRIDAY_FILL = '#FFF1F2';

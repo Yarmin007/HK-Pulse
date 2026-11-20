@@ -341,7 +341,7 @@ export default function MonthlyAttendanceSheet() {
       } finally { setExporting(false); }
   };
 
-  const legendCodes = ['O', 'AL', 'PH', 'SL', 'RO', 'RR', 'EL', 'NP', 'A'];
+  const legendCodes = ['O', 'AL', 'PH', 'SL', 'RO', 'RR', 'CL', 'NP', 'A'];
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 flex flex-col p-3 md:p-6 gap-3">
