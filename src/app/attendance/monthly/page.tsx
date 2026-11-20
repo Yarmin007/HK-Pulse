@@ -9,30 +9,15 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { computeLeaveBalancesRPC } from '@/lib/payrollMath';
 import { loadRosterChecks, saveRosterCheck, checkState, type RosterCheck } from '@/lib/rosterChecks';
+import RosterPrint, { type Paper } from './RosterPrint';
+import { exportRosterXlsx } from './rosterExcel';
+import { CODE_COLORS, CODE_NAMES, FRIDAY_FILL, PH_FILL, type RosterCell, type RosterGroup } from './rosterShared';
 
 const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT', 'RO'];
 
-const STATUS_COLORS: Record<string, string> = {
-  'O': 'text-emerald-600 bg-emerald-50',
-  'OFF': 'text-emerald-600 bg-emerald-50',
-  'AL': 'text-cyan-600 bg-cyan-50', 
-  'VAC': 'text-cyan-600 bg-cyan-50', 
-  'PH': 'text-blue-600 bg-blue-50', 
-  'RR': 'text-fuchsia-600 bg-fuchsia-50',
-  'SL': 'text-rose-600 bg-rose-50',
-  'NP': 'text-rose-800 bg-rose-200',
-  'A': 'text-white bg-red-500',
-  'RO': 'text-yellow-800 bg-yellow-200',
-  'CL': 'text-amber-700 bg-amber-50',
-  'PA': 'text-teal-700 bg-teal-50',
-  'MA': 'text-pink-700 bg-pink-50',
-  'EL': 'text-orange-700 bg-orange-50',
-  'OT': 'text-slate-800 bg-slate-100',
-};
 
 // The sheet runs 21st → 20th and is named after the month of the 20th: from the 21st, today is in next month's sheet.
 const sheetMonthFor = (d: Date) => (d.getDate() >= 21 ? new Date(d.getFullYear(), d.getMonth() + 1, 1) : new Date(d.getFullYear(), d.getMonth(), 1));
-const csvCell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 
 export default function MonthlyAttendanceSheet() {
   const [isLoading, setIsLoading] = useState(true);
@@ -54,6 +39,7 @@ export default function MonthlyAttendanceSheet() {
   const [checkFilter, setCheckFilter] = useState<'all' | 'sheet' | 'fusion'>('all');
   const [checkEdit, setCheckEdit] = useState<{ host: any; sheet: string; fusion: string } | null>(null);
   const [savingCheck, setSavingCheck] = useState(false);
+  const [paper, setPaper] = useState<Paper>('A4');
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -303,281 +289,272 @@ export default function MonthlyAttendanceSheet() {
   const departmentsList = Object.keys(groupedHosts).sort((a, b) => subDeptOrder(a) - subDeptOrder(b) || a.localeCompare(b));
   const fmtUpto = (d: string) => (d ? format(parseISO(d), 'dd/MM') : '');
   const displayedDepartments = selectedDepartment === 'All' ? departmentsList : departmentsList.filter(d => d === selectedDepartment);
+  const deptCount = useMemo(() => {
+      const m: Record<string, number> = {};
+      hosts.forEach(h => { const d = hostSubDept(teamConfig, h); m[d] = (m[d] || 0) + 1; });
+      return m;
+  }, [hosts, teamConfig]);
 
   const handlePrevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
   const handleNextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+  const thisRoster = sheetMonthFor(new Date());
+  const isThisRoster = thisRoster.getFullYear() === year && thisRoster.getMonth() === month;
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
 
-  const handlePrint = () => window.print();
+  // ---- shared by print + Excel ----
+  const phDates = useMemo(() => new Set(publicHolidays.map((p: any) => p.date)), [publicHolidays]);
+  const phName = (d: string) => publicHolidays.find((p: any) => p.date === d)?.name;
+  const cellOf = (hostId: string, dateStr: string): RosterCell => {
+      const host = hosts.find(h => h.host_id === hostId);
+      const joined = host?.joining_date ? String(host.joining_date).slice(0, 10) : '';
+      const lastDay = host?.status === 'Resigned' ? getResignedOn(teamConfig, hostId) : '';
+      if (joined && dateStr < joined) return { code: '', worked: false, blocked: 'join' };
+      if (lastDay && dateStr > lastDay) return { code: '', worked: false, blocked: 'left' };
+      const r = attMap.get(`${hostId}_${dateStr}`);
+      return { code: String(r?.status_code || '').trim().toUpperCase(), worked: !!r && isWorkedLeave(r), note: r?.shift_note || '', blocked: '' };
+  };
+  const visibleGroups: RosterGroup[] = displayedDepartments.map(dep => ({ dep, hosts: groupedHosts[dep] }));
+  const periodTitle = format(currentDate, 'MMMM yyyy');
+  const periodRange = `21 ${format(new Date(year, month - 1, 21), 'MMM')} – 20 ${format(new Date(year, month, 20), 'MMM yyyy')}`;
+  const scopeLabel = selectedDepartment === 'All' ? 'All sub-departments' : selectedDepartment;
+  const cfLabel = format(parseISO(prevTargetStr), 'dd MMM');
+  const balLabel = format(parseISO(targetDateStr), 'dd MMM');
 
-  const handleExportCSV = () => {
-      let csv = 'Sub-department,Host ID,Name,Role,';
-      monthDates.forEach(d => csv += `${format(parseISO(d), 'dd MMM')},`);
-      csv += `CF OFF (${prevTargetStr}),CF PH,OFF (${targetDateStr}),PH,AL,Sheet checked to,Fusion updated to\n`;
-
-      displayedDepartments.forEach(dep => {
-          groupedHosts[dep].forEach(host => {
-              csv += `${csvCell(dep)},${csvCell(host.host_id)},${csvCell(host.full_name)},${csvCell(host.role)},`;
-              const joined = host.joining_date ? String(host.joining_date).slice(0, 10) : '';
-              const lastDay = host.status === 'Resigned' ? getResignedOn(teamConfig, host.host_id) : '';
-              monthDates.forEach(dateStr => {
-                  if ((joined && dateStr < joined) || (lastDay && dateStr > lastDay)) { csv += ','; return; }
-                  const record = attMap.get(`${host.host_id}_${dateStr}`);
-                  const worked = !!record && isWorkedLeave(record);
-                  const val = record?.status_code || '';
-                  csv += `${val === 'P' ? '' : worked ? `${val}(W)` : val},`;
-              });
-              const c = checks[host.host_id];
-              csv += `${host.cfOff || 0},${host.cfPH || 0},${host.balOff || 0},${host.balPH || 0},${host.balAL || 0},${c?.sheet_upto || ''},${c?.fusion_upto || ''}\n`;
-          });
-      });
-
-      const blob = new Blob([csv], { type: 'text/csv' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Roster_${selectedDepartment === 'All' ? 'All' : selectedDepartment}_${format(currentDate, 'MMM_yyyy')}.csv`;
-      a.click();
-      toast.success("Downloaded CSV");
+  const handlePrint = () => {
+      if (!visibleGroups.length) return toast.error('Nobody to print');
+      window.print();
   };
 
+  const [exporting, setExporting] = useState(false);
+  const handleExportXlsx = async () => {
+      if (!visibleGroups.length) return toast.error('Nobody to export');
+      setExporting(true);
+      try {
+          await exportRosterXlsx({
+              fileName: `Roster ${selectedDepartment === 'All' ? 'All' : selectedDepartment} ${format(currentDate, 'MMM yyyy')}.xlsx`,
+              title: periodTitle, range: periodRange, scope: scopeLabel, dates: monthDates, phDates, groups: visibleGroups,
+              cellOf, cfLabel, balLabel, periodEnd, checks,
+          });
+          toast.success('Excel downloaded');
+      } catch (e: any) {
+          toast.error(`Export failed: ${e?.message || 'error'}`);
+      } finally { setExporting(false); }
+  };
+
+  const legendCodes = ['O', 'AL', 'PH', 'SL', 'RO', 'RR', 'EL', 'NP', 'A'];
+
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 flex flex-col p-4 md:p-8">
-      
-      {/* HEADER (Hidden in Print) */}
-      <div className="print:hidden flex flex-col xl:flex-row justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200 mb-4 gap-4">
-        <div className="flex items-center gap-4 w-full xl:w-auto">
-            <Link href="/attendance" className="p-2 bg-slate-100 hover:bg-slate-200 rounded-full transition-colors shrink-0">
-                <ArrowLeft size={20} className="text-slate-600"/>
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 flex flex-col p-3 md:p-6 gap-3">
+
+      {/* HEADER */}
+      <div className="bg-white p-3 md:p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-col lg:flex-row lg:items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+            <Link href="/attendance" className="w-10 h-10 bg-slate-100 hover:bg-slate-200 rounded-xl flex items-center justify-center shrink-0" aria-label="Back to attendance">
+                <ArrowLeft size={18} className="text-slate-600"/>
             </Link>
-            <div>
-                <h1 className="text-xl font-black text-[#6D2158] uppercase tracking-tight">Monthly Roster</h1>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-0.5">21st to 20th Planner</p>
+            <div className="min-w-0">
+                <h1 className="text-lg font-black text-[#6D2158] tracking-tight">Monthly Roster</h1>
+                <p className="text-[11px] font-bold text-slate-400">Roster runs 21st to 20th · tap a day to change it</p>
             </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4 w-full xl:w-auto justify-end">
-            <div className="flex items-center bg-slate-100 p-1.5 rounded-xl border border-slate-200 shadow-inner">
-                <button onClick={handlePrevMonth} className="p-2 hover:bg-white rounded-lg text-slate-500 transition-colors"><ChevronLeft size={16}/></button>
-                <div className="w-56 text-center font-black text-[#6D2158] uppercase tracking-widest leading-tight">
-                    <div className="text-sm">{format(currentDate, 'MMMM yyyy')}</div>
-                    <div className="text-[9px] text-slate-500 mt-0.5">21 {format(new Date(year, month - 1, 21), 'MMM')} - 20 {format(new Date(year, month, 20), 'MMM')}</div>
+        <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+                <button onClick={handlePrevMonth} className="w-9 h-9 hover:bg-white rounded-lg text-slate-500 flex items-center justify-center" aria-label="Previous roster"><ChevronLeft size={16}/></button>
+                <div className="w-44 text-center leading-tight">
+                    <div className="text-sm font-black text-[#6D2158]">{periodTitle}</div>
+                    <div className="text-[10px] font-bold text-slate-500">{periodRange}</div>
                 </div>
-                <button onClick={handleNextMonth} className="p-2 hover:bg-white rounded-lg text-slate-500 transition-colors"><ChevronRight size={16}/></button>
+                <button onClick={handleNextMonth} className="w-9 h-9 hover:bg-white rounded-lg text-slate-500 flex items-center justify-center" aria-label="Next roster"><ChevronRight size={16}/></button>
             </div>
-
-            <button onClick={handleExportCSV} className="bg-emerald-100 text-emerald-800 p-2.5 rounded-xl hover:bg-emerald-200 transition-colors shadow-sm" title="Export to Excel">
-                <Download size={18}/>
+            {!isThisRoster && (
+                <button onClick={() => setCurrentDate(thisRoster)} className="h-10 px-3 rounded-xl bg-amber-100 text-amber-800 text-xs font-black">This roster</button>
+            )}
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200" title="Paper size for printing">
+                {(['A4', 'A3'] as const).map(pz => (
+                    <button key={pz} onClick={() => setPaper(pz)} className={`h-8 px-2.5 rounded-lg text-[11px] font-black ${paper === pz ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500'}`}>{pz}</button>
+                ))}
+            </div>
+            <button onClick={handlePrint} disabled={isLoading} className="h-10 px-3.5 bg-[#6D2158] text-white rounded-xl hover:bg-[#5a1b49] text-xs font-black flex items-center gap-1.5 disabled:opacity-40">
+                <Printer size={15}/> Print
             </button>
-            <button onClick={handlePrint} className="bg-[#6D2158] text-white p-2.5 rounded-xl hover:bg-[#5a1b49] transition-colors shadow-md" title="Print Sheet">
-                <Printer size={18}/>
+            <button onClick={handleExportXlsx} disabled={isLoading || exporting} className="h-10 px-3.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 text-xs font-black flex items-center gap-1.5 disabled:opacity-40">
+                {exporting ? <Loader2 size={15} className="animate-spin"/> : <Download size={15}/>} Excel
             </button>
         </div>
       </div>
 
-      {/* SEARCH + CHECKLIST SUMMARY */}
       {!isLoading && (
-          <div className="print:hidden flex flex-wrap items-center gap-2 mb-3">
+        <div className="bg-white p-3 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-2.5">
+          {/* Search + checklist */}
+          <div className="flex flex-wrap items-center gap-2">
               <div className="relative w-full sm:w-72">
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Find one host: name, nickname or SSL"
-                      className="w-full h-10 pl-9 pr-8 rounded-xl bg-white border border-slate-200 text-xs font-bold outline-none focus:border-[#6D2158]" />
+                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Find a host: name, nickname or SSL"
+                      className="w-full h-10 pl-9 pr-8 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold outline-none focus:border-[#6D2158] focus:bg-white" />
                   {search && <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600" aria-label="Clear search"><X size={14} /></button>}
               </div>
-              <div className="flex flex-wrap items-center gap-1 bg-white border border-slate-200 rounded-xl p-1">
+              <div className="flex flex-wrap items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl p-1">
                   {([['all', 'All', checkTotals.total], ['sheet', 'Sheet pending', checkTotals.total - checkTotals.sheet], ['fusion', 'Fusion pending', checkTotals.total - checkTotals.fusion]] as const).map(([k, label, n]) => (
                       <button key={k} onClick={() => setCheckFilter(k)} title={k === 'sheet' ? 'Signing sheet not checked to the 20th' : k === 'fusion' ? 'Fusion not updated to the 20th' : undefined}
-                          className={`h-8 px-3 rounded-lg text-[11px] font-black flex items-center gap-1.5 ${checkFilter === k ? 'bg-[#6D2158] text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
-                          {label}<span className={`px-1.5 rounded-md text-[10px] ${checkFilter === k ? 'bg-white/20' : 'bg-slate-100'}`}>{n}</span>
+                          className={`h-8 px-3 rounded-lg text-[11px] font-black flex items-center gap-1.5 ${checkFilter === k ? 'bg-[#6D2158] text-white' : 'text-slate-500 hover:bg-white'}`}>
+                          {label}<span className={`px-1.5 rounded-md text-[10px] ${checkFilter === k ? 'bg-white/20' : 'bg-slate-200/70'}`}>{n}</span>
                       </button>
                   ))}
               </div>
-              <p className="text-[11px] font-bold text-slate-400">Sheet {checkTotals.sheet}/{checkTotals.total} · Fusion {checkTotals.fusion}/{checkTotals.total} done to {format(parseISO(periodEnd), 'dd MMM')}</p>
+              <div className="ml-auto flex items-center gap-3 text-[11px] font-bold text-slate-500">
+                  <span className="flex items-center gap-1.5"><FileCheck2 size={13} className="text-emerald-600"/> Sheet {checkTotals.sheet}/{checkTotals.total}</span>
+                  <span className="flex items-center gap-1.5"><MonitorCheck size={13} className="text-emerald-600"/> Fusion {checkTotals.fusion}/{checkTotals.total}</span>
+              </div>
           </div>
-      )}
-
-      {/* DEPARTMENT FILTER BUTTONS */}
-      {!isLoading && (
-          <div className="print:hidden flex flex-wrap gap-2 mb-4">
-              <button 
-                  onClick={() => setSelectedDepartment('All')}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${selectedDepartment === 'All' ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'}`}
-              >
-                  All Departments
-              </button>
-              {allDepartments.map(dep => (
-                  <button 
-                      key={dep}
-                      onClick={() => setSelectedDepartment(dep)}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${selectedDepartment === dep ? 'bg-[#6D2158] text-white shadow-md' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'}`}
-                  >
-                      {dep}
+          {/* Sub-departments */}
+          <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
+              {[['All', hosts.length] as const, ...allDepartments.map(d => [d, deptCount[d] || 0] as const)].map(([dep, n]) => (
+                  <button key={dep} onClick={() => setSelectedDepartment(dep)}
+                      className={`h-8 px-3 rounded-lg text-[11px] font-black whitespace-nowrap flex items-center gap-1.5 ${selectedDepartment === dep ? 'bg-[#6D2158] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                      {dep === 'All' ? 'All sub-departments' : dep}<span className={`text-[10px] ${selectedDepartment === dep ? 'text-white/70' : 'text-slate-400'}`}>{n}</span>
                   </button>
               ))}
           </div>
+          {/* Legend */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-bold text-slate-500">
+              {legendCodes.map(c => (
+                  <span key={c} className="flex items-center gap-1">
+                      <span className="inline-flex min-w-[22px] h-4 px-1 items-center justify-center rounded text-[9px] font-black" style={{ background: CODE_COLORS[c][0], color: CODE_COLORS[c][1] }}>{c}</span>{CODE_NAMES[c]}
+                  </span>
+              ))}
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" /> Leave day worked (earns RO)</span>
+              <span className="flex items-center gap-1"><span className="w-4 h-3 rounded-sm bg-slate-800" /> Not joined</span>
+              <span>Blank = present</span>
+          </div>
+        </div>
       )}
 
-      {/* PRINT HEADER (Only visible in Print) */}
-      <div className="hidden print:flex justify-between items-end mb-4 border-b-2 border-slate-800 pb-2">
-          <div>
-              <h1 className="text-2xl font-black uppercase tracking-tight text-black">Monthly Roster & Balances</h1>
-              <p className="text-sm font-bold uppercase tracking-widest text-slate-600">
-                  {selectedDepartment === 'All' ? 'Housekeeping Department' : selectedDepartment}
-              </p>
-          </div>
-          <div className="text-right">
-              <div className="text-xl font-black uppercase tracking-widest text-black">
-                  {format(currentDate, 'MMMM yyyy')}
-              </div>
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">
-                  21 {format(new Date(year, month - 1, 21), 'MMM')} - 20 {format(new Date(year, month, 20), 'MMM')}
-              </div>
-          </div>
-      </div>
-
       {/* SPREADSHEET */}
-      <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden print:border-none print:shadow-none print:rounded-none">
+      <div className="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           {isLoading ? (
               <div className="h-64 flex flex-col items-center justify-center text-slate-400">
-                  <Loader2 size={32} className="animate-spin text-[#6D2158] mb-4"/>
-                  <span className="font-bold tracking-widest uppercase text-xs">Generating Roster...</span>
+                  <Loader2 size={28} className="animate-spin text-[#6D2158] mb-3"/>
+                  <span className="font-bold text-xs">Loading the roster…</span>
+              </div>
+          ) : !visibleGroups.length ? (
+              <div className="h-48 flex flex-col items-center justify-center text-slate-400 gap-2">
+                  <Search size={22} />
+                  <span className="font-bold text-sm">{q ? `No host matches “${search}”` : checkFilter !== 'all' ? 'Everyone is done for this roster' : 'Nobody on this roster'}</span>
+                  {(q || checkFilter !== 'all' || selectedDepartment !== 'All') && <button onClick={() => { setSearch(''); setCheckFilter('all'); setSelectedDepartment('All'); }} className="text-xs font-black text-[#6D2158]">Show everyone</button>}
               </div>
           ) : (
-              <div className="overflow-x-auto w-full print:overflow-visible">
-                  <table className="w-full table-auto border-collapse text-[10px] bg-white print:text-[8px] select-none">
-                      <thead className="bg-slate-100 print:bg-slate-200">
+              <div className="overflow-auto w-full max-h-[calc(100vh-220px)]">
+                  <table className="w-full border-separate border-spacing-0 text-[11px] bg-white select-none">
+                      <thead>
                           <tr>
-                              <th className="border border-slate-300 px-2 py-1 text-left font-black uppercase tracking-widest min-w-[140px] md:w-[15%] print:w-40 sticky left-0 z-10 bg-slate-100 print:bg-slate-200">Host Name</th>
-                              
-                              {/* Highlighted Date Headers */}
+                              <th className="sticky top-0 left-0 z-30 bg-slate-100 border-b border-r border-slate-300 px-3 py-1.5 text-left font-black text-slate-500 text-[10px] uppercase tracking-wider min-w-[170px]">Host</th>
                               {monthDates.map(dateStr => {
                                   const d = parseISO(dateStr);
-                                  const isFriday = format(d, 'E') === 'Fri';
-                                  const isPH = publicHolidays.some(ph => ph.date === dateStr);
-                                  const phName = isPH ? publicHolidays.find(ph => ph.date === dateStr)?.name : undefined;
-
-                                  let bgClass = 'bg-slate-100 text-slate-500 print:bg-slate-200 print:text-slate-600';
-                                  if (isPH) bgClass = 'bg-blue-200 text-blue-800 print:bg-blue-100';
-                                  else if (isFriday) bgClass = 'bg-rose-200 text-rose-800 print:bg-rose-100';
-
+                                  const isFriday = d.getDay() === 5;
+                                  const isPH = phDates.has(dateStr);
+                                  const isToday = dateStr === todayStr;
+                                  const cls = isToday ? 'bg-amber-300 text-amber-950' : isPH ? 'bg-blue-100 text-blue-800' : isFriday ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-500';
                                   return (
-                                      <th key={dateStr} title={phName} className={`border border-slate-300 px-0.5 py-1 text-center min-w-[22px] font-black ${bgClass}`}>
-                                          <div className="leading-none">{format(d, 'dd')}</div>
-                                          <div className="text-[7px] uppercase mt-0.5">{format(d, 'EE')}</div>
+                                      <th key={dateStr} title={isPH ? phName(dateStr) : isToday ? 'Today' : undefined} className={`sticky top-0 z-20 border-b border-r border-slate-300 px-0 py-1 text-center min-w-[28px] font-black ${cls}`}>
+                                          <div className="text-[11px] leading-none">{format(d, 'd')}</div>
+                                          <div className="text-[8px] uppercase mt-0.5 font-bold opacity-80">{format(d, 'EEEEE')}</div>
                                       </th>
                                   );
                               })}
-
-                              {/* Balances: carried forward from the previous roster, and at the end of this one */}
-                              <th className="border-y border-r border-l-2 border-slate-300 p-1 text-center font-black text-emerald-700 bg-emerald-50 leading-tight min-w-[34px]" title={`OFF balance carried forward (end of previous roster, ${format(parseISO(prevTargetStr), 'dd MMM')})`}>CF<br/>OFF</th>
-                              <th className="border border-slate-300 p-1 text-center font-black text-blue-700 bg-blue-50 leading-tight min-w-[34px]" title={`PH balance carried forward (end of previous roster, ${format(parseISO(prevTargetStr), 'dd MMM')})`}>CF<br/>PH</th>
-                              <th className="border-y border-r border-l-2 border-slate-300 p-1 text-center font-black text-emerald-800 bg-emerald-200 leading-tight min-w-[34px]" title={`OFF balance at the end of this roster (${format(parseISO(targetDateStr), 'dd MMM')})`}>OFF<br/>BAL</th>
-                              <th className="border border-slate-300 p-1 text-center font-black text-blue-800 bg-blue-200 leading-tight min-w-[34px]" title={`PH balance at the end of this roster (${format(parseISO(targetDateStr), 'dd MMM')})`}>PH<br/>BAL</th>
-                              <th className="border border-slate-300 p-1 text-center font-black text-cyan-800 bg-cyan-200 leading-tight min-w-[38px]" title={`Annual leave balance (${format(parseISO(targetDateStr), 'dd MMM')})`}>AL<br/>BAL</th>
-                              <th className="print:hidden border-y border-r border-l-2 border-slate-300 p-1 text-center font-black text-slate-600 bg-slate-100 leading-tight min-w-[92px]" title="Signing sheet checked / Fusion updated, up to">CHECK</th>
+                              <th className="sticky top-0 z-20 border-b border-r border-l-2 border-l-slate-400 border-slate-300 px-1 py-1 text-center font-black text-emerald-700 bg-emerald-50 leading-tight min-w-[38px] text-[10px]" title={`OFF carried forward from the previous roster (${cfLabel})`}>CF<br/>OFF</th>
+                              <th className="sticky top-0 z-20 border-b border-r border-slate-300 px-1 py-1 text-center font-black text-blue-700 bg-blue-50 leading-tight min-w-[38px] text-[10px]" title={`PH carried forward from the previous roster (${cfLabel})`}>CF<br/>PH</th>
+                              <th className="sticky top-0 z-20 border-b border-r border-l-2 border-l-slate-400 border-slate-300 px-1 py-1 text-center font-black text-emerald-800 bg-emerald-100 leading-tight min-w-[38px] text-[10px]" title={`OFF balance at ${balLabel}`}>OFF<br/>BAL</th>
+                              <th className="sticky top-0 z-20 border-b border-r border-slate-300 px-1 py-1 text-center font-black text-blue-800 bg-blue-100 leading-tight min-w-[38px] text-[10px]" title={`PH balance at ${balLabel}`}>PH<br/>BAL</th>
+                              <th className="sticky top-0 z-20 border-b border-r border-slate-300 px-1 py-1 text-center font-black text-cyan-800 bg-cyan-100 leading-tight min-w-[42px] text-[10px]" title={`Annual leave balance at ${balLabel}`}>AL<br/>BAL</th>
+                              <th className="sticky top-0 z-20 border-b border-l-2 border-l-slate-400 border-slate-300 px-1 py-1 text-center font-black text-slate-500 bg-slate-100 min-w-[96px] text-[10px] uppercase tracking-wider" title="Signing sheet checked / Fusion updated, up to">Check</th>
                           </tr>
                       </thead>
-                      <tbody className="font-medium text-slate-700">
-                          {displayedDepartments.map(dep => (
+                      <tbody className="text-slate-700">
+                          {visibleGroups.map(({ dep, hosts: list }) => {
+                              const sheetDone = list.filter(h => checkState(checks[h.host_id]?.sheet_upto || '', periodEnd) === 'done').length;
+                              const fusionDone = list.filter(h => checkState(checks[h.host_id]?.fusion_upto || '', periodEnd) === 'done').length;
+                              return (
                               <React.Fragment key={dep}>
-                                  {/* Department Subheader */}
-                                  <tr className="bg-slate-200 print:bg-slate-300">
-                                      <td colSpan={monthDates.length + 7} className="p-2 border border-slate-300">
-                                          <div className="font-black text-slate-800 uppercase tracking-widest text-xs flex items-center gap-2">
-                                              <CalendarDays size={14} className="text-[#6D2158]"/> {dep}
+                                  <tr>
+                                      <td className="sticky left-0 z-10 bg-slate-200 border-b border-slate-300 px-3 py-1.5">
+                                          <div className="font-black text-[#6D2158] uppercase tracking-wider text-[11px] flex items-center gap-1.5 whitespace-nowrap">
+                                              <CalendarDays size={13}/> {dep} <span className="text-slate-500 font-bold normal-case tracking-normal">· {list.length}</span>
                                           </div>
+                                      </td>
+                                      <td colSpan={monthDates.length + 6} className="bg-slate-200 border-b border-slate-300 px-3 text-right text-[10px] font-bold text-slate-500 whitespace-nowrap">
+                                          Sheet {sheetDone}/{list.length} · Fusion {fusionDone}/{list.length}
                                       </td>
                                   </tr>
 
-                                  {/* Staff Rows */}
-                                  {groupedHosts[dep].map(host => {
-                                      const lastDay = host.status === 'Resigned' ? getResignedOn(teamConfig, host.host_id) : '';
-
+                                  {list.map((host: any) => {
+                                      const nick = teamConfig.nicknames?.[host.host_id];
+                                      const c = checks[host.host_id];
+                                      const chip = (upto: string, label: string, Icon: React.ElementType) => {
+                                          const st = checkState(upto, periodEnd);
+                                          return (
+                                              <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[9px] font-black whitespace-nowrap ${st === 'done' ? 'bg-emerald-100 text-emerald-700' : st === 'part' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-400'}`}>
+                                                  {st === 'done' ? <Check size={9} /> : <Icon size={9} />} {label}{st === 'part' ? ` ${fmtUpto(upto)}` : ''}
+                                              </span>
+                                          );
+                                      };
                                       return (
-                                          <tr key={host.host_id} className="hover:bg-slate-50 print:break-inside-avoid">
-                                              <td className="border border-slate-200 px-2 py-1 sticky left-0 z-10 bg-white print:bg-transparent">
-                                                  <div className="font-bold truncate w-32 md:w-full" title={host.full_name}>{host.full_name}</div>
-                                                  <div className="text-[8px] text-slate-400 uppercase tracking-widest truncate">{host.host_id}</div>
+                                          <tr key={host.host_id} className="group">
+                                              <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 border-b border-r border-slate-200 px-3 py-1">
+                                                  <div className="font-bold text-slate-800 truncate max-w-[200px]" title={host.full_name}>{host.full_name}</div>
+                                                  <div className="text-[9px] text-slate-400 font-semibold truncate max-w-[200px]">{host.host_id}{nick ? ` · ${nick}` : ''} · {host.role}</div>
                                               </td>
 
-                                              {/* Interactive Cells */}
                                               {monthDates.map(dateStr => {
-                                                  const record = attMap.get(`${host.host_id}_${dateStr}`);
-                                                  const val = record?.status_code || '';
-                                                  // Leave on paper but "working day" in the comment → counted as worked
-                                                  const worked = !!record && isWorkedLeave(record);
-                                                  const joinedOn = host.joining_date ? String(host.joining_date).slice(0, 10) : '';
-                                                  if (joinedOn && dateStr < joinedOn) {
-                                                      return <td key={dateStr} title="Not joined yet" className="border border-slate-800 p-0 bg-slate-900 print:bg-black box-border" />;
-                                                  }
-                                                  if (lastDay && dateStr > lastDay) {
-                                                      return <td key={dateStr} title={`Resigned · last working day ${lastDay}`} className="border border-slate-300 p-0 bg-slate-300 print:bg-slate-400 box-border" />;
-                                                  }
-
-                                                  const displayVal = val === 'P' ? '' : val;
-                                                  const colorClass = STATUS_COLORS[val] || '';
-
+                                                  const cell = cellOf(host.host_id, dateStr);
+                                                  if (cell.blocked === 'join') return <td key={dateStr} title="Not joined yet" className="border-b border-r border-slate-700 bg-slate-800" />;
+                                                  if (cell.blocked === 'left') return <td key={dateStr} title="After last working day" className="border-b border-r border-slate-300 bg-slate-300" />;
+                                                  const col = CODE_COLORS[cell.code];
                                                   const d = parseISO(dateStr);
-                                                  const isFriday = format(d, 'E') === 'Fri';
-                                                  const isPH = publicHolidays.some(ph => ph.date === dateStr);
-                                                  
-                                                  let cellBg = '';
-                                                  if (!val) {
-                                                      if (isPH) cellBg = 'bg-blue-50/50 print:bg-transparent';
-                                                      else if (isFriday) cellBg = 'bg-rose-50/50 print:bg-transparent';
-                                                  }
-
+                                                  const isToday = dateStr === todayStr;
+                                                  const plainBg = isToday ? '#FEF9C3' : phDates.has(dateStr) ? PH_FILL : d.getDay() === 5 ? FRIDAY_FILL : undefined;
+                                                  const tip = [`${host.full_name} · ${format(d, 'EEE d MMM')}`, cell.code ? (CODE_NAMES[cell.code] || cell.code) : 'Not filled', cell.worked ? 'worked: earns 1 RO' : '', cell.note || ''].filter(Boolean).join('\n');
                                                   return (
-                                                      <td 
-                                                          key={dateStr} 
-                                                          onClick={() => setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: val })}
-                                                          className={`relative border border-slate-200 p-0 text-center font-bold print:border-slate-400 cursor-pointer hover:ring-2 hover:ring-inset hover:ring-[#6D2158] transition-all box-border ${colorClass} ${cellBg}`}
-                                                      >
-                                                          <div className="w-full h-full min-h-[24px] flex flex-col items-center justify-center leading-none" title={worked ? 'Worked (comment says working day) — earns 1 RO' : record?.shift_note || undefined}>
-                                                              {displayVal}
-                                                              {worked && <span className="absolute bottom-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500 print:bg-black" />}
-                                                          </div>
+                                                      <td key={dateStr} title={tip}
+                                                          onClick={() => setEditCell({ hostId: host.host_id, hostName: host.full_name, dateStr, status: cell.code })}
+                                                          className="relative border-b border-r border-slate-200 p-0 text-center font-black cursor-pointer hover:outline hover:outline-2 hover:-outline-offset-2 hover:outline-[#6D2158]"
+                                                          style={{ background: col ? col[0] : plainBg, color: col ? col[1] : undefined }}>
+                                                          <div className="h-7 flex items-center justify-center text-[10px]">{cell.code === 'P' ? '' : cell.code}</div>
+                                                          {cell.worked && <span className="absolute bottom-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500" />}
+                                                          {cell.note && !cell.worked && <span className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-rose-400" />}
                                                       </td>
                                                   );
                                               })}
 
-                                              {/* Balances */}
-                                              <td className="border-y border-r border-l-2 border-slate-300 p-1 text-center font-bold bg-emerald-50/60 text-emerald-700">{host.cfOff || '0'}</td>
-                                              <td className="border border-slate-200 p-1 text-center font-bold bg-blue-50/60 text-blue-700">{host.cfPH || '0'}</td>
-                                              <td className="border-y border-r border-l-2 border-slate-300 p-1 text-center font-black bg-emerald-100/60 text-emerald-800">{host.balOff || '0'}</td>
-                                              <td className="border border-slate-200 p-1 text-center font-black bg-blue-100/60 text-blue-800">{host.balPH || '0'}</td>
-                                              <td className="border border-slate-200 p-1 text-center font-black bg-cyan-100/60 text-cyan-800">{host.balAL || '0'}</td>
-
-                                              {/* Checklist: signing sheet checked / Fusion updated, up to */}
-                                              {(() => {
-                                                  const c = checks[host.host_id];
-                                                  const chip = (upto: string, label: string, Icon: React.ElementType) => {
-                                                      const st = checkState(upto, periodEnd);
-                                                      return (
-                                                          <span className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-black whitespace-nowrap ${st === 'done' ? 'bg-emerald-100 text-emerald-700' : st === 'part' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-400'}`}>
-                                                              {st === 'done' ? <Check size={9} /> : <Icon size={9} />} {label}{st === 'part' ? ` ${fmtUpto(upto)}` : ''}
-                                                          </span>
-                                                      );
-                                                  };
-                                                  return (
-                                                      <td className="print:hidden border-y border-r border-l-2 border-slate-300 p-0.5 text-center">
-                                                          <button onClick={() => openCheck(host)} className="w-full flex flex-col items-center gap-0.5 py-0.5 rounded hover:bg-slate-50"
-                                                              title={[c?.sheet_upto ? `Sheet checked to ${c.sheet_upto}${c.sheet_by ? ` by ${c.sheet_by}` : ''}` : 'Sheet not checked', c?.fusion_upto ? `Fusion updated to ${c.fusion_upto}${c.fusion_by ? ` by ${c.fusion_by}` : ''}` : 'Fusion not updated'].join('\n')}>
-                                                              {chip(c?.sheet_upto || '', 'Sheet', FileCheck2)}
-                                                              {chip(c?.fusion_upto || '', 'Fusion', MonitorCheck)}
-                                                          </button>
-                                                      </td>
-                                                  );
-                                              })()}
+                                              <td className="border-b border-r border-l-2 border-l-slate-400 border-slate-200 px-1 text-center font-bold bg-emerald-50 text-emerald-700">{host.cfOff || '0'}</td>
+                                              <td className="border-b border-r border-slate-200 px-1 text-center font-bold bg-blue-50 text-blue-700">{host.cfPH || '0'}</td>
+                                              <td className="border-b border-r border-l-2 border-l-slate-400 border-slate-200 px-1 text-center font-black bg-emerald-100 text-emerald-800">{host.balOff || '0'}</td>
+                                              <td className="border-b border-r border-slate-200 px-1 text-center font-black bg-blue-100 text-blue-800">{host.balPH || '0'}</td>
+                                              <td className="border-b border-r border-slate-200 px-1 text-center font-black bg-cyan-100 text-cyan-800">{host.balAL || '0'}</td>
+                                              <td className="border-b border-l-2 border-l-slate-400 border-slate-200 p-0.5 text-center">
+                                                  <button onClick={() => openCheck(host)} className="w-full flex flex-col items-center gap-0.5 py-0.5 rounded-lg hover:bg-slate-100"
+                                                      title={[c?.sheet_upto ? `Sheet checked to ${c.sheet_upto}${c.sheet_by ? ` by ${c.sheet_by}` : ''}` : 'Sheet not checked', c?.fusion_upto ? `Fusion updated to ${c.fusion_upto}${c.fusion_by ? ` by ${c.fusion_by}` : ''}` : 'Fusion not updated'].join('\n')}>
+                                                      {chip(c?.sheet_upto || '', 'Sheet', FileCheck2)}
+                                                      {chip(c?.fusion_upto || '', 'Fusion', MonitorCheck)}
+                                                  </button>
+                                              </td>
                                           </tr>
                                       );
                                   })}
                               </React.Fragment>
-                          ))}
+                              );
+                          })}
                       </tbody>
                   </table>
               </div>
           )}
       </div>
+
+      {/* PRINT-ONLY SHEET (rendered into <body>) */}
+      {!isLoading && (
+          <RosterPrint paper={paper} title={periodTitle} range={periodRange} scope={scopeLabel} dates={monthDates} phDates={phDates}
+              groups={visibleGroups} cellOf={cellOf} cfLabel={cfLabel} balLabel={balLabel} printedBy={me()} />
+      )}
 
       {/* CHECKLIST MODAL */}
       {checkEdit && (() => {
@@ -635,52 +612,37 @@ export default function MonthlyAttendanceSheet() {
 
       {/* EDITOR MODAL */}
       {editCell && (
-          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-6 animate-in zoom-in-95 flex flex-col relative">
-                  <div className="flex justify-between items-start mb-6 border-b border-slate-100 pb-4">
+          <div className="fixed inset-0 z-[200] bg-black/50 flex items-center justify-center p-4 animate-in fade-in duration-150" onClick={e => { if (e.target === e.currentTarget) setEditCell(null); }}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-5 animate-in zoom-in-95 flex flex-col gap-4">
+                  <div className="flex justify-between items-start">
                       <div>
-                          <h3 className="font-black text-xl text-[#6D2158] flex items-center gap-2">
-                              {format(parseISO(editCell.dateStr), 'dd MMM yyyy')}
-                          </h3>
-                          <p className="text-xs font-bold text-slate-400 mt-1 uppercase tracking-widest">{editCell.hostName}</p>
+                          <h3 className="font-black text-lg text-[#6D2158]">{format(parseISO(editCell.dateStr), 'EEEE d MMM yyyy')}</h3>
+                          <p className="text-xs font-bold text-slate-400 mt-0.5">{editCell.hostName}{phDates.has(editCell.dateStr) ? ` · PH: ${phName(editCell.dateStr) || 'public holiday'}` : ''}</p>
                       </div>
-                      <button onClick={() => setEditCell(null)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-colors text-slate-500"><X size={18}/></button>
+                      <button onClick={() => setEditCell(null)} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 text-slate-500" aria-label="Close"><X size={18}/></button>
                   </div>
-                  
-                  <div className="mb-6">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-2">Set Status Code</label>
-                      <div className="grid grid-cols-4 gap-2">
-                          {STATUS_CODES.map(code => {
-                              const isSelected = editCell.status === code || (code === 'O' && editCell.status === 'OFF') || (code === 'AL' && editCell.status === 'VAC');
-                              return (
-                                  <button 
-                                      key={code}
-                                      onClick={() => handleSaveCell(code)}
-                                      className={`p-3 rounded-xl text-xs font-black border-2 transition-all active:scale-95 ${isSelected ? 'border-[#6D2158] bg-[#6D2158]/10 text-[#6D2158] shadow-sm' : 'border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200'}`}
-                                  >
-                                      {code}
-                                  </button>
-                              );
-                          })}
-                          <button 
-                              onClick={() => handleSaveCell('')}
-                              className={`p-3 rounded-xl text-xs font-black border-2 transition-all active:scale-95 ${editCell.status === '' ? 'border-rose-500 bg-rose-50 text-rose-600 shadow-sm' : 'border-slate-100 bg-slate-50 text-slate-500 hover:border-rose-200 hover:text-rose-500'}`}
-                              title="Clear Entry"
-                          >
-                              CLR
-                          </button>
-                      </div>
+                  <div className="grid grid-cols-4 gap-2">
+                      {STATUS_CODES.map(code => {
+                          const isSelected = editCell.status === code || (code === 'O' && editCell.status === 'OFF') || (code === 'AL' && editCell.status === 'VAC');
+                          const col = CODE_COLORS[code];
+                          return (
+                              <button key={code} onClick={() => handleSaveCell(code)} title={CODE_NAMES[code] || code}
+                                  className={`h-12 rounded-xl text-xs font-black border-2 transition-all active:scale-95 flex flex-col items-center justify-center leading-none ${isSelected ? 'border-[#6D2158] ring-2 ring-[#6D2158]/20' : 'border-transparent hover:border-slate-300'}`}
+                                  style={{ background: col ? col[0] : '#F1F5F9', color: col ? col[1] : '#334155' }}>
+                                  {code}
+                                  {CODE_NAMES[code] && <span className="text-[8px] font-bold opacity-70 mt-1 truncate max-w-full px-1">{CODE_NAMES[code]}</span>}
+                              </button>
+                          );
+                      })}
+                      <button onClick={() => handleSaveCell('')} title="Clear this day"
+                          className={`h-12 rounded-xl text-xs font-black border-2 transition-all active:scale-95 ${editCell.status === '' ? 'border-rose-500 bg-rose-50 text-rose-600' : 'border-transparent bg-slate-50 text-rose-500 hover:border-rose-200'}`}>
+                          Clear
+                      </button>
                   </div>
+                  <p className="text-[10px] font-semibold text-slate-400">Notes and “working day” comments are kept. Edit them on the main attendance sheet.</p>
               </div>
           </div>
       )}
-
-      <style dangerouslySetInnerHTML={{__html: `
-        @media print {
-            body { background: white; margin: 0; padding: 0; }
-            @page { size: A4 landscape; margin: 10mm; }
-        }
-      `}} />
     </div>
   );
 }
