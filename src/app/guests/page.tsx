@@ -4,7 +4,7 @@ import {
   Edit3, X, ChevronLeft, ChevronRight,
   FileSpreadsheet, Heart, ArrowRight, AlertTriangle, CheckCircle, Loader2, RotateCw, UploadCloud, User, Baby, ArrowRightLeft, Clock,
   Shirt, Trash2, Plus, Search, Eye, EyeOff, BedDouble, ShieldCheck, Link2, Check
-} from 'lucide-react';
+, History } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import { normalizeVilla, extractDepInfo, projectGuestDay } from '@/lib/guestDay';
@@ -729,14 +729,39 @@ export default function HousekeepingSummaryPage() {
   const handleFileProcess = (e: React.ChangeEvent<HTMLInputElement>, type: 'ARRDEP_XML' | 'OCC' | 'MEMO_CSV') => {
       const file = e.target.files?.[0];
       if (!file) return;
+      processFile(file, type, () => { e.target.value = ''; setFileInputKey(prev => prev + 1); });
+  };
+
+  // Drag & drop: drop the memo (Excel or CSV) anywhere on the page instead of locating it
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = React.useRef(0);
+  const hasFiles = (e: React.DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  const onDragEnter = (e: React.DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current += 1; setDragOver(true); };
+  const onDragOver = (e: React.DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
+  const onDragLeave = (e: React.DragEvent) => { if (!hasFiles(e)) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) setDragOver(false); };
+  const onDrop = (e: React.DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0; setDragOver(false);
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length !== 1) { toast.error('Drop one memo file at a time'); return; }
+      const file = files[0];
+      if (isProcessing) { toast.error('Still importing, try again in a moment'); return; }
+      if (isExcelFile(file.name) || /\.csv$/i.test(file.name)) { processFile(file, 'MEMO_CSV'); return; }
+      if (/\.xml$/i.test(file.name)) { toast.error('XML reports: use the OCC or Arrivals button (they need to know which one it is)'); return; }
+      toast.error(`${file.name} is not a memo (Excel or CSV)`);
+  };
+
+  const processFile = (file: File, type: 'ARRDEP_XML' | 'OCC' | 'MEMO_CSV', done: () => void = () => {}) => {
       setIsProcessing(true);
+      if (type === 'MEMO_CSV') toast(`Reading ${file.name}…`, { duration: 2000 });
 
       // Memo straight from Front Office's Excel (.xlsm / .xlsx): converted to the same CSV text here
       if (type === 'MEMO_CSV' && isExcelFile(file.name)) {
           excelFileToCsv(file)
               .then(csv => processDailyMemoCSV(csv))
               .catch(err => { toast.error(`Could not read the Excel memo: ${err?.message || err}`); setIsProcessing(false); })
-              .finally(() => { e.target.value = ''; setFileInputKey(prev => prev + 1); });
+              .finally(done);
           return;
       }
 
@@ -755,8 +780,7 @@ export default function HousekeepingSummaryPage() {
               toast.error("Error parsing file. Please verify export format.");
               setIsProcessing(false);
           }
-          e.target.value = '';
-          setFileInputKey(prev => prev + 1);
+          done();
       };
 
       // Excel saves the memo CSV as Windows-1252; read it that way so accented names and quotes survive
@@ -1019,7 +1043,17 @@ export default function HousekeepingSummaryPage() {
   }, [masterList, statusFilter, searchQuery]);
 
   return (
-    <div className="min-h-screen bg-slate-100/70 p-4 md:p-6 pb-32 font-sans text-slate-800">
+    <div className="min-h-screen bg-slate-100/70 p-4 md:p-6 pb-32 font-sans text-slate-800"
+      onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {dragOver && (
+        <div className="fixed inset-0 z-[2000] bg-teal-900/40 backdrop-blur-[2px] flex items-center justify-center p-6 pointer-events-none">
+          <div className="bg-white rounded-3xl border-4 border-dashed border-teal-500 px-10 py-12 text-center shadow-2xl max-w-md w-full">
+            <FileSpreadsheet size={40} className="mx-auto text-teal-600 mb-3" />
+            <p className="text-xl font-black text-slate-800">Drop the memo here</p>
+            <p className="text-sm font-semibold text-slate-500 mt-1">ArrDep Memo · Excel (.xlsm / .xlsx) or CSV · for {selectedDate.split('-').reverse().join('/')}</p>
+          </div>
+        </div>
+      )}
       
       {/* OPERA PMS HEADER */}
       <div className="flex flex-col xl:flex-row justify-between items-center mb-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm gap-4">
@@ -1075,8 +1109,11 @@ export default function HousekeepingSummaryPage() {
 
                    <input key={`memo-${fileInputKey}`} type="file" id="fileMemo" className="hidden" accept=".csv,.xlsx,.xlsm,.xls" onChange={(e) => handleFileProcess(e, 'MEMO_CSV')} />
                    <button onClick={() => document.getElementById('fileMemo')?.click()} className="hidden md:flex items-center gap-2 bg-teal-50 border border-teal-200 text-teal-800 hover:bg-teal-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
-                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span>Memo</span>
+                      {isProcessing ? <Loader2 size={16} className="animate-spin"/> : <FileSpreadsheet size={16}/>} <span>Memo</span><span className="hidden lg:inline text-[10px] font-semibold opacity-60">or drop</span>
                    </button>
+                   <a href="/guests/history" className="hidden md:flex items-center gap-2 bg-white border border-slate-200 text-[#6D2158] hover:bg-[#6D2158] hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm">
+                      <History size={16}/> <span>History</span>
+                   </a>
 
                    <button onClick={() => setIsPasteModalOpen(true)} className="hidden md:flex items-center gap-2 bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer">
                       <FileSpreadsheet size={16}/> <span>Paste Memo</span>

@@ -8,7 +8,7 @@ import { supabase } from '@/lib/supabase';
 import toast from 'react-hot-toast';
 import Image from 'next/image';
 import {
-  PROFILE_TYPES, getProfileType, getResignedOn, renameHostKey,
+  PROFILE_TYPES, getProfileType, getResignedOn, renameHostKey, SUB_DEPARTMENTS, hostSubDept, boardAreaFor,
   type ProfileType, type TeamConfig,
 } from '@/lib/hostProfile';
 
@@ -102,7 +102,8 @@ export default function HostsProfilePage() {
     });
     roles.sort((a, b) => a.rank - b.rank);
     setDesignations(roles);
-    setSubDepts(depts.sort((a, b) => a.localeCompare(b)));
+    // The six sub-departments, in their fixed order (attendance sheets group by them)
+    setSubDepts([...SUB_DEPARTMENTS]);
 
     const rankOf = new Map(roles.map(r => [r.name.toLowerCase(), r.rank]));
     const hosts = ((hostRes.data || []) as Host[]).sort((a, b) => {
@@ -165,7 +166,7 @@ export default function HostsProfilePage() {
     const d: Draft = {
       host: { ...h },
       displayName: teamConfig.nicknames?.[h.host_id] || '',
-      subDept: teamConfig.hostDepartments?.[h.host_id] || '',
+      subDept: (() => { const d = hostSubDept(teamConfig, h); return d === 'Unassigned' ? '' : d; })(),
       profileType: getProfileType(teamConfig, h.host_id),
       resignedOn: getResignedOn(teamConfig, h.host_id),
     };
@@ -265,15 +266,27 @@ export default function HostsProfilePage() {
     return m;
   }, [hostList]);
 
+  // "1715", "ssl1715", "SSl 1715" → "SSL 1715"; "int 132" → "INT 0132". Anything else is returned trimmed.
+  const normalizeSsl = (raw: string) => {
+    const m = raw.trim().match(/^(ssl|int|tf)?[\s\-_.]*(\d+)$/i);
+    if (!m) return raw.trim();
+    return `${(m[1] || 'SSL').toUpperCase()} ${m[2].padStart(4, '0')}`;
+  };
+
   // --- SAVE PROFILE ---
   const handleSave = async () => {
     if (!draft) return;
     const h = draft.host;
     const fullName = (h.full_name || '').trim();
-    const hostId = (h.host_id || '').trim();
     if (!fullName) return toast.error('Full name is required');
-    if (!hostId) return toast.error('SSL No is required');
+    if (!(h.host_id || '').trim()) return toast.error('SSL No is required');
     if (!h.role) return toast.error('Designation is required');
+    // Permanent hosts must have a proper "SSL 1234" number ("1715" or "ssl1715" is tidied to "SSL 1715").
+    // Interns and taskforce may keep their INT / TF number.
+    const hostId = draft.profileType === 'PERMANENT' ? normalizeSsl(h.host_id || '') : (h.host_id || '').trim();
+    if (draft.profileType === 'PERMANENT' && !/^SSL \d{4,}$/.test(hostId) && !(/^(INT|TF) \d+$/.test(hostId) && /intern|taskforce/i.test(h.role))) {
+      return toast.error('Permanent hosts need an SSL No like "SSL 1234"');
+    }
     const isResigned = h.status === 'Resigned';
     if (isResigned && !draft.resignedOn) return toast.error('Set the last working day');
     if (hostList.some(x => x.host_id.trim().toLowerCase() === hostId.toLowerCase() && x.id !== original?.id)) {
@@ -283,6 +296,8 @@ export default function HostsProfilePage() {
     setIsSaving(true);
     try {
       const prevSubDept = original ? (teamConfig.hostDepartments?.[original.host_id] || '') : '';
+      // The allocation boards keep their own working area; only pass on a sub-department that maps to one board
+      const boardArea = draft.subDept && draft.subDept !== prevSubDept ? boardAreaFor(draft.subDept) : null;
       const row = {
         full_name: fullName,
         host_id: hostId,
@@ -296,7 +311,7 @@ export default function HostsProfilePage() {
         joining_date: h.joining_date || null,
         image_url: h.image_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName)}&background=6D2158&color=fff`,
         // Allocation boards group by this column; keep it in step with the sub-department chosen here.
-        ...(draft.subDept && draft.subDept !== prevSubDept ? { sub_department: draft.subDept } : {}),
+        ...(boardArea ? { sub_department: boardArea } : {}),
       };
 
       if (original) {
@@ -310,6 +325,12 @@ export default function HostsProfilePage() {
         if (row.host_id !== original.host_id) uni.ssl_no = row.host_id;
         if (row.status !== original.status) uni.status = isResigned ? 'Resigned' : 'Active';
         if (Object.keys(uni).length) await supabase.from('hsk_laundry_uniforms').update(uni).eq('ssl_no', original.host_id);
+
+        // Attendance is kept by SSL No: move it to the new number, or the sheets lose this person's days
+        if (row.host_id !== original.host_id) {
+          const { error: attErr } = await supabase.from('hsk_attendance').update({ host_id: row.host_id }).eq('host_id', original.host_id);
+          if (attErr) toast.error(`Attendance not moved to ${row.host_id}: ${attErr.message}`);
+        }
 
         await updateConfig(cfg => applyHostSettings(renameHostKey(cfg, original.host_id, hostId), hostId, draft, isResigned));
         toast.success('Profile saved');
@@ -558,6 +579,7 @@ export default function HostsProfilePage() {
               <div>
                 <label className={label}>SSL No</label>
                 <input className={`${input} font-mono`} value={draft.host.host_id || ''} onChange={e => patchHost({ host_id: e.target.value })} placeholder="SSL 1234" />
+                {draft.profileType === 'PERMANENT' && <p className="text-[10px] text-slate-500 mt-1">Required for permanent hosts: SSL and 4 digits (typing 1715 saves as SSL 1715)</p>}
               </div>
               <div>
                 <label className={label}>Designation</label>

@@ -76,3 +76,44 @@ export const shortHostName = (
   const parts = String(h?.full_name || '').replace(/[^\p{L}\s'-]/gu, ' ').trim().split(/\s+/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : fallback;
 };
+
+// ---------------------------------------------------------------------------
+// Sub-departments (Host Profiles → Sub-department). Attendance, Monthly Roster, Leave Clearance and the
+// dashboard's team leave list group people by these, in this order.
+// (The allocation boards keep their own working area in hsk_hosts.sub_department.)
+// ---------------------------------------------------------------------------
+export const SUB_DEPARTMENTS = ['HK Admin', 'Landscaping & Garden', 'Laundry & Tailor', 'PA', 'Pool, Runner & Housemate', 'Room Attendant'] as const;
+
+// Old names / designations → one of the six
+const groupFromText = (raw?: string | null): string => {
+  const s = String(raw || '').toLowerCase();
+  if (!s.trim() || s.trim() === 'general') return '';
+  if (/garden|landscap|land use/.test(s)) return 'Landscaping & Garden';
+  if (/laundry|tailor|seamstress|linen|valet/.test(s)) return 'Laundry & Tailor';
+  if (/villa|room att|^va$|housekeeping attendant/.test(s)) return 'Room Attendant';
+  if (/water|pool|rider|runner|step|house ?mate|porter|luggage|buggy/.test(s)) return 'Pool, Runner & Housemate';
+  if (/public|^pa$|\bpa\b/.test(s)) return 'PA';
+  if (/admin|office|coord|super|executive|manager|desk|asst/.test(s)) return 'HK Admin';
+  return '';
+};
+
+/** The person's sub-department: the one set on their profile, else worked out from older settings and the designation. */
+export const hostSubDept = (
+  cfg: TeamConfig | null | undefined,
+  host: { host_id: string; role?: string | null; sub_department?: string | null },
+): string => {
+  const set = String(cfg?.hostDepartments?.[host.host_id] || '').trim();
+  if ((SUB_DEPARTMENTS as readonly string[]).includes(set)) return set;
+  // Garden Supervisor / Landscape Manager belong with the garden team, not HK Admin
+  if (/garden|landscap|land use/i.test(String(host.role || ''))) return 'Landscaping & Garden';
+  return groupFromText(set) || groupFromText(host.sub_department) || groupFromText(host.role) || 'Unassigned';
+};
+
+export const subDeptOrder = (d: string) => { const i = (SUB_DEPARTMENTS as readonly string[]).indexOf(d); return i < 0 ? 99 : i; };
+
+/**
+ * What the allocation boards should get in hsk_hosts.sub_department when a profile's sub-department changes.
+ * Mixed groups (Laundry & Tailor, Pool, Runner & Housemate) are left alone: the board can't tell which part.
+ */
+export const boardAreaFor = (subDept: string): string | null =>
+  ({ 'HK Admin': 'Admin', 'Landscaping & Garden': 'Garden', PA: 'Public Area', 'Room Attendant': 'Room Attendant' } as Record<string, string>)[subDept] || null;

@@ -9,6 +9,7 @@ import {
   X, ArrowDownWideNarrow, ArrowUpNarrowWide, CheckCircle2, Users,
 } from 'lucide-react';
 import { fetchROEvents } from '@/lib/attendanceData';
+import { hostSubDept, subDeptOrder } from '@/lib/hostProfile';
 import { supabase } from '@/lib/supabase';
 import { format, parseISO, addDays, differenceInDays } from 'date-fns';
 import toast from 'react-hot-toast';
@@ -170,12 +171,12 @@ export default function LeaveClearancePage() {
   const statsBy = useMemo(() => groupBy(historicalStats as { host_id: string }[]), [historicalStats]);
   const roBy = useMemo(() => groupBy(roEvents), [roEvents]);
 
-  const deptOf = useCallback((h: Host) => teamConfig.hostDepartments?.[h.host_id] || h.role || 'Unassigned', [teamConfig]);
+  const deptOf = useCallback((h: Host) => hostSubDept(teamConfig, h as any), [teamConfig]);
   const included = useMemo(() => hosts.filter(h => !teamConfig.excludeAttendance?.[h.host_id]), [hosts, teamConfig]);
   const departments = useMemo(() => {
     const m = new Map<string, number>();
     included.forEach(h => m.set(deptOf(h), (m.get(deptOf(h)) || 0) + 1));
-    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    return Array.from(m.entries()).sort((a, b) => subDeptOrder(a[0]) - subDeptOrder(b[0]) || a[0].localeCompare(b[0]));
   }, [included, deptOf]);
 
   const q = searchQuery.trim().toLowerCase();

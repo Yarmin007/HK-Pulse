@@ -92,6 +92,7 @@ export default function LeavePlannerPage() {
         let vaStaff = hostData.filter(h => 
             (h.role || '').toLowerCase().includes('villa') || 
             (h.sub_department || '').toLowerCase().includes('villa') ||
+            /room attendant/i.test(`${h.role || ''} ${h.sub_department || ''}`) ||
             (h.role || '').toLowerCase() === 'va'
         );
 

@@ -20,6 +20,9 @@ import LinenInventoryGrid from './_components/LinenInventoryGrid';
 import BottleInventoryGrid from './_components/BottleInventoryGrid';
 import RequestsBanner from './_components/RequestsBanner';
 import PantryBanner from './_components/PantryBanner';
+import VillaTaskList from './_components/VillaTaskList';
+import { loadVaTasks, setVaTaskDone, type VaTask } from '@/lib/vaDailyTasks';
+import { projectGuestDay } from '@/lib/guestDay';
 
 export type Host = { id: string; full_name: string; host_id: string; role?: string; };
 export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; sort_order?: number; };
@@ -78,6 +81,9 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     
     return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
 };
+
+// Start Service / room timer: switched off for now (My Tasks is the VA's daily task list). Set true to bring it back.
+const SERVICE_TIMER_ON = false;
 
 const triggerSystemNotification = (villa: string) => {
     const title = "⏰ Service Time Alert";
@@ -154,6 +160,37 @@ export default function MyTasksHub() {
   const [expiryCounts, setExpiryCounts] = useState<Record<string, number>>({});
   const [refillCounts, setRefillCounts] = useState<Record<string, number>>({});
   const [hiddenMbItems, setHiddenMbItems] = useState<string[]>([]);
+
+  // Daily task list per villa: requests, ice, milk, guest preferences
+  const [vaTasks, setVaTasks] = useState<Record<string, VaTask[]>>({});
+  const [vaTableMissing, setVaTableMissing] = useState(false);
+  const [busyTask, setBusyTask] = useState('');
+  const reloadVaTasks = useCallback(async (villas: string[]) => {
+      const { byVilla, tableMissing } = await loadVaTasks(villas, getDhakaDateStr());
+      setVaTasks(byVilla); setVaTableMissing(tableMissing);
+  }, []);
+  useEffect(() => { reloadVaTasks(myCleaningVillas); }, [myCleaningVillas, reloadVaTasks]);
+  // New requests / ticks from others show up without a refresh
+  useEffect(() => {
+      if (!myCleaningVillas.length) return;
+      let t: ReturnType<typeof setTimeout>;
+      const later = () => { clearTimeout(t); t = setTimeout(() => reloadVaTasks(myCleaningVillas), 600); };
+      const ch = supabase.channel('my_tasks_daily')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, later)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_va_task_done' }, later)
+          .subscribe();
+      return () => { clearTimeout(t); supabase.removeChannel(ch); };
+  }, [myCleaningVillas, reloadVaTasks]);
+  const toggleVaTask = async (t: VaTask) => {
+      if (!currentHost) return;
+      if (t.kind !== 'request' && vaTableMissing) { toast.error('Ticking needs the new table: ask the coordinator to run supabase/va_daily_tasks.sql'); return; }
+      const id = `${t.villa}|${t.key}`;
+      setBusyTask(id);
+      setVaTasks(prev => ({ ...prev, [t.villa]: (prev[t.villa] || []).map(x => (x.key === t.key ? { ...x, done: !t.done, doneAt: !t.done ? new Date().toISOString() : null, doneBy: !t.done ? currentHost.full_name : null } : x)) }));
+      const err = await setVaTaskDone(t, !t.done, getDhakaDateStr(), { id: currentHost.id, full_name: currentHost.full_name });
+      setBusyTask('');
+      if (err) { toast.error('Not saved: ' + err); reloadVaTasks(myCleaningVillas); }
+  };
 
   const [showSuccess, setShowSuccess] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{isOpen: boolean; title: string; message: string; confirmText: string; isDestructive: boolean; onConfirm: () => void;}>({ isOpen: false, title: '', message: '', confirmText: '', isDestructive: false, onConfirm: () => {} });
@@ -248,7 +285,7 @@ export default function MyTasksHub() {
       const allocData = myAllocs.find(a => a.area === 'villa') || myAllocs.find(a => a.area !== 'riders');
       const assignedCleanVillas = allocData?.task_details ? parseVillas(allocData.task_details, []).filter(v => !/[a-z]/i.test(v)) : [];
 
-      if (assignedCleanVillas.length > 0) {
+      if (assignedCleanVillas.length > 0 && SERVICE_TIMER_ON) {
           setMyCleaningVillas(assignedCleanVillas);
 
           const { data: allExistingLogs } = await supabase.from('hsk_cleaning_logs').select('*').eq('report_date', todayStr);
@@ -279,13 +316,11 @@ export default function MyTasksHub() {
           });
           setCleaningTasks(prev => ({ ...prev, ...newTasksState }));
           if (activeV) setActiveCleaningVilla(activeV);
-      } else { setMyCleaningVillas([]); }
+      } else { setMyCleaningVillas(assignedCleanVillas); }
 
-      const { data: gData } = await supabase.from('hsk_daily_summary').select('villa_number, status, arrival_time, departure_time, guest_name').eq('report_date', todayStr);
-      if (gData) setGuestData(gData);
-
-      const { data: aData } = await supabase.from('hsk_ac_tracker').select('villa_number, status');
-      if (aData) setAcData(aData);
+      // Guest list for the cards: the day's list, or carried over from yesterday until it is uploaded
+      const { rows: gRows } = await projectGuestDay(todayStr).catch(() => ({ rows: [] as any[] }));
+      setGuestData(gRows as GuestRecord[]);
 
       // --- FETCH LOCKS ---
       const { data: periodData } = await supabase.from('hsk_inventory_periods').select('is_locked, bottle_is_locked').eq('month_year', currentMonth).maybeSingle();
@@ -1013,6 +1048,8 @@ export default function MyTasksHub() {
                             startLinenAudit={startLinenAudit}
                             bottleAssignments={bottleAssignments}
                             startBottleAudit={startBottleAudit}
+                            renderVillaTasks={(v: string) => <VillaTaskList tasks={vaTasks[v] || []} busyKey={busyTask} onToggle={toggleVaTask} />}
+                            villaProgress={(v: string) => { const l = vaTasks[v] || []; return { done: l.filter(x => x.done).length, total: l.length }; }}
                         />
 
                         {displayVillas.length === 0 && linenAssignments.filter(a => a.location_type !== 'Villa').length === 0 && bottleAssignments.filter(a => a.location_type !== 'Villa').length === 0 && (

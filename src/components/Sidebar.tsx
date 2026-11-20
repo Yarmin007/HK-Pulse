@@ -9,7 +9,7 @@ import {
   Calendar, Menu, X, Wine, Box, Zap, UtensilsCrossed, ChevronDown, ChevronRight,
   Briefcase, Contact, UserCheck, Clock, RefreshCw, Share2, ClipboardCheck, FileSpreadsheet, PhoneCall, CheckSquare, Map, Key, Plane, Layers, ShieldCheck, Droplet, TrendingUp, Shirt,
   Eye, ArrowLeft, UserCog, Search, Bike, WashingMachine, Bug
-, Package } from "lucide-react";
+, Package , History } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { getDhakaDateStr } from "@/lib/dateUtils";
 import { riderDutyOf, isOffShift } from "@/app/allocation/lib/riders";
@@ -37,6 +37,7 @@ const ALLOCATION_ITEMS = [
   { name: "Live Board", icon: LayoutDashboard, path: "/allocation/board" }, 
   { name: "Forecast", icon: Plane, path: "/forecast" },
   { name: "Guest List", icon: Users, path: "/guests" },
+  { name: "Guest History", icon: History, path: "/guests/history" },
   { name: "Allocations", icon: ListChecks, path: "/allocation" },
   { name: "Special Villas", icon: Key, path: "/allocation/special" },
   { name: "Allocation Sheet", icon: Map, path: "/allocation/sheet" },

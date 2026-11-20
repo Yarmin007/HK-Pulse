@@ -16,7 +16,7 @@ import toast from 'react-hot-toast';
 import { getPayrollPeriod, getUpcomingLeave, computeLeaveBalancesRPC, LEAVE_CODES } from '@/lib/payrollMath';
 import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
 import OccasionBanner from '@/components/OccasionBanner';
-import { getProfileType, type ProfileType } from '@/lib/hostProfile';
+import { getProfileType, hostSubDept, subDeptOrder, type ProfileType } from '@/lib/hostProfile';
 import { fetchROEvents, isWorkedLeave } from '@/lib/attendanceData';
 
 // =========================================================================
@@ -478,7 +478,7 @@ export default function Dashboard() {
           const bal = computeLeaveBalancesRPC(h, [], rpcStats, cutoffDate, publicHolidays, anniversaryLeaves, roEvents);
           const myFutureLeaves = futureLeaves.filter(l => String(l.host_id).trim() === String(h.host_id).trim());
           const upcoming = getUpcomingLeave(myFutureLeaves, getDhakaDateStr());
-          const dept = teamConfig.hostDepartments?.[h.host_id] || 'Unassigned';
+          const dept = hostSubDept(teamConfig as any, h);
           
           return { host: h, department: dept, balances: bal, upcoming };
       }).filter((c: any) => c.balances !== null);
@@ -960,7 +960,7 @@ export default function Dashboard() {
               )}
               {!selectedTeamHost && (
                 <div className="flex gap-1.5 mt-3 overflow-x-auto no-scrollbar -mx-1 px-1">
-                  {['All', ...Array.from(new Set(teamBalances.map((c: any) => c.department))).sort()].map((dept: any) => (
+                  {['All', ...Array.from(new Set(teamBalances.map((c: any) => c.department as string))).sort((a, b) => subDeptOrder(a) - subDeptOrder(b) || a.localeCompare(b))].map((dept: any) => (
                     <button key={dept} onClick={() => setActiveDeptTab(dept)} className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap shrink-0 border ${activeDeptTab === dept ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-500 border-slate-200'}`}>{dept}</button>
                   ))}
                 </div>

@@ -10,6 +10,12 @@ import { differenceInDays, parseISO, isAfter, isBefore, format } from 'date-fns'
 import toast from 'react-hot-toast';
 import { fetchAttendanceRange, fetchROEvents, isWorkedLeave, isRO, hasWorkingNote, RO_EARNING_CODES, pendingWorkedDays, unallocatedROs, roForDay, roTakenOn, roNoteFor, workedNoteWithRO, workedNoteWithoutRO, fmtNoteDate } from '@/lib/attendanceData';
 import { computeLeaveBalancesRPC } from '@/lib/payrollMath'; 
+import { isOnAttendance } from '@/lib/hostProfile';
+
+// Many cells at once: save a few at a time instead of strictly one after another
+const runInBatches = async <T,>(items: T[], fn: (t: T) => Promise<void>, size = 8) => {
+    for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn));
+};
 
 // --- CONFIG ---
 const STATUS_CODES = ['P', 'O', 'AL', 'PH', 'RR', 'SL', 'NP', 'A', 'CL', 'PA', 'MA', 'EL', 'OT', 'RO'];
@@ -232,7 +238,7 @@ export default function AttendancePage() {
           .select('id, shift_note, shift_type')
           .eq('host_id', hostId)
           .eq('date', dateStr)
-          .limit(1); 
+          .order('id'); 
           
       if (fetchErr) throw new Error(fetchErr.message || 'Could not read the attendance row');
       const existing = existingArr?.[0];
@@ -276,13 +282,14 @@ export default function AttendancePage() {
     // Everything loads at the same time (the year's attendance comes in parallel pages).
     const [constRes, hostRes, rpcRes, rawAtt, roRows] = await Promise.all([
         supabase.from('hsk_constants').select('*').in('type', ['public_holiday', 'role_rank', 'team_viewer_config']),
-        supabase.from('hsk_hosts').select('*').neq('status', 'Resigned'),
+        supabase.from('hsk_hosts').select('*'),
         supabase.rpc('get_all_attendance_stats', { p_target_date: cutoffDate }),
         fetchAttendanceRange(`${selectedYear}-01-01`, `${selectedYear}-12-31`),
         fetchROEvents(),
     ]);
     
     let roleRanks: Record<string, number> = {};
+    let cfg: any = {};
     if (constRes.data) {
         const parsedHolidays = constRes.data
             .filter((c: any) => c.type === 'public_holiday')
@@ -298,12 +305,13 @@ export default function AttendancePage() {
         });
 
         constRes.data.filter((c: any) => c.type === 'team_viewer_config').forEach((c: any) => {
-            try { setTeamConfig(JSON.parse(c.label)); } catch(e) {}
+            try { cfg = JSON.parse(c.label); setTeamConfig(cfg); } catch(e) {}
         });
     }
     
     if (hostRes.data) {
-        const sortedHosts = hostRes.data.sort((a, b) => {
+        // Permanent hosts; a resigned host stays on the years up to their last working day
+        const sortedHosts = hostRes.data.filter((h: any) => isOnAttendance(cfg, h, `${selectedYear}-01-01`)).sort((a, b) => {
             const rankA = roleRanks[(a.role || '').toLowerCase().trim()] ?? 999;
             const rankB = roleRanks[(b.role || '').toLowerCase().trim()] ?? 999;
             if (rankA !== rankB) return rankA - rankB;
@@ -418,7 +426,7 @@ export default function AttendancePage() {
           const m = d.getMonth();
 
           if (isWorkedLeave(a)) return; // worked that day ("working day" comment)
-          if (['O', 'OFF', 'OT', 'RO'].includes(a.status_code)) {
+          if (['O', 'OFF', 'RO'].includes(a.status_code)) {
               monthlyStats[m].off++;
               totalLeavesTaken++;
           }
@@ -573,15 +581,17 @@ export default function AttendancePage() {
       });
 
       const dbTask = async () => {
+          const cells: { hostId: string, dateStr: string }[] = [];
           for (let r = minR; r <= maxR; r++) {
               for (let c = minC; c <= maxC; c++) {
                   const hostId = fHosts[r]?.host_id;
                   if (!hostId) continue;
                   const dateStr = dYear[c];
                   if (isBeforeJoin(fHosts[r], dateStr)) continue;
-                  await saveToDatabase(hostId, dateStr, status);
+                  cells.push({ hostId, dateStr });
               }
           }
+          await runInBatches(cells, c => saveToDatabase(c.hostId, c.dateStr, status));
       };
 
       const cellCount = (maxR - minR + 1) * (maxC - minC + 1);
@@ -724,7 +734,8 @@ export default function AttendancePage() {
       e.preventDefault();
 
       const pasteData = e.clipboardData.getData('text');
-      const rows = pasteData.split('\n').map(r => r.split('\t'));
+      // Excel ends the copy with a line break: drop that empty last line, keep blank cells inside rows
+      const rows = pasteData.replace(/\r/g, '').replace(/\n+$/, '').split('\n').map(r => r.split('\t'));
       
       let updateCount = 0;
       const tasks: { hostId: string, dateStr: string, val: string }[] = [];
@@ -732,7 +743,7 @@ export default function AttendancePage() {
       setAttendance(prev => {
           const newAtt = [...prev];
           for(let i=0; i<rows.length; i++) {
-              if (r1 + i >= filteredHosts.length || !rows[i][0]) continue;
+              if (r1 + i >= filteredHosts.length || rows[i].every(v => !v.trim())) continue;
               const hostId = filteredHosts[r1 + i].host_id;
               
               for(let j=0; j<rows[i].length; j++) {
@@ -748,7 +759,11 @@ export default function AttendancePage() {
                       const existingIdx = newAtt.findIndex(a => a.host_id === hostId && a.date === dateStr);
                       
                       if (val === '') {
-                          if (existingIdx > -1) newAtt.splice(existingIdx, 1);
+                          if (existingIdx > -1) {
+                              const ex = newAtt[existingIdx];
+                              if (!ex.shift_note && !ex.shift_type) newAtt.splice(existingIdx, 1);
+                              else newAtt[existingIdx] = { ...ex, status_code: '' };
+                          }
                       } else {
                           if (existingIdx > -1) {
                               newAtt[existingIdx] = { ...newAtt[existingIdx], status_code: val };
@@ -763,11 +778,7 @@ export default function AttendancePage() {
       });
 
       if (updateCount > 0) {
-          const dbTask = async () => {
-              for (const t of tasks) {
-                  await saveToDatabase(t.hostId, t.dateStr, t.val);
-              }
-          };
+          const dbTask = () => runInBatches(tasks, t => saveToDatabase(t.hostId, t.dateStr, t.val));
 
           toast.promise(dbTask(), {
               loading: `Pasting ${updateCount} cells...`,

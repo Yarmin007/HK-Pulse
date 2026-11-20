@@ -281,7 +281,10 @@ export default function OrgChartPage() {
   const landuseMgr = safeFind(h => h.role.toLowerCase().includes('landuse') || h.role.toLowerCase().includes('sustainab') || h.full_name.toLowerCase().includes('adam thalhath'), 'Sustainability Manager', 'DA');
   
   const laundrySup = safeFind(h => h.host_level === 'DB' && h.role.toLowerCase().includes('laundry'), 'Laundry Supervisor', 'DB');
-  const hkSups = activeHosts.filter(h => h.host_level === 'DB' && !h.role.toLowerCase().includes('laundry')).sort(sortBySeniority);
+  // Garden Supervisor reports to the Landscaping / Land Use Manager, not to Housekeeping
+  const isGardenRole = (h: Host) => /garden|landscap/i.test(h.role || '');
+  const gardenSups = activeHosts.filter(h => h.host_level === 'DB' && isGardenRole(h)).sort(sortBySeniority);
+  const hkSups = activeHosts.filter(h => h.host_level === 'DB' && !h.role.toLowerCase().includes('laundry') && !isGardenRole(h)).sort(sortBySeniority);
 
   const coordinator = safeFind(h => h.role.toLowerCase().includes('coordinator'), 'Housekeeping Coordinator', 'ATM');
   
@@ -511,7 +514,13 @@ export default function OrgChartPage() {
                   </FixedWrapper>
                   <ul>
                     <li>
-                      <FixedWrapper height={260} />
+                      <FixedWrapper height={260}>
+                        {gardenSups.length > 0 && (
+                          <div className="flex flex-wrap justify-center gap-3">
+                            {gardenSups.map(sup => <HostNode print={print} key={sup.id} host={sup} />)}
+                          </div>
+                        )}
+                      </FixedWrapper>
                       <ul>
                         <li>
                           <FixedWrapper height={0} hideLine>

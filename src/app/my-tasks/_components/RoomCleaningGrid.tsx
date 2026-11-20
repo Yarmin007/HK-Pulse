@@ -1,5 +1,5 @@
 import React from 'react';
-import { User, Clock, Wind, Wine, CheckSquare, CheckCircle2, DoorClosed, X, Play, BedDouble, AlertTriangle, PackageSearch, Layers, Building, WashingMachine, Droplet } from 'lucide-react';
+import { User, Clock, Wine, BedDouble, AlertTriangle, PackageSearch, Layers, Building, WashingMachine, Droplet } from 'lucide-react';
 
 export type UniversalTask = { schedule_id: string; inventory_type: string; villa_number: string; status: string; };
 export type CleaningTask = { villa_number: string; status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused'; start_time?: string; raw_start_time?: string; end_time?: string; time_spent?: string; reenter_reason?: string; session_history: any[]; };
@@ -33,6 +33,10 @@ interface RoomCleaningGridProps {
     // NEW BOTTLE PROPS
     bottleAssignments: any[];
     startBottleAudit: (taskObj: any) => void;
+
+    // Daily task list per villa (requests, ice, milk, preferences) and its progress
+    renderVillaTasks?: (v: string) => React.ReactNode;
+    villaProgress?: (v: string) => { done: number; total: number };
 }
 
 export default function RoomCleaningGrid({
@@ -40,7 +44,7 @@ export default function RoomCleaningGrid({
     startAudit, handleFinishRoom, setReenterModal, handleDND, handleRefused, confirmResetRoom, openEditModal,
     isNightShift, universalTasks, cleaningElapsedSeconds, formatTimer, expiryAssignedVillas, expiryVillaData, startExpiryAudit,
     linenAssignments, startLinenAudit,
-    bottleAssignments, startBottleAudit
+    bottleAssignments, startBottleAudit, renderVillaTasks, villaProgress
 }: RoomCleaningGridProps) {
 
     // Separate Non-Villa Tasks (Pantries, Laundry, Water Room, Outlets, PA) from Villa Tasks
@@ -56,7 +60,7 @@ export default function RoomCleaningGrid({
                     <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
                         <BedDouble size={20} className="text-[#6D2158]" /> My Active Tasks
                     </h3>
-                    <p className="text-xs text-slate-400 font-medium">All assigned cleaning, audit, and inventory locations.</p>
+                    <p className="text-xs text-slate-400 font-medium">Requests, ice, milk and guest preferences for your villas today. Tap to tick done.</p>
                 </div>
             </div>
 
@@ -151,11 +155,6 @@ export default function RoomCleaningGrid({
                     const displayType = isCleaningAssigned ? cardData.cleaningType : 'Audit Only';
 
                     // Cleaning State
-                    const taskState = cleaningTasks[v] || { status: 'Pending', session_history: [] };
-                    const isActive = v === activeCleaningVilla;
-                    const isCompleted = taskState.status === 'Completed';
-                    const isDND = taskState.status === 'DND';
-                    const isRefused = taskState.status === 'Refused';
 
                     // Expiry State
                     const expData = expiryVillaData[v];
@@ -174,11 +173,12 @@ export default function RoomCleaningGrid({
                     const linenTaskForVilla = linenAssignments.find(a => a.location_type === 'Villa' && a.location_name === v);
                     const bottleTaskForVilla = bottleAssignments.find(a => a.location_type === 'Villa' && a.location_name === v);
 
+                    const prog = villaProgress?.(v) || { done: 0, total: 0 };
+                    const allDone = prog.total > 0 && prog.done === prog.total;
                     let cardStyle = "bg-white border-slate-200";
-                    if (isActive) cardStyle = "bg-emerald-50/50 border-emerald-400 ring-4 ring-emerald-500/10";
-                    else if (isCleaningAssigned && isCompleted) cardStyle = "bg-slate-50 border-slate-200 opacity-60";
-                    else if (isCleaningAssigned && (isDND || isRefused)) cardStyle = "bg-rose-50 border-rose-200";
-                    else if (!isCleaningAssigned) cardStyle = "bg-slate-50 border-dashed border-slate-300";
+                    if (!isCleaningAssigned) cardStyle = "bg-slate-50 border-dashed border-slate-300";
+                    else if (allDone) cardStyle = "bg-emerald-50/40 border-emerald-200";
+                    else if (prog.total > 0) cardStyle = "bg-white border-[#6D2158]/30";
 
                     const hasAnyTasks = isCleaningAssigned || linenTaskForVilla || bottleTaskForVilla || hasExpiry || minibarTasksForVilla.length > 0 || otherInventoryTasks.length > 0;
                     
@@ -191,9 +191,12 @@ export default function RoomCleaningGrid({
                             <div className="flex justify-between items-start mb-4">
                                 <div>
                                     <div className="flex items-center gap-2 mb-1">
-                                        <h3 className={`text-2xl md:text-3xl font-black tracking-tighter ${isCompleted && isCleaningAssigned ? 'text-slate-400' : 'text-[#6D2158]'}`}>
+                                        <h3 className="text-2xl md:text-3xl font-black tracking-tighter text-[#6D2158]">
                                             {v}
                                         </h3>
+                                        {isCleaningAssigned && prog.total > 0 && (
+                                            <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black ${allDone ? 'bg-emerald-500 text-white' : 'bg-[#6D2158]/10 text-[#6D2158]'}`}>{prog.done}/{prog.total}</span>
+                                        )}
                                     </div>
                                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
                                         <User size={10}/> {cardData.guestName || 'No Guest Info'}
@@ -218,16 +221,6 @@ export default function RoomCleaningGrid({
                                 
                                 {/* Utilities Row: AC, Minibar, Expiry, Asset Inventory, LINEN, BOTTLE */}
                                 <div className="flex flex-wrap gap-2">
-                                    <button 
-                                        onClick={() => handleAcStatusChange(v, cardData.acStatus === 'ON' ? 'OFF' : 'ON')}
-                                        className={`flex-1 min-w-[100px] py-2 rounded-xl flex items-center justify-center gap-2 text-[9px] md:text-[10px] font-black uppercase tracking-wider transition-all border shadow-sm ${
-                                            cardData.acStatus === 'ON' ? 'bg-rose-50 border-rose-200 text-rose-700' : 'bg-emerald-500 border-emerald-600 text-white'
-                                        }`}
-                                    >
-                                        <Wind size={12} className={`shrink-0 ${cardData.acStatus === 'ON' ? 'animate-pulse' : ''}`}/>
-                                        {cardData.acStatus === 'ON' ? 'Turn AC OFF' : 'Turn AC ON'}
-                                    </button>
-
                                     {/* LINEN VILLA TASK */}
                                     {linenTaskForVilla && (
                                         <button 
@@ -306,102 +299,9 @@ export default function RoomCleaningGrid({
                                     })}
                                 </div>
 
-                                {/* Room Cleaning Controls */}
+                                {/* Today's list for this villa (Start Service / timer is switched off for now) */}
                                 {isCleaningAssigned ? (
-                                    isActive ? (
-                                        <div className="flex justify-between items-center bg-white border border-emerald-200 rounded-xl p-1.5 shadow-sm flex-wrap gap-2 mt-1">
-                                            <div className="flex items-center gap-2 text-[#6D2158] font-black text-sm px-2">
-                                                <span className="relative flex h-2 w-2 mr-1">
-                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                                                </span>
-                                                {formatTimer(cleaningElapsedSeconds)}
-                                            </div>
-                                            {taskState.reenter_reason && (
-                                                <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px] uppercase font-black tracking-widest shrink-0">
-                                                    {taskState.reenter_reason}
-                                                </span>
-                                            )}
-                                            <button 
-                                                onClick={() => handleFinishRoom(v)}
-                                                className="bg-emerald-500 text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm active:scale-95 flex items-center gap-1 ml-auto"
-                                            >
-                                                <CheckSquare size={14}/> Finish
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <div className="flex flex-col gap-2 mt-1">
-                                            
-                                            {/* ⚡ SEPARATE SESSION BLOCKS */}
-                                            {taskState.session_history && taskState.session_history.length > 0 && (
-                                                <div className="flex flex-col gap-1.5">
-                                                    {taskState.session_history.map((session, sIdx) => (
-                                                        <div key={sIdx} className={`flex items-center justify-between font-black uppercase tracking-widest text-[10px] md:text-xs py-2 px-3 rounded-xl border opacity-90 ${
-                                                            session.autoStopped ? 'bg-rose-50 text-rose-600 border-rose-200' :
-                                                            session.reason === 'TD Service' || session.reason === 'Night Service' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 
-                                                            'bg-emerald-50 text-emerald-600 border-emerald-100'
-                                                        }`}>
-                                                            <div className="flex flex-col">
-                                                                <span className="flex items-center gap-1.5">
-                                                                    {session.autoStopped ? <AlertTriangle size={14}/> : <CheckCircle2 size={14}/>} 
-                                                                    {session.reason} ({session.duration}m)
-                                                                </span>
-                                                                <span className="text-[8px] font-bold mt-0.5 opacity-80 normal-case">
-                                                                    {session.start} - {session.end} {session.autoStopped && <span className="text-rose-500 uppercase ml-1">Auto-Stopped</span>}
-                                                                </span>
-                                                            </div>
-                                                            <div className="flex gap-1 shrink-0">
-                                                                <button onClick={() => openEditModal(v, session.reason)} className="text-blue-700 hover:text-blue-900 text-[9px] bg-white/60 px-2 py-1 rounded shadow-sm transition-colors">Edit</button>
-                                                                <button onClick={() => confirmResetRoom(v, session.reason)} className="text-slate-500 hover:text-slate-700 text-[9px] bg-white/60 px-2 py-1 rounded shadow-sm transition-colors">Undo</button>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            
-                                            {(isDND || isRefused) && (
-                                                <div className={`flex items-center justify-between font-black uppercase tracking-widest text-[10px] md:text-xs py-2 px-1 ${isDND ? 'text-rose-600' : 'text-orange-600'}`}>
-                                                    <span className="flex items-center gap-1.5">
-                                                        {isDND ? <DoorClosed size={14}/> : <X size={14}/>} 
-                                                        {isDND ? 'DND Logged' : 'Service Refused'}
-                                                    </span>
-                                                    <button onClick={() => confirmResetRoom(v, isDND ? 'DND Log' : 'Service Refusal')} className="text-slate-400 hover:text-slate-600 underline text-[9px] md:text-[10px] bg-slate-100 px-2 py-0.5 rounded">Undo</button>
-                                                </div>
-                                            )}
-
-                                            <button 
-                                                onClick={() => setReenterModal({ isOpen: true, villa: v })}
-                                                disabled={!!activeCleaningVilla}
-                                                className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs flex items-center justify-center gap-2 transition-all shadow-md mt-1 ${
-                                                    activeCleaningVilla 
-                                                    ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-50 cursor-not-allowed' 
-                                                    : 'bg-[#6D2158] text-white hover:bg-[#5a1b49] active:scale-95'
-                                                }`}
-                                            >
-                                                <Play size={14}/> {taskState.session_history && taskState.session_history.length > 0 ? 'Add Service' : 'Start Service'}
-                                            </button>
-
-                                            {(!isCompleted) && (
-                                                <div className="flex gap-2">
-                                                    <button 
-                                                        onClick={() => handleDND(v)}
-                                                        disabled={!!activeCleaningVilla}
-                                                        className="flex-1 py-2.5 rounded-xl bg-rose-50 text-rose-600 font-black uppercase tracking-widest text-[9px] md:text-[10px] border border-rose-100 flex items-center justify-center gap-1 hover:bg-rose-100 transition-all active:scale-95 disabled:opacity-50"
-                                                    >
-                                                        <DoorClosed size={12}/> DND
-                                                    </button>
-                                                    
-                                                    <button 
-                                                        onClick={() => handleRefused(v)}
-                                                        disabled={!!activeCleaningVilla}
-                                                        className="flex-1 py-2.5 rounded-xl bg-orange-50 text-orange-600 font-black uppercase tracking-widest text-[9px] md:text-[10px] border border-orange-100 flex items-center justify-center gap-1 hover:bg-orange-100 transition-all active:scale-95 disabled:opacity-50"
-                                                    >
-                                                        <X size={12}/> Refused
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )
+                                    renderVillaTasks?.(v)
                                 ) : (
                                     <div className="py-2 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-100 rounded-xl mt-1">
                                         Audit Only Location
