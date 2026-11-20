@@ -172,6 +172,47 @@ export const readPreArrivalPdf = async (file: File, lib?: any): Promise<ParsedFo
   return { data: d, surnames, recognised };
 };
 
+// ---------- scanned forms ----------
+const toJpeg = (canvas: HTMLCanvasElement) => canvas.toDataURL('image/jpeg', 0.75);
+/** Pages of a scanned PDF, or a photo of the form, as JPEG data URLs (max 4 pages, ~1600px wide) for preview / AI reading. */
+export const scanImages = async (file: File, maxPages = 4): Promise<string[]> => {
+  if (file.type.startsWith('image/')) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => bad(new Error('Could not open the image')); i.src = url; });
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+      return [toJpeg(c)];
+    } finally { URL.revokeObjectURL(url); }
+  }
+  const pdfjs: any = await import('pdfjs-dist');
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const out: string[] = [];
+  for (let p = 1; p <= Math.min(pdf.numPages, maxPages); p++) {
+    const page = await pdf.getPage(p);
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: Math.min(2.5, 1600 / Math.max(base.width, base.height)) });
+    const c = document.createElement('canvas');
+    c.width = Math.round(viewport.width); c.height = Math.round(viewport.height);
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport, canvas: c }).promise;
+    out.push(toJpeg(c));
+  }
+  return out;
+};
+
+/** Read a scan with AI (server route). Only housekeeping fields come back. */
+export const readScanWithAi = async (images: string[]): Promise<Partial<PreArrival>> => {
+  const res = await fetch('/api/pre-arrival-scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images }) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+  return body.data || {};
+};
+
 // ---------- storage ----------
 export const loadPreArrivals = async (filter?: { stayKey?: string }): Promise<PreArrival[]> => {
   let q = supabase.from('hsk_constants').select('id, label').eq('type', PRE_ARRIVAL_TYPE);

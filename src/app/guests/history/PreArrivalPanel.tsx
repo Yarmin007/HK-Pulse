@@ -1,13 +1,15 @@
 "use client";
 // Pre-arrival form for one stay: drop the guest's PDF (or tick by hand from a paper form), check, save.
+// A scanned PDF or a photo has no form fields: its pages are shown beside the form to fill in by hand,
+// or 'Read with AI' fills it (only the housekeeping fields come back). The scan itself is never stored.
 // Only housekeeping items are kept; passport, contact and flight details are never stored.
 import React, { useRef, useState } from 'react';
-import { X, Upload, Loader2, Save, Trash2, AlertTriangle, FileText, Check } from 'lucide-react';
+import { X, Upload, Loader2, Save, Trash2, AlertTriangle, FileText, Check, Sparkles, ScanLine } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { readSession } from '@/lib/requestsShared';
 import {
-  PA_COMFORT, PA_DIET, PA_ENTERTAINMENT, PA_MINIBAR, PA_SCENTS, emptyPreArrival, readPreArrivalPdf, savePreArrival, deletePreArrival,
+  PA_COMFORT, PA_DIET, PA_ENTERTAINMENT, PA_MINIBAR, PA_SCENTS, emptyPreArrival, readPreArrivalPdf, savePreArrival, deletePreArrival, scanImages, readScanWithAi,
   type PreArrival,
 } from '@/lib/preArrival';
 
@@ -26,6 +28,9 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
   const [warning, setWarning] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [scan, setScan] = useState<string[]>([]);       // page images of a scanned form (not saved)
+  const [aiReading, setAiReading] = useState(false);
+  const [zoom, setZoom] = useState<string | null>(null);
 
   const set = <K extends keyof PreArrival>(k: K, v: PreArrival[K]) => setPa(p => ({ ...p, [k]: v }));
   const toggle = (k: 'diet' | 'minibar' | 'comfort' | 'entertainment', v: string) =>
@@ -36,19 +41,41 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
 
   const readFile = async (file: File | undefined) => {
     if (!file) return;
-    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { toast.error('Choose the PDF form'); return; }
-    setReading(true); setWarning('');
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+    const isImage = file.type.startsWith('image/');
+    if (!isPdf && !isImage) { toast.error('Choose the PDF form or a photo of it'); return; }
+    setReading(true); setWarning(''); setScan([]);
     try {
-      const { data, surnames, recognised } = await readPreArrivalPdf(file);
-      if (!recognised) { setWarning('This PDF has no fillable form fields (scanned or printed?). Tick the items by hand below.'); return; }
-      setPa(p => ({ ...emptyPreArrival(stay), ...data, _id: p._id, file_name: file.name } as PreArrival));
-      const stayName = stay.name.toLowerCase();
-      const other = surnames.filter(s => s.trim() && !stayName.includes(s.trim().toLowerCase()));
-      if (surnames.length && other.length === surnames.length) setWarning(`The form is for "${surnames.join(' / ')}" but this stay is ${stay.name}. Check it is the right guest.`);
-      toast.success('Form read: check and save');
+      if (isPdf) {
+        const { data, surnames, recognised } = await readPreArrivalPdf(file);
+        if (recognised) {
+          setPa(p => ({ ...emptyPreArrival(stay), ...data, _id: p._id, file_name: file.name } as PreArrival));
+          const stayName = stay.name.toLowerCase();
+          const other = surnames.filter(s => s.trim() && !stayName.includes(s.trim().toLowerCase()));
+          if (surnames.length && other.length === surnames.length) setWarning(`The form is for "${surnames.join(' / ')}" but this stay is ${stay.name}. Check it is the right guest.`);
+          toast.success('Form read: check and save');
+          return;
+        }
+      }
+      // Scanned PDF or photo: show the pages beside the form
+      const pages = await scanImages(file);
+      setScan(pages);
+      setPa(p => ({ ...p, file_name: file.name }));
+      setWarning('Scanned copy: fill in the form from the pages shown, or tap "Read with AI" and check what it fills in.');
     } catch (e: any) {
-      setWarning('Could not read this PDF: ' + (e?.message || e) + '. Tick the items by hand below.');
+      setWarning('Could not read this file: ' + (e?.message || e) + '. Tick the items by hand below.');
     } finally { setReading(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+
+  const readWithAi = async () => {
+    if (!scan.length) return;
+    setAiReading(true);
+    try {
+      const data = await readScanWithAi(scan);
+      setPa(p => ({ ...emptyPreArrival(stay), ...data, _id: p._id, file_name: p.file_name } as PreArrival));
+      toast.success('Filled in from the scan: check every item against the pages, then save');
+    } catch (e: any) { toast.error('AI could not read it: ' + (e?.message || e)); }
+    setAiReading(false);
   };
 
   const save = async () => {
@@ -86,7 +113,7 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
 
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900/50 backdrop-blur-[2px] flex items-end sm:items-center justify-center sm:p-4" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-2xl max-h-[92vh] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className={`bg-white w-full ${scan.length ? 'sm:max-w-6xl' : 'sm:max-w-2xl'} max-h-[92vh] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col`} onClick={e => e.stopPropagation()}>
         <div className="flex-none px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-lg font-black text-[#6D2158]">Pre-arrival form</h2>
@@ -95,7 +122,22 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
           <button onClick={onClose} className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center shrink-0" aria-label="Close"><X size={18} /></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+        <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
+        {scan.length > 0 && (
+          <div className="flex-none lg:flex-1 lg:min-w-0 max-h-[38vh] lg:max-h-none overflow-y-auto bg-slate-100 border-b lg:border-b-0 lg:border-r border-slate-200 p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-[11px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1.5"><ScanLine size={13} /> Scanned form ({scan.length} page{scan.length > 1 ? 's' : ''})</p>
+              <button onClick={readWithAi} disabled={aiReading} className="h-8 px-3 rounded-lg bg-[#6D2158] text-white text-[11px] font-black flex items-center gap-1.5 disabled:opacity-50">
+                {aiReading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Read with AI
+              </button>
+            </div>
+            {scan.map((src, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={i} src={src} alt={`Page ${i + 1}`} onClick={() => setZoom(src)} className="w-full rounded-lg border border-slate-200 bg-white cursor-zoom-in" />
+            ))}
+          </div>
+        )}
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5">
           {/* Upload */}
           <div
             onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
@@ -106,10 +148,10 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
               {reading ? <Loader2 size={20} className="animate-spin" /> : pa.file_name ? <FileText size={20} /> : <Upload size={20} />}
             </div>
             <div className="min-w-0">
-              <p className="text-sm font-black text-slate-800 truncate">{reading ? 'Reading the form…' : pa.file_name || 'Drop the guest\'s PDF here, or tap to choose'}</p>
+              <p className="text-sm font-black text-slate-800 truncate">{reading ? 'Reading the form…' : pa.file_name || 'Drop the guest\'s PDF, a scan or a photo here, or tap to choose'}</p>
               <p className="text-[11px] font-bold text-slate-400">Only housekeeping items are kept. Passport, contact and flight details are not saved.</p>
             </div>
-            <input ref={fileRef} type="file" accept="application/pdf,.pdf" className="hidden" onChange={e => readFile(e.target.files?.[0])} />
+            <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/*" className="hidden" onChange={e => readFile(e.target.files?.[0])} />
           </div>
           {warning && <p className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex gap-2"><AlertTriangle size={14} className="shrink-0 mt-0.5" />{warning}</p>}
 
@@ -174,6 +216,7 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
 
           {section('Stayed at another Six Senses', <input value={pa.six_senses_before} onChange={e => set('six_senses_before', e.target.value)} placeholder="Which one (leave empty if not)" className={input} />)}
         </div>
+        </div>
 
         <div className="flex-none p-4 border-t border-slate-100 flex gap-2">
           {pa._id && <button onClick={remove} disabled={saving} className="h-11 w-11 rounded-xl border border-rose-200 text-rose-600 flex items-center justify-center disabled:opacity-40" aria-label="Remove form" title="Remove form"><Trash2 size={16} /></button>}
@@ -183,6 +226,12 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
           </button>
         </div>
       </div>
+      {zoom && (
+        <div className="fixed inset-0 z-[80] bg-slate-900/80 overflow-auto p-4" onClick={e => { e.stopPropagation(); setZoom(null); }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={zoom} alt="Page" className="mx-auto max-w-none w-[min(1400px,200%)] rounded-lg bg-white" />
+        </div>
+      )}
     </div>
   );
 }

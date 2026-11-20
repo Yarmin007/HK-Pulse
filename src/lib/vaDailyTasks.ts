@@ -1,7 +1,7 @@
 // Villa attendant's daily task list (My Tasks), per villa, for one day:
 //   Milk         today's milk list (Guest History → Daily milk)
 //   Ice          daily ice requests (Allocation → Summary), until the guest departs
-//   Preferences  the guest's notes from the guest list that matter to housekeeping (lib/hkNotes)
+//   Preferences  only what is due that day: daily service/ice times, arrival set-up, dated birthday runner (lib/vaPrefTasks)
 //   Requests     anything sent from the Requests page for the villa today, except minibar
 // Milk / ice / preference ticks live in hsk_va_task_done (supabase/va_daily_tasks.sql);
 // a request is ticked on the request itself (delivered), so the Requests page shows it too.
@@ -10,8 +10,9 @@ import { projectGuestDay, extractDepInfo } from '@/lib/guestDay';
 import { loadMilkList } from '@/lib/milkRequests';
 import { deliveryPatch, undoPatch, isForToday, deliveryOf } from '@/lib/requestsShared';
 import { fetchRows, buildStays } from '@/lib/guestHistory';
-import { hkNoteLines } from '@/lib/hkNotes';
-import { loadPreArrivals, preArrivalNotes, type PreArrival } from '@/lib/preArrival';
+import { prefTasksFor } from '@/lib/vaPrefTasks';
+import { loadPreArrivals, type PreArrival } from '@/lib/preArrival';
+import { loadStayComments, applyCommentEdits, type StayComments } from '@/lib/stayComments';
 
 export type VaTaskKind = 'milk' | 'ice' | 'pref' | 'request';
 export type VaTask = {
@@ -29,7 +30,7 @@ export const loadVaTasks = async (villas: string[], date: string): Promise<{ byV
 
   // Preferences usually sit only on the arrival day's row, so read the whole current stay
   const since = (() => { const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() - 45); return d.toISOString().slice(0, 10); })();
-  const [guest, stayRows, milk, ice, reqs, ticks, preArrivals] = await Promise.all([
+  const [guest, stayRows, milk, ice, reqs, ticks, preArrivals, commentEdits] = await Promise.all([
     projectGuestDay(date).catch(() => ({ rows: [] as any[] })),
     fetchRows(b => b.in('villa_number', villas).gte('report_date', since).lte('report_date', date)).catch(() => []),
     loadMilkList(date).catch(() => null),
@@ -37,6 +38,7 @@ export const loadVaTasks = async (villas: string[], date: string): Promise<{ byV
     supabase.from('hsk_daily_requests').select('*').in('villa_number', villas).gte('request_time', `${date}T00:00:00+06:00`).not('request_type', 'in', '("Minibar","Ice","Time Edit Request")'),
     supabase.from('hsk_va_task_done').select('*').eq('report_date', date).in('villa_number', villas),
     loadPreArrivals().catch(() => [] as PreArrival[]),
+    loadStayComments().catch(() => [] as StayComments[]),
   ]);
   const tableMissing = !!ticks.error && /does not exist|schema cache|PGRST205|42P01/i.test(`${ticks.error.message} ${ticks.error.code}`);
   const tick = new Map((ticks.data || []).map((t: any) => [`${t.villa_number}|${t.task_key}`, t]));
@@ -65,16 +67,17 @@ export const loadVaTasks = async (villas: string[], date: string): Promise<{ byV
     // Only what housekeeping acts on (allergies, occasions, set-up, kids, minibar): not rates, benefits, transfers...
     // The guest's pre-arrival form (Guest History) comes first
     const pa = stay ? preArrivals.find(p => p.stay_key === stay.key || (p.villa === v && p.arr === stay.arr)) : undefined;
-    const lines = [
-      ...preArrivalNotes(pa).map(n => n.text),
-      ...hkNoteLines([today?.preferences, extractDepInfo(today?.remarks || '').cleanRemarks, ...(stay ? stay.notes.map(n => n.text) : [])]),
-    ];
+    // Only what is due today: daily times, arrival-day set-up, a dated birthday runner (lib/vaPrefTasks)
+    // Comments edited / removed / added in Guest History replace the raw memo
+    const ed = stay ? commentEdits.find(c => c.stay_key === stay.key || (c.villa === v && c.arr === stay.arr)) : undefined;
+    const tasks = prefTasksFor(date, v, stay ? { arr: stay.arr, dep: stay.dep } : null,
+      applyCommentEdits([today?.preferences, extractDepInfo(today?.remarks || '').cleanRemarks, ...(stay ? stay.notes.map(n => n.text) : [])], ed), pa);
     const seen = new Set<string>();
-    lines.forEach(line => {
-      const id = line.toLowerCase().replace(/\s+/g, ' ').trim();
+    tasks.forEach(t => {
+      const id = t.title.toLowerCase().replace(/\s+/g, ' ').trim();
       if (seen.has(id)) return; seen.add(id);
-      const key = `pref:${hash(line)}`;
-      byVilla[v].push({ key, kind: 'pref', villa: v, title: line, ...withTick(v, key) });
+      const key = `pref:${hash(t.title)}`;
+      byVilla[v].push({ key, kind: 'pref', villa: v, title: t.title, detail: t.detail, ...withTick(v, key) });
     });
   });
 
