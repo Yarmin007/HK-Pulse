@@ -174,7 +174,7 @@ export const readPreArrivalPdf = async (file: File, lib?: any): Promise<ParsedFo
 
 // ---------- scanned forms ----------
 const toJpeg = (canvas: HTMLCanvasElement) => canvas.toDataURL('image/jpeg', 0.75);
-/** Pages of a scanned PDF, or a photo of the form, as JPEG data URLs (max 4 pages, ~1600px wide) for preview / AI reading. */
+/** Pages of a scanned PDF, or a photo of the form, as JPEG data URLs (max 4 pages, ~1600px wide) to show beside the form. */
 export const scanImages = async (file: File, maxPages = 4): Promise<string[]> => {
   if (file.type.startsWith('image/')) {
     const url = URL.createObjectURL(file);
@@ -203,14 +203,6 @@ export const scanImages = async (file: File, maxPages = 4): Promise<string[]> =>
     out.push(toJpeg(c));
   }
   return out;
-};
-
-/** Read a scan with AI (server route). Only housekeeping fields come back. */
-export const readScanWithAi = async (images: string[]): Promise<Partial<PreArrival>> => {
-  const res = await fetch('/api/pre-arrival-scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images }) });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
-  return body.data || {};
 };
 
 // ---------- storage ----------
@@ -253,7 +245,8 @@ export const preArrivalNotes = (pa: PreArrival | null | undefined): HkNote[] => 
   if (pa.service_morning) out.push({ cat: 'service', text: `Morning service at ${pa.service_morning}` });
   if (pa.service_td) out.push({ cat: 'service', text: `Turndown at ${pa.service_td}` });
   if (pa.comfort.includes('Ice') || pa.ice_time) out.push({ cat: 'setup', text: `Daily ice${pa.ice_time ? ` at ${pa.ice_time}` : ''}` });
-  pa.pillow.forEach(p => out.push({ cat: 'setup', text: `Pillow fragrance: ${p.scent}${p.freq ? ` (${p.freq.toLowerCase()})` : ''}` }));
+  if (pa.pillow.length > 1) out.push({ cat: 'setup', text: `Pillow fragrance at turndown, a different one each day: ${pa.pillow.map(p => p.scent).join(' → ')}` });
+  else pa.pillow.forEach(p => out.push({ cat: 'setup', text: `Pillow fragrance at turndown: ${p.scent} (${p.freq === 'Daily' ? 'every turndown' : 'arrival day only'})` }));
   if (pa.bedding) out.push({ cat: 'kids', text: `Additional bedding: ${pa.bedding}` });
   if (pa.entertainment.length) out.push({ cat: 'other', text: `In-villa entertainment: ${pa.entertainment.join(', ')}` });
   if (pa.other) splitHkNotes([pa.other]).keep.forEach(n => out.push(n));

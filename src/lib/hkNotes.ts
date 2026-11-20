@@ -24,6 +24,8 @@ const JUNK = new RegExp([
   'requested villa', 'req(uested)? (a |the )?(villa|room)', 'same villa', 'villa on jetty', 'jetty', 'further out', 'quiet (room|villa)', 'good views?', 'connecting',
   '\\bta\\b', 'travel agent', 'tour operator', 'general manager', '\\bgm\\b', 'ground operations', 'diamond ambassador', 'ambassador', 'club benefits?',
   'smith benefits?', 'tablet hotel', 'virtuoso', 'amex', 'fine hotels', 'luxury circle',
+  'wellness platter', 'platter', 'handwritten card', 'bicycle tags?', 'bike tags?', '\\bcake\\b', 'dep(arture)? gif', 'welcome note', 'framed photo',
+  'welcome amenit', 'sparkling wine', 'bottle of champagne', 'prosecco', 'personali[sz]ed amenit',
   'luggage', 'baggage', 'excess', 'experiences?', 'f&b', '\\d+\\.\\d{2}', '\\bbc\\s?\\d', '\\bhrs\\b', 'villa away', 'sea ?view', 'allocate', 'gem\\b',
 ].join('|'), 'i');
 

@@ -1,5 +1,6 @@
 // Which guest notes become a VA task, and on which day.
-//   Every day    pre-arrival service / turndown / ice times, a daily pillow fragrance
+//   Every day    pre-arrival service / turndown / ice times; pillow fragrance at turndown (one scent once = arrival only,
+//                daily = every turndown, several scents = a different one each day)
 //   Arrival day  repeater banner (returning to this resort), anniversary / birthday bed runner (no date given),
 //                bedding (pillows, duvet, twin beds, extra bed), baby cot / high chair / sterilizer,
 //                minibar (no alcohol, empty, extra items, discount, not in the package), nut or gluten (beer),
@@ -97,7 +98,14 @@ export const prefTasksFor = (date: string, villa: string, stay: { arr: string; d
   if (pa?.service_morning) push(`Morning service at ${pa.service_morning}`);
   if (pa?.service_td) push(`Turndown at ${pa.service_td}`);
   if (pa && (pa.ice_time || pa.comfort.includes('Ice'))) push(`Daily ice${pa.ice_time ? ` at ${pa.ice_time}` : ''}`);
-  pa?.pillow.filter(p => p.freq === 'Daily').forEach(p => push(`Pillow fragrance: ${p.scent}`));
+  // Pillow fragrance is always at turndown: one scent once → arrival day; one scent daily → every turndown;
+  // more than one scent → every turndown, a different one each day (in turn)
+  const scents = pa?.pillow.map(p => p.scent).filter(Boolean) || [];
+  if (scents.length > 1 && arr) {
+    const day = Math.max(0, Math.round((Date.parse(`${date}T12:00:00Z`) - Date.parse(`${arr}T12:00:00Z`)) / 86400000));
+    push(`Turndown: ${scents[day % scents.length]} pillow fragrance`, `Changes every day: ${scents.join(' → ')}`);
+  } else if (scents.length === 1 && pa!.pillow[0].freq === 'Daily') push(`Turndown: ${scents[0]} pillow fragrance`, 'Every turndown');
+  else if (scents.length === 1 && arr === date) push(`Turndown: ${scents[0]} pillow fragrance`, 'Arrival day only');
 
   // Birthday / anniversary bed runner: on its date, or on arrival when no date is given ("Celebrated ..." = already done)
   const occasions = [
@@ -151,7 +159,6 @@ export const prefTasksFor = (date: string, villa: string, stay: { arr: string; d
     pa.minibar.forEach(m => push(m));
     const items = pa.comfort.filter(c => c !== 'Ice');
     if (items.length) push(`Place in villa: ${items.join(', ')}`);
-    pa.pillow.filter(p => p.freq !== 'Daily').forEach(p => push(`Pillow fragrance: ${p.scent}`));
     if (pa.bedding) push(`Bedding: ${pa.bedding}`);
     if (pa.entertainment.length) push(`In-villa entertainment: ${pa.entertainment.join(', ')}`);
   }

@@ -1,15 +1,15 @@
 "use client";
 // Pre-arrival form for one stay: drop the guest's PDF (or tick by hand from a paper form), check, save.
 // A scanned PDF or a photo has no form fields: its pages are shown beside the form to fill in by hand,
-// or 'Read with AI' fills it (only the housekeeping fields come back). The scan itself is never stored.
+// The scan itself is never stored.
 // Only housekeeping items are kept; passport, contact and flight details are never stored.
 import React, { useRef, useState } from 'react';
-import { X, Upload, Loader2, Save, Trash2, AlertTriangle, FileText, Check, Sparkles, ScanLine } from 'lucide-react';
+import { X, Upload, Loader2, Save, Trash2, AlertTriangle, FileText, Check, ScanLine } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { readSession } from '@/lib/requestsShared';
 import {
-  PA_COMFORT, PA_DIET, PA_ENTERTAINMENT, PA_MINIBAR, PA_SCENTS, emptyPreArrival, readPreArrivalPdf, savePreArrival, deletePreArrival, scanImages, readScanWithAi,
+  PA_COMFORT, PA_DIET, PA_ENTERTAINMENT, PA_MINIBAR, PA_SCENTS, emptyPreArrival, readPreArrivalPdf, savePreArrival, deletePreArrival, scanImages,
   type PreArrival,
 } from '@/lib/preArrival';
 
@@ -29,7 +29,6 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [scan, setScan] = useState<string[]>([]);       // page images of a scanned form (not saved)
-  const [aiReading, setAiReading] = useState(false);
   const [zoom, setZoom] = useState<string | null>(null);
 
   const set = <K extends keyof PreArrival>(k: K, v: PreArrival[K]) => setPa(p => ({ ...p, [k]: v }));
@@ -61,21 +60,10 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
       const pages = await scanImages(file);
       setScan(pages);
       setPa(p => ({ ...p, file_name: file.name }));
-      setWarning('Scanned copy: fill in the form from the pages shown, or tap "Read with AI" and check what it fills in.');
+      setWarning('Scanned copy: fill in the form from the pages shown (tap a page to zoom).');
     } catch (e: any) {
       setWarning('Could not read this file: ' + (e?.message || e) + '. Tick the items by hand below.');
     } finally { setReading(false); if (fileRef.current) fileRef.current.value = ''; }
-  };
-
-  const readWithAi = async () => {
-    if (!scan.length) return;
-    setAiReading(true);
-    try {
-      const data = await readScanWithAi(scan);
-      setPa(p => ({ ...emptyPreArrival(stay), ...data, _id: p._id, file_name: p.file_name } as PreArrival));
-      toast.success('Filled in from the scan: check every item against the pages, then save');
-    } catch (e: any) { toast.error('AI could not read it: ' + (e?.message || e)); }
-    setAiReading(false);
   };
 
   const save = async () => {
@@ -127,9 +115,6 @@ export default function PreArrivalPanel({ stay, existing, onClose, onSaved }: Pr
           <div className="flex-none lg:flex-1 lg:min-w-0 max-h-[38vh] lg:max-h-none overflow-y-auto bg-slate-100 border-b lg:border-b-0 lg:border-r border-slate-200 p-3 space-y-2">
             <div className="flex items-center gap-2">
               <p className="flex-1 text-[11px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1.5"><ScanLine size={13} /> Scanned form ({scan.length} page{scan.length > 1 ? 's' : ''})</p>
-              <button onClick={readWithAi} disabled={aiReading} className="h-8 px-3 rounded-lg bg-[#6D2158] text-white text-[11px] font-black flex items-center gap-1.5 disabled:opacity-50">
-                {aiReading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} Read with AI
-              </button>
             </div>
             {scan.map((src, i) => (
               // eslint-disable-next-line @next/next/no-img-element
