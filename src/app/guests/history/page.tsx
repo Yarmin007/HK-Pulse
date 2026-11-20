@@ -5,9 +5,10 @@ import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'reac
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  Search, Loader2, ArrowLeft, BedDouble, CalendarDays, Users, Utensils, UserRound, StickyNote, Wine,
-  History, Printer, ArrowRight, Repeat, X, ChevronRight, Milk,
+  Search, Loader2, ArrowLeft, BedDouble, CalendarDays, Users, StickyNote, Wine,
+  Printer, ArrowRight, Repeat, X, ChevronRight, Milk, AlertTriangle, PartyPopper, Gift, Baby, Star, ClipboardList, ChevronDown, Clock, FileText,
 } from 'lucide-react';
+import { splitHkNotes, HK_CAT_LABEL, HK_CAT_ORDER, type HkCat } from '@/lib/hkNotes';
 import AdminOnly from '@/components/AdminOnly';
 import { getDhakaDateStr } from '@/lib/dateUtils';
 import { isCoordinator } from '@/lib/requestsShared';
@@ -17,10 +18,23 @@ import {
 } from '@/lib/guestHistory';
 import { loadMilkList, loadMilkRange, type MilkList } from '@/lib/milkRequests';
 import MilkPanel from './MilkPanel';
+import PreArrivalPanel from './PreArrivalPanel';
+import { loadPreArrivals, preArrivalNotes, type PreArrival } from '@/lib/preArrival';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const nice = (iso?: string, year = true) => { if (!iso) return '—'; const [y, m, d] = iso.split('-'); return `${+d} ${MONTHS[+m - 1]}${year ? ` ${y}` : ''}`; };
 const hhmm = (ts: string) => { const d = new Date(ts); return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
+const CAT_STYLE: Record<HkCat, { icon: React.ElementType; box: string; title: string }> = {
+  diet: { icon: AlertTriangle, box: 'bg-rose-50 border-rose-200', title: 'text-rose-700' },
+  minibar: { icon: Wine, box: 'bg-purple-50 border-purple-200', title: 'text-purple-700' },
+  occasion: { icon: PartyPopper, box: 'bg-amber-50 border-amber-200', title: 'text-amber-800' },
+  setup: { icon: Gift, box: 'bg-[#6D2158]/5 border-[#6D2158]/15', title: 'text-[#6D2158]' },
+  kids: { icon: Baby, box: 'bg-sky-50 border-sky-200', title: 'text-sky-700' },
+  service: { icon: Clock, box: 'bg-teal-50 border-teal-200', title: 'text-teal-700' },
+  repeat: { icon: Star, box: 'bg-emerald-50 border-emerald-200', title: 'text-emerald-700' },
+  other: { icon: StickyNote, box: 'bg-slate-50 border-slate-200', title: 'text-slate-600' },
+};
+const hasAllergy = (s: Stay) => splitHkNotes(s.notes.map(n => n.text)).keep.some(n => n.cat === 'diet');
 const people = (name: string) => name.split('&').map(s => s.trim()).filter(Boolean);
 const villasLabel = (vs: string[]) => vs.map(v => `V${v}`).join(' → ');
 
@@ -61,6 +75,8 @@ function GuestHistoryInner() {
   const [past, setPast] = useState<Stay[] | null>(null);
   const stayKey = params.get('stay') || '';
   const [milkOpen, setMilkOpen] = useState(false);
+  const [preArrival, setPreArrival] = useState<PreArrival | null>(null);
+  const [paOpen, setPaOpen] = useState(false);
   const [todayMilk, setTodayMilk] = useState<MilkList | null>(null);
   const [stayMilk, setStayMilk] = useState<{ date: string; villa: string; items: string[]; until: string; note: string }[]>([]);
   useEffect(() => { loadMilkList(today).then(setTodayMilk).catch(() => {}); }, [today]);
@@ -85,7 +101,7 @@ function GuestHistoryInner() {
 
   // Load the selected stay with everything around it
   const loadProfile = useCallback(async (key: string) => {
-    setLoadingStay(true); setPast(null); setRequests([]); setAttendants({}); setStayMilk([]);
+    setLoadingStay(true); setPast(null); setRequests([]); setAttendants({}); setStayMilk([]); setPreArrival(null);
     try {
       const hint = params.get('v') ? { villas: (params.get('v') || '').split(',').filter(Boolean), arr: params.get('a') || '', dep: params.get('d') || '', name: params.get('n') || '' } : undefined;
       const s = await loadStay(key, hint);
@@ -94,6 +110,7 @@ function GuestHistoryInner() {
       const [req, att] = await Promise.all([stayRequests(s, isCoordinator()), stayAttendants(s, parseVillas)]);
       setRequests(req); setAttendants(att);
       pastStays(s).then(setPast).catch(() => setPast([]));
+      loadPreArrivals({ stayKey: s.key }).then(list => setPreArrival(list[0] || null)).catch(() => {});
       // Milk lists on the days of the stay, for the villa the guest was in that day
       const villaOn = new Map(s.days.map(d => [d.report_date, d.villa_number]));
       loadMilkRange(s.arr, s.dep || s.lastSeen).then(lists => setStayMilk(lists.flatMap(l => {
@@ -149,6 +166,7 @@ function GuestHistoryInner() {
                   </span>
                   <span className="shrink-0 flex flex-col items-end gap-1">
                     <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${PHASE_STYLE[ph]}`}>{ph}</span>
+                    {hasAllergy(s) && <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 flex items-center gap-0.5"><AlertTriangle size={10} /> Diet</span>}
                     {ph !== 'Departed' && milkToday(s.villas[s.villas.length - 1]) && <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 flex items-center gap-0.5" title={milkToday(s.villas[s.villas.length - 1])!.items.join(' + ')}><Milk size={10} /> Milk</span>}
                   </span>
                 </button>
@@ -184,38 +202,66 @@ function GuestHistoryInner() {
                   </div>
                   <button onClick={() => window.print()} className="w-10 h-10 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center shrink-0 print:hidden" title="Print profile"><Printer size={17} /></button>
                 </div>
-                <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {([
-                    [BedDouble, 'Villa', villasLabel(stay.villas)],
-                    [CalendarDays, 'Arrival', `${nice(stay.arr)}${stay.arrTime ? ` · ${stay.arrTime}` : ''}`],
-                    [CalendarDays, 'Departure', `${nice(stay.dep)}${stay.depTime ? ` · ${stay.depTime}` : ''}`],
-                    [History, 'Nights', String(stay.nights)],
-                    [Users, 'Guests', `${stay.adults} adult${stay.adults === 1 ? '' : 's'}${stay.kids ? ` · ${stay.kids} child${stay.kids === 1 ? '' : 'ren'}` : ''}`],
-                    [Utensils, 'Meal plan', stay.mealPlan || '—'],
-                    [UserRound, 'GEM', stay.gem || '—'],
-                  ] as const).map(([Icon, label, value]) => (
-                    <div key={label} className="rounded-xl bg-slate-50 px-3 py-2">
+                    [BedDouble, 'Villa', villasLabel(stay.villas), stay.villas.length > 1 ? 'moved during the stay' : ''],
+                    [CalendarDays, 'Arrival', nice(stay.arr), stay.arrTime ? `ETA ${stay.arrTime}` : ''],
+                    [CalendarDays, 'Departure', nice(stay.dep), [stay.depTime ? `ETD ${stay.depTime}` : '', `${stay.nights} night${stay.nights === 1 ? '' : 's'}`].filter(Boolean).join(' · ')],
+                    [Users, 'Guests', `${stay.adults} adult${stay.adults === 1 ? '' : 's'}${stay.kids ? ` + ${stay.kids} child${stay.kids === 1 ? '' : 'ren'}` : ''}`, stay.gem ? `GEM ${stay.gem}` : ''],
+                  ] as const).map(([Icon, label, value, sub]) => (
+                    <div key={label} className="rounded-xl bg-slate-50 px-3 py-2 min-w-0">
                       <p className="text-[10px] font-black uppercase tracking-wide text-slate-400 flex items-center gap-1"><Icon size={11} /> {label}</p>
-                      <p className="text-sm font-black text-slate-800">{value}</p>
+                      <p className="text-sm font-black text-slate-800 truncate">{value}</p>
+                      {sub && <p className="text-[11px] font-bold text-slate-500 truncate">{sub}</p>}
                     </div>
                   ))}
                 </div>
               </section>
 
-              {/* Notes */}
-              <section className="bg-white rounded-2xl border border-slate-200">
-                <h2 className="px-4 py-3 border-b border-slate-100 text-sm font-black text-slate-800 flex items-center gap-2"><StickyNote size={15} className="text-[#6D2158]" /> Notes & preferences</h2>
-                {stay.notes.length === 0 ? <p className="px-4 py-6 text-sm font-semibold text-slate-400">No notes recorded.</p> : (
-                  <ul className="divide-y divide-slate-100">
-                    {stay.notes.map((n, i) => (
-                      <li key={i} className="px-4 py-2.5 flex gap-3">
-                        <span className="text-sm font-semibold text-slate-700 flex-1 whitespace-pre-wrap">{n.text}</span>
-                        <span className="text-[11px] font-bold text-slate-400 shrink-0">{nice(n.first, false)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+              {/* For housekeeping: only what changes the villa or the service */}
+              {(() => {
+                const { keep: memoKeep, hidden } = splitHkNotes(stay.notes.map(n => n.text));
+                const formNotes = preArrivalNotes(preArrival);
+                const keep = [...formNotes.map(n => ({ ...n, form: true })), ...memoKeep.filter(m => !formNotes.some(f => f.text.toLowerCase() === m.text.toLowerCase())).map(n => ({ ...n, form: false }))];
+                const groups = HK_CAT_ORDER.map(c => [c, keep.filter(n => n.cat === c)] as const).filter(([, ns]) => ns.length);
+                return (
+                  <>
+                    <section className="bg-white rounded-2xl border border-slate-200">
+                      <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+                        <h2 className="text-sm font-black text-slate-800 flex items-center gap-2 flex-1"><ClipboardList size={15} className="text-[#6D2158]" /> For housekeeping</h2>
+                        <button onClick={() => setPaOpen(true)} className={`h-8 px-2.5 rounded-lg text-[11px] font-black flex items-center gap-1.5 print:hidden ${preArrival ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' : 'bg-[#6D2158]/10 text-[#6D2158]'}`}>
+                          <FileText size={13} /> {preArrival ? 'Pre-arrival form ✓' : 'Add pre-arrival form'}
+                        </button>
+                      </div>
+                      {groups.length === 0 ? <p className="px-4 py-6 text-sm font-semibold text-slate-400">Nothing special for housekeeping.</p> : (
+                        <div className="p-3 grid gap-2 sm:grid-cols-2">
+                          {groups.map(([cat, ns]) => {
+                            const st = CAT_STYLE[cat]; const Icon = st.icon;
+                            return (
+                              <div key={cat} className={`rounded-xl border px-3 py-2.5 ${st.box} ${cat === 'diet' ? 'sm:col-span-2' : ''}`}>
+                                <p className={`text-[11px] font-black uppercase tracking-wide flex items-center gap-1.5 ${st.title}`}><Icon size={13} /> {HK_CAT_LABEL[cat]}</p>
+                                <ul className="mt-1 space-y-0.5">
+                                  {ns.map(n => <li key={n.text} className="text-sm font-semibold text-slate-800">{n.text}{n.form && <span className="ml-1.5 align-middle text-[9px] font-black uppercase px-1 py-0.5 rounded bg-white/80 border border-slate-200 text-slate-500">form</span>}</li>)}
+                                </ul>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                    {hidden.length > 0 && (
+                      <details className="group bg-white rounded-2xl border border-slate-200 print:hidden">
+                        <summary className="px-4 py-3 text-xs font-black text-slate-400 flex items-center gap-2 cursor-pointer list-none">
+                          <ChevronDown size={14} className="transition-transform group-open:rotate-180" /> Front office memo notes ({hidden.length}): rates, benefits, transfers, bookings
+                        </summary>
+                        <ul className="px-4 pb-3 space-y-1">
+                          {hidden.map(h => <li key={h} className="text-xs font-semibold text-slate-500">{h}</li>)}
+                        </ul>
+                      </details>
+                    )}
+                  </>
+                );
+              })()}
 
               {/* Milk */}
               {stayMilk.length > 0 && (() => {
@@ -317,7 +363,7 @@ function GuestHistoryInner() {
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-black text-[#6D2158] leading-tight">Guest History</h1>
-            <p className="text-xs font-semibold text-slate-400">Every stay: villa, dates, notes, requests and minibar</p>
+            <p className="text-xs font-semibold text-slate-400">Every stay: villa, dates, what housekeeping needs to know, requests and minibar</p>
           </div>
           <button onClick={() => setMilkOpen(true)} className="h-10 px-3 rounded-xl bg-sky-50 border border-sky-200 text-xs font-black text-sky-700 flex items-center gap-1.5">
             <Milk size={15} /> Daily milk{todayMilk?.entries.length ? <span className="ml-0.5 px-1.5 rounded-full bg-sky-600 text-white text-[10px]">{todayMilk.entries.length}</span> : null}
@@ -325,6 +371,10 @@ function GuestHistoryInner() {
           <Link href="/guests" className="hidden sm:flex h-10 px-3 rounded-xl bg-white border border-slate-200 text-xs font-black text-slate-600 items-center gap-1.5">Guest List <ArrowRight size={14} /></Link>
         </div>
       </div>
+      {paOpen && stay && (
+        <PreArrivalPanel stay={{ key: stay.key, villa: stay.villas[stay.villas.length - 1], arr: stay.arr, name: stay.name }} existing={preArrival}
+          onClose={() => setPaOpen(false)} onSaved={pa => { setPreArrival(pa); setPaOpen(false); }} />
+      )}
       {milkOpen && <MilkPanel today={today} onClose={() => setMilkOpen(false)} onSaved={() => { loadMilkList(today).then(setTodayMilk).catch(() => {}); if (stayKey) loadProfile(stayKey); }} />}
       <div className="max-w-6xl mx-auto px-4 pt-4 flex flex-col lg:flex-row gap-4 items-start">
         {list}

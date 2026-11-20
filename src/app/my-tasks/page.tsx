@@ -20,9 +20,11 @@ import LinenInventoryGrid from './_components/LinenInventoryGrid';
 import BottleInventoryGrid from './_components/BottleInventoryGrid';
 import RequestsBanner from './_components/RequestsBanner';
 import PantryBanner from './_components/PantryBanner';
+import MinibarBanner from './_components/MinibarBanner';
 import VillaTaskList from './_components/VillaTaskList';
 import { loadVaTasks, setVaTaskDone, type VaTask } from '@/lib/vaDailyTasks';
 import { projectGuestDay } from '@/lib/guestDay';
+import { EMPTY_MB_TYPE, loadMbSubmissions, latestByVilla, saveMbSubmission, loadVaMinibarTasks } from '@/lib/minibarCounts';
 
 export type Host = { id: string; full_name: string; host_id: string; role?: string; };
 export type MasterItem = { article_number: string; article_name: string; generic_name?: string; category: string; image_url?: string; inventory_type?: string; is_minibar_item: boolean; villa_location?: string; sort_order?: number; };
@@ -63,7 +65,8 @@ const parseVillas = (input: string, doubleVillas: string[]) => {
     const parts = input.split(',').map(s => s.trim());
     
     for (const p of parts) {
-        if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
+        const half = p.match(/^(\d+)-([12])$/);
+        if (/^\d+-\d+$/.test(p) && !(half && doubleVillas.includes(half[1]))) {
             const [start, end] = p.split('-').map(Number);
             if (!isNaN(start) && !isNaN(end) && start <= end) {
                 for (let i = start; i <= end; i++) {
@@ -160,6 +163,7 @@ export default function MyTasksHub() {
   const [expiryCounts, setExpiryCounts] = useState<Record<string, number>>({});
   const [refillCounts, setRefillCounts] = useState<Record<string, number>>({});
   const [hiddenMbItems, setHiddenMbItems] = useState<string[]>([]);
+  const [mbPeriodState, setMbPeriodState] = useState('');
 
   // Daily task list per villa: requests, ice, milk, guest preferences
   const [vaTasks, setVaTasks] = useState<Record<string, VaTask[]>>({});
@@ -417,33 +421,16 @@ export default function MyTasksHub() {
           }
       }
 
-      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas', 'expiry_inv_status', 'hidden_mb_item', ACTIVE_ROUND_TYPE]);
-      const mbStatus = constData?.find(c => c.type === 'mb_inv_status')?.label || 'CLOSED';
-      const mbPeriod = constData?.find(c => c.type === 'mb_active_period')?.label;
+      const { data: constData } = await supabase.from('hsk_constants').select('*').in('type', ['mb_inv_status', 'mb_active_period', 'double_mb_villas', 'expiry_inv_status', 'hidden_mb_item', EMPTY_MB_TYPE, ACTIVE_ROUND_TYPE]);
       const expiryStatus = constData?.find(c => c.type === 'expiry_inv_status')?.label || 'CLOSED';
-      const dvStr = constData?.find(c => c.type === 'double_mb_villas')?.label || '';
-      const dvList = dvStr.split(',').map((s: string) => s.trim()).filter(Boolean);
-      
-      const hiddenList = constData?.filter(c => c.type === 'hidden_mb_item').map(c => c.label) || [];
-      setHiddenMbItems(hiddenList);
+      const dvList = (constData?.find(c => c.type === 'double_mb_villas')?.label || '').split(',').map((s: string) => s.trim()).filter(Boolean);
 
-      if (mbStatus === 'OPEN' && mbPeriod) {
-          const allocDate = `${mbPeriod}-01`;
-          const { data: allMbAlloc } = await supabase.from('hsk_minibar_allocations').select('host_id, villas').eq('date', allocDate);
-          const mbAllocations = allMbAlloc?.find(a => a.host_id === host.id || a.host_id === host.host_id);
-          
-          if (mbAllocations && mbAllocations.villas) {
-              const mbVillas = parseVillas(mbAllocations.villas, dvList);
-              const [y, m] = mbPeriod.split('-').map(Number);
-              const startOfMonthUTC = new Date(y, m - 1, 1).toISOString();
-              const startOfNextMonthUTC = new Date(y, m, 1).toISOString();
-              
-              const { data: allMbSubs } = await supabase.from('hsk_villa_minibar_inventory').select('host_id, villa_number').gte('logged_at', startOfMonthUTC).lt('logged_at', startOfNextMonthUTC);
-              const mbSubmissions = allMbSubs?.filter(s => s.host_id === host.id || s.host_id === host.host_id);
-              const completedMbVillas = new Set((mbSubmissions || []).map(s => s.villa_number));
-
-              taskMap['Legacy Minibar'] = mbVillas.map(v => ({ schedule_id: 'legacy_minibar', inventory_type: 'Legacy Minibar', villa_number: v, status: completedMbVillas.has(v) ? 'Submitted' : 'Pending' }));
-          }
+      // Minibar inventory: same loader the coordinator's simulation uses (src/lib/minibarCounts.ts)
+      const mb = await loadVaMinibarTasks(host).catch(() => null);
+      setHiddenMbItems(mb?.hidden || []);
+      setMbPeriodState(mb?.open ? mb.period : '');
+      if (mb?.open && mb.villas.length) {
+          taskMap['Legacy Minibar'] = mb.villas.map(v => ({ schedule_id: 'legacy_minibar', inventory_type: 'Legacy Minibar', villa_number: v.villa, status: v.done ? 'Submitted' : 'Pending' }));
       }
       setUniversalTasks(taskMap);
 
@@ -643,11 +630,11 @@ export default function MyTasksHub() {
     const relevantItems = taskType === 'Legacy Minibar' ? masterCatalog.filter(i => i.is_minibar_item) : masterCatalog.filter(i => i.inventory_type === taskType);
 
     if (taskType === 'Legacy Minibar') {
-        const mbPeriod = getDhakaDateStr().substring(0, 7);
-        const [y, m] = mbPeriod.split('-').map(Number);
-        const { data: sub } = await supabase.from('hsk_villa_minibar_inventory').select('inventory_data').eq('villa_number', villa).gte('logged_at', new Date(y, m - 1, 1).toISOString()).lt('logged_at', new Date(y, m, 1).toISOString()).order('logged_at', { ascending: false }).limit(1).maybeSingle();
+        const period = mbPeriodState || getDhakaDateStr().substring(0, 7);
+        const sub = latestByVilla(await loadMbSubmissions(period).catch(() => []))[villa];
         relevantItems.forEach(item => { initialCounts[item.article_number] = 0; });
-        if (sub && sub.inventory_data) sub.inventory_data.forEach((item: any) => { initialCounts[item.article_number] = item.qty; });
+        // Hidden items are not counted: don't bring back an old figure for them
+        if (sub && Array.isArray(sub.inventory_data)) sub.inventory_data.forEach((item: any) => { if (!hiddenMbItems.includes(item.article_number)) initialCounts[item.article_number] = item.qty; });
     } else {
         const { data: recs } = await supabase.from('hsk_inventory_records').select('article_number, counted_qty').eq('schedule_id', scheduleId).eq('villa_number', villa);
         relevantItems.forEach(item => { initialCounts[item.article_number] = 0; });
@@ -759,7 +746,7 @@ export default function MyTasksHub() {
       setRefillCounts(prev => { const next = (prev[artNo] || 0) + delta; return { ...prev, [artNo]: Math.max(0, next) }; });
   };
 
-  const executeSaveInventory = async () => {
+  const executeSaveInventory = async (minibarOverride?: Record<string, number>) => {
     setIsSaving(true);
     
     if (activeTaskType === 'Linen' && activeLinenTaskLocation) {
@@ -826,12 +813,17 @@ export default function MyTasksHub() {
         setBottleAssignments(prev => prev.map(a => a.location_name === activeBottleTaskLocation.location_name ? {...a, is_submitted: true} : a));
     }
     else if (activeTaskType === 'Legacy Minibar') {
-        const countedItems = Object.entries(counts).filter(([_, qty]) => Number(qty) > 0).map(([artNo, qty]) => {
+        // The inventory may have been locked while this screen was open
+        const { data: st } = await supabase.from('hsk_constants').select('type, label').in('type', ['mb_inv_status', 'mb_active_period']);
+        const openNow = st?.find(c => c.type === 'mb_inv_status')?.label === 'OPEN';
+        const periodNow = st?.find(c => c.type === 'mb_active_period')?.label || '';
+        if (!openNow || !periodNow) { toast.error('The minibar inventory is closed. Ask the coordinator to open it.'); setIsSaving(false); return; }
+        const countedItems = Object.entries(minibarOverride ?? counts).filter(([artNo, qty]) => Number(qty) > 0 && !hiddenMbItems.includes(artNo)).map(([artNo, qty]) => {
                 const item = masterCatalog.find(c => c.article_number === artNo); return { article_number: artNo, name: item?.generic_name || item?.article_name, qty: Number(qty) };
         });
-        const payload = { villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name, inventory_data: countedItems, logged_at: new Date().toISOString() };
-        const { error } = await supabase.from('hsk_villa_minibar_inventory').insert(payload);
-        if (error) { toast.error("Failed to save minibar: " + error.message); setIsSaving(false); return; }
+        try {
+            await saveMbSubmission({ villa_number: selectedVilla, host_id: currentHost?.host_id, host_name: currentHost?.full_name, inventory_data: countedItems as any }, periodNow);
+        } catch (e: any) { toast.error("Failed to save minibar: " + (e?.message || 'error')); setIsSaving(false); return; }
         setUniversalTasks(prev => { const updated = { ...prev }; if (updated['Legacy Minibar']) { updated['Legacy Minibar'] = updated['Legacy Minibar'].map(t => t.villa_number === selectedVilla ? { ...t, status: 'Submitted' } : t); } return updated; });
     } 
     else {
@@ -1023,6 +1015,10 @@ export default function MyTasksHub() {
                     <div className="space-y-6">
                         <RequestsBanner villas={myCleaningVillas} />
                         <PantryBanner villas={myCleaningVillas} />
+                        {mbPeriodState && (
+                            <MinibarBanner tasks={universalTasks['Legacy Minibar'] || []} periodLabel={format(parseISO(`${mbPeriodState}-01`), 'MMMM')}
+                                onStart={(v: string) => startAudit(v, 'Legacy Minibar', 'legacy_minibar')} />
+                        )}
                         <RoomCleaningGrid 
                             displayVillas={displayVillas}
                             myCleaningVillas={myCleaningVillas}
@@ -1070,12 +1066,23 @@ export default function MyTasksHub() {
                         <div className="flex items-center gap-3">
                             <button onClick={() => { setStep(2); setIsExpiryMode(false); setActiveLinenTaskLocation(null); setActiveBottleTaskLocation(null); setActiveTaskType(''); }} className={`p-2.5 md:p-3 rounded-full transition-colors ${isExpiryMode ? 'bg-white hover:bg-rose-100 text-rose-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500'}`}><ChevronLeft size={18}/></button>
                             <div>
-                                <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{selectedVilla}</h2>
+                                <h2 className={`text-xl md:text-2xl font-black ${isExpiryMode ? 'text-rose-700' : 'text-[#6D2158]'}`}>{activeTaskType === 'Legacy Minibar' ? `Villa ${selectedVilla}` : selectedVilla}</h2>
                                 <p className={`text-[10px] md:text-xs font-bold uppercase tracking-widest mt-0.5 ${isExpiryMode ? 'text-rose-500' : 'text-slate-400'}`}>
-                                    {isExpiryMode ? 'Targeted Tasks' : (activeTaskType === 'Legacy Minibar' ? `${format(getDhakaTime(), 'MMMM')} Minibar Inventory` : activeTaskType === 'Linen' ? 'Linen Inventory Count' : activeTaskType === 'Bottle' ? 'Bottle Inventory Count' : `${activeTaskType} Audit`)}
+                                    {isExpiryMode ? 'Targeted Tasks' : (activeTaskType === 'Legacy Minibar' ? `${mbPeriodState ? format(parseISO(`${mbPeriodState}-01`), 'MMMM') : format(getDhakaTime(), 'MMMM')} Minibar Inventory` : activeTaskType === 'Linen' ? 'Linen Inventory Count' : activeTaskType === 'Bottle' ? 'Bottle Inventory Count' : `${activeTaskType} Audit`)}
                                 </p>
                             </div>
                         </div>
+                        {activeTaskType === 'Legacy Minibar' && (universalTasks['Legacy Minibar'] || []).length > 0 && (() => {
+                            const list = universalTasks['Legacy Minibar'] || [];
+                            const done = list.filter(t => t.status === 'Submitted').length;
+                            const isDoneHere = list.find(t => t.villa_number === selectedVilla)?.status === 'Submitted';
+                            return (
+                                <div className="text-right shrink-0">
+                                    <p className="text-xs font-black text-slate-600">{done}/{list.length} villas done</p>
+                                    {isDoneHere && <p className="text-[10px] font-bold text-emerald-600">Already counted: saving replaces it</p>}
+                                </div>
+                            );
+                        })()}
                     </div>
                 </div>
 
@@ -1128,6 +1135,7 @@ export default function MyTasksHub() {
                         counts={counts as any} 
                         updateCount={(artNo: string, val: number) => setCounts(prev => ({...prev, [artNo]: val}))}
                         requestSaveInventory={() => setConfirmModal({ isOpen: true, title: `Submit Location ${selectedVilla}?`, message: "Are you sure you want to save this inventory record?", confirmText: "Confirm Minibar Inventory", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); executeSaveInventory(); } })}
+                        requestEmpty={() => setConfirmModal({ isOpen: true, title: `Villa ${selectedVilla}: minibar empty?`, message: "Saves this villa as counted with nothing in the minibar.", confirmText: "Save as empty", isDestructive: false, onConfirm: () => { setConfirmModal(prev => ({ ...prev, isOpen: false })); setCounts({}); executeSaveInventory({}); } })}
                         isSaving={isSaving}
                         activeTaskType={activeTaskType}
                     />
@@ -1212,7 +1220,20 @@ export default function MyTasksHub() {
                 <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center mb-5"><CheckCircle2 size={48} className="text-white"/></div>
                 <h2 className="text-3xl font-black text-center mb-2">Saved!</h2>
                 <p className="text-center font-medium text-emerald-100 mb-10 text-sm md:text-base">Location {selectedVilla} record has been logged.</p>
-                <button onClick={resetFlow} className="px-8 py-4 bg-white text-emerald-700 rounded-xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all hover:scale-105">Return to Hub</button>
+                {(() => {
+                    const nextMb = activeTaskType === 'Legacy Minibar' ? (universalTasks['Legacy Minibar'] || []).find(t => t.status !== 'Submitted' && t.villa_number !== selectedVilla) : null;
+                    return (
+                        <div className="flex flex-col sm:flex-row gap-3">
+                            {nextMb && (
+                                <button onClick={() => { setShowSuccess(false); startAudit(nextMb.villa_number, 'Legacy Minibar', 'legacy_minibar'); }}
+                                    className="px-8 py-4 bg-white text-emerald-700 rounded-xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all">
+                                    Next: Villa {nextMb.villa_number}
+                                </button>
+                            )}
+                            <button onClick={resetFlow} className={`px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all ${nextMb ? 'bg-emerald-700 text-white border border-white/30' : 'bg-white text-emerald-700'}`}>Back to my tasks</button>
+                        </div>
+                    );
+                })()}
             </div>
         )}
 

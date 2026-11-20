@@ -1,7 +1,7 @@
 // Villa attendant's daily task list (My Tasks), per villa, for one day:
 //   Milk         today's milk list (Guest History → Daily milk)
 //   Ice          daily ice requests (Allocation → Summary), until the guest departs
-//   Preferences  the guest's preferences / notes from the guest list
+//   Preferences  the guest's notes from the guest list that matter to housekeeping (lib/hkNotes)
 //   Requests     anything sent from the Requests page for the villa today, except minibar
 // Milk / ice / preference ticks live in hsk_va_task_done (supabase/va_daily_tasks.sql);
 // a request is ticked on the request itself (delivered), so the Requests page shows it too.
@@ -10,6 +10,8 @@ import { projectGuestDay, extractDepInfo } from '@/lib/guestDay';
 import { loadMilkList } from '@/lib/milkRequests';
 import { deliveryPatch, undoPatch, isForToday, deliveryOf } from '@/lib/requestsShared';
 import { fetchRows, buildStays } from '@/lib/guestHistory';
+import { hkNoteLines } from '@/lib/hkNotes';
+import { loadPreArrivals, preArrivalNotes, type PreArrival } from '@/lib/preArrival';
 
 export type VaTaskKind = 'milk' | 'ice' | 'pref' | 'request';
 export type VaTask = {
@@ -19,13 +21,6 @@ export type VaTask = {
 
 // Short stable id for a preference line (so its tick survives a re-upload of the same note)
 const hash = (s: string) => { let h = 0; for (const c of s.toLowerCase().replace(/\s+/g, ' ').trim()) h = (h * 31 + c.charCodeAt(0)) | 0; return (h >>> 0).toString(36); };
-const prefLines = (row: any) => {
-  const notes = [row?.preferences, extractDepInfo(row?.remarks || '').cleanRemarks]
-    .flatMap(t => String(t || '').split(/\n|•/)).map(s => s.trim())
-    .filter(s => s.length > 2 && !/^\[?DEP_INFO|^CHECKOUT \d/i.test(s));
-  return [...new Set(notes)];
-};
-
 export const loadVaTasks = async (villas: string[], date: string): Promise<{ byVilla: Record<string, VaTask[]>; tableMissing: boolean }> => {
   const byVilla: Record<string, VaTask[]> = {};
   villas.forEach(v => { byVilla[v] = []; });
@@ -34,13 +29,14 @@ export const loadVaTasks = async (villas: string[], date: string): Promise<{ byV
 
   // Preferences usually sit only on the arrival day's row, so read the whole current stay
   const since = (() => { const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() - 45); return d.toISOString().slice(0, 10); })();
-  const [guest, stayRows, milk, ice, reqs, ticks] = await Promise.all([
+  const [guest, stayRows, milk, ice, reqs, ticks, preArrivals] = await Promise.all([
     projectGuestDay(date).catch(() => ({ rows: [] as any[] })),
     fetchRows(b => b.in('villa_number', villas).gte('report_date', since).lte('report_date', date)).catch(() => []),
     loadMilkList(date).catch(() => null),
     supabase.from('hsk_daily_requests').select('*').eq('request_type', 'Ice').in('villa_number', villas),
     supabase.from('hsk_daily_requests').select('*').in('villa_number', villas).gte('request_time', `${date}T00:00:00+06:00`).not('request_type', 'in', '("Minibar","Ice","Time Edit Request")'),
     supabase.from('hsk_va_task_done').select('*').eq('report_date', date).in('villa_number', villas),
+    loadPreArrivals().catch(() => [] as PreArrival[]),
   ]);
   const tableMissing = !!ticks.error && /does not exist|schema cache|PGRST205|42P01/i.test(`${ticks.error.message} ${ticks.error.code}`);
   const tick = new Map((ticks.data || []).map((t: any) => [`${t.villa_number}|${t.task_key}`, t]));
@@ -66,7 +62,13 @@ export const loadVaTasks = async (villas: string[], date: string): Promise<{ byV
   villas.forEach(v => {
     const today = (guest.rows || []).find((r: any) => String(r.villa_number) === v);
     const stay = stays.find(st => st.villas[st.villas.length - 1] === v && st.arr <= date && (st.dep || st.lastSeen) >= date && st.lastSeen >= since);
-    const lines = [...prefLines(today), ...(stay ? stay.notes.map(n => n.text).filter(t => !/^\[?DEP_INFO|^CHECKOUT \d/i.test(t)) : [])];
+    // Only what housekeeping acts on (allergies, occasions, set-up, kids, minibar): not rates, benefits, transfers...
+    // The guest's pre-arrival form (Guest History) comes first
+    const pa = stay ? preArrivals.find(p => p.stay_key === stay.key || (p.villa === v && p.arr === stay.arr)) : undefined;
+    const lines = [
+      ...preArrivalNotes(pa).map(n => n.text),
+      ...hkNoteLines([today?.preferences, extractDepInfo(today?.remarks || '').cleanRemarks, ...(stay ? stay.notes.map(n => n.text) : [])]),
+    ];
     const seen = new Set<string>();
     lines.forEach(line => {
       const id = line.toLowerCase().replace(/\s+/g, ' ').trim();

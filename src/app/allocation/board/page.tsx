@@ -1,1137 +1,906 @@
-    "use client";
-    import React, { useState, useEffect, useMemo, useCallback } from 'react';
-    import { 
-    LayoutDashboard, Sparkles, CheckCircle2, DoorClosed, 
-    Clock, User, AlertCircle, BedDouble, Loader2, RefreshCw, Calendar, Search, X, Maximize, Minimize, TableProperties, LayoutGrid, ChevronDown, ZoomIn, Edit, Trash2, Plus, Save, LineChart
-    } from 'lucide-react';
-    import { supabase } from '@/lib/supabase';
-    import { format, parseISO, isToday } from 'date-fns';
-    import { getDhakaTime, getDhakaDateStr } from '@/lib/dateUtils';
-    import toast from 'react-hot-toast';
-
-    type LiveTask = {
-        villa: string;
-        status: 'Pending' | 'In Progress' | 'Completed' | 'DND' | 'Refused';
-        attendant: string;
-        type: string;
-        startTime?: string;
-        endTime?: string;
-        timeSpent?: string;
-        timeLogged?: string;
-        sessionHistory?: any[];
-        pendingEditRequest?: any;
-    };
-
-    type EditState = {
-        villa: string;
-        status: string;
-        timeSpent: number;
-        sessionHistory: any[];
-        pendingEditRequest?: any;
-    };
-
-    // Reusable villa parser
-    const parseVillas = (input: string, doubleVillas: string[] = []) => {
-        const result = new Set<string>();
-        const parts = (input || '').split(',').map(s => s.trim());
-        
-        for (const p of parts) {
-            if (p.includes('-') && !p.includes('-1') && !p.includes('-2')) {
-                const [start, end] = p.split('-').map(Number);
-                if (!isNaN(start) && !isNaN(end) && start <= end) {
-                    for (let i = start; i <= end; i++) {
-                        const v = String(i);
-                        if (doubleVillas.includes(v)) { result.add(`${v}-1`); result.add(`${v}-2`); } 
-                        else { result.add(v); }
-                    }
-                }
-            } else if (p) {
-                const baseV = p.replace('-1', '').replace('-2', '');
-                if (!p.includes('-') && doubleVillas.includes(p)) { result.add(`${p}-1`); result.add(`${p}-2`); } 
-                else { result.add(p); }
-            }
-        }
-        return Array.from(result).sort((a,b) => parseFloat(a.replace('-', '.')) - parseFloat(b.replace('-', '.')));
-    };
-
-    // Helper to parse 12-hour time string into timestamp for sorting
-    const parseTimeString = (timeStr: string | undefined) => {
-        if (!timeStr) return 0;
-        const today = new Date();
-        const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)?/i);
-        if (!match) return 0;
-        let hours = parseInt(match[1], 10);
-        const mins = parseInt(match[2], 10);
-        const period = match[3] ? match[3].toUpperCase() : '';
-        if (period === 'PM' && hours < 12) hours += 12;
-        if (period === 'AM' && hours === 12) hours = 0;
-        today.setHours(hours, mins, 0, 0);
-        return today.getTime();
-    };
-
-    // ⚡ Helper to calculate minutes between two 12-hour times
-    const calculateMinutes = (startStr: string, endStr: string) => {
-        const parseMins = (s: string) => {
-            const m = s.match(/(\d+):(\d+)\s*(AM|PM)?/i);
-            if (!m) return null;
-            let h = parseInt(m[1], 10);
-            const mins = parseInt(m[2], 10);
-            const p = m[3] ? m[3].toUpperCase() : '';
-            if (p === 'PM' && h < 12) h += 12;
-            if (p === 'AM' && h === 12) h = 0;
-            return h * 60 + mins;
-        };
-
-        const sMins = parseMins(startStr);
-        const eMins = parseMins(endStr);
-        
-        if (sMins !== null && eMins !== null) {
-            let diff = eMins - sMins;
-            if (diff < 0) diff += 24 * 60; // Handle cross-midnight
-            return diff;
-        }
-        return null;
-    };
-
-    // ⚡ Refined Styles with Reset Logic & Unified Colors
-    const getDoneStyles = (history: any[], isPastTurndown: boolean = false) => {
-        const latestSession = history && history.length > 0 ? history[history.length - 1] : null;
-        const reason = latestSession ? latestSession.reason : 'Morning Service';
-        
-        let label = 'Done';
-        if (reason === 'TD Service') label = 'TD Done';
-        else if (reason === 'Minibar Refill') label = 'MB Done';
-        else if (reason === 'Guest Request') label = 'Req Done';
-        else if (reason === 'Arrival') label = 'Arr Done';
-        else if (reason === 'Dep') label = 'Dep Done';
-        else label = 'Morn Done';
-
-        // Reset visual background for Daytime tasks after 17:00
-        if (isPastTurndown && reason !== 'TD Service') {
-            return {
-                bg: 'bg-white',
-                border: 'border-slate-200',
-                text: 'text-slate-500',
-                badge: 'bg-slate-100',
-                label: label,
-                colorHex: 'text-slate-500',
-                rowBg: 'bg-white',
-                isReset: true
-            };
-        }
-
-        if (reason === 'TD Service') {
-            return { bg: 'bg-indigo-500', border: 'border-indigo-600', text: 'text-indigo-100', badge: 'bg-indigo-700', label, colorHex: 'text-indigo-600', rowBg: 'bg-indigo-50/50', isReset: false };
-        } else if (['Morning Service', 'Arrival', 'Dep'].includes(reason)) {
-            return { bg: 'bg-emerald-500', border: 'border-emerald-600', text: 'text-emerald-100', badge: 'bg-emerald-700', label, colorHex: 'text-emerald-600', rowBg: 'bg-emerald-50/50', isReset: false };
-        } else {
-            return { bg: 'bg-slate-500', border: 'border-slate-600', text: 'text-slate-100', badge: 'bg-slate-700', label, colorHex: 'text-slate-600', rowBg: 'bg-slate-50', isReset: false };
-        }
-    };
-
-    export default function LiveCleaningBoard() {
-    const [isLoading, setIsLoading] = useState(true);
-    const [liveData, setLiveData] = useState<LiveTask[]>([]);
-    const [filter, setFilter] = useState<'ALL' | 'IN_PROGRESS' | 'COMPLETED' | 'DND' | 'REFUSED'>('ALL');
-    
-    // View Modes & Fullscreen & Zoom
-    const [boardDate, setBoardDate] = useState(getDhakaDateStr());
-    const [hostSearch, setHostSearch] = useState('');
-    const [isFullscreen, setIsFullscreen] = useState(false);
-    const [viewMode, setViewMode] = useState<'GRID' | 'SHEET'>('GRID');
-    const [gridColumns, setGridColumns] = useState(8);
-    
-    // Current time tracker for 17:00 Turndown reset
-    const [currentTime, setCurrentTime] = useState(getDhakaTime());
-
-    // Admin Edit Modal State
-    const [editModal, setEditModal] = useState<EditState | null>(null);
-    const [isSavingEdit, setIsSavingEdit] = useState(false);
-    
-    // Insights State
-    const [isInsightsOpen, setIsInsightsOpen] = useState(false);
-
-    useEffect(() => {
-        const savedZoom = localStorage.getItem('hk_pulse_board_zoom');
-        if (savedZoom) {
-            setGridColumns(Number(savedZoom));
-        }
-        const interval = setInterval(() => setCurrentTime(getDhakaTime()), 60000);
-        return () => clearInterval(interval);
-    }, []);
-
-    const handleZoomChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = Number(e.target.value);
-        setGridColumns(val);
-        localStorage.setItem('hk_pulse_board_zoom', String(val));
-    };
-
-    const fetchBoardData = useCallback(async (showLoader = true) => {
-        if (showLoader) setIsLoading(true);
-
-        const [allocRes, hostsRes, guestsRes, logsRes, reqsRes] = await Promise.all([
-            supabase.from('hsk_allocations').select('host_id, task_details').eq('report_date', boardDate),
-            supabase.from('hsk_hosts').select('id, host_id, full_name, nicknames'),
-            supabase.from('hsk_daily_summary').select('villa_number, status').eq('report_date', boardDate),
-            supabase.from('hsk_cleaning_logs').select('*').eq('report_date', boardDate),
-            supabase.from('hsk_daily_requests').select('*').eq('request_type', 'Time Edit Request').eq('is_done', false)
-        ]);
-
-        const allocations = allocRes.data || [];
-        const hosts = hostsRes.data || [];
-        const guests = guestsRes.data || [];
-        const logs = logsRes.data || [];
-        const reqs = reqsRes.data || [];
-
-        const hostMap: Record<string, string> = {};
-        hosts.forEach(h => {
-            const nickname = h.nicknames ? h.nicknames.split(',')[0].trim() : h.full_name;
-            hostMap[h.id] = nickname; 
-            hostMap[h.host_id] = nickname; 
-        });
-
-        const guestMap: Record<string, string> = {};
-        guests.forEach(g => {
-            let type = 'Occupied';
-            const st = g.status?.toUpperCase() || '';
-            if (st.includes('DEP')) type = 'Departure';
-            if (st.includes('ARR')) type = 'Arrival';
-            if (st.includes('VAC') || st === 'VM/VAC') type = 'Touch Up';
-            guestMap[g.villa_number] = type;
-        });
-
-        const logsMap: Record<string, any> = {};
-        logs.forEach(log => { logsMap[log.villa_number] = log; });
-
-        const reqsMap: Record<string, any> = {};
-        reqs.forEach(req => { reqsMap[req.villa_number] = req; });
-
-        const allTasks: LiveTask[] = [];
-
-        allocations.forEach(alloc => {
-            const attendantName = hostMap[alloc.host_id] || "Unknown Host";
-            const assignedVillas = parseVillas(alloc.task_details);
-
-            assignedVillas.forEach(v => {
-                const log = logsMap[v];
-                
-                allTasks.push({
-                    villa: v,
-                    status: log ? log.status : 'Pending', 
-                    attendant: attendantName,
-                    type: guestMap[v] || 'Occupied',
-                    startTime: log?.start_time ? format(parseISO(log.start_time), 'hh:mm a') : undefined,
-                    endTime: log?.end_time ? format(parseISO(log.end_time), 'hh:mm a') : undefined,
-                    timeSpent: log?.time_spent_minutes ? `${log.time_spent_minutes}` : undefined,
-                    timeLogged: log?.dnd_time ? format(parseISO(log.dnd_time), 'hh:mm a') : log?.updated_at ? format(parseISO(log.updated_at), 'hh:mm a') : undefined,
-                    sessionHistory: log?.session_history || [],
-                    pendingEditRequest: reqsMap[v]
-                });
-            });
-        });
-
-        allTasks.sort((a,b) => parseFloat(a.villa.replace('-', '.')) - parseFloat(b.villa.replace('-', '.')));
-        
-        setLiveData(allTasks);
-        if (showLoader) setIsLoading(false);
-    }, [boardDate]);
-
-    useEffect(() => {
-        fetchBoardData();
-    }, [fetchBoardData]);
-
-    // SUPABASE REALTIME LISTENER
-    useEffect(() => {
-        const logChannel = supabase.channel('realtime-cleaning-board')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_cleaning_logs' }, () => fetchBoardData(false))
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests', filter: "request_type=eq.Time Edit Request" }, () => fetchBoardData(false))
-            .subscribe();
-
-        return () => {
-            supabase.removeChannel(logChannel);
-        };
-    }, [boardDate, fetchBoardData]);
-
-    // ⚡ INSIGHTS GENERATOR
-    const getInsights = () => {
-        const hostStats: Record<string, { assigned: number, completed: number, validDurations: number[], autoStops: number }> = {};
-        
-        liveData.forEach(task => {
-            if (!hostStats[task.attendant]) {
-                hostStats[task.attendant] = { assigned: 0, completed: 0, validDurations: [], autoStops: 0 };
-            }
-            const stats = hostStats[task.attendant];
-            
-            if (['Arrival', 'Departure', 'Occupied'].includes(task.type)) {
-                stats.assigned++;
-                if (task.status === 'Completed') stats.completed++;
-            }
-
-            if (task.sessionHistory) {
-                task.sessionHistory.forEach(s => {
-                    if (s.autoStopped) stats.autoStops++;
-                    if (s.duration > 0 && s.duration < 90) {
-                        stats.validDurations.push(s.duration);
-                    }
-                });
-            }
-        });
-
-        const insights = [];
-        for (const [host, stats] of Object.entries(hostStats)) {
-            if (host === 'Unknown Host') continue;
-
-            const avgTime = stats.validDurations.length > 0 
-                ? Math.round(stats.validDurations.reduce((a,b)=>a+b,0) / stats.validDurations.length) 
-                : 0;
-
-            const completionRate = stats.assigned > 0 ? Math.round((stats.completed / stats.assigned) * 100) : 0;
-
-            let flag = null;
-            if (avgTime > 45) flag = 'Slow Service';
-            if (stats.assigned > 3 && completionRate < 30 && getDhakaTime().getHours() >= 14) flag = 'Inactive / Not Updating';
-            if (stats.autoStops > 0) flag = 'Forgetting Timer';
-
-            if (flag || avgTime > 0) {
-                insights.push({ host, avgTime, completionRate, flag, autoStops: stats.autoStops });
-            }
-        }
-
-        return insights.sort((a, b) => b.avgTime - a.avgTime);
-    };
-
-
-    // Admin Edit Functions
-    const openEditModal = (task: LiveTask) => {
-        setEditModal({
-            villa: task.villa,
-            status: task.status,
-            timeSpent: parseInt(task.timeSpent || '0', 10),
-            sessionHistory: JSON.parse(JSON.stringify(task.sessionHistory || [])),
-            pendingEditRequest: task.pendingEditRequest
-        });
-    };
-
-    const handleSessionChange = (index: number, field: string, value: string | number) => {
-        if (!editModal) return;
-        const newHistory = [...editModal.sessionHistory];
-        newHistory[index] = { ...newHistory[index], [field]: value };
-        
-        // ⚡ Auto Calculate Duration
-        if (field === 'start' || field === 'end') {
-            const calcMins = calculateMinutes(newHistory[index].start, newHistory[index].end);
-            if (calcMins !== null) {
-                newHistory[index].duration = calcMins;
-                
-                // Automatically update the global timeSpent sum
-                let newTotal = 0;
-                newHistory.forEach(s => newTotal += (s.duration || 0));
-                
-                setEditModal({ ...editModal, timeSpent: newTotal, sessionHistory: newHistory });
-                return;
-            }
-        }
-
-        setEditModal({ ...editModal, sessionHistory: newHistory });
-    };
-
-    const addSession = () => {
-        if (!editModal) return;
-        const newHistory = [...editModal.sessionHistory, { reason: 'Other', start: '', end: '', duration: 0 }];
-        setEditModal({ ...editModal, sessionHistory: newHistory });
-    };
-
-    const removeSession = (index: number) => {
-        if (!editModal) return;
-        const newHistory = editModal.sessionHistory.filter((_, i) => i !== index);
-        // Update global timeSpent sum
-        let newTotal = 0;
-        newHistory.forEach(s => newTotal += (s.duration || 0));
-
-        setEditModal({ ...editModal, timeSpent: newTotal, sessionHistory: newHistory });
-    };
-
-    // ⚡ Auto-Approve & Apply VA Edit Request Logic
-    const acceptEditRequest = async () => {
-        if (!editModal || !editModal.pendingEditRequest) return;
-        setIsSavingEdit(true);
-        
-        const details = editModal.pendingEditRequest.item_details;
-        const serviceTypeMatch = details.match(/(.*) time edit requested/i);
-        const startMatch = details.match(/Start:\s*([0-9:]+)/i);
-        const endMatch = details.match(/End:\s*([0-9:]+)/i);
-        const durationMatch = details.match(/New Duration:\s*(\d+)/i);
-
-        const serviceType = serviceTypeMatch ? serviceTypeMatch[1].trim() : 'Morning Service';
-        
-        const formatTo12H = (time24: string) => {
-            if (!time24) return '';
-            const parts = time24.split(':');
-            if(parts.length < 2) return time24;
-            let h = parseInt(parts[0], 10);
-            const period = h >= 12 ? 'PM' : 'AM';
-            h = h % 12 || 12;
-            return `${h.toString().padStart(2, '0')}:${parts[1]} ${period}`;
-        };
-
-        const startTime = formatTo12H(startMatch ? startMatch[1].trim() : '');
-        const endTime = formatTo12H(endMatch ? endMatch[1].trim() : '');
-        const newDuration = durationMatch ? parseInt(durationMatch[1], 10) : 0;
-
-        let newHistory = [...editModal.sessionHistory];
-        const existingIndex = newHistory.findIndex(s => s.reason === serviceType);
-        
-        if (existingIndex >= 0) {
-            newHistory[existingIndex] = { ...newHistory[existingIndex], start: startTime, end: endTime, duration: newDuration };
-        } else {
-            newHistory.push({ reason: serviceType, start: startTime, end: endTime, duration: newDuration });
-        }
-
-        const newTotalSpent = newHistory.reduce((total, s) => total + (s.duration || 0), 0);
-        
-        const payload = {
-            status: 'Completed',
-            time_spent_minutes: newTotalSpent,
-            session_history: newHistory,
-            updated_at: new Date().toISOString()
-        };
-
-        const { error: logError } = await supabase.from('hsk_cleaning_logs')
-            .update(payload)
-            .match({ report_date: boardDate, villa_number: editModal.villa });
-
-        if (!logError) {
-            await supabase.from('hsk_daily_requests')
-                .update({is_done: true, is_sent: true})
-                .eq('id', editModal.pendingEditRequest.id);
-            
-            toast.success('Time Edit Approved & Saved!');
-            setEditModal(null);
-            fetchBoardData(false);
-        } else {
-            toast.error('Failed to apply edit: ' + logError.message);
-        }
-        setIsSavingEdit(false);
-    };
-
-    const saveEditModal = async () => {
-        if (!editModal) return;
-        setIsSavingEdit(true);
-
-        const payload = {
-            status: editModal.status,
-            time_spent_minutes: editModal.timeSpent,
-            session_history: editModal.sessionHistory,
-            updated_at: new Date().toISOString()
-        };
-
-        const { error } = await supabase.from('hsk_cleaning_logs')
-            .update(payload)
-            .match({ report_date: boardDate, villa_number: editModal.villa });
-
-        setIsSavingEdit(false);
-
-        if (error) {
-            toast.error("Failed to save changes: " + error.message);
-        } else {
-            toast.success(`Room ${editModal.villa} updated successfully.`);
-            setEditModal(null);
-        }
-    };
-
-    const uniqueAttendants = useMemo(() => {
-        return Array.from(new Set(liveData.map(t => t.attendant))).sort();
-    }, [liveData]);
-
-    const filteredVillas = useMemo(() => {
-        let result = [...liveData];
-
-        if (filter === 'IN_PROGRESS') result = result.filter(v => v.status === 'In Progress');
-        if (filter === 'COMPLETED') result = result.filter(v => v.status === 'Completed');
-        if (filter === 'DND') result = result.filter(v => v.status === 'DND');
-        if (filter === 'REFUSED') result = result.filter(v => v.status === 'Refused');
-
-        if (hostSearch) {
-            result = result.filter(v => v.attendant === hostSearch);
-        }
-
-        result.sort((a,b) => parseFloat(a.villa.replace('-', '.')) - parseFloat(b.villa.replace('-', '.')));
-        return result;
-    }, [filter, liveData, hostSearch]);
-
-    const sheetRows = useMemo(() => {
-        let rows: any[] = [];
-        filteredVillas.forEach(villa => {
-            if (villa.sessionHistory && villa.sessionHistory.length > 0) {
-                villa.sessionHistory.forEach((session, sIdx) => {
-                    rows.push({
-                        id: `${villa.villa}-hist-${sIdx}`,
-                        villa: villa.villa,
-                        attendant: villa.attendant,
-                        type: villa.type,
-                        status: 'Completed',
-                        reason: session.reason || 'Service',
-                        startTime: session.start,
-                        endTime: session.end,
-                        duration: session.duration,
-                        autoStopped: session.autoStopped,
-                        rawTime: parseTimeString(session.start) || parseTimeString(session.end),
-                        originalTask: villa
-                    });
-                });
-            }
-            
-            if (villa.status !== 'Completed' && villa.status !== 'Pending') {
-                rows.push({
-                    id: `${villa.villa}-active`,
-                    villa: villa.villa,
-                    attendant: villa.attendant,
-                    type: villa.type,
-                    status: villa.status,
-                    reason: villa.status,
-                    startTime: villa.startTime,
-                    endTime: villa.endTime,
-                    duration: villa.timeSpent,
-                    rawTime: parseTimeString(villa.startTime) || parseTimeString(villa.timeLogged) || 0,
-                    timeLogged: villa.timeLogged,
-                    originalTask: villa
-                });
-            }
-        });
-
-        rows.sort((a, b) => a.rawTime - b.rawTime);
-        return rows;
-    }, [filteredVillas]);
-
-
-    const baseVillas = hostSearch ? liveData.filter(v => v.attendant === hostSearch) : liveData;
-    
-    const progressVillas = baseVillas.filter(v => ['Arrival', 'Departure', 'Occupied'].includes(v.type));
-    const total = progressVillas.length;
-    const completed = progressVillas.filter(v => v.status === 'Completed').length;
-    const progressPct = total === 0 ? 0 : (completed / total) * 100;
-    
-    const inProgress = baseVillas.filter(v => v.status === 'In Progress').length;
-    const dnd = baseVillas.filter(v => v.status === 'DND').length;
-    const refused = baseVillas.filter(v => v.status === 'Refused').length;
-
-    const isViewingHistory = !isToday(parseISO(boardDate));
-
-    const isExtreme = gridColumns >= 14;
-    const isUltraDense = gridColumns >= 11;
-    const isDense = gridColumns >= 8;
-
-    if (isLoading) {
-        return <div className="min-h-screen flex items-center justify-center bg-slate-50 z-[9999] relative"><Loader2 className="animate-spin text-[#6D2158]" size={32}/></div>;
+"use client";
+// Live Board: every villa today in one place: guest status, who has it, the VA's daily task list
+// (requests, ice, milk, preferences ticked on My Tasks) and the service timer for VAs who use it.
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  LayoutGrid, Users, ListChecks, Search, ChevronLeft, ChevronRight, RefreshCw, Maximize2, Minimize2, Loader2, X,
+  CheckCircle2, Sparkles, DoorClosed, Ban, AlertTriangle, Plus, Trash2, Save, Rows3, Grid2x2, MessageSquare,
+  Milk, Snowflake, Heart, Check, Circle, UserX, Timer, LayoutDashboard,
+} from 'lucide-react';
+import { supabase } from '@/lib/supabase';
+import { getDhakaTime, getDhakaDateStr, formatDisplayTime } from '@/lib/dateUtils';
+import { projectGuestDay, normalizeVilla } from '@/lib/guestDay';
+import { loadVaTasks, type VaTask } from '@/lib/vaDailyTasks';
+import { TOTAL_VILLAS } from '@/lib/minibarCounts';
+import toast from 'react-hot-toast';
+
+// ---------- types ----------
+type Session = { reason?: string; start?: string; end?: string; duration?: number; autoStopped?: boolean };
+type GuestKind = 'ARR' | 'DEP' | 'DEPARR' | 'OCC' | 'HOUSE' | 'VAC' | 'OTHER';
+type ServiceState = 'pending' | 'active' | 'done' | 'td-due' | 'dnd' | 'refused';
+type Va = { name: string; full: string; ssl: string };
+type VillaRow = {
+  villa: string;
+  guestKind: GuestKind; guestLabel: string; guestName: string;
+  vas: Va[];
+  log: any | null; sessions: Session[]; service: ServiceState; minutes: number;
+  tasks: VaTask[]; tasksDone: number; openRequests: number;
+  editReq: any | null;
+};
+type Filter = 'all' | 'guests' | 'arr' | 'dep' | 'open' | 'unassigned' | 'active' | 'done' | 'dnd' | 'refused';
+type View = 'villas' | 'team' | 'log';
+
+// ---------- helpers ----------
+const SERVICED: GuestKind[] = ['ARR', 'DEP', 'DEPARR', 'OCC', 'HOUSE'];
+const villaNum = (v: string) => parseFloat(v.replace('-', '.')) || 9999;
+
+/** Villas in an allocation: "6,7,28", "10-12", "36-1" (a half of a double villa → 36). */
+const parseAllocVillas = (input: string) => {
+  const out = new Set<string>();
+  for (const raw of String(input || '').replace(/\s*-\s*/g, '-').split(/[,;/\s]+/)) {
+    const p = raw.trim();
+    if (!p) continue;
+    const m = p.match(/^(\d+)-(\d+)$/);
+    if (m) {
+      const a = Number(m[1]), b = Number(m[2]);
+      if (b > a && b <= TOTAL_VILLAS) { for (let i = a; i <= b; i++) out.add(String(i)); }
+      else if (a >= 1 && a <= TOTAL_VILLAS) out.add(String(a));
+      continue;
     }
+    if (/^\d+$/.test(p)) { const n = Number(p); if (n >= 1 && n <= TOTAL_VILLAS) out.add(String(n)); }
+  }
+  return [...out];
+};
 
+const guestOf = (status: string | null | undefined): { kind: GuestKind; label: string } => {
+  const s = String(status || '').trim().toUpperCase();
+  if (!s || s === 'VAC' || s === 'VM/VAC') return { kind: 'VAC', label: 'Vacant' };
+  if (s === 'DEP/ARR') return { kind: 'DEPARR', label: 'Dep / Arr' };
+  if (s.startsWith('ARR') || s === 'VM/ARR') return { kind: 'ARR', label: 'Arrival' };
+  if (s.startsWith('DEP')) return { kind: 'DEP', label: 'Departure' };
+  if (s === 'OCC' || s === 'VM/OCC') return { kind: 'OCC', label: 'In house' };
+  if (s.includes('HOUSE')) return { kind: 'HOUSE', label: 'House use' };
+  return { kind: 'OTHER', label: s.charAt(0) + s.slice(1).toLowerCase() };
+};
+
+const GUEST_STYLE: Record<GuestKind, string> = {
+  ARR: 'bg-blue-100 text-blue-800',
+  DEP: 'bg-amber-100 text-amber-800',
+  DEPARR: 'bg-violet-100 text-violet-800',
+  OCC: 'bg-slate-200 text-slate-700',
+  HOUSE: 'bg-teal-100 text-teal-800',
+  VAC: 'bg-slate-100 text-slate-400',
+  OTHER: 'bg-pink-100 text-pink-800',
+};
+const GUEST_SHORT: Record<GuestKind, string> = { ARR: 'ARR', DEP: 'DEP', DEPARR: 'D/A', OCC: 'OCC', HOUSE: 'HU', VAC: 'VAC', OTHER: '•' };
+
+const SERVICE_META: Record<ServiceState, { label: string; card: string; text: string; icon: React.ElementType | null }> = {
+  pending: { label: 'Not started', card: 'bg-white border-slate-200', text: 'text-slate-400', icon: null },
+  active: { label: 'In service', card: 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-400/20', text: 'text-emerald-700', icon: Sparkles },
+  done: { label: 'Done', card: 'bg-emerald-50/70 border-emerald-200', text: 'text-emerald-700', icon: CheckCircle2 },
+  'td-due': { label: 'Turndown due', card: 'bg-white border-indigo-200', text: 'text-indigo-600', icon: CheckCircle2 },
+  dnd: { label: 'DND', card: 'bg-rose-50 border-rose-300', text: 'text-rose-600', icon: DoorClosed },
+  refused: { label: 'Refused', card: 'bg-orange-50 border-orange-300', text: 'text-orange-600', icon: Ban },
+};
+
+const shortTime = (t?: string | null) => (t ? t.replace(/^0/, '').replace(/\s?(AM|PM)$/i, m => m.trim()[0].toLowerCase()) : '');
+const isoTime = (iso?: string | null) => (iso ? formatDisplayTime(iso) : '');
+const reasonShort = (r?: string) => ({ 'Morning Service': 'Morning', 'TD Service': 'Turndown', 'Minibar Refill': 'Minibar', 'Guest Request': 'Request', Arrival: 'Arrival', Dep: 'Departure' } as Record<string, string>)[r || ''] || r || 'Service';
+
+const minutesBetween = (start: string, end: string) => {
+  const p = (s: string) => {
+    const m = s.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+    if (!m) return null;
+    let h = Number(m[1]);
+    const ap = (m[3] || '').toUpperCase();
+    if (ap === 'PM' && h < 12) h += 12;
+    if (ap === 'AM' && h === 12) h = 0;
+    return h * 60 + Number(m[2]);
+  };
+  const a = p(start), b = p(end);
+  if (a === null || b === null) return null;
+  return (b - a + 1440) % 1440;
+};
+const toMinutesOfDay = (t?: string) => {
+  const m = String(t || '').match(/(\d+):(\d+)\s*(AM|PM)?/i);
+  if (!m) return 9999;
+  let h = Number(m[1]);
+  const ap = (m[3] || '').toUpperCase();
+  if (ap === 'PM' && h < 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  return h * 60 + Number(m[2]);
+};
+const to12 = (t24: string) => {
+  const [hh, mm] = t24.split(':');
+  if (mm === undefined) return t24;
+  let h = Number(hh);
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${String(h).padStart(2, '0')}:${mm} ${ap}`;
+};
+const shiftDate = (d: string, days: number) => {
+  const x = new Date(`${d}T12:00:00Z`);
+  x.setUTCDate(x.getUTCDate() + days);
+  return x.toISOString().slice(0, 10);
+};
+const dayLabel = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const store = {
+  get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+};
+
+const TASK_ICON: Record<string, React.ElementType> = { request: MessageSquare, ice: Snowflake, milk: Milk, pref: Heart };
+
+// ============================================================
+export default function LiveBoard() {
+  const [date, setDate] = useState(getDhakaDateStr());
+  const [rows, setRows] = useState<VillaRow[]>([]);
+  const [hasVillaAlloc, setHasVillaAlloc] = useState(false);
+  const [tasksMissing, setTasksMissing] = useState(false);
+  const [guestProjected, setGuestProjected] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
+  const [now, setNow] = useState(getDhakaTime());
+
+  const [view, setView] = useState<View>('villas');
+  const [filter, setFilter] = useState<Filter>('guests');
+  const [search, setSearch] = useState('');
+  const [vaFilter, setVaFilter] = useState('');
+  const [compact, setCompact] = useState(false);
+  const [tv, setTv] = useState(false);
+  const [openVilla, setOpenVilla] = useState<string | null>(null);
+
+  const today = getDhakaDateStr();
+  const isToday = date === today;
+  const loadSeq = useRef(0);
+
+  useEffect(() => {
+    const v = store.get('hk_board_view'); if (v === 'villas' || v === 'team' || v === 'log') setView(v);
+    setCompact(store.get('hk_board_compact') === '1');
+    const t = setInterval(() => setNow(getDhakaTime()), 60000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => { store.set('hk_board_view', view); }, [view]);
+  useEffect(() => { store.set('hk_board_compact', compact ? '1' : '0'); }, [compact]);
+  useEffect(() => {
+    if (!tv) return;
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') setTv(false); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [tv]);
+
+  // ---------- load ----------
+  const load = useCallback(async (quiet = false) => {
+    const seq = ++loadSeq.current;
+    if (quiet) setIsRefreshing(true); else setIsLoading(true);
+    try {
+      const [allocRes, hostsRes, guest, logsRes, editRes] = await Promise.all([
+        supabase.from('hsk_allocations').select('host_id, area, task_details').eq('report_date', date).eq('area', 'villa'),
+        supabase.from('hsk_hosts').select('id, host_id, full_name, nicknames'),
+        projectGuestDay(date).catch(() => ({ rows: [] as any[], isProjected: false })),
+        supabase.from('hsk_cleaning_logs').select('*').eq('report_date', date),
+        supabase.from('hsk_daily_requests').select('*').eq('request_type', 'Time Edit Request').eq('is_done', false),
+      ]);
+      if (allocRes.error) throw allocRes.error;
+
+      const hostBy: Record<string, Va> = {};
+      (hostsRes.data || []).forEach((h: any) => {
+        const nick = String(h.nicknames || '').split(',')[0].trim();
+        const va = { name: nick || String(h.full_name || '').split(' ')[0] || h.full_name, full: h.full_name, ssl: h.host_id };
+        if (h.id) hostBy[h.id] = va;
+        if (h.host_id) hostBy[h.host_id] = va;
+      });
+
+      const vasBy: Record<string, Va[]> = {};
+      const villaAllocs = (allocRes.data || []).filter((a: any) => a.host_id && String(a.task_details || '').trim());
+      villaAllocs.forEach((a: any) => {
+        const va = hostBy[a.host_id] || { name: 'Unknown', full: 'Unknown host', ssl: '' };
+        parseAllocVillas(a.task_details).forEach(v => {
+          (vasBy[v] ||= []);
+          if (!vasBy[v].some(x => x.full === va.full)) vasBy[v].push(va);
+        });
+      });
+
+      const guestBy: Record<string, any> = {};
+      (guest.rows || []).forEach((r: any) => { const v = normalizeVilla(r.villa_number); if (v) guestBy[v] = r; });
+
+      const logBy: Record<string, any> = {};
+      (logsRes.data || []).forEach((l: any) => { const e = logBy[l.villa_number]; if (!e || String(l.updated_at) > String(e.updated_at)) logBy[l.villa_number] = l; });
+      const editBy: Record<string, any> = {};
+      (editRes.data || []).forEach((r: any) => { editBy[r.villa_number] = r; });
+
+      const villas = new Set<string>();
+      for (let i = 1; i <= TOTAL_VILLAS; i++) villas.add(String(i));
+      Object.keys(logBy).forEach(v => villas.add(v));
+      const list = [...villas].sort((a, b) => villaNum(a) - villaNum(b));
+
+      const { byVilla, tableMissing } = await loadVaTasks(list, date).catch(() => ({ byVilla: {} as Record<string, VaTask[]>, tableMissing: false }));
+      if (seq !== loadSeq.current) return;
+
+      const hour = getDhakaTime().getHours();
+      const out: VillaRow[] = list.map(v => {
+        const g = guestOf(guestBy[v]?.status);
+        const log = logBy[v] || null;
+        const sessions: Session[] = Array.isArray(log?.session_history) ? log.session_history : [];
+        const st = String(log?.status || 'Pending');
+        let service: ServiceState = 'pending';
+        if (st === 'In Progress') service = 'active';
+        else if (st === 'DND') service = 'dnd';
+        else if (st === 'Refused') service = 'refused';
+        else if (st === 'Completed') {
+          const lastReason = sessions[sessions.length - 1]?.reason;
+          service = date === getDhakaDateStr() && hour >= 17 && lastReason !== 'TD Service' ? 'td-due' : 'done';
+        }
+        const tasks = byVilla[v] || [];
+        return {
+          villa: v, guestKind: g.kind, guestLabel: g.label, guestName: String(guestBy[v]?.guest_name || '').trim(),
+          vas: vasBy[v] || [],
+          log, sessions, service, minutes: Number(log?.time_spent_minutes) || 0,
+          tasks, tasksDone: tasks.filter(t => t.done).length,
+          openRequests: tasks.filter(t => t.kind === 'request' && !t.done).length,
+          editReq: editBy[v] || null,
+        };
+      });
+      setRows(out);
+      setHasVillaAlloc(villaAllocs.length > 0);
+      setTasksMissing(tableMissing);
+      setGuestProjected(!!(guest as any).isProjected);
+      setLastLoaded(new Date());
+    } catch (e: any) {
+      if (seq === loadSeq.current) toast.error('Could not load the board: ' + (e?.message || e));
+    } finally {
+      if (seq === loadSeq.current) { setIsLoading(false); setIsRefreshing(false); }
+    }
+  }, [date]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Live: VA ticks, service timer, requests, allocation / guest list changes
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>;
+    const later = () => { clearTimeout(t); t = setTimeout(() => load(true), 700); };
+    const ch = supabase.channel(`live-board-${date}-${Math.random().toString(36).slice(2, 8)}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_cleaning_logs' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_va_task_done' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_requests' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_allocations' }, later)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'hsk_daily_summary' }, later)
+      .subscribe();
+    return () => { clearTimeout(t); supabase.removeChannel(ch); };
+  }, [date, load]);
+
+  // The turndown switch at 17:00 needs a re-evaluation without waiting for data
+  const lastHour = useRef(now.getHours());
+  useEffect(() => {
+    if (lastHour.current < 17 && now.getHours() >= 17 && isToday) load(true);
+    lastHour.current = now.getHours();
+  }, [now, isToday, load]);
+
+  // ---------- derived ----------
+  const allVas = useMemo(() => [...new Set(rows.flatMap(r => r.vas.map(v => v.full)))].sort(), [rows]);
+  const scoped = useMemo(() => (vaFilter ? rows.filter(r => r.vas.some(v => v.full === vaFilter)) : rows), [rows, vaFilter]);
+
+  const stats = useMemo(() => {
+    const guests = scoped.filter(r => SERVICED.includes(r.guestKind));
+    const tasks = scoped.flatMap(r => r.tasks);
+    return {
+      guests: guests.length,
+      arr: scoped.filter(r => r.guestKind === 'ARR' || r.guestKind === 'DEPARR').length,
+      dep: scoped.filter(r => r.guestKind === 'DEP' || r.guestKind === 'DEPARR').length,
+      vac: scoped.filter(r => r.guestKind === 'VAC').length,
+      unassigned: hasVillaAlloc ? guests.filter(r => !r.vas.length).length : 0,
+      doubled: scoped.filter(r => r.vas.length > 1).length,
+      tasks: tasks.length, tasksDone: tasks.filter(t => t.done).length,
+      open: scoped.filter(r => r.tasks.some(t => !t.done)).length,
+      requests: scoped.reduce((n, r) => n + r.openRequests, 0),
+      active: scoped.filter(r => r.service === 'active').length,
+      done: scoped.filter(r => r.service === 'done' || r.service === 'td-due').length,
+      dnd: scoped.filter(r => r.service === 'dnd').length,
+      refused: scoped.filter(r => r.service === 'refused').length,
+      serviceDone: guests.filter(r => r.service === 'done' || r.service === 'td-due').length,
+      logs: scoped.filter(r => r.log).length,
+      editReqs: scoped.filter(r => r.editReq).length,
+    };
+  }, [scoped, hasVillaAlloc]);
+
+  const match = useCallback((r: VillaRow, f: Filter) => {
+    switch (f) {
+      case 'guests': return SERVICED.includes(r.guestKind);
+      case 'arr': return r.guestKind === 'ARR' || r.guestKind === 'DEPARR';
+      case 'dep': return r.guestKind === 'DEP' || r.guestKind === 'DEPARR';
+      case 'open': return r.tasks.some(t => !t.done);
+      case 'unassigned': return SERVICED.includes(r.guestKind) && !r.vas.length;
+      case 'active': return r.service === 'active';
+      case 'done': return r.service === 'done' || r.service === 'td-due';
+      case 'dnd': return r.service === 'dnd';
+      case 'refused': return r.service === 'refused';
+      default: return true;
+    }
+  }, []);
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return scoped.filter(r => match(r, filter)).filter(r => !q
+      || r.villa === q || r.villa.startsWith(q + '-')
+      || (q.length > 1 && (r.guestName.toLowerCase().includes(q) || r.vas.some(v => v.full.toLowerCase().includes(q) || v.name.toLowerCase().includes(q)))));
+  }, [scoped, filter, search, match]);
+
+  const team = useMemo(() => {
+    const m = new Map<string, { va: Va; villas: VillaRow[] }>();
+    rows.forEach(r => r.vas.forEach(va => { if (!m.has(va.full)) m.set(va.full, { va, villas: [] }); m.get(va.full)!.villas.push(r); }));
+    return [...m.values()]
+      .filter(t => !vaFilter || t.va.full === vaFilter)
+      .map(t => {
+        const tasks = t.villas.flatMap(v => v.tasks);
+        const durations = t.villas.flatMap(v => v.sessions).map(s => Number(s.duration) || 0).filter(d => d > 0 && d < 90);
+        return {
+          ...t,
+          tasks: tasks.length, tasksDone: tasks.filter(x => x.done).length,
+          guestVillas: t.villas.filter(v => SERVICED.includes(v.guestKind)).length,
+          serviced: t.villas.filter(v => v.service === 'done' || v.service === 'td-due').length,
+          avg: durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0,
+          autoStops: t.villas.flatMap(v => v.sessions).filter(s => s.autoStopped).length,
+          active: t.villas.find(v => v.service === 'active')?.villa || '',
+        };
+      })
+      .sort((a, b) => villaNum(a.villas[0]?.villa || '999') - villaNum(b.villas[0]?.villa || '999'));
+  }, [rows, vaFilter]);
+
+  const unassignedGuests = useMemo(() => (hasVillaAlloc ? rows.filter(r => SERVICED.includes(r.guestKind) && !r.vas.length) : []), [rows, hasVillaAlloc]);
+
+  const sessionsLog = useMemo(() => {
+    const out: { key: string; row: VillaRow; s: Session; live?: boolean }[] = [];
+    visible.forEach(r => {
+      r.sessions.forEach((s, i) => out.push({ key: `${r.villa}-${i}`, row: r, s }));
+      if (r.service === 'active') out.push({ key: `${r.villa}-live`, row: r, s: { reason: 'In service', start: isoTime(r.log?.start_time) }, live: true });
+      if (r.service === 'dnd' || r.service === 'refused') out.push({ key: `${r.villa}-st`, row: r, s: { reason: r.service === 'dnd' ? 'DND' : 'Refused', start: isoTime(r.log?.dnd_time || r.log?.updated_at) } });
+    });
+    return out.sort((a, b) => toMinutesOfDay(a.s.start) - toMinutesOfDay(b.s.start));
+  }, [visible]);
+
+  const selected = rows.find(r => r.villa === openVilla) || null;
+  const tasksPct = stats.tasks ? Math.round((stats.tasksDone / stats.tasks) * 100) : 0;
+
+  // ---------- UI pieces ----------
+  const chip = (f: Filter, label: string, n: number, tone = '') => (
+    <button key={f} onClick={() => setFilter(f)}
+      className={`h-8 px-3 rounded-full text-xs font-black whitespace-nowrap border transition-colors ${filter === f ? 'bg-[#6D2158] border-[#6D2158] text-white' : `bg-white border-slate-200 text-slate-600 hover:border-[#6D2158]/40 ${tone}`}`}>
+      {label} <span className={filter === f ? 'text-white/70' : 'text-slate-400'}>{n}</span>
+    </button>
+  );
+
+  const kpi = (label: string, value: React.ReactNode, sub: React.ReactNode, onClick?: () => void, tone = 'border-slate-200', bar?: number) => (
+    <button onClick={onClick} disabled={!onClick} className={`text-left bg-white rounded-2xl border ${tone} p-3 min-w-0 enabled:hover:shadow-sm transition-shadow`}>
+      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 truncate">{label}</p>
+      <p className="text-2xl font-black text-slate-800 leading-tight mt-0.5">{value}</p>
+      {bar !== undefined && <div className="h-1.5 rounded-full bg-slate-100 mt-1.5 overflow-hidden"><div className="h-full bg-emerald-500 transition-all" style={{ width: `${bar}%` }} /></div>}
+      <p className="text-[11px] font-bold text-slate-500 mt-1 truncate">{sub}</p>
+    </button>
+  );
+
+  const taskDots = (r: VillaRow, max = 6) => {
+    if (!r.tasks.length) return null;
+    const shown = r.tasks.slice(0, max);
     return (
-        <div className={`${isFullscreen ? 'fixed inset-0 z-[9999] bg-[#FDFBFD] overflow-hidden flex flex-col' : 'min-h-screen bg-slate-50 pb-24 w-full flex flex-col'} font-sans text-slate-800 transition-all duration-300`}>
-        
-        {/* HEADER */}
-        <div className={`bg-[#6D2158] text-white shadow-lg shrink-0 ${isFullscreen ? 'p-3 md:p-4 z-20' : 'p-6 md:p-8 rounded-b-[2.5rem] sticky top-0 z-20'}`}>
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 md:gap-6">
-            <div className="flex-1 flex flex-col gap-2 w-full">
-                <div className="flex flex-wrap items-center justify-between md:justify-start gap-4 w-full">
-                    <h1 className={`${isFullscreen ? 'text-xl md:text-2xl' : 'text-2xl md:text-3xl'} font-black tracking-tight flex items-center gap-2 md:gap-3`}>
-                        <LayoutDashboard size={isFullscreen ? 24 : 28} className="text-pink-300"/> 
-                        {isViewingHistory ? 'Historical Log' : 'Live Cleaning Board'}
-                    </h1>
-                    
-                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                        {/* INSIGHTS BUTTON */}
-                        <button onClick={() => setIsInsightsOpen(true)} className="p-2 bg-amber-500/20 text-amber-300 rounded-full hover:bg-amber-500/30 active:scale-95 transition-all" title="View Insights">
-                            <LineChart size={14}/>
-                        </button>
-
-                        {/* ZOOM SLIDER */}
-                        {viewMode === 'GRID' && (
-                            <div className="flex items-center bg-white/10 px-3 py-1.5 md:py-2 rounded-full border border-white/20 gap-2 transition-colors focus-within:ring-2 focus-within:ring-white/50">
-                                <ZoomIn size={14} className="text-white/70 hidden sm:block"/>
-                                <input 
-                                    type="range" 
-                                    min="4" max="18" step="1"
-                                    value={gridColumns}
-                                    onChange={handleZoomChange}
-                                    className="w-20 md:w-24 h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full"
-                                    title="Adjust Grid Zoom"
-                                />
-                                <span className="text-[10px] md:text-xs font-black w-4 text-center">{gridColumns}</span>
-                            </div>
-                        )}
-
-                        <div className="flex bg-white/10 p-0.5 rounded-full">
-                            <button onClick={() => setViewMode('GRID')} className={`p-1.5 rounded-full transition-all ${viewMode === 'GRID' ? 'bg-white text-[#6D2158] shadow-sm' : 'text-white hover:bg-white/20'}`} title="Grid View"><LayoutGrid size={14}/></button>
-                            <button onClick={() => setViewMode('SHEET')} className={`p-1.5 rounded-full transition-all ${viewMode === 'SHEET' ? 'bg-white text-[#6D2158] shadow-sm' : 'text-white hover:bg-white/20'}`} title="Sheet View"><TableProperties size={14}/></button>
-                        </div>
-                        
-                        <button onClick={() => fetchBoardData(true)} className="p-2 bg-white/10 rounded-full hover:bg-white/20 active:scale-95 transition-all" title="Refresh Data"><RefreshCw size={14} className={isLoading ? 'animate-spin' : ''}/></button>
-                        <button onClick={() => setIsFullscreen(!isFullscreen)} className="p-2 bg-white/10 rounded-full hover:bg-white/20 active:scale-95 transition-all hidden md:flex items-center justify-center" title="Toggle Fullscreen">
-                            {isFullscreen ? <Minimize size={14}/> : <Maximize size={14}/>}
-                        </button>
-                    </div>
-                </div>
-
-                {/* Date Picker */}
-                <div className="flex flex-wrap items-center gap-2 md:gap-3 mt-1">
-                    <div className={`flex items-center bg-white/10 px-3 ${isFullscreen ? 'py-1 md:py-1.5' : 'py-1.5 md:py-2'} rounded-xl border border-white/20 gap-2 transition-colors hover:bg-white/20 cursor-pointer focus-within:ring-2 focus-within:ring-white/50 max-w-[160px]`}>
-                        <Calendar size={14} className="text-white shrink-0"/>
-                        <input 
-                            type="date" 
-                            className="bg-transparent text-white font-bold text-[10px] md:text-xs outline-none w-full cursor-pointer [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100 uppercase tracking-widest"
-                            value={boardDate}
-                            onChange={e => e.target.value && setBoardDate(e.target.value)}
-                        />
-                    </div>
-                    {isViewingHistory && <span className="text-[9px] md:text-[10px] font-black uppercase tracking-widest bg-rose-500 text-white px-2 py-1 md:py-1.5 rounded-lg shadow-sm">Archive</span>}
-                </div>
-            </div>
-            
-            {/* MASTER PROGRESS */}
-            <div className={`w-full ${isFullscreen ? 'md:w-56 p-2.5' : 'md:w-64 p-3 md:p-4'} bg-white/10 rounded-2xl backdrop-blur-sm border border-white/10 shrink-0`}>
-                <div className="flex justify-between items-end mb-1.5">
-                <span className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-white/70">Cleaning Progress</span>
-                <span className={`${isFullscreen ? 'text-base' : 'text-lg md:text-xl'} font-black leading-none`}>{Math.round(progressPct)}%</span>
-                </div>
-                <div className="h-1.5 md:h-2 w-full bg-black/20 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-400 transition-all duration-1000" style={{ width: `${progressPct}%` }}></div>
-                </div>
-            </div>
-            </div>
-
-            {/* METRIC CARDS & FILTERS */}
-            <div className={`flex flex-col lg:flex-row gap-3 md:gap-4 justify-between items-end ${isFullscreen ? 'mt-3' : 'mt-6'}`}>
-                
-                <div className="grid grid-cols-5 gap-2 w-full lg:w-auto flex-1 max-w-3xl">
-                    <button onClick={() => setFilter('ALL')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'ALL' ? 'bg-white text-[#6D2158] shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
-                        <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{baseVillas.length}</span>
-                        <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1">Total</span>
-                    </button>
-                    <button onClick={() => setFilter('IN_PROGRESS')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'IN_PROGRESS' ? 'bg-emerald-400 text-emerald-950 shadow-md scale-[1.02] ring-2 ring-emerald-300 ring-offset-1 ring-offset-[#6D2158]' : 'bg-white/10 hover:bg-white/20'}`}>
-                        <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{inProgress}</span>
-                        <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1 flex items-center gap-1"><Sparkles size={8} className="animate-pulse"/> Active</span>
-                    </button>
-                    <button onClick={() => setFilter('COMPLETED')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'COMPLETED' ? 'bg-blue-400 text-blue-950 shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
-                        <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{baseVillas.filter(v => v.status === 'Completed').length}</span>
-                        <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1 flex items-center gap-1"><CheckCircle2 size={8}/> Done</span>
-                    </button>
-                    <button onClick={() => setFilter('DND')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'DND' ? 'bg-rose-400 text-rose-950 shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
-                        <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{dnd}</span>
-                        <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1 flex items-center gap-1"><DoorClosed size={8}/> DND</span>
-                    </button>
-                    <button onClick={() => setFilter('REFUSED')} className={`p-1.5 md:p-2 rounded-xl flex flex-col items-center justify-center transition-all ${filter === 'REFUSED' ? 'bg-orange-400 text-orange-950 shadow-md scale-[1.02]' : 'bg-white/10 hover:bg-white/20'}`}>
-                        <span className={`${isFullscreen ? 'text-lg md:text-xl' : 'text-xl md:text-2xl'} font-black leading-none`}>{refused}</span>
-                        <span className="text-[7px] md:text-[9px] font-bold uppercase tracking-widest opacity-80 mt-1 flex items-center gap-1"><X size={8}/> Refused</span>
-                    </button>
-                </div>
-
-                <div className="relative w-full lg:w-56 shrink-0 group">
-                    <User className="absolute left-3 top-2.5 text-white/50" size={14}/>
-                    <select 
-                        className="w-full pl-9 pr-8 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-bold text-xs outline-none focus:bg-white focus:text-[#6D2158] transition-colors appearance-none cursor-pointer"
-                        value={hostSearch}
-                        onChange={e => setHostSearch(e.target.value)} 
-                    >
-                        <option value="" className="text-slate-800">All Attendants</option>
-                        {uniqueAttendants.map(att => (
-                            <option key={att} value={att} className="text-slate-800">{att}</option>
-                        ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-2.5 text-white/50 pointer-events-none group-focus-within:text-[#6D2158]" size={14}/>
-                </div>
-            </div>
-        </div>
-
-        {/* CONTENT AREA */}
-        <div className={`${isFullscreen ? 'flex-1 overflow-y-auto p-2 md:p-4 custom-scrollbar' : 'p-4 md:p-8 flex-1'}`}>
-            
-            {filteredVillas.length === 0 ? (
-                <div className={`text-center py-20 bg-white rounded-3xl border border-slate-200 shadow-sm mx-auto max-w-lg ${isFullscreen ? 'mt-4' : 'mt-10'}`}>
-                    <BedDouble size={40} className="mx-auto mb-3 text-slate-300"/>
-                    <h3 className="text-base font-black text-slate-500">No Allocations Found</h3>
-                    <p className="text-xs font-bold text-slate-400 mt-1 px-4">
-                        {hostSearch ? `No villas assigned to "${hostSearch}".` : 'Villas have not been allocated for this date.'}
-                    </p>
-                </div>
-            ) : viewMode === 'SHEET' ? (
-                
-                // --- EXCEL SHEET VIEW (CHRONOLOGICAL SESSIONS) ---
-                <div className={`bg-white border border-slate-200 shadow-sm overflow-hidden flex flex-col ${isFullscreen ? 'rounded-2xl h-full' : 'rounded-3xl'}`}>
-                    <div className="overflow-auto custom-scrollbar flex-1">
-                        <table className="w-full text-left border-collapse">
-                            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-                                <tr>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center w-12">#</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Start Time</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Villa</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Attendant</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center">Type</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200 text-center">Session / Status</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 border-r border-slate-200">Time Log</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center border-r border-slate-200">Duration</th>
-                                    <th className="p-3 text-[10px] font-black uppercase tracking-widest text-slate-400 text-center">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {sheetRows.length === 0 && (
-                                    <tr>
-                                        <td colSpan={9} className="p-8 text-center text-slate-400 font-bold">No sessions logged yet.</td>
-                                    </tr>
-                                )}
-                                {sheetRows.map((row, idx) => {
-                                    const isCleaning = row.status === 'In Progress';
-                                    const isDone = row.status === 'Completed';
-                                    const isDND = row.status === 'DND';
-                                    const isRefused = row.status === 'Refused';
-                                    
-                                    const doneStyles = getDoneStyles([{ reason: row.reason }]);
-                                    
-                                    return (
-                                        <tr key={row.id} className={`hover:bg-slate-50 transition-colors ${isDone ? `${doneStyles.rowBg} opacity-90` : isDND ? 'bg-rose-50/30' : isRefused ? 'bg-orange-50/40' : isCleaning ? 'bg-emerald-50/30' : ''}`}>
-                                            <td className="p-2 border-r border-slate-100 text-center text-xs font-bold text-slate-400">{idx + 1}</td>
-                                            <td className={`p-2 border-r border-slate-100 text-xs font-bold text-slate-500`}>
-                                                {row.startTime || row.timeLogged || '--:--'}
-                                            </td>
-                                            <td className={`p-2 border-r border-slate-100 font-black text-lg flex items-center gap-2 ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
-                                                {row.villa}
-                                                {row.originalTask.pendingEditRequest && (
-                                                    <span className="bg-purple-600 text-white text-[8px] font-black uppercase px-1.5 py-0.5 rounded shadow animate-pulse border border-purple-400">Edit Req</span>
-                                                )}
-                                            </td>
-                                            <td className={`p-2 border-r border-slate-100 text-xs font-bold flex items-center gap-2 ${isDone ? doneStyles.colorHex : 'text-slate-700'}`}>
-                                                <User size={12} className={isDone ? doneStyles.colorHex : 'text-slate-400 hidden md:block'}/> {row.attendant}
-                                            </td>
-                                            <td className="p-2 border-r border-slate-100 text-center">
-                                                <span className={`px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest ${
-                                                    row.type === 'Departure' ? 'bg-amber-100 text-amber-700' : 
-                                                    row.type === 'Arrival' ? 'bg-blue-100 text-blue-700' : 
-                                                    row.type === 'Touch Up' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-600'
-                                                }`}>
-                                                    {row.type}
-                                                </span>
-                                            </td>
-                                            <td className="p-2 border-r border-slate-100 text-center">
-                                                <span className={`flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest ${
-                                                    isCleaning ? 'text-emerald-600' : isDone ? doneStyles.colorHex : isDND ? 'text-rose-500' : isRefused ? 'text-orange-600' : 'text-slate-400'
-                                                }`}>
-                                                    {isCleaning && <Sparkles size={10} className="animate-pulse hidden md:block"/>}
-                                                    {isDone && <CheckCircle2 size={10} className="hidden md:block"/>}
-                                                    {isDND && <DoorClosed size={10} className="hidden md:block"/>}
-                                                    {isRefused && <X size={10} className="hidden md:block"/>}
-                                                    {!isCleaning && !isDone && !isDND && !isRefused && <BedDouble size={10} className="hidden md:block"/>}
-                                                    {isDone ? row.reason : row.status}
-                                                </span>
-                                            </td>
-                                            <td className={`p-2 border-r border-slate-100 text-[10px] md:text-xs font-mono font-bold flex flex-col items-start ${isDone ? doneStyles.colorHex : 'text-slate-500'}`}>
-                                                {isDone ? `${row.startTime || '--:--'} to ${row.endTime || '--:--'}` : 
-                                                isCleaning ? `Start: ${row.startTime || '--:--'}` : 
-                                                (isDND || isRefused) ? `Log: ${row.timeLogged || '--:--'}` : '-'}
-                                                {row.autoStopped && <span className="bg-rose-500 text-white text-[8px] px-1 rounded uppercase tracking-widest mt-0.5">Auto Stop</span>}
-                                            </td>
-                                            <td className={`p-2 text-center border-r border-slate-100 text-sm font-black ${isDone ? doneStyles.colorHex : 'text-[#6D2158]'}`}>
-                                                {isDone ? `${row.duration || '0'}m` : isCleaning ? 'Active' : '-'}
-                                            </td>
-                                            <td className="p-2 text-center">
-                                                <button onClick={() => openEditModal(row.originalTask)} className="p-1.5 bg-white border border-slate-200 shadow-sm text-slate-500 hover:text-blue-600 hover:border-blue-300 rounded-md transition-all active:scale-95 mx-auto flex items-center justify-center" title="Edit Master Record">
-                                                    <Edit size={14} />
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-            ) : (
-                // --- GRID VIEW (VILLA CENTRIC) ---
-                <div 
-                    className={`grid content-start ${isExtreme ? 'gap-1' : isUltraDense ? 'gap-1.5' : 'gap-2 md:gap-3'}`} 
-                    style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))` }}
-                >
-                {filteredVillas.map((item, idx) => {
-                    const isDone = item.status === 'Completed';
-                    const isPastTurndown = currentTime.getHours() >= 17;
-                    const doneStyles = getDoneStyles(item.sessionHistory || [], isPastTurndown);
-                    
-                    const isResetDone = isDone && doneStyles.isReset;
-
-                    const isCleaning = item.status === 'In Progress';
-                    const isDND = item.status === 'DND';
-                    const isRefused = item.status === 'Refused';
-                    const isPending = item.status === 'Pending';
-
-                    const typeLabel = isUltraDense ? item.type.substring(0, 3).toUpperCase() : item.type;
-                    const attendantLabel = isUltraDense ? item.attendant.split(' ')[0] : item.attendant;
-                    const timeIn = item.startTime?.replace(/ (AM|PM)/, (match) => match.trim().charAt(0).toLowerCase()) || '--:--';
-                    const timeOut = item.endTime?.replace(/ (AM|PM)/, (match) => match.trim().charAt(0).toLowerCase()) || '--:--';
-
-                    return (
-                    <div 
-                        key={`${item.villa}-${idx}`} 
-                        className={`shadow-sm transition-all flex flex-col justify-between rounded-xl overflow-hidden relative group ${
-                            isExtreme ? 'p-1 min-h-[45px] border' :
-                            isUltraDense ? 'p-1.5 min-h-[60px] border' :
-                            isDense ? 'p-2 min-h-[85px] border' : 
-                            'p-2.5 md:p-3 min-h-[105px] border-2'
-                        } ${
-                            isDone && !isResetDone ? `${doneStyles.bg} ${doneStyles.border} text-white shadow-sm` :
-                            isResetDone ? 'bg-white border-slate-200 border-2 hover:border-[#6D2158]/40 hover:shadow-md' :
-                            isCleaning ? 'border-emerald-400 ring-2 ring-emerald-500/10 bg-emerald-50/20 bg-white' : 
-                            isDND ? 'border-rose-300 bg-rose-50/40 bg-white' : 
-                            isRefused ? 'border-orange-300 bg-orange-50/40 bg-white' : 
-                            'border-slate-200 hover:border-[#6D2158]/40 hover:shadow-md bg-white'
-                        }`}
-                    >
-                        {/* VA TIME EDIT REQUEST BADGE */}
-                        {item.pendingEditRequest && (
-                            <div className="absolute top-1 left-1 z-20">
-                                <span className="bg-purple-600 text-white text-[8px] md:text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded shadow-sm animate-pulse border border-purple-400">Edit Req</span>
-                            </div>
-                        )}
-
-                        {/* EDIT BUTTON (Visible permanently on touch devices, hover on desktop) */}
-                        <button 
-                            onClick={() => openEditModal(item)}
-                            className={`absolute top-1.5 right-1.5 rounded-md bg-white/90 backdrop-blur-sm border border-slate-200 text-slate-500 shadow-sm opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity z-10 hover:text-blue-600 ${isExtreme || isUltraDense ? 'p-0.5' : 'p-1.5'}`}
-                            title="Edit Log"
-                        >
-                            <Edit size={isExtreme || isUltraDense ? 10 : 12}/>
-                        </button>
-
-                        {/* Top Row: Villa Number & Status Icon */}
-                        <div className="flex justify-between items-start mb-0.5 md:mb-1">
-                            <span className={`font-black tracking-tighter leading-none ${
-                                isExtreme ? 'text-xs' :
-                                isUltraDense ? 'text-sm' : 
-                                isDense ? 'text-lg' : 
-                                'text-2xl'
-                            } ${isDone && !isResetDone ? 'text-white' : 'text-[#6D2158]'}`}>
-                                {item.villa}
-                            </span>
-                            <div>
-                                {isCleaning && <Sparkles size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-emerald-500 animate-pulse drop-shadow-sm" />}
-                                {isDone && !isResetDone && <CheckCircle2 size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-white"/>}
-                                {isResetDone && <CheckCircle2 size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-slate-300"/>}
-                                {isDND && <DoorClosed size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-rose-500"/>}
-                                {isRefused && <X size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 14 : 16} className="text-orange-500"/>}
-                                {isPending && <BedDouble size={isExtreme ? 8 : isUltraDense ? 10 : isDense ? 12 : 14} className="text-slate-300"/>}
-                            </div>
-                        </div>
-
-                        {/* Middle: Badges */}
-                        <div className="flex flex-wrap gap-0.5 md:gap-1 mb-0.5">
-                            <span className={`rounded font-black uppercase tracking-widest truncate ${
-                                isExtreme ? 'px-0.5 py-[1px] text-[5px]' :
-                                isUltraDense ? 'px-1 py-0.5 text-[6px]' : 
-                                isDense ? 'px-1.5 py-0.5 text-[7px]' : 
-                                'px-1.5 py-0.5 text-[8px] md:text-[9px]'
-                            } ${
-                                isDone && !isResetDone ? 'bg-white/20 text-white' :
-                                item.type === 'Departure' ? 'bg-amber-100 text-amber-700' : 
-                                item.type === 'Arrival' ? 'bg-blue-100 text-blue-700' : 
-                                item.type === 'Touch Up' ? 'bg-sky-100 text-sky-700' :
-                                'bg-slate-100 text-slate-600'
-                            }`}>
-                                {typeLabel}
-                            </span>
-                            {(isDND || isRefused) && !isExtreme && (
-                                <span className={`rounded font-black uppercase tracking-widest flex items-center gap-0.5 ${
-                                    isUltraDense ? 'px-1 py-0.5 text-[6px]' : 'px-1.5 py-0.5 text-[7px] md:text-[8px]'
-                                } ${isDND ? 'bg-rose-100 text-rose-700' : 'bg-orange-100 text-orange-700'}`}>
-                                    {isDND ? <AlertCircle size={6}/> : <X size={6}/>} {isDND ? 'DND' : 'REF'}
-                                </span>
-                            )}
-                        </div>
-
-                        {/* Bottom: Attendant & Session History Log */}
-                        <div className={`mt-auto border-t flex flex-col ${isDone && !isResetDone ? 'border-white/20' : 'border-slate-100'} ${isExtreme ? 'pt-0.5 gap-0' : isUltraDense ? 'pt-1 gap-0.5' : 'pt-1.5 gap-1'}`}>
-                            <span className={`flex items-center gap-1 font-bold truncate leading-none ${
-                                isExtreme ? 'text-[5px]' :
-                                isUltraDense ? 'text-[6px]' : 
-                                isDense ? 'text-[8px]' : 
-                                'text-[9px] md:text-[10px]'
-                            } ${isDone && !isResetDone ? doneStyles.text : 'text-slate-500'}`}>
-                                {!isUltraDense && <User size={isDense ? 8 : 10} className="shrink-0"/>} <span className="truncate">{attendantLabel}</span>
-                            </span>
-
-                            {isCleaning && (
-                                <div className={`flex items-center justify-between text-emerald-700 bg-emerald-50 rounded border border-emerald-100 ${
-                                    isExtreme ? 'px-0.5 py-[1px] mt-0.5' : isUltraDense ? 'px-1 py-0.5 mt-0.5' : 'px-1.5 py-0.5 mt-1'
-                                }`}>
-                                    <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} font-black uppercase tracking-widest leading-none`}>
-                                        {!isUltraDense && <Sparkles size={8} className="inline mr-1"/>}Active
-                                    </span>
-                                    <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[7px]' : 'text-[9px]'} font-bold leading-none`}>{timeIn}</span>
-                                </div>
-                            )}
-
-                            {isDone && (
-                                <div className={`flex flex-col ${isExtreme ? 'gap-0 mt-0' : 'gap-0.5 mt-0.5'} max-h-24 overflow-y-auto custom-scrollbar pr-1 -mr-1`}>
-                                    {item.sessionHistory && item.sessionHistory.length > 0 ? (
-                                        item.sessionHistory.map((session, sIdx) => (
-                                            <div key={sIdx} className={`border-b ${isResetDone ? 'border-slate-100' : 'border-white/10'} last:border-0 pb-1 mb-1 last:pb-0 last:mb-0`}>
-                                                <div className="flex items-center justify-between leading-none">
-                                                    {!isExtreme && <span className={`${isUltraDense ? 'text-[4px]' : 'text-[6px]'} font-black uppercase tracking-widest ${isResetDone ? 'text-slate-400' : doneStyles.text} truncate mr-1`}>
-                                                        {session.reason || 'Service'}
-                                                        {session.autoStopped && <span className="text-rose-400 ml-0.5 font-black">(Auto)</span>}
-                                                    </span>}
-                                                    <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} font-bold ${isResetDone ? 'text-slate-700' : 'text-white'} ml-auto`}>
-                                                        {session.end?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) || '--:--'}
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center justify-between leading-none mt-0.5">
-                                                    <span className={`${isExtreme ? 'text-[4px]' : isUltraDense ? 'text-[5px]' : 'text-[7px]'} ${isResetDone ? 'text-slate-400' : doneStyles.text}`}>
-                                                        {isExtreme ? session.start?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) : `In: ${session.start?.replace(/ (AM|PM)/, (match: string) => match.trim().charAt(0).toLowerCase()) || '--:--'}`}
-                                                    </span>
-                                                    <span className={`${isExtreme ? 'text-[4px] px-0.5' : isUltraDense ? 'text-[5px] px-1' : 'text-[7px] px-1'} font-black ${doneStyles.colorHex} ${isResetDone ? 'bg-slate-100' : 'bg-white'} rounded`}>
-                                                        {session.duration || '0'}m
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        ))
-                                    ) : (
-                                        <div className="flex flex-col">
-                                            <div className="flex items-center justify-between leading-none">
-                                                {!isExtreme && <span className={`${isUltraDense ? 'text-[5px]' : 'text-[7px]'} font-black uppercase tracking-widest ${isResetDone ? 'text-slate-400' : doneStyles.text}`}>{doneStyles.label}:</span>}
-                                                <span className={`${isExtreme ? 'text-[6px]' : isUltraDense ? 'text-[7px]' : 'text-[9px]'} font-bold ${isResetDone ? 'text-slate-700' : 'text-white'}`}>
-                                                    {timeOut}
-                                                </span>
-                                            </div>
-                                            <div className="flex items-center justify-between leading-none mt-0.5">
-                                                <span className={`${isExtreme ? 'text-[5px]' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} ${isResetDone ? 'text-slate-400' : doneStyles.text}`}>
-                                                    {isExtreme ? timeIn : `In: ${timeIn}`}
-                                                </span>
-                                                <span className={`${isExtreme ? 'text-[5px] px-0.5' : isUltraDense ? 'text-[6px] px-1' : 'text-[8px] px-1'} font-black ${doneStyles.colorHex} ${isResetDone ? 'bg-slate-100' : 'bg-white'} rounded`}>
-                                                    {item.timeSpent || '0'}m
-                                                </span>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {(isDND || isRefused) && (
-                                <div className={`flex items-center justify-between ${isDND ? 'text-rose-500' : 'text-orange-500'} ${isUltraDense ? 'mt-0' : 'mt-0.5'}`}>
-                                    {!isExtreme && <span className={`${isUltraDense ? 'text-[5px]' : 'text-[7px]'} font-black uppercase tracking-widest`}>Log:</span>}
-                                    <span className={`${isExtreme ? 'text-[5px] ml-auto' : isUltraDense ? 'text-[6px]' : 'text-[8px]'} font-bold ${isDND ? 'bg-rose-50 border-rose-100' : 'bg-orange-50 border-orange-100'} px-1 py-0.5 rounded border leading-none`}>
-                                        {item.timeLogged || '--:--'}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                    );
-                })}
-                </div>
-            )}
-        </div>
-
-        {/* ADMIN EDIT MODAL OVERLAY */}
-        {editModal && (
-            <div className="fixed inset-0 z-[10000] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-                <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
-                    <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                        <div>
-                            <h2 className="text-xl font-black text-[#6D2158]">Edit Room {editModal.villa}</h2>
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Manual Override</p>
-                        </div>
-                        <button onClick={() => setEditModal(null)} className="p-2 bg-white rounded-full text-slate-400 hover:text-rose-500 shadow-sm transition-colors">
-                            <X size={20}/>
-                        </button>
-                    </div>
-                    
-                    <div className="p-5 overflow-y-auto custom-scrollbar flex-1 space-y-6">
-
-                        {/* --- VA EDIT REQUEST BANNER --- */}
-                        {editModal.pendingEditRequest && (
-                            <div className="bg-purple-50 p-4 rounded-2xl border border-purple-200 shadow-inner">
-                                <div className="flex items-center gap-2 mb-2 text-purple-800">
-                                    <AlertCircle size={16}/>
-                                    <h4 className="text-xs font-black uppercase tracking-widest">VA Requested Time Edit</h4>
-                                </div>
-                                <p className="text-sm font-bold text-purple-900 whitespace-pre-wrap bg-white/60 p-3 rounded-xl border border-purple-100">{editModal.pendingEditRequest.item_details}</p>
-                                
-                                <div className="flex gap-2 mt-3">
-                                    <button 
-                                        onClick={acceptEditRequest}
-                                        disabled={isSavingEdit}
-                                        className="flex-1 py-2.5 bg-purple-600 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-md hover:bg-purple-700 active:scale-95 transition-all flex justify-center items-center gap-2 disabled:opacity-50"
-                                    >
-                                        {isSavingEdit ? <Loader2 className="animate-spin" size={14}/> : <CheckCircle2 size={14}/>}
-                                        Accept & Apply
-                                    </button>
-                                    <button 
-                                        onClick={async () => {
-                                            await supabase.from('hsk_daily_requests').update({is_done: true, is_sent: true}).eq('id', editModal.pendingEditRequest.id);
-                                            setEditModal({...editModal, pendingEditRequest: null});
-                                            fetchBoardData(false);
-                                            toast.success('Request declined & cleared.');
-                                        }}
-                                        disabled={isSavingEdit}
-                                        className="flex-1 py-2.5 bg-white text-purple-700 border border-purple-200 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-purple-50 active:scale-95 transition-all flex justify-center items-center disabled:opacity-50"
-                                    >
-                                        Decline
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-                        
-                        {/* Global Overrides */}
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Global Status</label>
-                                <select 
-                                    value={editModal.status}
-                                    onChange={(e) => setEditModal({...editModal, status: e.target.value})}
-                                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm text-slate-800 outline-none focus:border-[#6D2158]"
-                                >
-                                    <option value="Pending">Pending</option>
-                                    <option value="In Progress">In Progress</option>
-                                    <option value="Completed">Completed</option>
-                                    <option value="DND">DND</option>
-                                    <option value="Refused">Refused</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1.5">Total Duration (Mins)</label>
-                                <input 
-                                    type="number"
-                                    value={editModal.timeSpent}
-                                    onChange={(e) => setEditModal({...editModal, timeSpent: parseInt(e.target.value || '0', 10)})}
-                                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm text-slate-800 outline-none focus:border-[#6D2158]"
-                                />
-                            </div>
-                        </div>
-
-                        {/* Session Logs Manager */}
-                        <div className="border-t border-slate-100 pt-5">
-                            <div className="flex justify-between items-center mb-3">
-                                <label className="text-xs font-black uppercase tracking-widest text-[#6D2158]">Session Logs</label>
-                                <button onClick={addSession} className="text-[10px] font-black uppercase tracking-widest bg-[#6D2158] text-white px-2 py-1 rounded-md flex items-center gap-1 active:scale-95 transition-transform">
-                                    <Plus size={12}/> Add Session
-                                </button>
-                            </div>
-                            
-                            {editModal.sessionHistory.length === 0 ? (
-                                <p className="text-sm font-bold text-slate-400 text-center py-6 bg-slate-50 rounded-xl border border-dashed border-slate-200">No session logs recorded.</p>
-                            ) : (
-                                <div className="space-y-3">
-                                    {editModal.sessionHistory.map((session, index) => (
-                                        <div key={index} className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-col gap-2 relative group">
-                                            <button onClick={() => removeSession(index)} className="absolute -top-2 -right-2 bg-white text-rose-500 p-1.5 rounded-full shadow-md border border-slate-100 hover:bg-rose-50 hover:text-rose-700 transition-colors opacity-0 group-hover:opacity-100">
-                                                <Trash2 size={14}/>
-                                            </button>
-                                            
-                                            <div>
-                                                <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Reason</label>
-                                                <input 
-                                                    type="text" 
-                                                    value={session.reason}
-                                                    onChange={(e) => handleSessionChange(index, 'reason', e.target.value)}
-                                                    className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700"
-                                                />
-                                            </div>
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <div>
-                                                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">In (e.g. 10:30 AM)</label>
-                                                    <input 
-                                                        type="text" 
-                                                        value={session.start}
-                                                        onChange={(e) => handleSessionChange(index, 'start', e.target.value)}
-                                                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center"
-                                                        placeholder="10:00 AM"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Out</label>
-                                                    <input 
-                                                        type="text" 
-                                                        value={session.end}
-                                                        onChange={(e) => handleSessionChange(index, 'end', e.target.value)}
-                                                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 text-center"
-                                                        placeholder="10:45 AM"
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Mins (Auto)</label>
-                                                    <input 
-                                                        type="number" 
-                                                        value={session.duration}
-                                                        onChange={(e) => handleSessionChange(index, 'duration', parseInt(e.target.value || '0', 10))}
-                                                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-black text-emerald-700 text-center"
-                                                    />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-
-                    <div className="p-5 border-t border-slate-100 bg-white">
-                        <button 
-                            onClick={saveEditModal} 
-                            disabled={isSavingEdit}
-                            className="w-full py-3.5 bg-[#6D2158] text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-70"
-                        >
-                            {isSavingEdit ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>}
-                            Save Overrides
-                        </button>
-                    </div>
-                </div>
-            </div>
-        )}
-
-        {/* --- INSIGHTS MODAL --- */}
-        {isInsightsOpen && (
-            <div className="fixed inset-0 z-[10000] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-                <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95">
-                    <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                        <div>
-                            <h2 className="text-xl font-black text-amber-600 flex items-center gap-2"><LineChart size={20}/> Daily Insights</h2>
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Attendant Performance</p>
-                        </div>
-                        <button onClick={() => setIsInsightsOpen(false)} className="p-2 bg-white rounded-full text-slate-400 hover:text-rose-500 shadow-sm transition-colors">
-                            <X size={20}/>
-                        </button>
-                    </div>
-                    
-                    <div className="p-5 overflow-y-auto custom-scrollbar flex-1">
-                        {getInsights().length === 0 ? (
-                            <div className="text-center py-10">
-                                <p className="text-sm font-bold text-slate-400">No notable insights generated yet.</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {getInsights().map((insight, idx) => (
-                                    <div key={idx} className={`p-4 rounded-2xl border ${insight.flag === 'Inactive / Not Updating' ? 'bg-rose-50 border-rose-200' : insight.flag === 'Slow Service' ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
-                                        <h4 className="font-black text-slate-800 text-base">{insight.host}</h4>
-                                        <div className="flex gap-2 mt-2">
-                                            {insight.flag && <span className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${insight.flag === 'Inactive / Not Updating' ? 'bg-rose-600 text-white' : 'bg-amber-500 text-white'}`}>{insight.flag}</span>}
-                                            {insight.autoStops > 0 && <span className="px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest bg-rose-100 text-rose-700">{insight.autoStops} Auto Stops</span>}
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t border-black/5">
-                                            <div>
-                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Avg Time</p>
-                                                <p className={`text-lg font-black ${insight.avgTime > 45 ? 'text-amber-600' : 'text-slate-700'}`}>{insight.avgTime}m</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Completion</p>
-                                                <p className={`text-lg font-black ${insight.completionRate < 50 ? 'text-rose-600' : 'text-emerald-600'}`}>{insight.completionRate}%</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-            </div>
-        )}
-
-        </div>
+      <span className="inline-flex items-center gap-0.5">
+        {shown.map(t => { const I = TASK_ICON[t.kind] || Circle; return <I key={t.key} size={11} className={t.done ? 'text-emerald-500' : t.kind === 'request' ? 'text-rose-500' : 'text-slate-400'} />; })}
+        {r.tasks.length > max && <span className="text-[10px] font-black text-slate-400">+{r.tasks.length - max}</span>}
+      </span>
     );
+  };
+
+  const villaCard = (r: VillaRow) => {
+    const meta = SERVICE_META[r.service];
+    const SIcon = meta.icon;
+    const isVac = r.guestKind === 'VAC' && r.service === 'pending' && !r.tasks.length;
+    const unassigned = hasVillaAlloc && SERVICED.includes(r.guestKind) && !r.vas.length;
+    const allTasksDone = r.tasks.length > 0 && r.tasksDone === r.tasks.length;
+    const border = unassigned ? 'bg-white border-amber-300 border-dashed' : isVac ? 'bg-slate-50 border-slate-200' : meta.card;
+
+    if (compact) {
+      return (
+        <button key={r.villa} onClick={() => setOpenVilla(r.villa)}
+          className={`relative rounded-xl border p-1.5 text-left min-h-[64px] flex flex-col ${border} hover:shadow-md transition-shadow`}>
+          <div className="flex items-start justify-between gap-1">
+            <span className={`text-lg font-black leading-none ${isVac ? 'text-slate-300' : 'text-[#6D2158]'}`}>{r.villa}</span>
+            {SIcon ? <SIcon size={13} className={meta.text} /> : r.openRequests > 0 ? <MessageSquare size={12} className="text-rose-500" /> : null}
+          </div>
+          <span className={`mt-1 self-start text-[9px] font-black px-1 rounded ${GUEST_STYLE[r.guestKind]}`}>{GUEST_SHORT[r.guestKind]}</span>
+          <div className="mt-auto flex items-center justify-between gap-1 pt-1">
+            <span className="text-[10px] font-bold text-slate-500 truncate">{r.vas.map(v => v.name).join('/') || (unassigned ? '—' : '')}</span>
+            {r.tasks.length > 0 && <span className={`text-[10px] font-black ${allTasksDone ? 'text-emerald-600' : 'text-slate-500'}`}>{r.tasksDone}/{r.tasks.length}</span>}
+          </div>
+          {r.editReq && <span className="absolute -top-1.5 -left-1.5 w-3 h-3 rounded-full bg-purple-600 ring-2 ring-white" title="Time edit request" />}
+        </button>
+      );
     }
+
+    const lastSession = r.sessions[r.sessions.length - 1];
+    return (
+      <button key={r.villa} onClick={() => setOpenVilla(r.villa)}
+        className={`relative rounded-2xl border-2 p-3 text-left min-h-[132px] flex flex-col gap-1.5 ${border} hover:shadow-md transition-shadow`}>
+        <div className="flex items-start justify-between gap-2">
+          <span className={`text-2xl font-black leading-none tracking-tight ${isVac ? 'text-slate-300' : 'text-[#6D2158]'}`}>{r.villa}</span>
+          <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded-md ${GUEST_STYLE[r.guestKind]}`}>{r.guestLabel}</span>
+        </div>
+        {r.guestName && !isVac && <p className="text-[11px] font-bold text-slate-500 truncate -mt-0.5">{r.guestName}</p>}
+
+        <div className="mt-auto space-y-1">
+          <div className="flex items-center justify-between gap-2 min-h-[16px]">
+            <span className={`text-[11px] font-black flex items-center gap-1 truncate ${unassigned ? 'text-amber-700' : 'text-slate-600'}`}>
+              {unassigned ? <><UserX size={12} /> No VA</> : r.vas.length ? r.vas.map(v => v.name).join(' + ') : ''}
+            </span>
+            {taskDots(r)}
+          </div>
+          {r.service !== 'pending' && (
+            <div className={`flex items-center justify-between gap-2 text-[11px] font-black ${meta.text}`}>
+              <span className="flex items-center gap-1 truncate">
+                {SIcon && <SIcon size={12} className={r.service === 'active' ? 'animate-pulse' : ''} />}
+                {r.service === 'active' ? `Since ${shortTime(isoTime(r.log?.start_time))}`
+                  : r.service === 'done' ? `${reasonShort(lastSession?.reason)} ${shortTime(lastSession?.end) || shortTime(isoTime(r.log?.end_time))}`
+                  : r.service === 'td-due' ? 'Morning ✓ · TD due'
+                  : `${meta.label} ${shortTime(isoTime(r.log?.dnd_time || r.log?.updated_at))}`}
+              </span>
+              {(r.service === 'done' || r.service === 'td-due') && r.minutes > 0 && <span className="bg-white/80 border border-emerald-200 rounded px-1">{r.minutes}m</span>}
+            </div>
+          )}
+        </div>
+        {r.editReq && <span className="absolute -top-2 left-3 bg-purple-600 text-white text-[9px] font-black uppercase px-1.5 py-0.5 rounded shadow">Edit request</span>}
+        {r.vas.length > 1 && <span className="absolute -top-2 right-3 bg-amber-500 text-white text-[9px] font-black uppercase px-1.5 py-0.5 rounded shadow">2 VAs</span>}
+      </button>
+    );
+  };
+
+  // ---------- render ----------
+  return (
+    <div className={`${tv ? 'fixed inset-0 z-[9999]' : 'absolute inset-0 md:left-64 pt-16 md:pt-0'} flex flex-col bg-slate-50 font-sans text-slate-800 overflow-hidden`}>
+      {/* HEADER */}
+      <div className="flex-none bg-white border-b border-slate-200 px-4 md:px-6 py-3 flex flex-wrap items-center gap-3 z-20">
+        <div className="flex items-center gap-3 min-w-0 mr-auto">
+          <div className="w-10 h-10 rounded-xl bg-[#6D2158]/10 text-[#6D2158] flex items-center justify-center shrink-0"><LayoutDashboard size={20} /></div>
+          <div className="min-w-0">
+            <h1 className="text-lg font-black text-[#6D2158] leading-tight">Live Board</h1>
+            <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-black">
+              {isToday
+                ? <span className="inline-flex items-center gap-1 text-emerald-700"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live{lastLoaded ? ` · updated ${lastLoaded.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}</span>
+                : <span className="text-slate-500">Past day: as it was logged</span>}
+              {guestProjected && <span className="text-amber-700">· guest list carried from last upload</span>}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center bg-slate-100 rounded-xl p-1 border border-slate-200">
+          <button onClick={() => setDate(d => shiftDate(d, -1))} className="w-8 h-8 rounded-lg hover:bg-white text-slate-500 flex items-center justify-center" aria-label="Previous day"><ChevronLeft size={16} /></button>
+          <label className="relative w-32 text-center cursor-pointer">
+            <span className="text-sm font-black text-[#6D2158]">{dayLabel(date)}</span>
+            <input type="date" value={date} onChange={e => e.target.value && setDate(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" aria-label="Date" />
+          </label>
+          <button onClick={() => setDate(d => shiftDate(d, 1))} className="w-8 h-8 rounded-lg hover:bg-white text-slate-500 flex items-center justify-center" aria-label="Next day"><ChevronRight size={16} /></button>
+        </div>
+        {!isToday && <button onClick={() => setDate(today)} className="h-10 px-3 rounded-xl bg-[#6D2158] text-white text-xs font-black">Today</button>}
+        <button onClick={() => load(true)} className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-slate-500 hover:text-[#6D2158] flex items-center justify-center" aria-label="Refresh" title="Refresh">
+          <RefreshCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
+        </button>
+        <button onClick={() => setTv(t => !t)} className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-slate-500 hover:text-[#6D2158] hidden md:flex items-center justify-center" title={tv ? 'Exit full screen (Esc)' : 'Full screen for a TV / office screen'} aria-label="Full screen">
+          {tv ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-4 md:px-6 py-3 space-y-3">
+          {isLoading ? (
+            <div className="flex h-64 items-center justify-center"><Loader2 className="animate-spin text-[#6D2158]" size={30} /></div>
+          ) : (
+            <>
+              {/* KPIs */}
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
+                {kpi('Guest villas', stats.guests, `${stats.arr} arrivals · ${stats.dep} departures · ${stats.vac} vacant`, () => setFilter('guests'))}
+                {kpi('Task list', `${stats.tasksDone}/${stats.tasks}`, stats.tasks ? `${stats.open} villas with open tasks` : 'No requests, ice, milk or notes', () => setFilter('open'), 'border-slate-200', tasksPct)}
+                {kpi('Open requests', stats.requests, stats.requests ? 'not delivered yet' : 'all delivered', () => setFilter('open'), stats.requests ? 'border-rose-200' : 'border-slate-200')}
+                {kpi('Service timer', `${stats.serviceDone}/${stats.guests}`, stats.logs ? `${stats.active} in service · ${stats.dnd} DND · ${stats.refused} refused` : 'No VA used the timer', stats.logs ? () => setFilter('done') : undefined)}
+                {kpi('Not allocated', stats.unassigned, !hasVillaAlloc ? 'No villa allocation for this day' : stats.unassigned ? 'guest villas without a VA' : `every guest villa has a VA${stats.doubled ? ` · ${stats.doubled} with 2 VAs` : ''}`,
+                  stats.unassigned ? () => setFilter('unassigned') : undefined, stats.unassigned || !hasVillaAlloc ? 'border-amber-300 bg-amber-50/40' : 'border-emerald-200')}
+              </div>
+
+              {tasksMissing && (
+                <p className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">VA ticks for milk, ice and preferences need supabase/va_daily_tasks.sql. Only requests show as done until it is run.</p>
+              )}
+              {stats.editReqs > 0 && (
+                <button onClick={() => setOpenVilla(scoped.find(r => r.editReq)?.villa || null)} className="w-full text-left text-xs font-black text-purple-800 bg-purple-50 border border-purple-200 rounded-xl px-3 py-2 flex items-center gap-2">
+                  <Timer size={14} /> {stats.editReqs} time edit request{stats.editReqs > 1 ? 's' : ''} from VAs waiting: tap to review
+                </button>
+              )}
+
+              {/* TOOLBAR */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 bg-slate-200/60 p-1 rounded-2xl">
+                  {([['villas', 'Villas', LayoutGrid], ['team', 'By VA', Users], ['log', 'Time log', ListChecks]] as [View, string, React.ElementType][]).map(([v, label, I]) => (
+                    <button key={v} onClick={() => setView(v)} className={`h-8 px-3 rounded-xl text-xs font-black flex items-center gap-1.5 ${view === v ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                      <I size={14} /> {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="relative flex-1 min-w-[160px] max-w-xs">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Villa, guest or VA"
+                    className="w-full h-9 pl-8 pr-8 rounded-xl border border-slate-200 bg-white text-sm font-bold outline-none focus:border-[#6D2158]" />
+                  {search && <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" aria-label="Clear search"><X size={14} /></button>}
+                </div>
+                <select value={vaFilter} onChange={e => setVaFilter(e.target.value)} className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-sm font-bold text-slate-700 outline-none focus:border-[#6D2158] max-w-[200px]">
+                  <option value="">All VAs</option>
+                  {allVas.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+                {view === 'villas' && (
+                  <button onClick={() => setCompact(c => !c)} className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-xs font-black text-slate-600 flex items-center gap-1.5" title="Card size">
+                    {compact ? <Grid2x2 size={14} /> : <Rows3 size={14} />} {compact ? 'Large' : 'Compact'}
+                  </button>
+                )}
+              </div>
+
+              {view !== 'team' && (
+                <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-4 px-4 md:mx-0 md:px-0 md:flex-wrap">
+                  {chip('guests', 'Guest villas', stats.guests)}
+                  {chip('all', 'All villas', scoped.length)}
+                  {chip('arr', 'Arrivals', stats.arr)}
+                  {chip('dep', 'Departures', stats.dep)}
+                  {chip('open', 'Open tasks', stats.open)}
+                  {hasVillaAlloc && stats.unassigned > 0 && chip('unassigned', 'No VA', stats.unassigned, 'text-amber-700')}
+                  {stats.logs > 0 && <>
+                    {chip('active', 'In service', stats.active)}
+                    {chip('done', 'Serviced', stats.done)}
+                    {chip('dnd', 'DND', stats.dnd)}
+                    {chip('refused', 'Refused', stats.refused)}
+                  </>}
+                </div>
+              )}
+
+              {/* VIEWS */}
+              {view === 'villas' && (
+                visible.length === 0 ? (
+                  <div className="text-center py-16 bg-white rounded-2xl border border-slate-200 text-sm font-bold text-slate-400">No villas match.</div>
+                ) : (
+                  <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${compact ? 78 : 158}px, 1fr))` }}>
+                    {visible.map(villaCard)}
+                  </div>
+                )
+              )}
+
+              {view === 'team' && (
+                <div className="space-y-3">
+                  {unassignedGuests.length > 0 && !vaFilter && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3">
+                      <p className="text-xs font-black text-amber-800 flex items-center gap-1.5"><UserX size={14} /> Guest villas with no VA ({unassignedGuests.length})</p>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {unassignedGuests.map(r => (
+                          <button key={r.villa} onClick={() => setOpenVilla(r.villa)} className="h-8 px-2.5 rounded-lg bg-white border border-amber-300 text-sm font-black text-amber-800">{r.villa} <span className="text-[10px]">{GUEST_SHORT[r.guestKind]}</span></button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!hasVillaAlloc && <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 text-sm font-bold text-slate-400">No villa allocation saved for this day.</div>}
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {team.map(t => {
+                      const pct = t.tasks ? Math.round((t.tasksDone / t.tasks) * 100) : 0;
+                      return (
+                        <div key={t.va.full} className="bg-white border border-slate-200 rounded-2xl p-3.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-black text-slate-800 truncate">{t.va.full}</p>
+                              <p className="text-[11px] font-bold text-slate-400">{t.va.ssl} · {t.villas.length} villas · {t.guestVillas} with guests</p>
+                            </div>
+                            {t.active
+                              ? <span className="text-[10px] font-black text-emerald-700 bg-emerald-100 px-2 py-1 rounded-lg flex items-center gap-1 shrink-0"><Sparkles size={11} className="animate-pulse" /> In {t.active}</span>
+                              : t.tasks > 0 && t.tasksDone === t.tasks ? <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg shrink-0">All done</span> : null}
+                          </div>
+                          <div className="flex items-center gap-2 mt-2.5">
+                            <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden"><div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} /></div>
+                            <span className="text-[11px] font-black text-slate-600 shrink-0">{t.tasks ? `${t.tasksDone}/${t.tasks} tasks` : 'no tasks'}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5 mt-2.5">
+                            {t.villas.map(v => {
+                              const open = v.tasks.length - v.tasksDone;
+                              const tone = v.service === 'active' ? 'bg-emerald-500 text-white border-emerald-500'
+                                : v.service === 'dnd' ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : v.service === 'refused' ? 'bg-orange-50 text-orange-700 border-orange-200'
+                                : v.service === 'done' || v.service === 'td-due' ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : v.guestKind === 'VAC' ? 'bg-slate-50 text-slate-400 border-slate-200'
+                                : 'bg-white text-slate-700 border-slate-200';
+                              return (
+                                <button key={v.villa} onClick={() => setOpenVilla(v.villa)} title={`${v.villa}: ${v.guestLabel}${open ? ` · ${open} open task${open > 1 ? 's' : ''}` : ''}`}
+                                  className={`relative h-9 min-w-[44px] px-2 rounded-lg border text-sm font-black flex items-center justify-center gap-1 ${tone}`}>
+                                  {v.villa}
+                                  <span className={`text-[8px] font-black px-0.5 rounded ${GUEST_STYLE[v.guestKind]}`}>{GUEST_SHORT[v.guestKind]}</span>
+                                  {open > 0 && <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center">{open}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {(t.avg > 0 || t.autoStops > 0) && (
+                            <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2.5 border-t border-slate-100 text-[11px] font-black">
+                              {t.avg > 0 && <span className={`px-2 py-0.5 rounded-md ${t.avg > 45 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>Avg {t.avg}m / service</span>}
+                              <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600">{t.serviced}/{t.guestVillas} serviced</span>
+                              {t.autoStops > 0 && <span className="px-2 py-0.5 rounded-md bg-rose-100 text-rose-700">{t.autoStops} timer auto-stopped</span>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {view === 'log' && (
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                  {sessionsLog.length === 0 ? (
+                    <p className="p-10 text-center text-sm font-bold text-slate-400">No service times logged{stats.logs ? ' for these villas' : ' this day. VAs log them with the service timer'}.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                          <tr>
+                            <th className="text-left px-3 py-2">Time</th>
+                            <th className="text-left px-3 py-2">Villa</th>
+                            <th className="text-left px-3 py-2 hidden sm:table-cell">VA</th>
+                            <th className="text-left px-3 py-2">Service</th>
+                            <th className="text-right px-3 py-2">Mins</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {sessionsLog.map(({ key, row, s, live }) => (
+                            <tr key={key} onClick={() => setOpenVilla(row.villa)} className="hover:bg-slate-50 cursor-pointer">
+                              <td className="px-3 py-2 font-bold text-slate-600 whitespace-nowrap">{shortTime(s.start) || '—'}{s.end ? ` – ${shortTime(s.end)}` : ''}</td>
+                              <td className="px-3 py-2"><span className="font-black text-[#6D2158]">{row.villa}</span> <span className={`text-[9px] font-black px-1 rounded ${GUEST_STYLE[row.guestKind]}`}>{GUEST_SHORT[row.guestKind]}</span></td>
+                              <td className="px-3 py-2 font-bold text-slate-600 hidden sm:table-cell">{row.log?.host_name || row.vas.map(v => v.name).join(' + ')}</td>
+                              <td className="px-3 py-2">
+                                <span className={`font-black text-xs ${live ? 'text-emerald-600' : s.reason === 'DND' ? 'text-rose-600' : s.reason === 'Refused' ? 'text-orange-600' : 'text-slate-700'}`}>
+                                  {live && <Sparkles size={11} className="inline mr-1 animate-pulse" />}{live || s.reason === 'DND' || s.reason === 'Refused' ? s.reason : reasonShort(s.reason)}
+                                </span>
+                                {s.autoStopped && <span className="ml-1.5 text-[9px] font-black uppercase bg-rose-100 text-rose-700 px-1 rounded">auto-stop</span>}
+                              </td>
+                              <td className="px-3 py-2 text-right font-black text-slate-700">{s.duration ? `${s.duration}` : ''}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* LEGEND */}
+              {view === 'villas' && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] font-bold text-slate-500 pt-1 pb-6">
+                  <span className="flex items-center gap-1"><MessageSquare size={12} className="text-rose-500" /> request</span>
+                  <span className="flex items-center gap-1"><Snowflake size={12} /> ice</span>
+                  <span className="flex items-center gap-1"><Milk size={12} /> milk</span>
+                  <span className="flex items-center gap-1"><Heart size={12} /> preference</span>
+                  <span className="flex items-center gap-1"><Check size={12} className="text-emerald-500" /> green = ticked by the VA</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded border-2 border-dashed border-amber-300" /> guest villa, no VA</span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {selected && (
+        <VillaDrawer key={selected.villa} row={selected} date={date} isToday={isToday} onClose={() => setOpenVilla(null)} onSaved={() => load(true)} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Villa detail: guest, VA, today's tasks, service log (admin override) and VA time edit requests
+function VillaDrawer({ row, date, isToday, onClose, onSaved }: { row: VillaRow; date: string; isToday: boolean; onClose: () => void; onSaved: () => void }) {
+  const initial = () => ({
+    status: String(row.log?.status || 'Pending'),
+    sessions: JSON.parse(JSON.stringify(row.sessions || [])) as Session[],
+  });
+  const [form, setForm] = useState(initial);
+  const [touched, setTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const total = form.sessions.reduce((n, s) => n + (Number(s.duration) || 0), 0);
+  const dirty = touched && JSON.stringify(form) !== JSON.stringify(initial());
+  const edit = (fn: (f: typeof form) => typeof form) => { setTouched(true); setForm(fn); };
+
+  // Fresh data for this villa (a VA finished, another admin saved) refreshes the form unless you are editing it
+  const stamp = `${row.log?.updated_at || ''}`;
+  useEffect(() => {
+    if (!touched) setForm(initial());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stamp]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+
+  const setSession = (i: number, patch: Partial<Session>) => edit(f => {
+    const sessions = f.sessions.map((s, j) => (j === i ? { ...s, ...patch } : s));
+    const s = sessions[i];
+    if (('start' in patch || 'end' in patch) && s.start && s.end) {
+      const m = minutesBetween(s.start, s.end);
+      if (m !== null) sessions[i] = { ...s, duration: m };
+    }
+    return { ...f, sessions };
+  });
+
+  /** Update the day's log row, or create it when the VA never started the timer. */
+  const writeLog = async (patch: Record<string, any>) => {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase.from('hsk_cleaning_logs').update({ ...patch, updated_at: nowIso }).match({ report_date: date, villa_number: row.villa }).select('id');
+    if (error) throw error;
+    if (!data?.length) {
+      const va = row.vas[0];
+      const { error: e2 } = await supabase.from('hsk_cleaning_logs').insert({ report_date: date, villa_number: row.villa, host_id: va?.ssl || null, host_name: va?.full || null, ...patch, updated_at: nowIso });
+      if (e2) throw e2;
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await writeLog({ status: form.status, time_spent_minutes: total || null, session_history: form.sessions });
+      toast.success(`Villa ${row.villa} saved`);
+      setTouched(false);
+      onSaved();
+    } catch (e: any) { toast.error('Not saved: ' + (e?.message || e)); }
+    setSaving(false);
+  };
+
+  const req = row.editReq;
+  const parsedReq = useMemo(() => {
+    if (!req) return null;
+    const d = String(req.item_details || '');
+    return {
+      reason: (d.match(/(.*) time edit requested/i)?.[1] || 'Morning Service').trim(),
+      start: to12((d.match(/Start:\s*([0-9:]+)/i)?.[1] || '').trim()),
+      end: to12((d.match(/End:\s*([0-9:]+)/i)?.[1] || '').trim()),
+      duration: Number(d.match(/New Duration:\s*(\d+)/i)?.[1] || 0),
+    };
+  }, [req]);
+
+  const closeRequest = async () => {
+    const { error } = await supabase.from('hsk_daily_requests').update({ is_done: true, is_sent: true }).eq('id', req.id);
+    if (error) throw error;
+  };
+  const acceptRequest = async () => {
+    if (!parsedReq) return;
+    setSaving(true);
+    try {
+      const sessions = [...row.sessions];
+      const i = sessions.findIndex(s => s.reason === parsedReq.reason);
+      const s = { reason: parsedReq.reason, start: parsedReq.start, end: parsedReq.end, duration: parsedReq.duration };
+      if (i >= 0) sessions[i] = { ...sessions[i], ...s }; else sessions.push(s);
+      await writeLog({ status: 'Completed', time_spent_minutes: sessions.reduce((n, x) => n + (Number(x.duration) || 0), 0), session_history: sessions });
+      await closeRequest();
+      toast.success('Time edit approved');
+      onSaved();
+    } catch (e: any) { toast.error('Not saved: ' + (e?.message || e)); }
+    setSaving(false);
+  };
+  const declineRequest = async () => {
+    setSaving(true);
+    try { await closeRequest(); toast.success('Request declined'); onSaved(); } catch (e: any) { toast.error('Not saved: ' + (e?.message || e)); }
+    setSaving(false);
+  };
+
+  const tryClose = () => { if (dirty && !window.confirm('Close without saving your changes?')) return; onClose(); };
+
+  return (
+    <div className="fixed inset-0 z-[10000] flex justify-end bg-slate-900/40 backdrop-blur-[2px]" onClick={tryClose}>
+      <div className="w-full sm:max-w-md h-full bg-white shadow-2xl flex flex-col animate-in slide-in-from-right duration-200" onClick={e => e.stopPropagation()}>
+        <div className="flex-none px-5 py-4 border-b border-slate-100 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-black text-[#6D2158]">Villa {row.villa}</h2>
+              <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded-md ${GUEST_STYLE[row.guestKind]}`}>{row.guestLabel}</span>
+            </div>
+            {row.guestName && <p className="text-sm font-bold text-slate-600 truncate">{row.guestName}</p>}
+            <p className="text-xs font-bold text-slate-400 mt-0.5">
+              {row.vas.length ? row.vas.map(v => `${v.full}${v.ssl ? ` (${v.ssl})` : ''}`).join(' + ') : 'No VA allocated'}
+            </p>
+          </div>
+          <button onClick={tryClose} className="w-9 h-9 rounded-full bg-slate-100 text-slate-500 hover:text-rose-500 flex items-center justify-center shrink-0" aria-label="Close"><X size={18} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {/* Edit request */}
+          {req && parsedReq && (
+            <div className="bg-purple-50 border border-purple-200 rounded-2xl p-3.5">
+              <p className="text-[11px] font-black uppercase tracking-wider text-purple-800 flex items-center gap-1.5"><Timer size={13} /> VA asked to change a time</p>
+              <p className="text-sm font-black text-purple-900 mt-1.5">{reasonShort(parsedReq.reason)}: {shortTime(parsedReq.start)} – {shortTime(parsedReq.end)} · {parsedReq.duration}m</p>
+              <p className="text-[11px] font-bold text-purple-700/80 mt-1 whitespace-pre-wrap">{req.item_details}</p>
+              <div className="flex gap-2 mt-3">
+                <button onClick={acceptRequest} disabled={saving} className="flex-1 h-10 rounded-xl bg-purple-600 text-white text-xs font-black flex items-center justify-center gap-1.5 disabled:opacity-50"><CheckCircle2 size={14} /> Approve</button>
+                <button onClick={declineRequest} disabled={saving} className="flex-1 h-10 rounded-xl bg-white border border-purple-200 text-purple-700 text-xs font-black disabled:opacity-50">Decline</button>
+              </div>
+            </div>
+          )}
+
+          {/* Tasks */}
+          <section>
+            <h3 className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">
+              {isToday ? "Today's tasks" : 'Tasks'} {row.tasks.length > 0 && <span className="text-slate-500">· {row.tasksDone}/{row.tasks.length} done</span>}
+            </h3>
+            {row.tasks.length === 0 ? (
+              <p className="text-sm font-bold text-slate-400 bg-slate-50 rounded-xl px-3 py-3">No requests, ice, milk or guest notes for this villa.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {row.tasks.map(t => {
+                  const I = TASK_ICON[t.kind] || Circle;
+                  return (
+                    <li key={t.key} className={`flex items-start gap-2.5 rounded-xl border px-3 py-2 ${t.done ? 'bg-emerald-50/60 border-emerald-100' : 'bg-white border-slate-200'}`}>
+                      <span className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${t.done ? 'bg-emerald-500 text-white' : 'border-2 border-slate-300'}`}>{t.done && <Check size={12} strokeWidth={3} />}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-sm font-bold ${t.done ? 'text-slate-500' : 'text-slate-800'}`}><I size={12} className={`inline mr-1 -mt-0.5 ${t.kind === 'request' && !t.done ? 'text-rose-500' : 'text-slate-400'}`} />{t.title}</p>
+                        <p className="text-[11px] font-bold text-slate-400">
+                          {[t.time, t.detail, t.done && t.doneBy ? `✓ ${t.doneBy}${t.doneAt ? ` ${shortTime(isoTime(t.doneAt))}` : ''}` : ''].filter(Boolean).join(' · ')}
+                        </p>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          {/* Service log */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[11px] font-black uppercase tracking-wider text-slate-400">Service log</h3>
+              <button onClick={() => edit(f => ({ ...f, sessions: [...f.sessions, { reason: 'Morning Service', start: '', end: '', duration: 0 }] }))}
+                className="h-7 px-2.5 rounded-lg bg-slate-100 text-slate-600 text-[11px] font-black flex items-center gap-1 hover:bg-slate-200"><Plus size={12} /> Session</button>
+            </div>
+            <div className="grid grid-cols-5 gap-1 bg-slate-100 p-1 rounded-xl mb-3">
+              {(['Pending', 'In Progress', 'Completed', 'DND', 'Refused'] as const).map(s => (
+                <button key={s} onClick={() => edit(f => ({ ...f, status: s }))}
+                  className={`h-8 rounded-lg text-[10px] font-black ${form.status === s ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500'}`}>
+                  {s === 'In Progress' ? 'Active' : s === 'Completed' ? 'Done' : s === 'Pending' ? 'Not started' : s}
+                </button>
+              ))}
+            </div>
+            {form.sessions.length === 0 ? (
+              <p className="text-sm font-bold text-slate-400 bg-slate-50 rounded-xl px-3 py-3">No service times logged.</p>
+            ) : (
+              <div className="space-y-2">
+                {form.sessions.map((s, i) => (
+                  <div key={i} className="rounded-xl border border-slate-200 p-2.5">
+                    <div className="flex items-center gap-2">
+                      <select value={s.reason || ''} onChange={e => setSession(i, { reason: e.target.value })} className="flex-1 h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold bg-white">
+                        {[...new Set(['Morning Service', 'TD Service', 'Arrival', 'Dep', 'Guest Request', 'Minibar Refill', s.reason || 'Morning Service'])].map(r => <option key={r} value={r}>{reasonShort(r)}</option>)}
+                      </select>
+                      {s.autoStopped && <span className="text-[9px] font-black uppercase bg-rose-100 text-rose-700 px-1 rounded">auto-stop</span>}
+                      <button onClick={() => edit(f => ({ ...f, sessions: f.sessions.filter((_, j) => j !== i) }))} className="w-8 h-8 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center" aria-label="Remove session"><Trash2 size={14} /></button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 mt-2">
+                      <label className="text-[10px] font-black text-slate-400">In
+                        <input value={s.start || ''} onChange={e => setSession(i, { start: e.target.value })} placeholder="10:00 AM" className="mt-0.5 w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold text-slate-700" />
+                      </label>
+                      <label className="text-[10px] font-black text-slate-400">Out
+                        <input value={s.end || ''} onChange={e => setSession(i, { end: e.target.value })} placeholder="10:45 AM" className="mt-0.5 w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-bold text-slate-700" />
+                      </label>
+                      <label className="text-[10px] font-black text-slate-400">Mins
+                        <input type="number" min={0} value={s.duration ?? 0} onChange={e => setSession(i, { duration: Math.max(0, parseInt(e.target.value || '0', 10)) })} className="mt-0.5 w-full h-8 px-2 rounded-lg border border-slate-200 text-xs font-black text-emerald-700" />
+                      </label>
+                    </div>
+                  </div>
+                ))}
+                <p className="text-right text-xs font-black text-slate-500">Total {total}m</p>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="flex-none p-4 border-t border-slate-100 flex gap-2">
+          <button onClick={() => { setForm(initial()); setTouched(false); }} disabled={!dirty || saving} className="h-11 px-4 rounded-xl border border-slate-200 text-xs font-black text-slate-600 disabled:opacity-40">Reset</button>
+          <button onClick={save} disabled={!dirty || saving} className="flex-1 h-11 rounded-xl bg-[#6D2158] text-white text-xs font-black flex items-center justify-center gap-2 disabled:opacity-40">
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Save service log
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

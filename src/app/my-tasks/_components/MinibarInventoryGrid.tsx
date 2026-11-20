@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Search, X, MapPin, Wine, Minus, Plus, Loader2, Save, Info } from 'lucide-react';
 import type { MasterItem } from '../page';
 
@@ -13,16 +13,22 @@ interface MinibarInventoryGridProps {
     counts: Record<string, number>;
     updateCount: (artNo: string, delta: number) => void;
     requestSaveInventory: () => void;
+    requestEmpty?: () => void;
     isSaving: boolean;
     activeTaskType?: string;
 }
 
 export default function MinibarInventoryGrid({
     searchQuery, setSearchQuery, locationFilters, activeLocation, setActiveLocation, 
-    displayCatalog, counts, updateCount, requestSaveInventory, 
+    displayCatalog, counts, updateCount, requestSaveInventory, requestEmpty,
     isSaving, activeTaskType
 }: MinibarInventoryGridProps) {
-    const catalogToDisplay = displayCatalog || [];
+    const [category, setCategory] = useState('All');
+    const categories = useMemo(() => ['All', ...Array.from(new Set((displayCatalog || []).map(i => i.category || 'Other')))], [displayCatalog]);
+    const catalogToDisplay = (displayCatalog || []).filter(i => category === 'All' || (i.category || 'Other') === category);
+    // Running total of what has been counted so far (all categories)
+    const countedItems = (displayCatalog || []).filter(i => (counts[i.article_number] || 0) > 0);
+    const countedUnits = countedItems.reduce((n, i) => n + (counts[i.article_number] || 0), 0);
 
     // Local State for this specific grid
     const [keypadTarget, setKeypadTarget] = useState<string | null>(null);
@@ -93,6 +99,21 @@ export default function MinibarInventoryGrid({
                 </button>
             </div>
 
+            {/* CATEGORY CHIPS */}
+            {categories.length > 2 && (
+                <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-3 mb-1">
+                    {categories.map(c => {
+                        const n = c === 'All' ? countedItems.length : countedItems.filter(i => (i.category || 'Other') === c).length;
+                        return (
+                            <button key={c} onClick={() => setCategory(c)}
+                                className={`h-8 px-3 rounded-lg text-[11px] font-black whitespace-nowrap flex items-center gap-1.5 border ${category === c ? 'bg-[#6D2158] text-white border-[#6D2158]' : 'bg-white text-slate-600 border-slate-200'}`}>
+                                {c}{n > 0 && <span className={`text-[10px] px-1.5 rounded ${category === c ? 'bg-white/20' : 'bg-[#6D2158]/10 text-[#6D2158]'}`}>{n}</span>}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
             {/* DYNAMIC VILLA LOCATION TABS */}
             {locationFilters && locationFilters.length > 1 && (
                 <div className="flex gap-2 overflow-x-auto no-scrollbar pb-3 mb-2 border-b border-slate-100">
@@ -155,11 +176,21 @@ export default function MinibarInventoryGrid({
 
             {/* Fixed Bottom Submit Bar */}
             <div className="fixed bottom-20 md:bottom-0 left-0 right-0 md:left-64 p-3 md:p-6 bg-white/90 backdrop-blur-xl border-t border-slate-200 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] pb-safe">
-                <div className="max-w-5xl mx-auto">
+                <p className="max-w-5xl mx-auto mb-2 text-[11px] font-bold text-slate-500 text-center">
+                    {countedItems.length ? `${countedItems.length} item${countedItems.length === 1 ? '' : 's'} · ${countedUnits} unit${countedUnits === 1 ? '' : 's'} counted` : 'Nothing counted yet: use + or tap the number'}
+                </p>
+                <div className="max-w-5xl mx-auto flex gap-2">
+                    {requestEmpty && (
+                        <button onClick={requestEmpty} disabled={isSaving}
+                            className="shrink-0 px-4 py-4 bg-white border border-slate-300 text-slate-600 rounded-xl font-black uppercase tracking-widest text-[10px] md:text-xs active:scale-95 transition-all disabled:opacity-50"
+                            title="Nothing in this minibar">
+                            Minibar empty
+                        </button>
+                    )}
                     <button 
                         onClick={requestSaveInventory} 
                         disabled={isSaving} 
-                        className="w-full py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                        className="flex-1 py-4 text-white bg-[#6D2158] shadow-purple-900/20 rounded-xl font-black uppercase tracking-widest text-xs md:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
                     >
                         {isSaving ? <Loader2 className="animate-spin" size={20}/> : <><Save size={16}/> Confirm Minibar Inventory</>}
                     </button>
