@@ -247,8 +247,10 @@ export default function MonthlyAttendanceSheet() {
               // "1718" finds "SSL 1718"
               if (!hay.includes(q) && !String(h.host_id).replace(/\D/g, '').includes(q.replace(/\D/g, '') || '§')) return;
           }
-          if (checkFilter === 'sheet' && checkState(checks[h.host_id]?.sheet_upto || '', periodEnd) === 'done') return;
-          if (checkFilter === 'fusion' && checkState(checks[h.host_id]?.fusion_upto || '', periodEnd) === 'done') return;
+          const sheetDone = checkState(checks[h.host_id]?.sheet_upto || '', periodEnd) === 'done';
+          const fusionDone = checkState(checks[h.host_id]?.fusion_upto || '', periodEnd) === 'done';
+          if (checkFilter === 'sheet' && sheetDone) return;
+          if (checkFilter === 'fusion' && fusionDone) return;
           const dep = hostSubDept(teamConfig, h);
           if (!groups[dep]) groups[dep] = [];
           groups[dep].push(h);
@@ -261,8 +263,10 @@ export default function MonthlyAttendanceSheet() {
   const checkTotals = useMemo(() => {
       const t = { sheet: 0, fusion: 0, total: hosts.length };
       hosts.forEach(h => {
-          if (checkState(checks[h.host_id]?.sheet_upto || '', periodEnd) === 'done') t.sheet++;
-          if (checkState(checks[h.host_id]?.fusion_upto || '', periodEnd) === 'done') t.fusion++;
+          const sd = checkState(checks[h.host_id]?.sheet_upto || '', periodEnd) === 'done';
+          const fd = checkState(checks[h.host_id]?.fusion_upto || '', periodEnd) === 'done';
+          if (sd) t.sheet++;
+          if (fd) t.fusion++;
       });
       return t;
   }, [hosts, checks, periodEnd]);
@@ -379,10 +383,12 @@ export default function MonthlyAttendanceSheet() {
                       className="w-full h-10 pl-9 pr-8 rounded-xl bg-white border border-slate-200 text-xs font-bold outline-none focus:border-[#6D2158]" />
                   {search && <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600" aria-label="Clear search"><X size={14} /></button>}
               </div>
-              <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1">
-                  {([['all', `Everyone · ${checkTotals.total}`], ['sheet', `Sheet to check · ${checkTotals.total - checkTotals.sheet}`], ['fusion', `Fusion to update · ${checkTotals.total - checkTotals.fusion}`]] as const).map(([k, label]) => (
-                      <button key={k} onClick={() => setCheckFilter(k)}
-                          className={`h-8 px-3 rounded-lg text-[11px] font-black ${checkFilter === k ? 'bg-[#6D2158] text-white' : 'text-slate-500 hover:bg-slate-50'}`}>{label}</button>
+              <div className="flex flex-wrap items-center gap-1 bg-white border border-slate-200 rounded-xl p-1">
+                  {([['all', 'All', checkTotals.total], ['sheet', 'Sheet pending', checkTotals.total - checkTotals.sheet], ['fusion', 'Fusion pending', checkTotals.total - checkTotals.fusion]] as const).map(([k, label, n]) => (
+                      <button key={k} onClick={() => setCheckFilter(k)} title={k === 'sheet' ? 'Signing sheet not checked to the 20th' : k === 'fusion' ? 'Fusion not updated to the 20th' : undefined}
+                          className={`h-8 px-3 rounded-lg text-[11px] font-black flex items-center gap-1.5 ${checkFilter === k ? 'bg-[#6D2158] text-white' : 'text-slate-500 hover:bg-slate-50'}`}>
+                          {label}<span className={`px-1.5 rounded-md text-[10px] ${checkFilter === k ? 'bg-white/20' : 'bg-slate-100'}`}>{n}</span>
+                      </button>
                   ))}
               </div>
               <p className="text-[11px] font-bold text-slate-400">Sheet {checkTotals.sheet}/{checkTotals.total} · Fusion {checkTotals.fusion}/{checkTotals.total} done to {format(parseISO(periodEnd), 'dd MMM')}</p>
