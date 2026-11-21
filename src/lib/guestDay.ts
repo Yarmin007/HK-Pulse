@@ -11,7 +11,7 @@ export const normalizeVilla = (raw: any): string | null => {
     return parseInt(match[1], 10).toString();
 };
 
-type DepInfo = { name: string; time: string; dates: string };
+type DepInfo = { name: string; time: string; dates: string; gem?: string };
 
 export const extractDepInfo = (remarksStr?: string): { cleanRemarks: string; depInfo: DepInfo | null } => {
     const raw = String(remarksStr || '');
@@ -25,7 +25,8 @@ export const extractDepInfo = (remarksStr?: string): { cleanRemarks: string; dep
             depInfo: {
                 name: parsed.name || '',
                 time: parsed.time || '',
-                dates: parsed.dates || ''
+                dates: parsed.dates || '',
+                gem: parsed.gem || ''
             }
         };
     } catch {

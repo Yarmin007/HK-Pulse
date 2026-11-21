@@ -27,6 +27,8 @@ export type GuestRow = {
     stay_id?: string;
     dep_guest_name?: string;
     dep_stay_dates?: string;
+    /** DEP/ARR: the departing guest's GEM (from the memo's DEPARTURES section). gem_name is the arriving guest's. */
+    dep_gem_name?: string;
     [key: string]: unknown;
 };
 
@@ -233,6 +235,29 @@ export const isSameGuest = (n1: string, n2: string) => {
     }));
 };
 
+/** Name words of 3+ letters, without titles / memo prefixes / ages. */
+const cleanWords = (s: string) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/\(.*?\)/g, ' ').replace(/\b(mr|ms|mrs|miss|mstr|master|dr|prof|(al)?a?faalila?|kokko)\b/g, ' ')
+    .split(/[^a-z]+/).filter(w => w.length >= 3);
+
+/**
+ * Stricter than isSameGuest: one person must have ALL the words of the shorter name in the other.
+ * "Barbara Arese Lucini" and "Francesca Arese Lucini" share a surname but are different people, so two
+ * families travelling together are not mistaken for each other when a revised memo swaps their villas.
+ */
+export const samePartyStrict = (n1: string, n2: string) => {
+    const people = (s: string) => String(s || '').split('&').map(p =>
+        p.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+            .replace(/\(.*?\)/g, ' ')
+            .replace(/\b(mr|ms|mrs|miss|mstr|master|dr|prof|(al)?a?faalila?|kokko)\b/g, ' ')
+            .split(/[^a-z]+/).filter(w => w.length >= 2)).filter(w => w.length);
+    const a = people(n1), b = people(n2);
+    return a.some(x => b.some(y => {
+        const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+        return short.every(w => long.includes(w));
+    }));
+};
+
 // ---------------------------------------------------------------------------------------------------------------
 // Meal plans
 // ---------------------------------------------------------------------------------------------------------------
@@ -415,13 +440,23 @@ export type MemoData = {
     reportDate: string;
     arrivals: Party[];
     departures: Party[];
-    moves: { from: string; to: string; time: string }[];
-    crew: { villa: string; shift: 'Day' | 'Night' }[];
+    /** reason: the memo's REASON column ("DAY USE TILL 2:50 PM", "STAY EXT", "PAID UPGRADE"...) */
+    moves: { from: string; to: string; time: string; reason?: string }[];
+    /** flight: the seaplane the crew stays for ("FLT242"), from the crew table heading, when given */
+    crew: { villa: string; shift: 'Day' | 'Night'; flight?: string }[];
     /** GEMS ALLOCATION table: villa → GEM, for every villa in house (not only arrivals / departures) */
     gems: Record<string, string>;
     /** Seaplane crew (TMA) times, HH:MM. Departures use the group's CHECK OUT time, not "leave to airport".
      *  nightLeave = last night's crew leaving this morning (the aircraft that stayed overnight). */
     crewTimes?: { dayArr: string; dayDep: string; nightArr: string; nightLeave: string };
+    /** Arrival time on the island per arriving flight ("FLT242" → "12:45"), for crews of a given flight */
+    flightArr?: Record<string, string>;
+};
+
+/** "FLT-242", "FLT 242", "FLT242", "FLT: FLT242" → "FLT242" */
+const flightId = (s: string) => {
+    const m = String(s || '').toUpperCase().match(/FLT[\s:.-]*(\d+)/);
+    return m ? `FLT${m[1]}` : '';
 };
 
 /** A flight group line in the memo: "FLT947 CKN @ ... ARR BY SPS (STANDARD) 8Q-MAF ... NIGHT SHUTDOWN" */
@@ -447,6 +482,7 @@ export const parseMemo = (rows: string[][], refIso: string): MemoData => {
     // SEAPLANE & DOMESTIC FLIGHT MOVEMENTS: Flight No. | MLE DEP | ARR | DEP | MLE ARR
     // MLE DEP + ARR empty = the aircraft slept at the resort and leaves this morning (last night's crew).
     const overnightOut = new Set<string>();
+    const overnightIn = new Map<string, string>(); // night-stop flight → landing time at the resort
     for (let i = 0; i < rows.length; i++) {
         const c = rows[i].findIndex(x => String(x || '').trim().toUpperCase() === 'FLIGHT NO.');
         if (c < 0) continue;
@@ -454,7 +490,9 @@ export const parseMemo = (rows: string[][], refIso: string): MemoData => {
             const f = String(rows[j][c] ?? '').trim().toUpperCase();
             if (!f) break;
             const [mleDep, arr, dep] = [1, 2, 3].map(k => String(rows[j][c + k] ?? '').trim());
-            if (!mleDep && !arr && dep) overnightOut.add(f.replace(/\s+/g, ''));
+            if (!mleDep && !arr && dep) overnightOut.add(flightId(f) || f.replace(/\s+/g, ''));
+            const mleArr = String(rows[j][c + 4] ?? '').trim();
+            if (arr && !dep && !mleArr) overnightIn.set(flightId(f) || f.replace(/\s+/g, ''), to24h(arr.replace(/^(\d{1,2})(\d{2})$/, '$1:$2')));
         }
         break;
     }
@@ -482,8 +520,10 @@ export const parseMemo = (rows: string[][], refIso: string): MemoData => {
     }
     const ref = memo.reportDate || refIso;
 
-    type Section = 'NONE' | 'ARR' | 'DEP' | 'MOVES' | 'CREW_DAY' | 'CREW_NIGHT';
+    type Section = 'NONE' | 'ARR' | 'DEP' | 'MOVES' | 'CREW';
     let section: Section = 'NONE';
+    // Crew tables sit side by side: "SEAPLANE NIGHT SHUTDOWN CREW VILLAS: FLT242" in B, "... FLT: FLT151" in D
+    let crewCols: { col: number; shift: 'Day' | 'Night'; flight: string }[] = [];
     let label: string[] = [];
     let headerRows = 0;
     let current: Party | null = null;
@@ -503,11 +543,16 @@ export const parseMemo = (rows: string[][], refIso: string): MemoData => {
         if (head === 'ARRIVALS') { section = 'ARR'; label = []; headerRows = 0; current = null; groupTime = ''; continue; }
         if (head === 'DEPARTURES') { section = 'DEP'; label = []; headerRows = 0; current = null; groupTime = ''; continue; }
         if (head === 'ROOM MOVES') { section = 'MOVES'; continue; }
-        if (head.startsWith('SEAPLANE DAY SHUTDOWN CREW')) { section = 'CREW_DAY'; continue; }
-        if (head.startsWith('SEAPLANE NIGHT SHUTDOWN CREW')) { section = 'CREW_NIGHT'; continue; }
+        const crewHeads = r.map((c, j) => ({ c: String(c || '').trim().toUpperCase(), j }))
+            .filter(x => /^SEAPLANE (DAY|NIGHT) SHUTDOWN CREW/.test(x.c));
+        if (crewHeads.length && /^SEAPLANE (DAY|NIGHT) SHUTDOWN CREW/.test(head)) {
+            section = 'CREW';
+            crewCols = crewHeads.map(x => ({ col: x.j, shift: /NIGHT/.test(x.c) ? 'Night' : 'Day', flight: flightId(x.c) }));
+            continue;
+        }
         const rowText = r.map(c => String(c || '').trim().toUpperCase()).filter(Boolean).join(' | ');
         if (/(^|\| )(HOST ARRIVAL|HOST DEPARTURE|ARR\/DEP ATTENDEES|REPEATERS INHOUSE|GI BY|WEEKEND MOD|\* VIP|MOD CHECKLIST|VILLAS ON STANDBY|HOUSEKEEPING ON DUTY)/.test(rowText)) {
-            if (section === 'ARR' || section === 'DEP' || section === 'MOVES' || section.startsWith('CREW')) section = 'NONE';
+            if (section !== 'NONE') section = 'NONE';
             current = null;
             continue;
         }
@@ -523,9 +568,9 @@ export const parseMemo = (rows: string[][], refIso: string): MemoData => {
             // Flight group line: "FLT651 CKN @ 9:45 AM ..." resets the group time
             if (/^FLT|CKN @|^PAGE \d/.test(c1)) {
                 current = null; groupTime = '';
-                const fl = c1.match(/FLT\s*\d+/);
+                const fl = flightId(c1);
                 if (fl) {
-                    group = { flight: fl[0].replace(/\s+/g, ''), reg: (rowText.match(/8Q-[A-Z]{3}/) || [''])[0], shut: /NIGHT SHUTDOWN/.test(rowText) ? 'NIGHT' : /DAY SHUTDOWN/.test(rowText) ? 'DAY' : '', time: '' };
+                    group = { flight: fl, reg: (rowText.match(/8Q-[A-Z]{3}/) || [''])[0], shut: /NIGHT SHUTDOWN/.test(rowText) ? 'NIGHT' : /DAY SHUTDOWN/.test(rowText) ? 'DAY' : '', time: '' };
                     (section === 'ARR' ? arrGroups : depGroups).push(group);
                 } else group = null;
                 continue;
@@ -597,26 +642,34 @@ export const parseMemo = (rows: string[][], refIso: string): MemoData => {
         if (section === 'MOVES') {
             if (c1 === 'FROM') continue;
             const from = normalizeVilla(cell(r, 1)), to = normalizeVilla(cell(r, 2));
-            if (from && to && from !== to) memo.moves.push({ from, to, time: to24h(cell(r, 3)) });
+            if (from && to && from !== to) memo.moves.push({ from, to, time: to24h(cell(r, 3)), reason: cell(r, 4).replace(/\s+/g, ' ').trim() });
             else if (c1) section = 'NONE';
             continue;
         }
 
-        if (section === 'CREW_DAY' || section === 'CREW_NIGHT') {
-            const v = normalizeVilla(cell(r, 1));
-            if (v) {
-                if (!memo.crew.some(c => c.villa === v)) memo.crew.push({ villa: v, shift: section === 'CREW_DAY' ? 'Day' : 'Night' });
-            } else if (c1) section = 'NONE';
+        if (section === 'CREW') {
+            // "#52 | CAPT | #35 | CAPT": a villa under each crew heading. "#" alone = not given yet.
+            let any = false, other = false;
+            crewCols.forEach(cc => {
+                const raw = cell(r, cc.col);
+                const v = normalizeVilla(raw);
+                if (v) { any = true; memo.crew.push({ villa: v, shift: cc.shift, flight: cc.flight || undefined }); }
+                else if (raw && !raw.startsWith('#')) other = true;
+            });
+            if (!any && other) section = 'NONE';
             continue;
         }
     }
 
     // Crew times. Day crew: arrives with the DAY SHUTDOWN flight, leaves with the same flight / aircraft.
     const dayArr = arrGroups.find(g => g.shut === 'DAY');
-    const nightArr = arrGroups.find(g => g.shut === 'NIGHT');
+    const nightArr = arrGroups.find(g => g.shut === 'NIGHT') || arrGroups.find(g => overnightIn.has(g.flight) && g.time)
+        // No guests on the night-stop seaplane (crew only): its landing time from the movement table
+        || (() => { const f = Array.from(overnightIn.entries()).find(([, t]) => t); return f ? { time: f[1] } : undefined; })();
     const dayDep = dayArr && (depGroups.find(g => g.flight === dayArr.flight) || depGroups.find(g => g.reg && g.reg === dayArr.reg && !overnightOut.has(g.flight)));
     const leave = depGroups.find(g => overnightOut.has(g.flight));
     memo.crewTimes = { dayArr: dayArr?.time || '', dayDep: dayDep?.time || '', nightArr: nightArr?.time || '', nightLeave: leave?.time || '' };
+    memo.flightArr = Object.fromEntries(arrGroups.filter(g => g.time).map(g => [g.flight, g.time]));
     return memo;
 };
 
@@ -630,8 +683,13 @@ const isProtected = (status: string) => /TMA|HOUSE|SHOW|FUMIG|DAY USE/i.test(Str
 
 const EMPTY_STAY = {
     status: 'VAC', guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', stay_dates: '', gem_name: '', stay_id: '',
-    preferences: '', arrival_time: '', departure_time: '', dep_guest_name: '', dep_stay_dates: '',
+    preferences: '', arrival_time: '', departure_time: '', dep_guest_name: '', dep_stay_dates: '', dep_gem_name: '',
 };
+
+/** The departing side of a DEP/ARR row (or of a DEP row about to become one). */
+const depSideOf = (row: GuestRow, fromMain = false) => fromMain
+    ? { dep_guest_name: row.guest_name, dep_stay_dates: row.stay_dates, departure_time: row.departure_time || '', dep_gem_name: row.gem_name || '' }
+    : { dep_guest_name: row.dep_guest_name || '', dep_stay_dates: row.dep_stay_dates || '', departure_time: row.departure_time || '', dep_gem_name: row.dep_gem_name || '' };
 
 const joinNames = (names: string[]) => names.filter(Boolean).join(' & ');
 
@@ -696,15 +754,16 @@ const placeArrival = (row: GuestRow, p: Party, D: string, o: MergeOpts, notes: M
     }
     if (row.status === 'DEP/ARR') {
         // A different arriving party than the one loaded before: replace the arriving side, keep the departing side
-        const dep = { name: row.dep_guest_name, dates: row.dep_stay_dates, time: row.departure_time };
+        const dep = depSideOf(row);
         startStay(row, p, D, o);
-        Object.assign(row, { status: 'DEP/ARR', dep_guest_name: dep.name, dep_stay_dates: dep.dates, departure_time: dep.time });
+        Object.assign(row, { status: 'DEP/ARR', ...dep });
         return;
     }
     if (departsToday(row, D)) {
-        const dep = { name: row.guest_name, dates: row.stay_dates, time: row.departure_time };
+        // The departing guest keeps their own GEM; gem_name becomes the arriving guest's
+        const dep = depSideOf(row, true);
         startStay(row, p, D, o);
-        Object.assign(row, { status: 'DEP/ARR', dep_guest_name: dep.name, dep_stay_dates: dep.dates, departure_time: dep.time });
+        Object.assign(row, { status: 'DEP/ARR', ...dep });
         return;
     }
     if (row.guest_name && IN_HOUSE.includes(row.status)) {
@@ -740,6 +799,7 @@ const enforceUniqueGuests = (rows: Map<string, GuestRow>, authoritative: Set<str
 const FIELD_LABELS: [keyof GuestRow, string][] = [
     ['guest_name', 'Name'], ['pax_adults', 'Adults'], ['pax_kids', 'Kids'], ['stay_dates', 'Dates'], ['meal_plan', 'Meal'],
     ['gem_name', 'GEM'], ['arrival_time', 'Arr time'], ['departure_time', 'Dep time'], ['dep_guest_name', 'Departing'],
+    ['dep_gem_name', 'Departing GEM'],
 ];
 
 const describeChanges = (before: Map<string, GuestRow>, after: Map<string, GuestRow>, notes: Map<string, string>, groups: Map<string, string>): ImportChange[] => {
@@ -825,6 +885,7 @@ export const applyOcc = (rows: GuestRow[], occ: Record<string, Party[]>, D: stri
             if (row.status === 'DEP/ARR') {
                 row.dep_guest_name = joinNames(leaving.names);
                 row.dep_stay_dates = stayDatesOf(leaving.arr, leaving.dep);
+                if (leaving.gem) row.dep_gem_name = leaving.gem;
             }
             return;
         }
@@ -941,6 +1002,8 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
             if (p.depTime) row.departure_time = p.depTime;
             if (!row.dep_guest_name) row.dep_guest_name = names;
             if (!row.dep_stay_dates && p.arr) row.dep_stay_dates = stayDatesOf(p.arr, D);
+            // DEPARTURES section GEM belongs to the departing guest (the GEM table has the arriving guest's)
+            if (p.gem) row.dep_gem_name = p.gem;
             return;
         }
         if (row.guest_name && (holdsStay(row, p, D) || isSameGuest(row.guest_name, names) || departsToday(row, D))) {
@@ -949,7 +1012,7 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
             return;
         }
         if (row.guest_name && ['ARR', 'VM/ARR'].includes(row.status)) {
-            Object.assign(row, { status: 'DEP/ARR', dep_guest_name: names, dep_stay_dates: stayDatesOf(p.arr, D), departure_time: p.depTime || row.departure_time });
+            Object.assign(row, { status: 'DEP/ARR', dep_guest_name: names, dep_stay_dates: stayDatesOf(p.arr, D), departure_time: p.depTime || row.departure_time, dep_gem_name: p.gem || '' });
             return;
         }
         if (row.guest_name && IN_HOUSE.includes(row.status)) {
@@ -961,17 +1024,185 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
         row.status = 'DEP';
     });
 
+    // Room moves BEFORE arrivals: the in-house guest leaves the villa first, then today's arrival comes in.
+    // (Done after arrivals, the move took the ARRIVING guest out of the villa.)
+    const AMENDED = 'Amended — check these';
+    const arrivingToday = (row: GuestRow) => !!row.guest_name && /ARR/.test(row.status) && rowStay(row, D).arr === D;
+    const moveTargets = new Set(memo.moves.map(m => m.to));
+
+    /** Put the moving guest's stay (taken from `src`) into villa `to`. False when someone else is in house there. */
+    const moveInto = (src: GuestRow, to: GuestRow, m: { from: string; to: string; time: string }, moveNote: string[]) => {
+        // A booking that ends on the move day is common when the move is re-booked: they are NOT leaving,
+        // the stay continues in the new villa with a new departure date.
+        const moved = { ...src };
+        const fs = rowStay(src, D);
+        if (src.status === 'DEP' || (fs.dep && fs.dep <= D)) {
+            moved.stay_dates = stayDatesOf(fs.arr, '');
+            moveNote.push('new booking after the move: set the new departure date');
+        }
+        const stayFields = {
+            guest_name: moved.guest_name, pax_adults: moved.pax_adults, pax_kids: moved.pax_kids, meal_plan: moved.meal_plan,
+            gem_name: moved.gem_name, stay_dates: moved.stay_dates, preferences: moved.preferences, stay_id: moved.stay_id,
+        };
+        if (!to.guest_name) {
+            Object.assign(to, stayFields, { arrival_time: m.time || moved.arrival_time || '', departure_time: '' });
+            to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
+            return true;
+        }
+        if (to.status === 'DEP' || departsToday(to, D)) {
+            // The new villa's guest checks out today, then the moving guest comes in: back-to-back
+            Object.assign(to, depSideOf(to, true), stayFields, { status: 'DEP/ARR', arrival_time: m.time || '' });
+            moveNote.push(`after ${to.dep_guest_name} checks out`);
+            return true;
+        }
+        notes.set(m.to, `Room move from V${m.from}, but ${to.guest_name} is in house here: check the move`);
+        return false;
+    };
+
+    // Moves out of a villa that only gets today's arrival: the arriving guest is placed there first, then moved
+    // (e.g. arrives in 97, moves to 8 at 13:00). Done after the arrivals below.
+    const lateMoves: typeof memo.moves = [];
+    const memoArrVillas = new Set(memo.arrivals.map(a => a.villa));
+
+    memo.moves.forEach(m => {
+        const from = after.get(m.from), to = after.get(m.to);
+        if (!from || !to) return;
+        groups.set(m.from, 'Villa moves'); groups.set(m.to, 'Villa moves');
+        const moveNote = [`Room move from V${m.from}${m.time ? ` at ${m.time}` : ''}`];
+
+        // Departing guest moved out of their villa until a late check-out: DAY USE in the new villa.
+        // The memo still lists them under DEPARTURES, so the old villa keeps its departure (and any arrival).
+        const dayUse = /DAY\s*USE/i.test(m.reason || '');
+        const leaving = memo.departures.find(d => d.villa === m.from)
+            || (dayUse ? { villa: m.from, names: [], adults: null, kids: null, mealPlan: '', gem: '', arr: '', dep: D, depTime: to24h((m.reason || '').replace(/.*TILL/i, '')) } as Party : undefined);
+        if (leaving && from.guest_name && (from.status === 'DEP' || from.status === 'DEP/ARR' || departsToday(from, D) || dayUse)) {
+            const b2b = from.status === 'DEP/ARR';
+            const guest = b2b ? from.dep_guest_name || '' : from.guest_name;
+            const free = !to.guest_name || ['VAC', 'VM/VAC'].includes(to.status) || (to.status === 'DAY USE' && isSameGuest(to.guest_name, guest));
+            if (!free) {
+                notes.set(m.to, `Day use for ${guest} from V${m.from}, but ${to.guest_name} is in this villa: check the move`);
+                return;
+            }
+            Object.assign(to, EMPTY_STAY, {
+                status: 'DAY USE', guest_name: guest,
+                pax_adults: b2b ? 0 : from.pax_adults, pax_kids: b2b ? 0 : from.pax_kids, meal_plan: b2b ? '' : from.meal_plan,
+                gem_name: (b2b ? from.dep_gem_name : from.gem_name) || leaving.gem || '',
+                stay_dates: (b2b ? from.dep_stay_dates : from.stay_dates) || '',
+                stay_id: b2b ? '' : from.stay_id || '',
+                arrival_time: m.time || '', departure_time: leaving.depTime || from.departure_time || '',
+            });
+            notes.set(m.to, `Day use: ${guest} moves here from V${m.from}${m.time ? ` at ${m.time}` : ''} until check-out${to.departure_time ? ` (${to.departure_time})` : ''}`);
+            return;
+        }
+
+        // The villa already holds today's arrival (or is empty): the move was applied by an earlier memo.
+        // If the revised memo sends the guest to a different villa, they are in the old target: take them from there.
+        if (!from.guest_name || arrivingToday(from)) {
+            if (to.guest_name && /^VM\//.test(to.status) && !arrivingToday(to)) return; // already moved here
+            const prev = Array.from(after.entries()).find(([v, r]) =>
+                v !== m.to && v !== m.from && !moveTargets.has(v) && /^VM\/(OCC|ARR)$/.test(r.status) && !!r.guest_name && !arrivingToday(r) &&
+                (!m.time || !r.arrival_time || r.arrival_time === m.time));
+            if (prev) {
+                const [pv, prow] = prev;
+                if (!moveInto(prow, to, m, moveNote)) return;
+                Object.assign(prow, EMPTY_STAY, { status: 'VAC' });
+                groups.set(pv, AMENDED); groups.set(m.to, AMENDED);
+                notes.set(pv, `Room move changed: ${to.guest_name} now moves to V${m.to}, not here (revised memo)`);
+                notes.set(m.to, [...moveNote, `was V${pv} in the earlier memo`].join(' — '));
+                return;
+            }
+            // The arriving guest moves only when the move is after their arrival (arrives 17:00, moves 20:00).
+            // A move before the arrival is the in-house guest leaving the villa: we just don't have them in the list.
+            const arrHere = memo.arrivals.find(a => a.villa === m.from);
+            if (arrHere && m.time && arrHere.arrTime && m.time > arrHere.arrTime) { lateMoves.push(m); return; }
+            if (arrHere || arrivingToday(from)) {
+                groups.set(m.from, AMENDED);
+                notes.set(m.from, `Room move V${m.from} → V${m.to}${m.time ? ` at ${m.time}` : ''}${m.reason ? ` (${m.reason})` : ''}: the guest moving out of V${m.from} is not in the list. Load the OCC report or move them by hand`);
+                return;
+            }
+        }
+
+        if (from.guest_name && isSameGuest(to.guest_name, from.guest_name)) {
+            // OCC already has them in the new villa: just clear the old one
+            Object.assign(from, EMPTY_STAY);
+        } else if (from.guest_name) {
+            if (!moveInto(from, to, m, moveNote)) return;
+            Object.assign(from, EMPTY_STAY);
+        } else if (to.guest_name && !['DEP/ARR', 'DEP'].includes(to.status)) {
+            to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
+        }
+        if (!from.guest_name) from.status = 'VM/VAC';
+        notes.set(m.to, moveNote.join(' — '));
+    });
+
+    // Arrivals. A revised memo can give a villa to a different party (e.g. two families swap villas).
+    // Every arrival today has the same arrival date, so the date alone can't tell stays apart: compare the
+    // names strictly, and when the party was listed in another villa, bring that stay (Opera names, pax...) over.
+    const snap = new Map(Array.from(after.entries()).map(([v, r]) => [v, { ...r }]));
     memo.arrivals.forEach(p => {
         const row = after.get(p.villa);
         if (!row || isProtected(row.status)) return;
         groups.set(p.villa, 'Arrival villas'); // DEP/ARR villas sit here: the arriving guest is the one staying
+        const names = joinNames(p.names);
+        const held = snap.get(p.villa)!;
+        if (names && arrivingToday(held) && !samePartyStrict(held.guest_name, names)) {
+            const src = Array.from(snap.entries()).find(([u, r]) => u !== p.villa && arrivingToday(r) && samePartyStrict(r.guest_name, names));
+            // Without a source villa, only call it a different party when not even a surname is shared
+            // ("Kate Gaskell" in Opera vs "Katherine Gaskell" in the memo is the same guest).
+            const words = (x: string) => new Set(cleanWords(x));
+            const shareWord = [...words(held.guest_name)].some(w => words(names).has(w));
+            if (src || !shareWord) {
+                const arriving = src
+                    ? { guest_name: src[1].guest_name, pax_adults: src[1].pax_adults, pax_kids: src[1].pax_kids, meal_plan: src[1].meal_plan,
+                        gem_name: src[1].gem_name, stay_dates: src[1].stay_dates, preferences: src[1].preferences, arrival_time: src[1].arrival_time || '' }
+                    : { guest_name: '', pax_adults: 0, pax_kids: 0, meal_plan: '', gem_name: '', stay_dates: '', preferences: '', arrival_time: '' };
+                Object.assign(row, arriving, { stay_id: src ? stayIdOf(p.villa, D) : '' });
+                groups.set(p.villa, AMENDED);
+                notes.set(p.villa, `Revised memo: was ${held.guest_name}${src ? ` — this party was in V${src[0]}` : ''}`);
+            }
+        }
         placeArrival(row, p, D, { namesFromReport: false, replacePrefs: true }, notes);
+
+        // Same party already in house in another villa since an earlier day: the memo wrote a room move as an
+        // arrival. Clear the old villa and keep the stay's real arrival / departure dates.
+        if (names) {
+            const old = Array.from(after.entries()).find(([u, r]) => u !== p.villa && !!r.guest_name &&
+                ['OCC', 'VM/OCC', 'DEP'].includes(r.status) && rowStay(r, D).arr && rowStay(r, D).arr < D && samePartyStrict(r.guest_name, names));
+            if (old) {
+                const [u, orow] = old;
+                const os = rowStay(orow, D);
+                const ns = rowStay(row, D);
+                row.stay_dates = stayDatesOf(os.arr, ns.dep && ns.dep !== D ? ns.dep : os.dep);
+                if (orow.stay_id) row.stay_id = orow.stay_id;
+                if (!row.gem_name) row.gem_name = orow.gem_name;
+                if (row.status === 'ARR') row.status = 'VM/OCC';
+                else if (row.status === 'VM/ARR') row.status = 'VM/OCC';
+                Object.assign(orow, EMPTY_STAY, { status: 'VM/VAC' });
+                groups.set(u, 'Villa moves'); groups.set(p.villa, 'Villa moves');
+                notes.set(u, `${row.guest_name} moved to V${p.villa} (memo lists it as an arrival)`);
+                notes.set(p.villa, `Moved from V${u}: in house since ${os.arr} (memo lists it as an arrival)`);
+            }
+        }
+    });
+
+    lateMoves.forEach(m => {
+        const from = after.get(m.from)!, to = after.get(m.to)!;
+        const moveNote = [`Arrives in V${m.from}, moves here${m.time ? ` at ${m.time}` : ''}`];
+        if (!from.guest_name) return;
+        if (isSameGuest(to.guest_name, from.guest_name)) {
+            Object.assign(from, EMPTY_STAY, { status: 'VM/VAC' }); // moved by an earlier import of this memo
+            return;
+        }
+        if (!moveInto(from, to, m, moveNote)) return;
+        if (to.status === 'VM/OCC') to.status = 'VM/ARR';
+        Object.assign(from, EMPTY_STAY, { status: 'VM/VAC' });
+        notes.set(m.to, moveNote.join(' — '));
+        notes.set(m.from, `${to.guest_name} arrives here, then moves to V${m.to}`);
     });
 
     // Amended memo: today's arrivals / departures in our list that the memo no longer has.
     // The memo lists every arrival and departure of the day, so a missing one was cancelled, moved or extended.
-    const AMENDED = 'Amended — check these';
-    const memoArr = new Set(memo.arrivals.map(a => a.villa));
+    const memoArr = new Set([...memo.arrivals.map(a => a.villa), ...lateMoves.map(m => m.to)]);
     if (memo.arrivals.length) after.forEach((row, v) => {
         if (memoArr.has(v) || isProtected(row.status) || !row.guest_name) return;
         if (!['ARR', 'VM/ARR', 'DEP/ARR'].includes(row.status) || rowStay(row, D).arr !== D) return;
@@ -979,10 +1210,10 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
         const who = row.guest_name;
         if (row.status === 'DEP/ARR') {
             // Keep the departing guest, drop the arrival
-            const dep = { name: row.dep_guest_name || '', dates: row.dep_stay_dates || '', time: row.departure_time || '' };
+            const dep = depSideOf(row);
             Object.assign(row, EMPTY_STAY, {
-                status: 'DEP', guest_name: dep.name, stay_dates: dep.dates, departure_time: dep.time,
-                stay_id: stayIdOf(v, parseStayRange(dep.dates, D).arr),
+                status: 'DEP', guest_name: dep.dep_guest_name, stay_dates: dep.dep_stay_dates, departure_time: dep.departure_time,
+                gem_name: dep.dep_gem_name, stay_id: stayIdOf(v, parseStayRange(dep.dep_stay_dates, D).arr),
             });
         } else Object.assign(row, EMPTY_STAY, { status: row.status === 'VM/ARR' ? 'VM/VAC' : 'VAC' });
         groups.set(v, AMENDED);
@@ -998,69 +1229,43 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
         }
     });
 
-    memo.moves.forEach(m => {
-        const from = after.get(m.from), to = after.get(m.to);
-        if (!from || !to) return;
-        groups.set(m.from, 'Villa moves'); groups.set(m.to, 'Villa moves');
-        const moveNote = [`Room move from V${m.from}${m.time ? ` at ${m.time}` : ''}`];
-
-        if (from.guest_name && isSameGuest(to.guest_name, from.guest_name)) {
-            // OCC already has them in the new villa: just clear the old one
-            Object.assign(from, EMPTY_STAY);
-        } else if (from.guest_name) {
-            // The moving guest's stay. A booking that ends on the move day is common when the move is
-            // re-booked: they are NOT leaving, the stay continues in the new villa with a new departure date.
-            const moved = { ...from };
-            const fs = rowStay(from, D);
-            if (from.status === 'DEP' || (fs.dep && fs.dep <= D)) {
-                moved.stay_dates = stayDatesOf(fs.arr, '');
-                moveNote.push('new booking after the move: set the new departure date');
-            }
-            const stayFields = {
-                guest_name: moved.guest_name, pax_adults: moved.pax_adults, pax_kids: moved.pax_kids, meal_plan: moved.meal_plan,
-                gem_name: moved.gem_name, stay_dates: moved.stay_dates, preferences: moved.preferences, stay_id: moved.stay_id,
-            };
-
-            if (!to.guest_name) {
-                Object.assign(to, stayFields, { arrival_time: m.time || moved.arrival_time || '', departure_time: '' });
-                to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
-            } else if (to.status === 'DEP' || departsToday(to, D)) {
-                // The new villa's guest checks out today, then the moving guest comes in: back-to-back
-                Object.assign(to, {
-                    dep_guest_name: to.guest_name, dep_stay_dates: to.stay_dates, departure_time: to.departure_time,
-                }, stayFields, { status: 'DEP/ARR', arrival_time: m.time || '' });
-                moveNote.push(`after ${to.dep_guest_name} checks out`);
-            } else {
-                notes.set(m.to, `Room move from V${m.from}, but ${to.guest_name} is in house here: check the move`);
-                return;
-            }
-            Object.assign(from, EMPTY_STAY);
-        } else if (to.guest_name && !['DEP/ARR', 'DEP'].includes(to.status)) {
-            to.status = /ARR/.test(to.status) ? 'VM/ARR' : 'VM/OCC';
-        }
-        if (!from.guest_name) from.status = 'VM/VAC';
-        notes.set(m.to, moveNote.join(' — '));
-    });
-
     // GEM table covers every villa in house. On a DEP/ARR villa it is the ARRIVING guest's GEM (the row's gem_name).
     // A GEM given in the Arrivals section itself wins over the table.
+    // A villa that only has a departure keeps the GEM from the DEPARTURES section.
     const arrGem = new Set(memo.arrivals.filter(a => a.gem).map(a => a.villa));
+    const depGem = new Set(memo.departures.filter(d => d.gem).map(d => d.villa));
     Object.entries(memo.gems).forEach(([v, gem]) => {
         const row = after.get(v);
         if (!row || !row.guest_name || !IN_HOUSE.includes(row.status) || arrGem.has(v) || row.gem_name === gem) return;
+        if (row.status === 'DEP' && depGem.has(v)) return;
         row.gem_name = gem;
         if (!groups.has(v)) groups.set(v, 'GEM allocation');
     });
 
+    const crewSeen = new Map<string, string>();
     memo.crew.forEach(c => {
         const row = after.get(c.villa);
         if (!row) return;
+        const label = c.flight || c.shift;
+        if (crewSeen.has(c.villa)) {
+            if (crewSeen.get(c.villa) !== label) s.warnings.push(`Memo puts two seaplane crews in villa ${c.villa} (${crewSeen.get(c.villa)} and ${label}). Check the crew villas.`);
+            return;
+        }
+        crewSeen.set(c.villa, label);
         groups.set(c.villa, 'Seaplane crew');
-        if (row.guest_name && IN_HOUSE.includes(row.status)) { notes.set(c.villa, `Memo lists seaplane crew (${c.shift}) but a guest is in this villa`); return; }
+        if (row.guest_name && IN_HOUSE.includes(row.status)) {
+            const crew = `seaplane crew (${c.shift}${c.flight ? `, ${c.flight}` : ''})`;
+            notes.set(c.villa, row.status === 'DEP'
+                ? `Memo puts ${crew} here after ${row.guest_name} checks out${row.departure_time ? ` at ${row.departure_time}` : ''}: set the villa to TMA on the Allocation page if they come`
+                : `Memo lists ${crew} but a guest is in this villa`);
+            return;
+        }
         row.status = c.shift === 'Day' ? 'TMA (Day)' : 'TMA (Night)';
         const t = memo.crewTimes;
         if (t && c.shift === 'Day') { if (t.dayArr) row.arrival_time = t.dayArr; if (t.dayDep) row.departure_time = t.dayDep; }
-        if (t && c.shift === 'Night' && t.nightArr) row.arrival_time = t.nightArr;
+        // Night crew arrives with its own seaplane (the crew table heading names it), else the night-shutdown flight
+        const nightArr = (c.flight && memo.flightArr?.[c.flight]) || t?.nightArr;
+        if (c.shift === 'Night' && nightArr) row.arrival_time = nightArr;
     });
 
     // Last night's crew leaves this morning: their check-out time goes on today's row of that villa

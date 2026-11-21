@@ -50,11 +50,11 @@ const EXTENSION_PARENT: Record<string, string> = { '56': '57', '58': '57', '88':
 const getAssociatedVillas = (villa: string) => LINKABLE_VILLAS[villa] || [];
 
 // Helper to pack & unpack departing guest details into remarks column safely
-type DepInfo = { name: string; time: string; dates: string };
+type DepInfo = { name: string; time: string; dates: string; gem?: string };
 
 const packRemarksWithDep = (cleanRemarks: string, depInfo: DepInfo | null): string => {
     const base = String(cleanRemarks || '').replace(/\[DEP_INFO\].*?\[\/DEP_INFO\]/g, '').trim();
-    if (!depInfo || (!depInfo.name && !depInfo.time && !depInfo.dates)) return base;
+    if (!depInfo || (!depInfo.name && !depInfo.time && !depInfo.dates && !depInfo.gem)) return base;
     const tag = `[DEP_INFO]${JSON.stringify(depInfo)}[/DEP_INFO]`;
     return base ? `${base} ${tag}` : tag;
 };
@@ -83,6 +83,8 @@ export type GuestRecord = {
   stay_id?: string;
   dep_guest_name?: string;
   dep_stay_dates?: string;
+  /** DEP/ARR: departing guest's GEM (gem_name is the arriving guest's) */
+  dep_gem_name?: string;
 };
 
 type ChangeLog = {
@@ -99,11 +101,12 @@ type ChangeLog = {
 // Strips UI-only helper fields so Supabase only receives real hsk_daily_summary columns
 const buildDbRowPayload = (rec: GuestRecord, reportDate: string) => {
     const depPayload: DepInfo | null =
-        rec.status === 'DEP/ARR' && (rec.dep_guest_name || rec.departure_time || rec.dep_stay_dates)
+        rec.status === 'DEP/ARR' && (rec.dep_guest_name || rec.departure_time || rec.dep_stay_dates || rec.dep_gem_name)
             ? {
                   name: rec.dep_guest_name || '',
                   time: rec.departure_time || '',
                   dates: rec.dep_stay_dates || '',
+                  gem: rec.dep_gem_name || '',
               }
             : null;
 
@@ -248,6 +251,7 @@ export default function HousekeepingSummaryPage() {
                             remarks: cleanRemarks,
                             dep_guest_name: depInfo?.name || '',
                             dep_stay_dates: depInfo?.dates || '',
+                            dep_gem_name: depInfo?.gem || '',
                         };
                     }
                     return v;
@@ -295,13 +299,14 @@ export default function HousekeepingSummaryPage() {
                 stay_id: match.stay_id || '',
                 dep_guest_name: depInfo?.name || '',
                 dep_stay_dates: depInfo?.dates || '',
+                dep_gem_name: depInfo?.gem || '',
             });
           } else {
             fullList.push({
               report_date: selectedDate, villa_number: villaNum, status: 'VAC', guest_name: '',
               pax_adults: 0, pax_kids: 0, gem_name: '', meal_plan: '', stay_dates: '', remarks: '',
               preferences: '', arrival_time: '', departure_time: '', stay_id: '',
-              dep_guest_name: '', dep_stay_dates: ''
+              dep_guest_name: '', dep_stay_dates: '', dep_gem_name: ''
             });
           }
         }
@@ -1228,6 +1233,7 @@ export default function HousekeepingSummaryPage() {
                               <div className="flex flex-wrap gap-2 text-[10px] font-mono text-rose-700 font-bold">
                                   {row.departure_time && <span>Dep Time: {row.departure_time}</span>}
                                   {row.dep_stay_dates && <span>Stay: {row.dep_stay_dates}</span>}
+                                  {row.dep_gem_name && <span>GEM: {row.dep_gem_name}</span>}
                               </div>
                           </div>
                       )}
@@ -1338,7 +1344,7 @@ export default function HousekeepingSummaryPage() {
                                     <span className="font-bold text-slate-800">{row.dep_guest_name || 'No departing guest recorded'}</span>
                                 </div>
                                 <div className="font-mono font-bold text-rose-700 shrink-0">
-                                    {row.departure_time ? `ETD: ${row.departure_time}` : ''} {row.dep_stay_dates ? `(${row.dep_stay_dates})` : ''}
+                                    {row.departure_time ? `ETD: ${row.departure_time}` : ''} {row.dep_stay_dates ? `(${row.dep_stay_dates})` : ''} {row.dep_gem_name ? `GEM: ${row.dep_gem_name}` : ''}
                                 </div>
                             </div>
                         )}
@@ -1887,6 +1893,14 @@ export default function HousekeepingSummaryPage() {
                                     className="w-full p-2.5 bg-white border border-rose-200 rounded-xl text-xs font-bold text-slate-800 outline-none" 
                                     value={editingRecord.dep_guest_name || ''} 
                                     onChange={e => setEditingRecord({...editingRecord, dep_guest_name: e.target.value})}
+                                 />
+                             </div>
+                             <div>
+                                 <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Departing Guest GEM</label>
+                                 <input 
+                                    className="w-full p-2.5 bg-white border border-rose-200 rounded-xl text-xs font-bold text-slate-800 uppercase outline-none" 
+                                    value={editingRecord.dep_gem_name || ''} 
+                                    onChange={e => setEditingRecord({...editingRecord, dep_gem_name: e.target.value})}
                                  />
                              </div>
                              <div className="grid grid-cols-2 gap-3 pt-1">
