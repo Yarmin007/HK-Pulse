@@ -6,10 +6,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bug, Sun, Moon, Loader2, CheckCircle2, ChevronRight, ChevronLeft, X, Search, Copy, FileDown,
-  ClipboardList, FileText, CalendarDays, CalendarRange, Calendar, Share2, Eye, Trash2, PenLine, Eraser, Check,
+  ClipboardList, FileText, Wind, CalendarDays, CalendarRange, Calendar, Share2, Eye, Trash2, PenLine, Eraser, Check,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminOnly from '@/components/AdminOnly';
+import FumigationTab from './FumigationTab';
 import { getDhakaDateStr } from '@/lib/dateUtils';
 import {
   PEST_TARGETS, PEST_METHODS, PEST_OUTLETS, PestShift, PestWorksheet, PestRow,
@@ -31,7 +32,7 @@ const PEST_ICON: Record<string, string> = { Cockroach: '🪳', Rats: '🐀', Fli
 const METHOD_ICON: Record<string, string> = { 'Hand Spray': '🧴', Fog: '🌫️', 'Mist Blow': '💨', 'Bait Station': '📦', Fumigation: '☁️' };
 const COMMON_CHEMICALS = ['Cypermethrin', 'Deltamethrin (K-Othrine)', 'Fipronil Gel', 'Bromadiolone Bait', 'Imidacloprid'];
 
-type Tab = 'log' | 'reports';
+type Tab = 'log' | 'reports' | 'fumigation';
 
 function Chip({ on, onClick, children, tone = 'brand' }: { on: boolean; onClick: () => void; children: React.ReactNode; tone?: 'brand' | 'teal' }) {
   const onCls = tone === 'teal' ? 'bg-teal-600 border-teal-600 text-white shadow-sm' : 'bg-[#6D2158] border-[#6D2158] text-white shadow-sm';
@@ -318,10 +319,10 @@ function PestControlApp() {
           </div>
         </div>
         <div className="max-w-3xl lg:max-w-[1400px] mx-auto px-4 lg:px-6 pb-3">
-          <div className="grid grid-cols-2 p-1 rounded-2xl bg-slate-100 lg:max-w-md">
-            {([['log', 'Log', ClipboardList], ['reports', 'Reports & PDF', FileText]] as const).map(([k, label, Icon]) => (
-              <button key={k} onClick={() => setTab(k)} className={`py-2.5 rounded-xl text-sm font-black flex items-center justify-center gap-2 transition-all ${tab === k ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500'}`}>
-                <Icon size={16} /> {label}
+          <div className="grid grid-cols-3 p-1 rounded-2xl bg-slate-100 lg:max-w-xl">
+            {([['log', 'Log', ClipboardList], ['fumigation', 'Fumigation', Wind], ['reports', 'Reports', FileText]] as const).map(([k, label, Icon]) => (
+              <button key={k} onClick={() => setTab(k)} className={`py-2.5 rounded-xl text-[13px] sm:text-sm font-black flex items-center justify-center gap-1.5 sm:gap-2 transition-all ${tab === k ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500'}`}>
+                <Icon size={16} className="shrink-0" /> {label}
               </button>
             ))}
           </div>
@@ -329,7 +330,7 @@ function PestControlApp() {
       </div>
 
       <div className="max-w-3xl lg:max-w-[1400px] mx-auto px-4 lg:px-6 pt-4 space-y-4">
-        {tab === 'log' ? (
+        {tab === 'fumigation' ? <FumigationTab /> : tab === 'log' ? (
           <div className="space-y-4">
             {/* Date + shift + progress (desktop: one bar) */}
             <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3 lg:space-y-0 lg:flex lg:flex-wrap lg:items-center lg:gap-3">
