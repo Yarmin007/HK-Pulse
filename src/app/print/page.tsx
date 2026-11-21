@@ -1,15 +1,16 @@
 "use client";
 import React, { useState } from 'react';
 import { 
-  Printer, X, Download, Plane, CalendarDays 
+  Printer, X, Download, Plane, CalendarDays, CakeSlice
 } from 'lucide-react';
 
 // Child Components
 import DepartureMode from './components/DepartureMode';
 import FlightRequestMode from './components/FlightRequestMode';
 import LeaveRequestMode from './components/LeaveRequestMode';
+import CakeRequestMode from './components/CakeRequestMode';
 
-type Mode = 'DASHBOARD' | 'DEPARTURE' | 'FLIGHT' | 'LEAVE';
+type Mode = 'DASHBOARD' | 'DEPARTURE' | 'FLIGHT' | 'LEAVE' | 'CAKE';
 
 export default function PrintHubPage() {
   const [activeMode, setActiveMode] = useState<Mode>('DASHBOARD');
@@ -60,6 +61,13 @@ export default function PrintHubPage() {
                       <h3 className="text-lg font-bold text-slate-800">Leave Request Form</h3>
                       <p className="text-xs text-slate-400 mt-2">Auto-Detect & Generate Documents</p>
                   </button>
+
+                  {/* The exact Word form (public/forms), filled in here and printed */}
+                  <button onClick={() => setActiveMode('CAKE')} className="bg-white p-6 rounded-2xl shadow-sm border-2 border-[#6D2158]/10 hover:border-[#6D2158] text-left transition-all group h-auto md:h-40 flex flex-col justify-center active:scale-95">
+                      <div className="w-14 h-14 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><CakeSlice size={28}/></div>
+                      <h3 className="text-lg font-bold text-slate-800">Cake Request Form</h3>
+                      <p className="text-xs text-slate-400 mt-2">Fill in, print or save as PDF</p>
+                  </button>
               </div>
           )}
 
@@ -67,6 +75,7 @@ export default function PrintHubPage() {
           {activeMode === 'DEPARTURE' && <DepartureMode />}
           {activeMode === 'FLIGHT' && <FlightRequestMode />}
           {activeMode === 'LEAVE' && <LeaveRequestMode />}
+          {activeMode === 'CAKE' && <CakeRequestMode />}
           
       </div>
     </div>
