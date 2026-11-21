@@ -1,8 +1,9 @@
 // Builds the PestEX "Pest Control Day & Night Worksheet" as a PDF, auto-filled from saved sheets.
-// One A4 portrait page per sheet (date + shift); multi-sheet reports start with a summary page.
+// One A4 portrait page per DATE: the Day and Night entries of the same day are merged onto one sheet
+// (shift printed as "Day & Night"). Multi-day reports start with a summary page.
 import { jsPDF } from 'jspdf';
 import autoTable, { CellHookData } from 'jspdf-autotable';
-import { PEST_TARGETS, PEST_METHODS, PEST_OUTLETS, PestWorksheet, PestShift, emptyWorksheet, pestRowHasData } from '@/lib/pestControl';
+import { PEST_TARGETS, PEST_METHODS, PEST_OUTLETS, PestWorksheet, PestShift, emptyWorksheet, pestRowHasData, outletsOf, mergeDaySheets } from '@/lib/pestControl';
 
 const M = 10; // page margin (mm)
 
@@ -43,7 +44,7 @@ const letterhead = (doc: jsPDF, title: string) => {
   doc.line(M, 30.5, W - M, 30.5);
 };
 
-const sheetPage = (doc: jsPDF, sheet: PestWorksheet) => {
+const sheetPage = (doc: jsPDF, sheet: PestWorksheet, shiftLabel: string = sheet.shift) => {
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   letterhead(doc, 'PEST CONTROL DAY & NIGHT WORKSHEET');
@@ -56,10 +57,10 @@ const sheetPage = (doc: jsPDF, sheet: PestWorksheet) => {
   doc.setFont('helvetica', 'normal');
   doc.text(sheet.resort || 'SIX SENSES LAAMU', M + 26, 36);
   doc.text(fmt(sheet.date), 129, 36);
-  doc.text(sheet.shift, 174, 36);
+  doc.text(shiftLabel, 174, 36);
 
   const ticks: boolean[][] = [];
-  const body = PEST_OUTLETS.map(outlet => {
+  const body = outletsOf(sheet).map(outlet => {
     const r = sheet.rows[outlet];
     ticks.push([
       ...PEST_TARGETS.map(p => !!r?.pests?.includes(p)),
@@ -140,7 +141,8 @@ const summaryPage = (doc: jsPDF, sheets: PestWorksheet[], rangeLabel: string, mi
   const nights = sheets.length - days;
   const treated = new Set<string>();
 
-  const rows = PEST_OUTLETS.map(outlet => {
+  const all = Array.from(new Set(sheets.flatMap(outletsOf)));
+  const rows = all.map(outlet => {
     const used = sheets.map(s => s.rows[outlet]).filter(pestRowHasData);
     if (used.length) treated.add(outlet);
     const chems = Array.from(new Set(used.map(r => r!.chemical.trim()).filter(Boolean)));
@@ -216,10 +218,8 @@ export const buildPestControlPdf = (sheets: PestWorksheet[], opts: PestPdfOption
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   let list = sheets;
 
-  if (list.length === 0 && opts.blankWhenEmpty) {
-    const shifts: PestShift[] = opts.shift === 'Both' ? ['Day', 'Night'] : [opts.shift];
-    list = shifts.map(s => emptyWorksheet(opts.from, s));
-  }
+  if (list.length === 0 && opts.blankWhenEmpty) list = [emptyWorksheet(opts.from, opts.shift === 'Both' ? 'Day' : opts.shift)];
+  const blankBoth = sheets.length === 0 && opts.shift === 'Both';
 
   const multi = opts.from !== opts.to;
   let first = true;
@@ -229,10 +229,12 @@ export const buildPestControlPdf = (sheets: PestWorksheet[], opts: PestPdfOption
     first = false;
   }
 
-  list.forEach(sheet => {
+  // One page per date (Day + Night together)
+  const pages = mergeDaySheets(list);
+  pages.forEach(sheet => {
     if (!first) doc.addPage();
     first = false;
-    sheetPage(doc, sheet);
+    sheetPage(doc, sheet, blankBoth ? 'Day & Night' : sheet.shiftLabel);
   });
 
   // Page numbers
@@ -244,5 +246,5 @@ export const buildPestControlPdf = (sheets: PestWorksheet[], opts: PestPdfOption
     doc.text(`HK Pulse · Pest Control · ${opts.label} · Page ${i} of ${total}`, doc.internal.pageSize.getWidth() / 2, doc.internal.pageSize.getHeight() - 4, { align: 'center' });
     doc.setTextColor(0);
   }
-  return { doc, pages: list.length };
+  return { doc, pages: pages.length };
 };

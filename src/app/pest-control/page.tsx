@@ -1,10 +1,12 @@
 "use client";
-// Pest Control: log treatments per outlet (mobile-first) and auto-generate the PestEX
+// Pest Control: log treatments per outlet and auto-generate the PestEX
+// Phone: outlet cards + a bottom sheet per outlet. Desktop (lg+): sidebar (date, shift, sign-off) and the
+// worksheet as a table — click the tick boxes, type chemical / remarks in place; every change saves.
 // "Pest Control Day & Night Worksheet" as PDF — daily, monthly or for any date range.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bug, Sun, Moon, Loader2, CheckCircle2, ChevronRight, ChevronLeft, X, Search, Copy, FileDown,
-  ClipboardList, FileText, CalendarDays, CalendarRange, Calendar, Share2, Eye, Trash2, PenLine, Eraser,
+  ClipboardList, FileText, CalendarDays, CalendarRange, Calendar, Share2, Eye, Trash2, PenLine, Eraser, Check,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AdminOnly from '@/components/AdminOnly';
@@ -25,15 +27,6 @@ const monthEnd = (ym: string) => { const [y, m] = ym.split('-').map(Number); ret
 const errMsg = (err: unknown) => (err instanceof Error ? err.message : (err as { message?: string })?.message) || 'Unknown error';
 const sessionName = () => { try { return JSON.parse(localStorage.getItem('hk_pulse_session') || '{}').full_name || ''; } catch { return ''; } };
 
-// Repeated outlets in the PestEX template get a round number so staff know which row they're on
-const OUTLET_ROUND: Record<string, number> = (() => {
-  const seen: Record<string, number> = {};
-  const out: Record<string, number> = {};
-  PEST_OUTLETS.forEach(o => { const k = o.trim(); seen[k] = (seen[k] || 0) + 1; out[o] = seen[k]; });
-  return out;
-})();
-const REPEATED = new Set(PEST_OUTLETS.filter(o => OUTLET_ROUND[o] > 1).map(o => o.trim()));
-
 const PEST_ICON: Record<string, string> = { Cockroach: '🪳', Rats: '🐀', Flies: '🪰', Ants: '🐜', Mosquitoes: '🦟', Others: '🐛' };
 const METHOD_ICON: Record<string, string> = { 'Hand Spray': '🧴', Fog: '🌫️', 'Mist Blow': '💨', 'Bait Station': '📦', Fumigation: '☁️' };
 const COMMON_CHEMICALS = ['Cypermethrin', 'Deltamethrin (K-Othrine)', 'Fipronil Gel', 'Bromadiolone Bait', 'Imidacloprid'];
@@ -50,6 +43,16 @@ function Chip({ on, onClick, children, tone = 'brand' }: { on: boolean; onClick:
       className={`min-h-[48px] px-3 py-2 rounded-2xl border-2 text-[13px] font-bold flex items-center justify-center gap-1.5 transition-all active:scale-95 ${on ? onCls : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}
     >
       {children}
+    </button>
+  );
+}
+
+// Desktop worksheet tick box
+function TickBox({ on, onClick, tone, label }: { on: boolean; onClick: () => void; tone: string; label: string }) {
+  return (
+    <button type="button" onClick={onClick} aria-pressed={on} aria-label={label} title={label}
+      className={`w-8 h-8 mx-auto rounded-lg border-2 flex items-center justify-center transition-colors ${on ? `${tone} text-white` : 'border-slate-200 text-transparent hover:border-slate-400'}`}>
+      <Check size={15} strokeWidth={3} />
     </button>
   );
 }
@@ -119,6 +122,14 @@ function PestControlApp() {
       .catch(err => { setSaveState('error'); toast.error('Save failed: ' + errMsg(err)); });
     return saveChain.current;
   }, []);
+
+  // Desktop table edits a row in place (saves at once, like the phone editor)
+  const updateRow = (outlet: string, patch: Partial<PestRow>) => {
+    const row = { ...emptyPestRow(), ...(sheet.rows[outlet] || {}), ...patch };
+    const next = { ...sheet, rows: { ...sheet.rows, [outlet]: row } };
+    setSheet(next);
+    persist(next);
+  };
 
   const doneCount = useMemo(() => PEST_OUTLETS.filter(o => pestRowHasData(sheet.rows[o])).length, [sheet]);
   const pct = Math.round((doneCount / PEST_OUTLETS.length) * 100);
@@ -254,20 +265,60 @@ function PestControlApp() {
 
   const openSheetFromReport = (s: PestWorksheet) => { setDate(s.date); setShift(s.shift); setTab('log'); window.scrollTo({ top: 0 }); };
 
+  const signoff = (
+<section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-x-5 lg:gap-y-3">
+            <h2 className="lg:col-span-2 text-sm font-black text-slate-800 flex items-center gap-2"><PenLine size={16} className="text-[#6D2158]" /> Sign-off</h2>
+            {([['extraWork', 'Extra work done', 'e.g. Fogging around host village drains'], ['repComments', "Representative's comments", 'Any feedback for PestEX']] as const).map(([k, label, ph]) => (
+              <label key={k} className="block">
+                <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">{label}</span>
+                <textarea rows={2} value={sheet[k]} placeholder={ph} onChange={e => { setSheet({ ...sheet, [k]: e.target.value }); setSignoffDirty(true); }} className="mt-1 w-full p-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-semibold outline-none focus:border-[#6D2158] resize-none" />
+              </label>
+            ))}
+            <div className="grid sm:grid-cols-2 gap-3">
+              {([['technician', 'PestEX technician'], ['representative', 'Resort representative']] as const).map(([k, label]) => (
+                <label key={k} className="block">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">{label}</span>
+                  <input value={sheet[k].name} onChange={e => { setSheet({ ...sheet, [k]: { ...sheet[k], name: e.target.value } }); setSignoffDirty(true); }} className="mt-1 w-full h-12 px-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" />
+                </label>
+              ))}
+            </div>
+            <div className="space-y-2 lg:self-end">
+            <p className="text-[11px] font-semibold text-slate-400">Signatures are left blank on the PDF for signing by hand.</p>
+            <button onClick={saveSignoff} disabled={!signoffDirty || saveState === 'saving'} className="w-full h-12 rounded-2xl bg-[#6D2158] text-white text-sm font-black disabled:opacity-40 active:scale-[0.99]">
+              {signoffDirty ? 'Save sign-off' : 'Sign-off saved'}
+            </button>
+
+            </div>
+            {isSaved && (
+              <div className="pt-1 flex justify-center lg:col-span-2">
+                {confirmDelete ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-rose-600">Delete this {shift} sheet?</span>
+                    <button onClick={() => setConfirmDelete(false)} className="px-3 py-2 rounded-xl bg-slate-100 text-xs font-black text-slate-600">Cancel</button>
+                    <button onClick={removeSheet} className="px-3 py-2 rounded-xl bg-rose-600 text-xs font-black text-white">Delete</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setConfirmDelete(true)} className="px-3 py-2 rounded-xl text-xs font-black text-rose-500 flex items-center gap-1.5"><Trash2 size={13} /> Delete sheet</button>
+                )}
+              </div>
+            )}
+          </section>
+  );
+
   // ======================================================================================
   return (
     <div className="min-h-screen bg-slate-50 pb-32 md:pb-12">
       {/* Sticky top bar */}
       <div className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
-        <div className="max-w-3xl mx-auto px-4 pt-3 pb-2 flex items-center gap-3">
+        <div className="max-w-3xl lg:max-w-[1400px] mx-auto px-4 lg:px-6 pt-3 pb-2 flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-700 flex items-center justify-center shrink-0"><Bug size={20} /></div>
           <div className="min-w-0 flex-1">
             <h1 className="text-lg font-black text-[#6D2158] leading-tight">Pest Control</h1>
             <p className="text-[11px] font-bold text-slate-400 truncate">PestEX Day &amp; Night Worksheet</p>
           </div>
         </div>
-        <div className="max-w-3xl mx-auto px-4 pb-3">
-          <div className="grid grid-cols-2 p-1 rounded-2xl bg-slate-100">
+        <div className="max-w-3xl lg:max-w-[1400px] mx-auto px-4 lg:px-6 pb-3">
+          <div className="grid grid-cols-2 p-1 rounded-2xl bg-slate-100 lg:max-w-md">
             {([['log', 'Log', ClipboardList], ['reports', 'Reports & PDF', FileText]] as const).map(([k, label, Icon]) => (
               <button key={k} onClick={() => setTab(k)} className={`py-2.5 rounded-xl text-sm font-black flex items-center justify-center gap-2 transition-all ${tab === k ? 'bg-white text-[#6D2158] shadow-sm' : 'text-slate-500'}`}>
                 <Icon size={16} /> {label}
@@ -277,12 +328,12 @@ function PestControlApp() {
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-4 pt-4 space-y-4">
+      <div className="max-w-3xl lg:max-w-[1400px] mx-auto px-4 lg:px-6 pt-4 space-y-4">
         {tab === 'log' ? (
-          <>
-            {/* Date + shift + progress */}
-            <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
-              <div className="flex items-center gap-2">
+          <div className="space-y-4">
+            {/* Date + shift + progress (desktop: one bar) */}
+            <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3 lg:space-y-0 lg:flex lg:flex-wrap lg:items-center lg:gap-3">
+              <div className="flex items-center gap-2 lg:w-[290px]">
                 <button onClick={() => setDate(addDays(date, -1))} className="w-11 h-11 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-500 active:scale-95" aria-label="Previous day"><ChevronLeft size={18} /></button>
                 <label className="relative flex-1 h-11 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-center gap-2 text-sm font-black text-slate-800 cursor-pointer">
                   <Calendar size={15} className="text-[#6D2158]" />
@@ -292,7 +343,7 @@ function PestControlApp() {
                 <button onClick={() => setDate(addDays(date, 1))} disabled={date >= today} className="w-11 h-11 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-500 active:scale-95 disabled:opacity-30" aria-label="Next day"><ChevronRight size={18} /></button>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2 lg:w-[250px]">
                 {(['Day', 'Night'] as PestShift[]).map(s => (
                   <button key={s} onClick={() => setShift(s)} className={`h-12 rounded-2xl text-sm font-black flex items-center justify-center gap-2 border-2 transition-all active:scale-[0.98] ${shift === s ? (s === 'Day' ? 'bg-amber-50 border-amber-400 text-amber-800' : 'bg-indigo-50 border-indigo-400 text-indigo-800') : 'bg-white border-slate-200 text-slate-500'}`}>
                     {s === 'Day' ? <Sun size={17} /> : <Moon size={17} />} {s} shift
@@ -300,8 +351,8 @@ function PestControlApp() {
                 ))}
               </div>
 
-              <div>
-                <div className="flex items-center justify-between text-xs font-bold mb-1.5">
+              <div className="lg:flex-1 lg:min-w-[180px]">
+                <div className="flex items-center justify-between gap-2 text-xs font-bold mb-1.5 whitespace-nowrap">
                   <span className="text-slate-500">{loading ? 'Loading…' : `${doneCount} of ${PEST_OUTLETS.length} outlets logged`}</span>
                   <span className={`flex items-center gap-1 ${saveState === 'error' ? 'text-rose-600' : saveState === 'saving' ? 'text-slate-400' : isSaved ? 'text-emerald-600' : 'text-slate-400'}`}>
                     {saveState === 'saving' ? <><Loader2 size={12} className="animate-spin" /> Saving…</> : saveState === 'error' ? 'Not saved' : isSaved ? <><CheckCircle2 size={12} /> Saved</> : 'New sheet'}
@@ -312,9 +363,9 @@ function PestControlApp() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={copyPrevious} disabled={loading} className="h-11 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-black text-slate-700 flex items-center justify-center gap-1.5 active:scale-[0.98] disabled:opacity-50"><Copy size={14} /> Copy last {shift.toLowerCase()} sheet</button>
-                <button onClick={() => { setMode('daily'); setRDay(date); setRShift(shift); setTab('reports'); }} className="h-11 rounded-2xl bg-[#6D2158]/5 border border-[#6D2158]/20 text-xs font-black text-[#6D2158] flex items-center justify-center gap-1.5 active:scale-[0.98]"><FileDown size={14} /> PDF of this sheet</button>
+              <div className="grid grid-cols-2 gap-2 lg:flex">
+                <button onClick={copyPrevious} disabled={loading} className="h-11 lg:px-3 rounded-2xl bg-slate-50 border border-slate-200 text-xs font-black text-slate-700 flex items-center justify-center gap-1.5 active:scale-[0.98] disabled:opacity-50 whitespace-nowrap"><Copy size={14} /> Copy last {shift.toLowerCase()} sheet</button>
+                <button onClick={() => { setMode('daily'); setRDay(date); setRShift('Both'); setTab('reports'); }} className="h-11 lg:px-3 rounded-2xl bg-[#6D2158]/5 border border-[#6D2158]/20 text-xs font-black text-[#6D2158] flex items-center justify-center gap-1.5 active:scale-[0.98] whitespace-nowrap"><FileDown size={14} /> PDF of this day</button>
               </div>
             </section>
 
@@ -334,8 +385,60 @@ function PestControlApp() {
               </div>
             </section>
 
-            {/* Outlet cards */}
-            <section className="space-y-2">
+            {/* Desktop: the worksheet as a table */}
+            <section className="hidden lg:block bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+              {loading ? <div className="py-16 flex justify-center"><Loader2 className="animate-spin text-[#6D2158]" /></div> : (
+              <div className="max-h-[calc(100vh-300px)] min-h-[420px] overflow-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead className="sticky top-0 z-10 bg-white">
+                    <tr className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                      <th rowSpan={2} className="sticky left-0 bg-white text-left px-3 py-2 border-b border-slate-200 min-w-[230px]">Outlet</th>
+                      <th colSpan={PEST_TARGETS.length} className="py-1.5 border-b border-l border-slate-100 text-[#6D2158]">Target pest</th>
+                      <th colSpan={PEST_METHODS.length} className="py-1.5 border-b border-l border-slate-100 text-teal-700">Method</th>
+                      <th rowSpan={2} className="px-2 py-2 border-b border-l border-slate-200 text-left min-w-[170px]">Chemical used</th>
+                      <th rowSpan={2} className="px-2 py-2 border-b border-l border-slate-200 text-left min-w-[170px]">Remarks</th>
+                    </tr>
+                    <tr className="text-[10px] font-bold text-slate-500">
+                      {PEST_TARGETS.map((p, i) => <th key={p} className={`w-11 px-0.5 py-1.5 border-b border-slate-200 ${i === 0 ? 'border-l border-slate-100' : ''}`} title={p}><span className="block text-base leading-none">{PEST_ICON[p]}</span><span className="block mt-0.5 leading-tight">{p === 'Mosquitoes' ? 'Mosq.' : p === 'Cockroach' ? 'Roach' : p}</span></th>)}
+                      {PEST_METHODS.map((m, i) => <th key={m} className={`w-11 px-0.5 py-1.5 border-b border-slate-200 ${i === 0 ? 'border-l border-slate-100' : ''}`} title={m}><span className="block text-base leading-none">{METHOD_ICON[m]}</span><span className="block mt-0.5 leading-tight">{m === 'Bait Station' ? 'Bait' : m === 'Hand Spray' ? 'Spray' : m === 'Fumigation' ? 'Fumig.' : m}</span></th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.length === 0 && <tr><td colSpan={3 + PEST_TARGETS.length + PEST_METHODS.length} className="py-12 text-center text-sm font-bold text-slate-400">{filter === 'pending' ? 'All outlets logged 🎉' : 'No outlets match.'}</td></tr>}
+                    {visible.map(outlet => {
+                      const r = { ...emptyPestRow(), ...(sheet.rows[outlet] || {}) };
+                      const done = pestRowHasData(r);
+                      return (
+                        <tr key={outlet} className={`group border-b border-slate-100 ${done ? 'bg-emerald-50/40' : 'hover:bg-slate-50'}`}>
+                          <td className={`sticky left-0 px-3 py-1.5 ${done ? 'bg-emerald-50' : 'bg-white group-hover:bg-slate-50'}`}>
+                            <button onClick={() => openEditor(outlet)} className="flex items-center gap-2 text-left w-full" title="Open the full form">
+                              <span className={`w-6 h-6 rounded-lg shrink-0 flex items-center justify-center text-[10px] font-black ${done ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{done ? <Check size={13} strokeWidth={3} /> : PEST_OUTLETS.indexOf(outlet) + 1}</span>
+                              <span className="text-[13px] font-bold text-slate-800 leading-snug">{outlet}</span>
+                            </button>
+                          </td>
+                          {PEST_TARGETS.map((p, i) => <td key={p} className={`py-1 ${i === 0 ? 'border-l border-slate-100' : ''}`}><TickBox on={r.pests.includes(p)} onClick={() => updateRow(outlet, { pests: toggle(r.pests, p) })} tone="bg-[#6D2158] border-[#6D2158]" label={`${outlet}: ${p}`} /></td>)}
+                          {PEST_METHODS.map((m, i) => <td key={m} className={`py-1 ${i === 0 ? 'border-l border-slate-100' : ''}`}><TickBox on={r.methods.includes(m)} onClick={() => updateRow(outlet, { methods: toggle(r.methods, m) })} tone="bg-teal-600 border-teal-600" label={`${outlet}: ${m}`} /></td>)}
+                          {(['chemical', 'remarks'] as const).map(k => (
+                            <td key={k} className="px-1.5 py-1 border-l border-slate-100">
+                              <input key={`${date}|${shift}|${outlet}|${r[k]}`} defaultValue={r[k]} list={k === 'chemical' ? 'pest-chemicals' : undefined}
+                                onBlur={e => { const v = e.target.value.trim(); if (v !== r[k]) updateRow(outlet, { [k]: v }); }}
+                                onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { (e.target as HTMLInputElement).value = r[k]; (e.target as HTMLInputElement).blur(); } }}
+                                placeholder={k === 'chemical' ? 'e.g. Cytrol 100 ml' : '—'}
+                                className="w-full h-8 px-2 rounded-lg bg-transparent border border-transparent hover:border-slate-200 focus:bg-white focus:border-[#6D2158] text-[13px] font-semibold text-slate-700 outline-none" />
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <datalist id="pest-chemicals">{chemicals.map(c => <option key={c} value={c} />)}</datalist>
+              </div>
+              )}
+            </section>
+
+            {/* Phone: outlet cards */}
+            <section className="space-y-2 lg:hidden">
               {loading ? (
                 <div className="py-16 flex justify-center"><Loader2 className="animate-spin text-[#6D2158]" /></div>
               ) : visible.length === 0 ? (
@@ -352,7 +455,6 @@ function PestControlApp() {
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5">
                         <span className="text-sm font-black text-slate-800 truncate">{name}</span>
-                        {REPEATED.has(name) && <span className="shrink-0 text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Round {OUTLET_ROUND[outlet]}</span>}
                       </span>
                       {done ? (
                         <span className="mt-1 flex flex-wrap gap-1">
@@ -368,48 +470,11 @@ function PestControlApp() {
               })}
             </section>
 
-            {/* Sign-off */}
-            {!loading && (
-              <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-3">
-                <h2 className="text-sm font-black text-slate-800 flex items-center gap-2"><PenLine size={16} className="text-[#6D2158]" /> Sign-off</h2>
-                {([['extraWork', 'Extra work done', 'e.g. Fogging around host village drains'], ['repComments', "Representative's comments", 'Any feedback for PestEX']] as const).map(([k, label, ph]) => (
-                  <label key={k} className="block">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">{label}</span>
-                    <textarea rows={2} value={sheet[k]} placeholder={ph} onChange={e => { setSheet({ ...sheet, [k]: e.target.value }); setSignoffDirty(true); }} className="mt-1 w-full p-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-semibold outline-none focus:border-[#6D2158] resize-none" />
-                  </label>
-                ))}
-                <div className="grid sm:grid-cols-2 gap-3">
-                  {([['technician', 'PestEX technician'], ['representative', 'Resort representative']] as const).map(([k, label]) => (
-                    <label key={k} className="block">
-                      <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">{label}</span>
-                      <input value={sheet[k].name} onChange={e => { setSheet({ ...sheet, [k]: { ...sheet[k], name: e.target.value } }); setSignoffDirty(true); }} className="mt-1 w-full h-12 px-3 rounded-2xl bg-slate-50 border border-slate-200 text-sm font-bold outline-none focus:border-[#6D2158]" />
-                    </label>
-                  ))}
-                </div>
-                <p className="text-[11px] font-semibold text-slate-400">Signatures are left blank on the PDF for signing by hand.</p>
-                <button onClick={saveSignoff} disabled={!signoffDirty || saveState === 'saving'} className="w-full h-12 rounded-2xl bg-[#6D2158] text-white text-sm font-black disabled:opacity-40 active:scale-[0.99]">
-                  {signoffDirty ? 'Save sign-off' : 'Sign-off saved'}
-                </button>
-
-                {isSaved && (
-                  <div className="pt-1 flex justify-center">
-                    {confirmDelete ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-rose-600">Delete this {shift} sheet?</span>
-                        <button onClick={() => setConfirmDelete(false)} className="px-3 py-2 rounded-xl bg-slate-100 text-xs font-black text-slate-600">Cancel</button>
-                        <button onClick={removeSheet} className="px-3 py-2 rounded-xl bg-rose-600 text-xs font-black text-white">Delete</button>
-                      </div>
-                    ) : (
-                      <button onClick={() => setConfirmDelete(true)} className="px-3 py-2 rounded-xl text-xs font-black text-rose-500 flex items-center gap-1.5"><Trash2 size={13} /> Delete sheet</button>
-                    )}
-                  </div>
-                )}
-              </section>
-            )}
-          </>
+            {!loading && signoff}
+          </div>
         ) : (
           /* ============================ REPORTS ============================ */
-          <>
+          <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-5 lg:items-start lg:max-w-5xl">
             <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4 space-y-4">
               <div>
                 <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Report period</p>
@@ -467,6 +532,7 @@ function PestControlApp() {
               )}
             </section>
 
+            <div className="space-y-4">
             {/* What will be in the PDF */}
             <section className="bg-white rounded-3xl border border-slate-200 shadow-sm p-4">
               <div className="flex items-center justify-between mb-3">
@@ -475,14 +541,14 @@ function PestControlApp() {
                   <p className="text-[11px] font-bold text-slate-400">
                     {found === null ? 'Checking saved sheets…'
                       : found.length === 0 ? (mode === 'daily' ? 'Nothing saved — PDF will be a blank form' : 'No saved sheets in this period')
-                      : `${found.length} sheet${found.length > 1 ? 's' : ''}${mode !== 'daily' && withSummary ? ' + summary page' : ''}`}
+                      : (() => { const days = new Set(found.map(f => f.date)).size; return `${found.length} sheet${found.length > 1 ? 's' : ''} → ${days} page${days > 1 ? 's' : ''} (Day & Night of a date share one page)${mode !== 'daily' && withSummary ? ' + summary page' : ''}`; })()}
                   </p>
                 </div>
                 {found === null && <Loader2 size={16} className="animate-spin text-slate-400" />}
               </div>
 
               {found && found.length > 0 && (
-                <div className="space-y-1.5 max-h-72 overflow-y-auto -mx-1 px-1">
+                <div className="space-y-1.5 max-h-72 lg:max-h-[50vh] overflow-y-auto -mx-1 px-1">
                   {found.map(s => {
                     const n = PEST_OUTLETS.filter(o => pestRowHasData(s.rows[o])).length;
                     return (
@@ -516,7 +582,8 @@ function PestControlApp() {
                 )}
               </div>
             </section>
-          </>
+            </div>
+          </div>
         )}
       </div>
 
@@ -529,7 +596,7 @@ function PestControlApp() {
             <div className="px-5 pt-2 pb-3 flex items-start gap-3 border-b border-slate-100">
               <div className="min-w-0 flex-1">
                 <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Outlet {editingIdx + 1} of {PEST_OUTLETS.length} · {shift}</p>
-                <h3 className="text-lg font-black text-slate-800 leading-snug">{editing.trim()}{REPEATED.has(editing.trim()) && <span className="ml-2 align-middle text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Round {OUTLET_ROUND[editing]}</span>}</h3>
+                <h3 className="text-lg font-black text-slate-800 leading-snug">{editing.trim()}</h3>
               </div>
               <button onClick={() => commitDraft(null)} className="w-10 h-10 rounded-2xl bg-slate-100 text-slate-500 flex items-center justify-center shrink-0" aria-label="Close"><X size={18} /></button>
             </div>
