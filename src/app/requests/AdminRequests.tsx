@@ -5,8 +5,9 @@ import {
   Split, Send, Check, Clock, Edit3, Wand2, Loader2, 
   CheckCircle2, AlertTriangle, User, MessageCircle, Sparkles,
   Settings, ArrowUp, ArrowDown, Eye, EyeOff, ChevronUp, Ticket, MapPin, History, Star,
-  Lock, PiggyBank, Bike, Package
+  Lock, PiggyBank, Bike, Package, Hammer, Info
 } from 'lucide-react';
+import { suggestRouting, ROUTING_LABEL, MAINTENANCE_TYPE, ENGINEERING, type Routing } from '@/lib/requestRouting';
 import {
   TOTAL_VILLAS, normalizeVillaNumber, classifyTarget, parseVillas, isOnlyRefills,
   isCoordinator, packageOf, isHardLiquor, parseItemLine, deliveryOf, deliveryPatch, markAllItems, isMissingColumn, MISSING_COLUMN_HINT, shortHHMM,
@@ -90,6 +91,12 @@ const REQUEST_FORM_ITEMS = [
 const PILLOW_ITEMS = [
   'Body Pillow', 'Buckwheat Pillow', 'Butterfly Pillow', 'Cervical Support Pillow', 'Hypo Body Pillow', 'Isotonic Pillow',
   'Feather Firm', 'Feather Soft', 'No Snore Pillow', 'Mediflow Water Base Pillow', 'Gel and Memory Foam Pillow',
+];
+
+// Maintenance quick picks (tap to add to the note)
+const MAINT_PRESETS = [
+  'AC not cooling', 'AC leaking', 'Light not working', 'Toilet blocked', 'Water leak', 'No hot water', 'Low water pressure',
+  'TV / remote not working', 'WiFi not working', 'Door / lock problem', 'Safe not opening', 'Fan not working', 'Pest / insects', 'Bad smell',
 ];
 
 // Target category sorting order inside Frequent tab
@@ -227,7 +234,11 @@ export default function CoordinatorLog() {
   // Modals
   const [isMinibarOpen, setIsMinibarOpen] = useState(false);
   const [isOtherOpen, setIsOtherOpen] = useState(false);
-  const [otherModalType, setOtherModalType] = useState<'General' | 'GEM'>('General');
+  const [otherModalType, setOtherModalType] = useState<'General' | 'GEM' | 'Maintenance'>('General');
+  // Who the request is for (runner / VA only / Engineering): suggested from the text until picked by hand
+  const [routing, setRouting] = useState<Routing>('runner');
+  const [routingTouched, setRoutingTouched] = useState(false);
+  const [presetSearch, setPresetSearch] = useState('');
   const [isPartialOpen, setIsPartialOpen] = useState(false);
   const [showOverdue, setShowOverdue] = useState(false); 
   const [isManageLayoutOpen, setIsManageLayoutOpen] = useState(false);
@@ -526,16 +537,62 @@ export default function CoordinatorLog() {
     }
   };
 
-  const handleOpenModal = (type: 'Minibar' | 'General' | 'GEM') => {
+  // Preset search: Request Form + Pillow lists + housekeeping items of the catalogue (amenities, linen…)
+  const presetResults = useMemo(() => {
+      const q = presetSearch.trim().toLowerCase();
+      if (!q) return [] as string[];
+      const catalog = masterCatalog
+        .filter(i => !i.is_minibar_item && /amenit|linen|general request/i.test(String(i.category || '')) || /hair ?dryer|kettle|iron/i.test(String(i.article_name || '')))
+        .map(i => String(i.article_name || '').trim()).filter(Boolean);
+      const all = Array.from(new Set([...REQUEST_FORM_ITEMS, ...PILLOW_ITEMS, ...catalog]));
+      const words = q.split(/\s+/);
+      return all.filter(n => words.every(w => n.toLowerCase().includes(w)))
+        .sort((a, b) => Number(!a.toLowerCase().startsWith(q)) - Number(!b.toLowerCase().startsWith(q)) || a.length - b.length)
+        .slice(0, 24);
+  }, [presetSearch, masterCatalog]);
+
+  // Who the request is for: picked by hand, else suggested from what is typed / picked
+  const route: Routing = otherModalType === 'Maintenance' ? 'engineering' : routingTouched ? routing : (() => {
+      const next = suggestRouting(customNote, otherCart.length);
+      return classifyTarget(villaNumber).kind !== 'villa' && next === 'va' ? 'runner' : next;
+  })();
+
+  // Desktop: typing with the modal open goes to the right box — digits to the villa, letters to the item search
+  // (or the note). Phones are left alone (the keyboard only opens on tap).
+  useEffect(() => {
+      if (!isMinibarOpen && !isOtherOpen) return;
+      if (typeof window === 'undefined' || !window.matchMedia('(pointer: fine)').matches) return;
+      const visible = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(sel)).find(el => el.offsetParent !== null) as HTMLInputElement | HTMLTextAreaElement | undefined;
+      const focusEnd = (el: HTMLInputElement | HTMLTextAreaElement) => { el.focus(); try { const n = el.value.length; el.setSelectionRange(n, n); } catch { /* number inputs */ } };
+      const first = window.setTimeout(() => { const v = visible('[data-villa-input]'); if (v && !v.value) focusEnd(v); }, 60);
+      const onKey = (e: KeyboardEvent) => {
+          if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1) return;
+          const t = e.target as HTMLElement | null;
+          if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+          const isDigit = /^[0-9]$/.test(e.key);
+          const box = isDigit ? visible('[data-villa-input]') : (visible('[data-item-search]') || visible('[data-note-input]'));
+          if (!box) return;
+          e.preventDefault();
+          focusEnd(box);
+          if (isDigit) setVillaNumber(v => v + e.key);
+          else if (box.hasAttribute('data-item-search')) { if (isMinibarOpen) setMbItemSearch(q => q + e.key); else setPresetSearch(q => q + e.key); }
+          else setCustomNote(n => n + e.key);
+      };
+      window.addEventListener('keydown', onKey);
+      return () => { window.clearTimeout(first); window.removeEventListener('keydown', onKey); };
+  }, [isMinibarOpen, isOtherOpen]);
+
+  const handleOpenModal = (type: 'Minibar' | 'General' | 'GEM' | 'Maintenance') => {
     const dhakaTimeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dhaka', hour: '2-digit', minute: '2-digit', hour12: false });
     setManualTime(dhakaTimeFormatter.format(getDhakaTime()));
     
     setVillaNumber(''); setGuestOptions([]); setGuestRole(''); setEditingGuestName(''); setMbTrayOpen(false); setMbCart([]); setOtherCart([]); setCustomNote(''); setRequesterSearch(''); setMbItemSearch(''); setOtherItemSearch('');
     setOtherCategory('General'); setIsEditing(false); setEditingId(null); setIsPrivate(false); setVaOnly(false);
     setMbCategory('Frequent');
+    setPresetSearch(''); setRouting(type === 'Maintenance' ? 'engineering' : 'runner'); setRoutingTouched(type === 'Maintenance');
     
     if (type === 'Minibar') setIsMinibarOpen(true);
-    else { setOtherModalType(type); setOtherMode('Form'); setIsOtherOpen(true); }
+    else { setOtherModalType(type); setOtherMode(type === 'Maintenance' ? 'Note' : 'Form'); setIsOtherOpen(true); }
   };
 
   const handleEditRecord = (record: RequestRecord) => {
@@ -566,8 +623,11 @@ export default function CoordinatorLog() {
       const cleanNote = (record.item_details || '').split('\n').map(l => l.replace(/\s*\(SENT\)$/, '')).join('\n');
       setCustomNote(cleanNote);
       setOtherMode('Note');
-      setOtherModalType(record.request_type === 'GEM Request' ? 'GEM' : 'General');
+      setOtherModalType(record.request_type === 'GEM Request' ? 'GEM' : record.request_type === MAINTENANCE_TYPE ? 'Maintenance' : 'General');
       setOtherCategory(record.request_type);
+      setPresetSearch('');
+      setRouting(record.request_type === MAINTENANCE_TYPE ? 'engineering' : deliveryOf(record) === 'va' ? 'va' : 'runner');
+      setRoutingTouched(true);
       setIsOtherOpen(true);
     }
   };
@@ -658,8 +718,11 @@ export default function CoordinatorLog() {
         details = [...otherCart.map(i => `${i.qty}x ${i.name}`), customNote.trim()].filter(Boolean).join('\n');
         if (!details.trim()) { toast.error("Pick items or write the request"); return; }
         const onlyPillows = otherCart.length > 0 && !customNote.trim() && otherCart.every(i => PILLOW_ITEMS.includes(i.name));
-        reqType = otherModalType === 'GEM' ? 'GEM Request' : onlyPillows ? 'Pillow Request' : otherCategory; 
+        reqType = route === 'engineering' ? MAINTENANCE_TYPE : otherModalType === 'GEM' ? 'GEM Request' : onlyPillows ? 'Pillow Request' : otherCategory === MAINTENANCE_TYPE ? 'General' : otherCategory;
     }
+    // Other requests: the routing picker decides. Minibar: the VA-only switch.
+    const toVa = type === 'Minibar' ? vaOnly : route === 'va';
+    const forRunners = type === 'Minibar' ? !vaOnly : route === 'runner';
 
     const dateStr = getDhakaDateStr(selectedDate);
     const dbTimeStr = `${dateStr}T${manualTime}:00+06:00`; 
@@ -702,8 +765,8 @@ export default function CoordinatorLog() {
     // VA only: goes straight to the villa attendant (status "with VA"), not to the runners.
     const editRec = isEditing ? records.find(r => r.id === editingId) : null;
     const vaStep = target.kind !== 'villa' ? {}
-      : vaOnly && (!editRec || deliveryOf(editRec) === 'new') ? { delivery_status: 'va', taken_by: vaFor(cleanV) || 'VA', taken_at: new Date().toISOString(), ...(reqType === 'Minibar' ? { is_sent: true, item_details: markAllItems(details, true) } : {}) }
-      : !vaOnly && editRec && deliveryOf(editRec) === 'va' ? { delivery_status: null, taken_by: null, taken_at: null, ...(reqType === 'Minibar' ? { is_sent: false } : {}) }
+      : toVa && (!editRec || deliveryOf(editRec) === 'new') ? { delivery_status: 'va', taken_by: vaFor(cleanV) || 'VA', taken_at: new Date().toISOString(), ...(reqType === 'Minibar' ? { is_sent: true, item_details: markAllItems(details, true) } : {}) }
+      : !toVa && editRec && deliveryOf(editRec) === 'va' ? { delivery_status: null, taken_by: null, taken_at: null, ...(reqType === 'Minibar' ? { is_sent: false } : {}) }
       : {};
     Object.assign(payload, vaStep);
 
@@ -746,8 +809,14 @@ export default function CoordinatorLog() {
     if (!error) { 
       setIsMinibarOpen(false); setIsOtherOpen(false); fetchRecords(); 
       // New, non-private request for today → ping the runners on duty.
-      if (!isEditing && !(coord && isPrivate) && !(vaOnly && target.kind === 'villa') && dateStr === getDhakaDateStr()) {
+      const isToday = dateStr === getDhakaDateStr();
+      if (!isEditing && !(coord && isPrivate) && forRunners && !(toVa && target.kind === 'villa') && isToday) {
         notifyRunners(cleanV, reqType, details).then(n => toast.success(n ? `Saved · ${n} runner phone${n > 1 ? 's' : ''} notified` : 'Saved · no runner has notifications on'));
+      } else if (!isEditing && !(coord && isPrivate) && !forRunners && target.kind === 'villa' && isToday) {
+        // Information / maintenance: the villa's VA is told, the runners are not
+        const title = reqType === MAINTENANCE_TYPE ? `🔧 Maintenance · ${target.label}` : `ℹ️ For you · ${target.label}`;
+        notifyVillaVA(cleanV, title, details, doubleVillas).then(n => toast.success(
+          reqType === MAINTENANCE_TYPE ? `Saved · report it to Engineering${n ? ` · VA notified` : ''}` : `Saved · ${n ? 'VA notified' : 'VA has no notifications on'} · runners not sent`));
       } else toast.success(isEditing ? "Updated" : "Saved"); 
     } else {
       toast.error("Error saving request.");
@@ -937,6 +1006,17 @@ export default function CoordinatorLog() {
         onTap={() => (deliveryOf(rec) === 'new' ? handOver(rec, 'taken', defaultRunner()) : setHandOverFor(rec))}
         onMenu={() => setHandOverFor(rec)} />
   );
+
+  // Maintenance: reported to Engineering = "with Engineering"; fixed = done. Opens WhatsApp with the report.
+  const reportToEngineering = async (rec: RequestRecord) => {
+      if (deliveryOf(rec) === 'new') await handOver(rec, 'taken', ENGINEERING);
+      const target = classifyTarget(rec.villa_number);
+      const items = (rec.item_details || '').split('\n').map(s => s.trim().replace(/^[•\-\*]\s*/, '')).filter(Boolean).map(s => `• ${s}`);
+      const g = dailyGuests[target.base] || dailyGuests[rec.villa_number];
+      const lines = [`🔧 *Maintenance — ${target.label}*${rec.guest_name ? ` · ${rec.guest_name}` : ''}`, `_Reported ${formatDisplayTime(rec.request_time)} by Housekeeping_`, '', ...items,
+        ...(g?.status ? ['', `Villa: ${g.status}${vaFor(rec.villa_number) ? ` · VA ${vaFor(rec.villa_number)}` : ''}`] : [])];
+      window.open(`https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`, '_blank');
+  };
 
   const handleWhatsApp = (record: RequestRecord, type: 'inform' | 'done') => {
       const target = classifyTarget(record.villa_number);
@@ -1328,6 +1408,33 @@ export default function CoordinatorLog() {
       </button>
   ) : null;
 
+  // Gen / GEM / Maintenance request: who it goes to. Suggested from the note until picked by hand.
+  const routingPicker = (() => {
+      const isVilla = classifyTarget(villaNumber).kind === 'villa';
+      const opts: Routing[] = otherModalType === 'Maintenance' ? ['engineering'] : ['runner', 'va', 'engineering'];
+      const tone: Record<Routing, string> = { runner: 'bg-[#6D2158] border-[#6D2158]', va: 'bg-amber-500 border-amber-500', engineering: 'bg-slate-700 border-slate-700' };
+      return (
+        <div className="mb-2">
+          <div className={`grid gap-1.5 ${opts.length === 3 ? 'grid-cols-3' : 'grid-cols-1'}`}>
+            {opts.map(o => {
+              const on = route === o;
+              const disabled = o === 'va' && !isVilla;
+              return (
+                <button key={o} type="button" disabled={disabled} onClick={() => { setRouting(o); setRoutingTouched(true); }}
+                  className={`px-2 py-2 rounded-xl border text-[11px] font-black flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 ${on ? `${tone[o]} text-white` : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                  {o === 'runner' ? <Bike size={13}/> : o === 'va' ? <Info size={13}/> : <Hammer size={13}/>}
+                  <span className="truncate">{o === 'va' && vaFor(villaNumber) ? `Inform VA · ${vaFor(villaNumber)}` : ROUTING_LABEL[o].title}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1 text-[10px] font-semibold text-slate-400 text-center">
+            {ROUTING_LABEL[route].hint}{!routingTouched && (customNote.trim() || otherCart.length) ? ' · suggested from the request' : ''}
+          </p>
+        </div>
+      );
+  })();
+
   // VA only: the villa attendant does it, the runners never see it.
   const vaOnlyToggle = classifyTarget(villaNumber).kind === 'villa' ? (
       <button type="button" onClick={() => setVaOnly(v => !v)}
@@ -1399,6 +1506,14 @@ export default function CoordinatorLog() {
             >
               <Sparkles size={15} />
               <span>GEM Req</span>
+            </button>
+            <button 
+              onClick={() => handleOpenModal('Maintenance')} 
+              className="flex-1 md:flex-initial justify-center bg-slate-700 hover:bg-slate-800 active:scale-95 text-white px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+              title="Something broken: report to Engineering"
+            >
+              <Hammer size={15} />
+              <span>Maint</span>
             </button>
             {coord && (
               <button
@@ -1567,6 +1682,8 @@ export default function CoordinatorLog() {
                    ? 'border-rose-200/80 shadow-xs hover:shadow-md' 
                    : isGemReq 
                    ? 'border-amber-200/90 shadow-xs hover:shadow-md' 
+                   : r.request_type === MAINTENANCE_TYPE
+                   ? 'border-slate-400/70 shadow-xs hover:shadow-md'
                    : 'border-slate-200/80 shadow-xs hover:shadow-md'
                }`}
              >
@@ -1617,6 +1734,8 @@ export default function CoordinatorLog() {
                            ? 'bg-rose-50 text-rose-700 border-rose-200' 
                            : isGemReq 
                            ? 'bg-amber-50 text-amber-700 border-amber-200' 
+                           : r.request_type === MAINTENANCE_TYPE
+                           ? 'bg-slate-700 text-white border-slate-700'
                            : 'bg-purple-50 text-[#6D2158] border-purple-200'
                        }`}>
                            {r.request_type === 'General Request' ? 'Gen Req' : r.request_type}
@@ -1660,10 +1779,11 @@ export default function CoordinatorLog() {
                       <div className={`-mt-2 mb-3 px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 ${
                         delivery === 'delivered' ? 'bg-emerald-50 text-emerald-700' : delivery === 'pantry' || delivery === 'va' ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-blue-50 text-blue-700'
                       }`}>
-                        {delivery === 'taken' && <><Bike size={12} className="shrink-0"/> With {r.taken_by === GENERIC_RUNNER ? 'runner' : r.taken_by} · {shortHHMM(r.taken_at)}{r.request_type === 'Minibar' && itemsPending(r.item_details) > 0 ? ` · ${itemsPending(r.item_details)} still at office` : ''}</>}
-                        {delivery === 'va' && <><User size={12} className="shrink-0"/> With VA {r.taken_by} · {shortHHMM(r.taken_at)} — to confirm in villa</>}
+                        {delivery === 'taken' && r.request_type === MAINTENANCE_TYPE && <><Hammer size={12} className="shrink-0"/> Reported to Engineering · {shortHHMM(r.taken_at)} — mark ✓ when fixed</>}
+                        {delivery === 'taken' && r.request_type !== MAINTENANCE_TYPE && <><Bike size={12} className="shrink-0"/> With {r.taken_by === GENERIC_RUNNER ? 'runner' : r.taken_by} · {shortHHMM(r.taken_at)}{r.request_type === 'Minibar' && itemsPending(r.item_details) > 0 ? ` · ${itemsPending(r.item_details)} still at office` : ''}</>}
+                        {delivery === 'va' && <><User size={12} className="shrink-0"/> For VA {r.taken_by} · {shortHHMM(r.taken_at)} — runners not sent</>}
                         {delivery === 'pantry' && <><Package size={12} className="shrink-0"/> At pantry since {shortHHMM(r.pantry_at)} ({r.pantry_by}) — VA to confirm</>}
-                        {delivery === 'delivered' && <><CheckCircle2 size={12} className="shrink-0"/> In villa · {r.delivered_by} {shortHHMM(r.delivered_at)}{r.pantry_at ? ' · via pantry' : ''}</>}
+                        {delivery === 'delivered' && <><CheckCircle2 size={12} className="shrink-0"/> {r.request_type === MAINTENANCE_TYPE ? 'Fixed' : 'In villa'} · {r.delivered_by} {shortHHMM(r.delivered_at)}{r.pantry_at ? ' · via pantry' : ''}</>}
                       </div>
                     )}
 
@@ -1727,6 +1847,15 @@ export default function CoordinatorLog() {
                                          <Check size={14}/>
                                      </button>
                                  )}
+                             </>
+                         ) : r.request_type === MAINTENANCE_TYPE ? (
+                             <>
+                                 <button onClick={() => reportToEngineering(r)} className={`px-2.5 py-2 rounded-xl text-[10px] font-black uppercase flex items-center gap-1 active:scale-90 transition-all cursor-pointer ${delivery === 'new' ? 'bg-slate-700 text-white hover:bg-slate-800' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`} title="Send the report to Engineering on WhatsApp">
+                                     <Hammer size={13}/> {delivery === 'new' ? 'Tell Eng' : 'Resend'}
+                                 </button>
+                                 <button onClick={() => toggleStatus(r.id, 'is_done')} className={`p-2 rounded-xl active:scale-90 transition-all cursor-pointer ${r.is_done ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600'}`} title="Fixed">
+                                     <Check size={14}/>
+                                 </button>
                              </>
                          ) : (
                              <>
@@ -1829,6 +1958,7 @@ export default function CoordinatorLog() {
              enterKeyHint="done"
              autoComplete="off"
              placeholder="Villa / code"
+             data-villa-input
              className={`w-28 p-2 bg-slate-50 border-2 border-rose-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-rose-500 ${extra}`}
              value={villaNumber}
              onChange={e => setVillaNumber(e.target.value)}
@@ -1884,6 +2014,7 @@ export default function CoordinatorLog() {
                         <input
                           type="text"
                           placeholder="Search all items..."
+                          data-item-search
                           className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-base md:text-sm text-slate-700 outline-none focus:bg-white focus:border-rose-500"
                           value={mbItemSearch}
                           onChange={(e) => setMbItemSearch(e.target.value)}
@@ -2134,11 +2265,11 @@ export default function CoordinatorLog() {
       {/* ========================================================================= */}
       {isOtherOpen && (
          <div className="fixed inset-x-0 top-0 h-[100dvh] bg-black/60 backdrop-blur-xs z-[9999] flex items-end md:items-center justify-center p-0 md:p-4" style={modalViewport}>
-            <div className={`bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-4xl 2xl:max-w-6xl h-full max-h-full md:h-[82vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95 ${otherModalType === 'GEM' ? 'border-t-4 border-t-amber-400' : ''}`}>
+            <div className={`bg-white rounded-t-3xl md:rounded-3xl shadow-2xl w-full max-w-4xl 2xl:max-w-6xl h-full max-h-full md:h-[82vh] flex flex-col overflow-hidden border border-slate-200 animate-in slide-in-from-bottom-6 md:zoom-in-95 ${otherModalType === 'GEM' ? 'border-t-4 border-t-amber-400' : otherModalType === 'Maintenance' ? 'border-t-4 border-t-slate-700' : ''}`}>
                
                <div className="px-5 py-4 flex justify-between items-center border-b border-slate-100 shrink-0">
                   <h3 className={`text-base sm:text-lg font-black flex items-center gap-2 uppercase tracking-tight ${otherModalType === 'GEM' ? 'text-amber-600' : 'text-[#6D2158]'}`}>
-                      <Wrench size={20}/> {otherModalType === 'GEM' ? 'GEM Request' : 'General Housekeeping Request'}
+                      {otherModalType === 'Maintenance' ? <Hammer size={20}/> : <Wrench size={20}/>} {otherModalType === 'GEM' ? 'GEM Request' : otherModalType === 'Maintenance' ? 'Maintenance — for Engineering' : 'General Housekeeping Request'}
                   </h3>
                   <button onClick={() => setIsOtherOpen(false)} className="bg-slate-100 p-2 rounded-full text-slate-500 hover:bg-slate-200 cursor-pointer"><X size={18}/></button>
                </div>
@@ -2150,6 +2281,7 @@ export default function CoordinatorLog() {
                        enterKeyHint="done"
                        autoComplete="off"
                        placeholder="Villa / code" 
+                       data-villa-input
                        className="col-span-1 p-3 bg-slate-50 border-2 border-slate-200 rounded-xl font-mono font-black text-center text-base text-slate-800 outline-none focus:border-[#6D2158]" 
                        value={villaNumber} 
                        onChange={e => setVillaNumber(e.target.value)}
@@ -2197,6 +2329,14 @@ export default function CoordinatorLog() {
                     </div>
                   )}
 
+                  {otherModalType === 'Maintenance' ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {MAINT_PRESETS.map(f => (
+                        <button key={f} type="button" onClick={() => setCustomNote(n => (n.trim() ? `${n.trim()}\n${f}` : f))}
+                          className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:border-slate-700 cursor-pointer">{f}</button>
+                      ))}
+                    </div>
+                  ) : (
                   <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1.5 rounded-2xl">
                      {([['Form', 'Request Form', REQUEST_FORM_ITEMS], ['Pillow', 'Pillow Request', PILLOW_ITEMS], ['Note', 'Note', null]] as const).map(([k, label, list]) => {
                        const n = list ? otherCart.filter(c => (list as readonly string[]).includes(c.name)).reduce((s2, c) => s2 + c.qty, 0) : (customNote.trim() ? 1 : 0);
@@ -2208,14 +2348,28 @@ export default function CoordinatorLog() {
                        );
                      })}
                   </div>
+                  )}
                   
-                  {otherMode !== 'Note' ? (
+                  {otherMode !== 'Note' && otherModalType !== 'Maintenance' ? (
+                     <div className="space-y-2">
+                     <div className="relative">
+                       <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
+                       <input type="text" data-item-search value={presetSearch} onChange={e => setPresetSearch(e.target.value)}
+                         onKeyDown={e => { if (e.key === 'Enter' && presetSearch.trim()) { e.preventDefault(); const hit = presetResults[0]; addToCart(hit || presetSearch.trim(), 'Other'); setPresetSearch(''); } if (e.key === 'Escape') setPresetSearch(''); }}
+                         placeholder="Search items (towel, slipper, hair dryer…) — Enter adds the first"
+                         className="w-full pl-9 pr-9 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none focus:bg-white focus:border-[#6D2158]" />
+                       {presetSearch && <button onClick={() => setPresetSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 cursor-pointer" aria-label="Clear"><X size={14}/></button>}
+                     </div>
                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                        {(otherMode === 'Pillow' ? PILLOW_ITEMS : REQUEST_FORM_ITEMS).map((name, idx) => {
+                        {presetSearch.trim() && !presetResults.some(n => n.toLowerCase() === presetSearch.trim().toLowerCase()) && (
+                          <button onClick={() => { addToCart(presetSearch.trim(), 'Other'); setPresetSearch(''); }}
+                            className="sm:col-span-2 flex items-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-[#6D2158]/40 text-sm font-bold text-[#6D2158] cursor-pointer"><Plus size={14}/> Add “{presetSearch.trim()}”</button>
+                        )}
+                        {(presetSearch.trim() ? presetResults : otherMode === 'Pillow' ? PILLOW_ITEMS : REQUEST_FORM_ITEMS).map((name, idx) => {
                           const inCart = otherCart.find(c => c.name === name);
                           return (
                             <div key={name} className={`flex items-center gap-2 pl-3 pr-1.5 py-1.5 rounded-xl border transition-colors ${inCart ? 'bg-[#6D2158]/[0.05] border-[#6D2158]/30' : 'bg-white border-slate-200'}`}>
-                              {otherMode === 'Pillow' && <span className="w-5 text-[10px] font-black text-slate-300 shrink-0">{idx + 1}</span>}
+                              {otherMode === 'Pillow' && !presetSearch.trim() && <span className="w-5 text-[10px] font-black text-slate-300 shrink-0">{idx + 1}</span>}
                               <button onClick={() => addToCart(name, 'Other')} className="flex-1 min-w-0 text-left py-1 text-sm font-bold text-slate-700 truncate cursor-pointer">{name}</button>
                               {inCart ? (
                                 <div className="flex items-center gap-1 shrink-0">
@@ -2230,9 +2384,10 @@ export default function CoordinatorLog() {
                           );
                         })}
                      </div>
+                     </div>
                   ) : (
                      <div className="flex flex-col gap-3">
-                         {otherModalType !== 'GEM' && (
+                         {otherModalType === 'General' && (
                              <select 
                                value={otherCategory} 
                                onChange={e => setOtherCategory(e.target.value)} 
@@ -2240,7 +2395,6 @@ export default function CoordinatorLog() {
                              >
                                 <option value="General">General Request</option>
                                 <option value="Cleaning">Cleaning</option>
-                                <option value="Maintenance">Maintenance</option>
                                 <option value="Amenities">Amenities</option>
                                 <option value="Laundry">Laundry</option>
                              </select>
@@ -2249,8 +2403,9 @@ export default function CoordinatorLog() {
                              <textarea 
                                  rows={6}
                                  className="w-full p-4 pr-14 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-xs text-slate-700 outline-none focus:bg-white focus:border-[#6D2158] resize-none leading-relaxed" 
-                                 placeholder="Paste WhatsApp message or type request notes here..." 
+                                 placeholder={otherModalType === 'Maintenance' ? 'What is broken? e.g. AC not cooling in bedroom' : 'Paste WhatsApp message or type request notes here...'} 
                                  value={customNote} 
+                                 data-note-input
                                  onChange={e => setCustomNote(e.target.value)}
                              />
                              <button 
@@ -2267,16 +2422,18 @@ export default function CoordinatorLog() {
                </div>
 
                <div className="p-4 bg-white border-t border-slate-100 pb-6 md:pb-4 shrink-0">
-                  {vaOnlyToggle}{privateToggle}
+                  {routingPicker}{privateToggle}
                   <button 
                     onClick={() => submitRequest('Other')} 
                     className={`w-full py-3.5 rounded-2xl text-xs font-black uppercase tracking-wider text-white shadow-lg transition-all cursor-pointer ${
-                      otherModalType === 'GEM' 
+                      route === 'engineering'
+                        ? 'bg-slate-700 hover:bg-slate-800 shadow-slate-700/20'
+                        : otherModalType === 'GEM' 
                         ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-500/20' 
                         : 'bg-[#6D2158] hover:bg-[#5a1b49] shadow-[#6D2158]/20'
                     }`}
                   >
-                      {isEditing ? 'Confirm Update' : 'Save Request'}
+                      {isEditing ? 'Confirm Update' : route === 'engineering' ? 'Save maintenance request' : route === 'va' ? 'Save · inform VA' : 'Save · send to runners'}
                   </button>
                </div>
             </div>

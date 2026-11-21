@@ -1,8 +1,9 @@
 "use client";
+import { MAINTENANCE_TYPE } from '@/lib/requestRouting';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bike, Check, CheckCheck, Clock, Loader2, MapPin, RefreshCw, Ticket, User, Wine, ClipboardList, Star,
-  Package, Plus, Minus, X, Search, Undo2, Home, Send, Shuffle, PackageMinus, ArrowRight,
+  Package, Plus, Minus, X, Search, Undo2, Home, Send, Shuffle, PackageMinus, ArrowRight, Wrench,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { supabase } from '@/lib/supabase';
@@ -205,6 +206,7 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
     if (!isRunner) return true;
     const d = deliveryOf(r);
     if (d === 'va') return false;
+    if (r.request_type === MAINTENANCE_TYPE) return false; // Engineering's job, not the runner's
     return !(d === 'delivered' && !r.pantry_at && r.taken_by && sameName(r.taken_by, vaOf(r.villa_number)));
   };
   const jettyCount = (j: Jetty) => requests.filter(r => forMe(r) && isTodo(r) && (j === 'All' || jettyOf(r.villa_number) === j)).length;
@@ -439,7 +441,8 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
               {/* Where it is now */}
               {d !== 'new' && (
                 <div className={`mx-3 mb-2 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 ${d === 'delivered' ? 'bg-emerald-50 text-emerald-700' : d === 'pantry' || d === 'va' ? 'bg-amber-50 text-amber-800' : 'bg-blue-50 text-blue-700'}`}>
-                  {d === 'taken' && <><Bike size={13} /> {r.taken_by === me ? 'With you' : !r.taken_by || r.taken_by === GENERIC_RUNNER ? (isRunner ? 'Handed to runner — that is you' : 'With the runner') : `With ${r.taken_by}`} · {shortHHMM(r.taken_at)}{partial ? ` · ${pending} still at office` : ''}</>}
+                  {d === 'taken' && r.request_type === MAINTENANCE_TYPE && <><Wrench size={13} /> Reported to Engineering · {shortHHMM(r.taken_at)}</>}
+                  {d === 'taken' && r.request_type !== MAINTENANCE_TYPE && <><Bike size={13} /> {r.taken_by === me ? 'With you' : !r.taken_by || r.taken_by === GENERIC_RUNNER ? (isRunner ? 'Handed to runner — that is you' : 'With the runner') : `With ${r.taken_by}`} · {shortHHMM(r.taken_at)}{partial ? ` · ${pending} still at office` : ''}</>}
                   {d === 'va' && <><User size={13} /> {r.taken_by === me ? 'Handed to you' : `Handed to ${r.taken_by || 'the VA'}`} · {shortHHMM(r.taken_at)}</>}
                   {d === 'pantry' && <><Package size={13} /> At pantry since {shortHHMM(r.pantry_at)}{r.pantry_by ? ` (${r.pantry_by})` : ''}{pantryWait >= 30 ? ` · ${agoLabel(pantryWait)}` : ''}{isRunner ? ' — waiting for VA' : ''}</>}
                   {d === 'delivered' && <><Check size={13} /> In villa · {r.delivered_by === me ? 'you' : r.delivered_by} {shortHHMM(r.delivered_at)}{r.pantry_at ? ' · via pantry' : ''}</>}
@@ -481,7 +484,7 @@ export default function StaffRequests({ mode, session }: { mode: StaffMode; sess
                   <button onClick={() => move(r, 'delivered')} disabled={busy === r.id}
                     className={`w-full py-3 rounded-2xl text-sm font-black text-white active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60 ${d === 'pantry' || d === 'va' ? 'bg-amber-600' : 'bg-emerald-600'}`}>
                     {busy === r.id ? <Loader2 size={16} className="animate-spin" /> : <CheckCheck size={18} />}
-                    {d === 'pantry' ? 'Collected from pantry — in villa' : 'Placed in villa'}
+                    {r.request_type === MAINTENANCE_TYPE ? 'Fixed' : d === 'pantry' ? 'Collected from pantry — in villa' : d === 'va' ? 'Done' : 'Placed in villa'}
                   </button>
                 )}
               </div>

@@ -1253,15 +1253,29 @@ export const applyMemo = (rows: GuestRow[], memo: MemoData, D: string, leavingCr
         }
         crewSeen.set(c.villa, label);
         groups.set(c.villa, 'Seaplane crew');
+        const t = memo.crewTimes;
+        const crew = `seaplane crew (${c.shift}${c.flight ? `, ${c.flight}` : ''})`;
+        // Guest checks out today, night crew sleeps here tonight → DEP/TMA N. Same as the Allocation special page:
+        // today's row becomes the crew (one night), the departing guest is kept on its departing side and on
+        // yesterday's row, which the boards read for the DEP part.
+        if (row.guest_name && row.status === 'DEP' && c.shift === 'Night') {
+            const guest = row.guest_name;
+            const next = (() => { const d = new Date(`${D}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); })();
+            Object.assign(row, EMPTY_STAY, depSideOf(row, true), {
+                status: 'TMA (Night)', guest_name: 'TMA NIGHT', stay_dates: stayDatesOf(D, next), remarks: 'TMA arrival',
+            });
+            const nightArr = (c.flight && memo.flightArr?.[c.flight]) || t?.nightArr;
+            if (nightArr) row.arrival_time = nightArr;
+            notes.set(c.villa, `${guest} checks out${row.departure_time ? ` at ${row.departure_time}` : ''}, then ${crew} for the night (DEP/TMA N)`);
+            return;
+        }
         if (row.guest_name && IN_HOUSE.includes(row.status)) {
-            const crew = `seaplane crew (${c.shift}${c.flight ? `, ${c.flight}` : ''})`;
             notes.set(c.villa, row.status === 'DEP'
                 ? `Memo puts ${crew} here after ${row.guest_name} checks out${row.departure_time ? ` at ${row.departure_time}` : ''}: set the villa to TMA on the Allocation page if they come`
                 : `Memo lists ${crew} but a guest is in this villa`);
             return;
         }
         row.status = c.shift === 'Day' ? 'TMA (Day)' : 'TMA (Night)';
-        const t = memo.crewTimes;
         if (t && c.shift === 'Day') { if (t.dayArr) row.arrival_time = t.dayArr; if (t.dayDep) row.departure_time = t.dayDep; }
         // Night crew arrives with its own seaplane (the crew table heading names it), else the night-shutdown flight
         const nightArr = (c.flight && memo.flightArr?.[c.flight]) || t?.nightArr;
