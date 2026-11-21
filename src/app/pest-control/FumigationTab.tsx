@@ -2,13 +2,13 @@
 // Pest Control → Fumigation: log villas fumigated (date & time filled in, remarks), see where every villa
 // stands (days since the last fumigation), monthly stats, villa history, and download reports (PDF / Excel).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Wind, Clock, Check, FileDown, FileSpreadsheet, Upload, X, Trash2, CalendarDays, Calendar, CalendarRange, History, AlertTriangle } from 'lucide-react';
+import { Loader2, Wind, Clock, Check, FileDown, FileSpreadsheet, Upload, X, Trash2, CalendarDays, Calendar, CalendarRange, History, AlertTriangle, Lock } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useConfirm } from '@/components/ConfirmProvider';
 import { getDhakaDateStr } from '@/lib/dateUtils';
 import {
   TOTAL_VILLAS, DUE_DAYS, FUMIGATION_REMARKS, BAND_LABEL, band, daysBetween, lastByVilla, parseVillaList, parseTrackerRows,
-  loadFumigations, addFumigations, deleteFumigation, type FumigationEntry,
+  loadFumigations, addFumigations, deleteFumigation, loadBlocked, saveBlocked, villaRanges, type FumigationEntry, type BlockedVillas, type Band,
 } from '@/lib/fumigation';
 
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -24,14 +24,17 @@ const BAND_STYLE = {
   ok: 'bg-lime-200 text-lime-900 border-lime-300',
   soon: 'bg-amber-300 text-amber-950 border-amber-400',
   due: 'bg-rose-500 text-white border-rose-500',
-  never: 'bg-slate-100 text-slate-400 border-slate-200',
-} as const;
+  never: 'bg-white text-slate-400 border-slate-300 border-dashed',
+  blocked: 'bg-slate-200 text-slate-500 border-slate-300',
+} as const satisfies Record<Band, string>;
 
 export default function FumigationTab() {
   const { confirmAction } = useConfirm();
   const today = getDhakaDateStr();
   const [entries, setEntries] = useState<FumigationEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [blocked, setBlocked] = useState<BlockedVillas>({ villas: [], note: '', since: '', by: '', at: '' });
+  const [blockEdit, setBlockEdit] = useState<string | null>(null);   // text being edited, null = closed
 
   // log form
   const [villaText, setVillaText] = useState('');
@@ -60,6 +63,7 @@ export default function FumigationTab() {
   }, []);
   useEffect(() => {
     let alive = true;
+    loadBlocked().then(b => { if (alive) setBlocked(b); }).catch(() => {});
     loadFumigations().then(list => { if (alive) setEntries(list); })
       .catch(e => toast.error('Could not load fumigations: ' + ((e as Error)?.message || e)))
       .finally(() => { if (alive) setLoading(false); });
@@ -105,7 +109,9 @@ export default function FumigationTab() {
   const thisMonth = entries.filter(e => e.date.startsWith(today.slice(0, 7)));
   const villasThisMonth = new Set(thisMonth.map(e => e.villa)).size;
   const villas = Array.from({ length: TOTAL_VILLAS }, (_, i) => String(i + 1));
-  const bands = villas.map(v => { const l = last.get(v); return band(l ? daysBetween(l.date, today) : null); });
+  const isBlocked = new Set(blocked.villas);
+  const activeCount = TOTAL_VILLAS - villas.filter(v => isBlocked.has(v)).length;
+  const bands = villas.map(v => { const l = last.get(v); return band(l ? daysBetween(l.date, today) : null, isBlocked.has(v)); });
   const dueCount = bands.filter(b => b === 'due' || b === 'never').length;
   const perMonth = MON.map((_, i) => yearEntries.filter(e => +e.date.slice(5, 7) === i + 1).length);
   const maxMonth = Math.max(1, ...perMonth);
@@ -121,7 +127,7 @@ export default function FumigationTab() {
     setBusy(kind);
     try {
       const { buildFumigationPdf, buildFumigationXlsx } = await import('@/lib/fumigationReport');
-      const opts = { ...range, asOf: today };
+      const opts = { ...range, asOf: today, blocked: blocked.villas };
       const name = `Villa_Fumigation_${range.file}`;
       if (kind === 'pdf') buildFumigationPdf(entries, opts).save(`${name}.pdf`);
       else {
@@ -243,9 +249,9 @@ export default function FumigationTab() {
         <section className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {([
             ['This month', String(thisMonth.length), `${villasThisMonth} villas`],
-            [`Year ${year}`, String(yearEntries.length), `${new Set(yearEntries.map(e => e.villa)).size} / ${TOTAL_VILLAS} villas`],
-            [`Due (> ${DUE_DAYS} d)`, String(dueCount), 'or no record'],
-            ['Done ≤ 30 days', String(bands.filter(b => b === 'fresh').length), `of ${TOTAL_VILLAS} villas`],
+            [`Year ${year}`, String(yearEntries.length), `${new Set(yearEntries.map(e => e.villa)).size} villas`],
+            [`Due (> ${DUE_DAYS} d)`, String(dueCount), `active villas${isBlocked.size ? ` · ${isBlocked.size} blocked` : ''}`],
+            ['Done in 30 days', String(bands.filter(b => b === 'fresh').length), `of ${activeCount} active villas`],
           ] as const).map(([k, v, sub], i) => (
             <div key={k} className={`${card} !p-3`}>
               <p className={label}>{k}</p>
@@ -258,16 +264,36 @@ export default function FumigationTab() {
         <section className={card}>
           <div className="flex items-center justify-between gap-2 mb-3">
             <h2 className="text-sm font-black text-slate-800">Villas · days since last fumigation</h2>
+            <button onClick={() => setBlockEdit(blockEdit === null ? villaRanges(blocked.villas).replace(/–/g, '-') : null)}
+              className={`h-8 px-2.5 rounded-lg text-[11px] font-black flex items-center gap-1.5 ${isBlocked.size ? 'bg-slate-200 text-slate-700' : 'bg-slate-50 border border-slate-200 text-slate-500'}`}>
+              <Lock size={12} /> {isBlocked.size ? `Blocked: V${villaRanges(blocked.villas)}` : 'Blocked villas'}
+            </button>
           </div>
+          {blockEdit !== null && (
+            <div className="mb-3 p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+              <p className="text-[11px] font-bold text-slate-500">Villas closed (renovation): never counted as due and left out of the active-villa numbers and reports. Clear the box when they reopen.</p>
+              <div className="flex gap-2">
+                <input value={blockEdit} onChange={e => setBlockEdit(e.target.value)} placeholder="e.g. 59-82" className="flex-1 h-10 px-3 rounded-xl bg-white border border-slate-200 text-sm font-bold font-mono outline-none focus:border-[#6D2158]" />
+                <button onClick={async () => {
+                  const p = parseVillaList(blockEdit);
+                  if (p.bad.length) { toast.error(`Not a villa: ${p.bad.join(', ')}`); return; }
+                  const next = { villas: p.villas, note: 'Renovation', since: blocked.villas.length ? blocked.since : today, by: sessionName(), at: new Date().toISOString() };
+                  try { await saveBlocked(next); setBlocked(next); setBlockEdit(null); toast.success(p.villas.length ? `Blocked: V${villaRanges(p.villas)}` : 'No villas blocked'); }
+                  catch (e) { toast.error('Not saved: ' + ((e as Error)?.message || e)); }
+                }} className="h-10 px-4 rounded-xl bg-[#6D2158] text-white text-xs font-black">Save</button>
+                <button onClick={() => setBlockEdit(null)} className="h-10 px-3 rounded-xl bg-white border border-slate-200 text-slate-500" aria-label="Cancel"><X size={15} /></button>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-8 sm:grid-cols-10 lg:grid-cols-12 xl:grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5">
             {villas.map((v, i) => {
               const l = last.get(v);
               const d = l ? daysBetween(l.date, today) : null;
               return (
-                <button key={v} onClick={() => setOpenVilla(v)} title={l ? `V${v} · last ${dmy(l.date)} (${d} days)` : `V${v} · no record`}
+                <button key={v} onClick={() => setOpenVilla(v)} title={`${isBlocked.has(v) ? 'Blocked (renovation) · ' : ''}${l ? `V${v} · last ${dmy(l.date)} (${d} days)` : `V${v} · no record`}`}
                   className={`aspect-square rounded-xl border flex flex-col items-center justify-center leading-none hover:ring-2 hover:ring-[#6D2158]/40 ${BAND_STYLE[bands[i]]}`}>
                   <span className="text-sm font-black">{v}</span>
-                  <span className="text-[9px] font-bold opacity-80 mt-0.5">{d === null ? '—' : `${d}d`}</span>
+                  <span className="text-[9px] font-bold opacity-80 mt-0.5">{isBlocked.has(v) ? <Lock size={9} /> : d === null ? '—' : `${d}d`}</span>
                 </button>
               );
             })}

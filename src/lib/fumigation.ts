@@ -80,11 +80,43 @@ export const lastByVilla = (entries: FumigationEntry[], upTo: string) => {
   return m;
 };
 
-// Freshness bands (days since the last fumigation)
+// Freshness bands (days since the last fumigation). Blocked villas (renovation) are their own band:
+// never "due", and left out of the counts that are about active villas.
 export const DUE_DAYS = 90;
-export const band = (days: number | null): 'fresh' | 'ok' | 'soon' | 'due' | 'never' =>
-  days === null ? 'never' : days <= 30 ? 'fresh' : days <= 60 ? 'ok' : days <= DUE_DAYS ? 'soon' : 'due';
-export const BAND_LABEL = { fresh: '≤ 30 days', ok: '31–60 days', soon: '61–90 days', due: 'Over 90 days', never: 'No record' } as const;
+export type Band = 'fresh' | 'ok' | 'soon' | 'due' | 'never' | 'blocked';
+export const band = (days: number | null, blocked = false): Band =>
+  blocked ? 'blocked' : days === null ? 'never' : days <= 30 ? 'fresh' : days <= 60 ? 'ok' : days <= DUE_DAYS ? 'soon' : 'due';
+export const BAND_LABEL: Record<Band, string> = { fresh: '0–30 days', ok: '31–60 days', soon: '61–90 days', due: 'Over 90 days', never: 'No record', blocked: 'Blocked (renovation)' };
+
+// ---------- blocked villas (closed for renovation etc.) ----------
+export const BLOCKED_TYPE = 'fumigation_blocked';
+export type BlockedVillas = { villas: string[]; note: string; since: string; by: string; at: string };
+export const loadBlocked = async (): Promise<BlockedVillas> => {
+  const { data, error } = await supabase.from('hsk_constants').select('label').eq('type', BLOCKED_TYPE).limit(1).maybeSingle();
+  if (error) throw error;
+  try { const v = JSON.parse(data?.label || '{}'); return { villas: (v.villas || []).map(String), note: v.note || '', since: v.since || '', by: v.by || '', at: v.at || '' }; }
+  catch { return { villas: [], note: '', since: '', by: '', at: '' }; }
+};
+export const saveBlocked = async (b: BlockedVillas) => {
+  const label = JSON.stringify(b);
+  const { data } = await supabase.from('hsk_constants').select('id').eq('type', BLOCKED_TYPE).limit(1).maybeSingle();
+  const { error } = data?.id
+    ? await supabase.from('hsk_constants').update({ label }).eq('id', data.id)
+    : await supabase.from('hsk_constants').insert({ type: BLOCKED_TYPE, label });
+  if (error) throw error;
+};
+/** ["59","60",…,"82"] → "59–82" */
+export const villaRanges = (villas: string[]) => {
+  const n = Array.from(new Set(villas.map(Number))).filter(Boolean).sort((a, b) => a - b);
+  const out: string[] = [];
+  for (let i = 0; i < n.length; i++) {
+    let j = i;
+    while (j + 1 < n.length && n[j + 1] === n[j] + 1) j++;
+    out.push(j > i ? `${n[i]}–${n[j]}` : String(n[i]));
+    i = j;
+  }
+  return out.join(', ');
+};
 
 // ---------- import of the Excel tracker ("VILLA FUMIGATION SCHEDULE — 2026") ----------
 const MON = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
